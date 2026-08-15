@@ -1,7 +1,11 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::UserAgentControlAction;
+use codex_app_server_protocol::UserAgentControlStatus;
+use codex_app_server_protocol::UserAgentForkMode;
 use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::strip_user_message_prefix;
@@ -123,7 +127,7 @@ FROM (
       ON turns.thread_id = items.thread_id
      AND turns.turn_id = items.turn_id
     WHERE items.thread_id = ?
-      AND items.item_type = 'userMessage'
+      AND items.item_type IN ('userMessage', 'userAgentControl')
       AND items.rollout_ordinal >= ?
       AND items.rollout_ordinal < ?
       AND turns.rollout_ordinal >= ?
@@ -329,6 +333,74 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
         }
         ThreadItem::AgentMessage { text, .. } => {
             let text = markdown_to_search_text(text);
+            (!text.is_empty()).then_some(Cow::Owned(text))
+        }
+        ThreadItem::UserAgentControl {
+            action,
+            authored_selector,
+            target_thread_id,
+            previous_owner_session_id,
+            new_owner_session_id,
+            agent_ref,
+            nickname,
+            role,
+            prompt_preview,
+            resumed_target,
+            fork_mode,
+            observe_commentary,
+            final_response,
+            status,
+            error,
+            ..
+        } => {
+            let action = match action {
+                UserAgentControlAction::Spawn => "spawn",
+                UserAgentControlAction::Prompt => "prompt",
+                UserAgentControlAction::QueuedPrompt => "queued prompt",
+                UserAgentControlAction::Resume => "resume",
+                UserAgentControlAction::Interrupt => "interrupt",
+                UserAgentControlAction::Close => "close",
+                UserAgentControlAction::Observe => "observe",
+            };
+            let status = match status {
+                UserAgentControlStatus::Succeeded => "succeeded",
+                UserAgentControlStatus::Failed => "failed",
+            };
+            let fork_mode = fork_mode.map(|fork_mode| match fork_mode {
+                UserAgentForkMode::None => "fork none".to_string(),
+                UserAgentForkMode::All => "fork all".to_string(),
+                UserAgentForkMode::LastNTurns { turns } => {
+                    format!("fork last {turns} turns")
+                }
+            });
+            let final_response = final_response.map(|final_response| match final_response {
+                AgentFinalResponseHandling::None => "ignore final response",
+                AgentFinalResponseHandling::Passive => "passive response",
+                AgentFinalResponseHandling::Wake => "wake on response",
+                AgentFinalResponseHandling::Presentation => "presentation only response",
+            });
+            let text = [
+                Some(action),
+                Some(status),
+                resumed_target.then_some("resumed target"),
+                authored_selector.as_deref(),
+                target_thread_id.as_deref(),
+                previous_owner_session_id.as_deref(),
+                new_owner_session_id.as_deref(),
+                agent_ref.as_deref(),
+                nickname.as_deref(),
+                role.as_deref(),
+                prompt_preview.as_deref(),
+                fork_mode.as_deref(),
+                (*observe_commentary == Some(true)).then_some("commentary"),
+                final_response,
+                error.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
             (!text.is_empty()).then_some(Cow::Owned(text))
         }
         ThreadItem::HookPrompt { .. }

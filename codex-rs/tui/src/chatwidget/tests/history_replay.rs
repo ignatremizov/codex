@@ -489,12 +489,15 @@ async fn replayed_delegated_tool_output_is_attributed_without_seeding_composer_h
         "replayed_delegated_tool_output",
         lines_to_single_string(&cells[0])
     );
-    let projected = crate::thread_transcript::thread_items_to_transcript_cells(
+    let known_collab_agent_metadata =
+        crate::thread_transcript::collab_agent_metadata_from_items([&item]);
+    let projected = crate::thread_transcript::thread_items_to_transcript_cells_with_metadata(
         /*thread_id*/ None,
         &chat.config.cwd,
         [item],
         crate::thread_transcript::RawReasoningVisibility::Hidden,
         /*config*/ None,
+        &known_collab_agent_metadata,
     );
     assert_eq!(
         projected

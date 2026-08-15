@@ -954,7 +954,7 @@ impl Session {
                 ));
             }
         };
-        let resumed_session_id = match &initial_history {
+        let persisted_session_id = match &initial_history {
             InitialHistory::Resumed(resumed) => {
                 resumed.history.iter().find_map(|item| match item {
                     RolloutItem::SessionMeta(meta_line) => Some(meta_line.meta.session_id),
@@ -963,12 +963,21 @@ impl Session {
             }
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
-        // Legacy subagent rollouts synthesized session_id from their own thread ID.
-        let resumed_session_id = resumed_session_id.filter(|session_id| {
-            !session_configuration.session_source.is_non_root_agent()
-                || *session_id != SessionId::from(thread_id)
-        });
-        // session_id is equal to the root thread's ID.
+        let controlling_session_id = agent_control.bound_session_id();
+        let resumed_session_id = if session_configuration.session_source.is_non_root_agent()
+            && controlling_session_id.is_some()
+        {
+            // A controlled resume may adopt an existing rollout into another root. Its historical
+            // session metadata remains auditable, while the live agent control and app-server
+            // session tree must use the current owner selected by the resume operation.
+            controlling_session_id
+        } else {
+            // Older subagent rollouts synthesize session_id from their own thread id.
+            persisted_session_id.filter(|session_id| {
+                !session_configuration.session_source.is_non_root_agent()
+                    || *session_id != SessionId::from(thread_id)
+            })
+        };
         let session_id = resumed_session_id.unwrap_or_else(|| {
             if session_configuration.session_source.is_non_root_agent() {
                 agent_control.session_id()
@@ -1411,11 +1420,7 @@ impl Session {
             let agents_md_refresh = async {
                 if should_load_agents_md {
                     agents_md_manager
-                        .refresh(
-                            config.as_ref(),
-                            &resolved_environments,
-                            session_configuration.windows_sandbox_level,
-                        )
+                        .refresh(config.as_ref(), &resolved_environments)
                         .await
                 } else {
                     Ok(())

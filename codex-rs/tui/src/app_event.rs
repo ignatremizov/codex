@@ -12,9 +12,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use crate::chatwidget::agent_command::AgentSelector;
 use crate::inline_visualization::InlineVisualizationContext;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
+use codex_app_server_protocol::AgentAlias;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
@@ -306,10 +308,103 @@ pub(crate) enum AppEvent {
     AgentPickerThreadsLoaded {
         primary_thread_id: ThreadId,
         request_id: Uuid,
-        result: Result<Vec<Thread>, String>,
+        result: Result<AgentPickerRefresh, String>,
     },
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+
+    /// Resolve a user-authored selector and open the `/agent` pane on that target.
+    OpenAgentTarget(AgentSelector),
+
+    /// Open contextual controls for one agent selected in the `/agent` pane.
+    OpenAgentActions(ThreadId),
+
+    /// Inspect one agent's canonical transcript without switching the active thread.
+    InspectAgentTranscript(ThreadId),
+
+    /// Close the `/agent` overlays and prepare an auditable command in the normal composer.
+    PrepareAgentCommand(String),
+
+    /// Submit a genuine user-authored prompt to an agent without changing focus.
+    SubmitAgentPrompt {
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+        user_message: UserMessage,
+        response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
+    },
+
+    /// Queue a genuine user-authored prompt for the target's next idle boundary.
+    QueueAgentPrompt {
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+        user_message: UserMessage,
+        response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
+    },
+
+    /// Resolve an agent and open its process-lifetime queued follow-ups.
+    OpenAgentPromptQueue(AgentSelector),
+
+    /// Remove one queued follow-up and restore it to the source composer for editing.
+    EditQueuedAgentPrompt {
+        target_thread_id: ThreadId,
+        prompt_id: Uuid,
+    },
+
+    /// Open contextual edit/remove controls for one stable queued follow-up.
+    OpenQueuedAgentPromptActions {
+        target_thread_id: ThreadId,
+        prompt_id: Uuid,
+    },
+
+    /// Remove one queued follow-up without dispatching it.
+    RemoveQueuedAgentPrompt {
+        target_thread_id: ThreadId,
+        prompt_id: Uuid,
+    },
+
+    /// Admit the next queued user prompt after the target's active turn stops.
+    DrainAgentPromptQueue {
+        target_thread_id: ThreadId,
+    },
+
+    /// Spawn a default or configured-role agent from the displayed source thread.
+    SpawnAgent {
+        source_thread_id: ThreadId,
+        role: Option<String>,
+        authored_selector: Option<String>,
+        prompt: Option<UserMessage>,
+        fork_mode: codex_app_server_protocol::AgentForkMode,
+        response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
+    },
+
+    /// Resume or explicitly adopt an agent from the displayed source thread.
+    ResumeAgent {
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+        response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
+        prompt: Option<UserMessage>,
+    },
+
+    /// Interrupt an agent turn and optionally submit a follow-up.
+    InterruptAgent {
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+        follow_up: Option<UserMessage>,
+        response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
+    },
+
+    /// Close a controlled agent runtime.
+    CloseAgent {
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+    },
+
+    /// Replace response handling for one target turn.
+    ObserveAgent {
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+        response_handling: codex_app_server_protocol::AgentObservationMode,
+    },
 
     /// Fork the current thread into a transient side conversation.
     StartSide {
@@ -1481,6 +1576,12 @@ pub(crate) enum AppEvent {
         turn_revision: usize,
         result: Result<String, String>,
     },
+}
+
+#[derive(Debug)]
+pub(crate) struct AgentPickerRefresh {
+    pub(crate) threads: Vec<Thread>,
+    pub(crate) aliases: Vec<AgentAlias>,
 }
 
 /// Named profile selection to apply after any required UI guardrails complete.

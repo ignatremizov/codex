@@ -33,6 +33,7 @@ use crate::history_cell;
 use crate::history_cell::HistoryCell;
 use crate::key_hint;
 use crate::keymap::RuntimeKeymap;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::legacy_core::config::Config;
 use crate::render::Insets;
 use crate::render::renderable::FlexRenderable;
@@ -171,7 +172,14 @@ impl StartupDraftPump {
         self.bottom_pane
             .set_disable_paste_burst(config.disable_paste_burst);
         self.bottom_pane.request_redraw();
-        if let Ok(keymap) = RuntimeKeymap::from_config(&config.tui_keymap) {
+        if let Ok(keymap) = RuntimeKeymap::from_config_with_features(
+            &config.tui_keymap,
+            RuntimeKeymapFeatures {
+                voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                    config,
+                ),
+            },
+        ) {
             self.bottom_pane.set_keymap_bindings(&keymap);
         }
     }

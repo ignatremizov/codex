@@ -1256,6 +1256,7 @@ impl PickerState {
                         }
                         return Ok(Some(self.action.selection(SessionTarget {
                             path,
+                            source_rollout_path: None,
                             thread_id,
                             history_mode: self.thread_history_modes.get(&thread_id).copied(),
                         })));

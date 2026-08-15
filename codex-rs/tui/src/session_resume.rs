@@ -587,6 +587,7 @@ mod tests {
             /*state_db_ctx*/ None,
             &SessionTarget {
                 path: Some(rollout_path),
+                source_rollout_path: None,
                 thread_id,
                 history_mode: None,
             },

@@ -12,8 +12,13 @@ use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
+use crate::chatwidget::agent_command::AGENT_COMMAND_USAGE;
+use crate::chatwidget::agent_command::AgentCommand;
+use crate::chatwidget::agent_command::AgentCommandPrompt;
+use crate::chatwidget::agent_command::parse_agent_command_with_attached_input;
 use crate::goal_display::GOAL_USAGE;
 use crate::goal_files::GoalDraft;
+use codex_app_server_protocol::AgentForkMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -79,6 +84,9 @@ impl ChatWidget {
         text_elements: Vec<TextElement>,
     ) {
         self.dispatch_command_with_args(cmd, args, text_elements);
+        if cmd != SlashCommand::Goal {
+            self.bottom_pane.drain_pending_submission_state();
+        }
         self.bottom_pane.record_pending_slash_command_history();
     }
 
@@ -338,7 +346,7 @@ impl ChatWidget {
             SlashCommand::Agents => {
                 self.app_event_tx.send(AppEvent::OpenAgentsOverview);
             }
-            SlashCommand::MultiAgents => {
+            SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Approvals => {
@@ -711,6 +719,38 @@ impl ChatWidget {
         }
     }
 
+    fn prepared_agent_prompt(
+        &mut self,
+        prompt: Option<AgentCommandPrompt<'_>>,
+        has_attached_input: bool,
+        command_text_elements: &[TextElement],
+        local_images: Vec<LocalImageAttachment>,
+        remote_image_urls: Vec<String>,
+        mention_bindings: Vec<MentionBinding>,
+        source: SlashCommandDispatchSource,
+    ) -> Option<UserMessage> {
+        let (text, text_elements) = match prompt {
+            Some(prompt) => (
+                prompt.text.to_string(),
+                Self::slash_command_args_elements(
+                    prompt.text,
+                    prompt.offset,
+                    command_text_elements,
+                ),
+            ),
+            None if has_attached_input => (String::new(), Vec::new()),
+            None => return None,
+        };
+        Some(self.prepared_inline_user_message(
+            text,
+            text_elements,
+            local_images,
+            remote_image_urls,
+            mention_bindings,
+            source,
+        ))
+    }
+
     fn dispatch_prepared_command_with_args(
         &mut self,
         cmd: SlashCommand,
@@ -1006,6 +1046,242 @@ impl ChatWidget {
                 );
                 self.request_side_conversation(parent_thread_id, Some(user_message));
             }
+            SlashCommand::Agent if !trimmed.is_empty() => {
+                let has_attached_input = match source {
+                    SlashCommandDispatchSource::Live => {
+                        !self.bottom_pane.composer_local_images().is_empty()
+                            || !self.remote_image_urls().is_empty()
+                    }
+                    SlashCommandDispatchSource::Queued => {
+                        !local_images.is_empty() || !remote_image_urls.is_empty()
+                    }
+                };
+                let parsed =
+                    match parse_agent_command_with_attached_input(&args, has_attached_input) {
+                        Ok(parsed) => parsed,
+                        Err(message) => {
+                            self.add_error_message(message);
+                            if source == SlashCommandDispatchSource::Live {
+                                self.bottom_pane.drain_pending_submission_state();
+                            }
+                            return;
+                        }
+                    };
+                if has_attached_input
+                    && matches!(
+                        parsed,
+                        AgentCommand::Close { .. } | AgentCommand::Observe { .. }
+                    )
+                {
+                    self.add_error_message(
+                        "Attached images require an agent prompt, queued follow-up, or interrupt \
+                         follow-up."
+                            .to_string(),
+                    );
+                    if source == SlashCommandDispatchSource::Live {
+                        self.bottom_pane.drain_pending_submission_state();
+                    }
+                    return;
+                }
+                let Some(source_thread_id) = self.thread_id else {
+                    self.add_error_message(
+                        "'/agent' is unavailable before the session starts.".to_string(),
+                    );
+                    if source == SlashCommandDispatchSource::Live {
+                        self.bottom_pane.drain_pending_submission_state();
+                    }
+                    return;
+                };
+                let spawn = match &parsed {
+                    AgentCommand::New {
+                        fork,
+                        response,
+                        prompt,
+                    } => Some((None, Some("new".to_string()), *fork, *response, *prompt)),
+                    AgentCommand::SelectOrDispatch {
+                        selector,
+                        fork,
+                        response,
+                        prompt,
+                    } => match selector.kind() {
+                        crate::chatwidget::agent_command::AgentSelectorKind::Role(role) => Some((
+                            Some(role.clone()),
+                            Some(selector.authored().to_string()),
+                            *fork,
+                            *response,
+                            *prompt,
+                        )),
+                        crate::chatwidget::agent_command::AgentSelectorKind::UnprefixedName(
+                            role,
+                        ) if self.config.agent_roles.contains_key(role) => Some((
+                            Some(role.clone()),
+                            Some(selector.authored().to_string()),
+                            *fork,
+                            *response,
+                            *prompt,
+                        )),
+                        crate::chatwidget::agent_command::AgentSelectorKind::Id(_)
+                        | crate::chatwidget::agent_command::AgentSelectorKind::Ref(_)
+                        | crate::chatwidget::agent_command::AgentSelectorKind::Nickname(_)
+                        | crate::chatwidget::agent_command::AgentSelectorKind::UnprefixedName(_) => {
+                            None
+                        }
+                    },
+                    _ => None,
+                };
+                if let Some((role, authored_selector, fork, response, prompt)) = spawn {
+                    let prompt = self.prepared_agent_prompt(
+                        prompt,
+                        has_attached_input,
+                        &text_elements,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    );
+                    self.app_event_tx.send(AppEvent::SpawnAgent {
+                        source_thread_id,
+                        role,
+                        authored_selector,
+                        prompt,
+                        fork_mode: fork.unwrap_or(AgentForkMode::None),
+                        response_handling: response,
+                    });
+                    return;
+                }
+                if let AgentCommand::Resume {
+                    selector,
+                    response,
+                    prompt,
+                } = &parsed
+                {
+                    let prompt = self.prepared_agent_prompt(PreparedAgentPromptArgs {
+                        prompt: *prompt,
+                        has_attached_input,
+                        command_text_elements: &text_elements,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    });
+                    self.app_event_tx.send(AppEvent::ResumeAgent {
+                        source_thread_id,
+                        selector: selector.clone(),
+                        response_handling: *response,
+                        prompt,
+                    });
+                    return;
+                }
+                if let AgentCommand::Close { selector } = &parsed {
+                    self.app_event_tx.send(AppEvent::CloseAgent {
+                        source_thread_id,
+                        selector: selector.clone(),
+                    });
+                    return;
+                }
+                if let AgentCommand::Observe { selector, mode } = &parsed {
+                    self.app_event_tx.send(AppEvent::ObserveAgent {
+                        source_thread_id,
+                        selector: selector.clone(),
+                        response_handling: *mode,
+                    });
+                    return;
+                }
+                if let AgentCommand::Queue {
+                    selector,
+                    response,
+                    prompt,
+                } = &parsed
+                {
+                    if prompt.is_none() && !has_attached_input {
+                        self.app_event_tx
+                            .send(AppEvent::OpenAgentPromptQueue(selector.clone()));
+                        return;
+                    }
+                    let Some(user_message) = self.prepared_agent_prompt(
+                        *prompt,
+                        has_attached_input,
+                        &text_elements,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    ) else {
+                        unreachable!("queue prompt was checked above")
+                    };
+                    self.app_event_tx.send(AppEvent::QueueAgentPrompt {
+                        source_thread_id,
+                        selector: selector.clone(),
+                        user_message,
+                        response_handling: *response,
+                    });
+                    return;
+                }
+                if let AgentCommand::Interrupt {
+                    selector,
+                    response,
+                    prompt,
+                } = &parsed
+                {
+                    let follow_up = self.prepared_agent_prompt(
+                        *prompt,
+                        has_attached_input,
+                        &text_elements,
+                        local_images,
+                        remote_image_urls,
+                        mention_bindings,
+                        source,
+                    );
+                    self.app_event_tx.send(AppEvent::InterruptAgent {
+                        source_thread_id,
+                        selector: selector.clone(),
+                        follow_up,
+                        response_handling: *response,
+                    });
+                    return;
+                }
+                let AgentCommand::SelectOrDispatch {
+                    selector,
+                    fork: None,
+                    response,
+                    prompt,
+                } = parsed
+                else {
+                    self.add_error_message(AGENT_COMMAND_USAGE.to_string());
+                    if source == SlashCommandDispatchSource::Live {
+                        self.bottom_pane.drain_pending_submission_state();
+                    }
+                    return;
+                };
+                if prompt.is_none() && !has_attached_input && response.is_some() {
+                    self.add_error_message(AGENT_COMMAND_USAGE.to_string());
+                    if source == SlashCommandDispatchSource::Live {
+                        self.bottom_pane.drain_pending_submission_state();
+                    }
+                    return;
+                }
+                if prompt.is_none() && !has_attached_input {
+                    self.app_event_tx.send(AppEvent::OpenAgentTarget(selector));
+                    return;
+                }
+                let Some(user_message) = self.prepared_agent_prompt(
+                    prompt,
+                    has_attached_input,
+                    &text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                ) else {
+                    unreachable!("existing-target prompt was checked above")
+                };
+                self.app_event_tx.send(AppEvent::SubmitAgentPrompt {
+                    source_thread_id,
+                    selector,
+                    user_message,
+                    response_handling: response,
+                });
+            }
             SlashCommand::Review if !trimmed.is_empty() => {
                 self.submit_op(AppCommand::review(ReviewTarget::Custom {
                     instructions: args,
@@ -1031,9 +1307,6 @@ impl ChatWidget {
                 self.select_pet_by_id(args);
             }
             _ => self.dispatch_command(cmd),
-        }
-        if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
-            self.bottom_pane.drain_pending_submission_state();
         }
     }
 
@@ -1142,7 +1415,14 @@ impl ChatWidget {
                 source: SlashCommandDispatchSource::Queued,
             },
         );
-        self.queued_command_drain_result(cmd)
+        if cmd == SlashCommand::Agent {
+            // Non-empty `/agent` input is a control command handled above. It neither starts a turn
+            // nor opens a picker in the displayed thread, so it must not strand later queued input.
+            // Bare `/agent` returns earlier and retains the picker/Stop behavior.
+            QueueDrain::Continue
+        } else {
+            self.queued_command_drain_result(cmd)
+        }
     }
 
     fn builtin_command_flags(&self) -> BuiltinCommandFlags {
@@ -1227,6 +1507,7 @@ impl ChatWidget {
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
+            | SlashCommand::Agent
             | SlashCommand::Agents
             | SlashCommand::MultiAgents
             | SlashCommand::Approvals

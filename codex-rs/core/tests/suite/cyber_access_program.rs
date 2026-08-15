@@ -4,8 +4,12 @@ use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
+use codex_core::test_support::subscribe_agent_status;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::turn_input::CyberAccessProgram;
@@ -20,11 +24,74 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::time::timeout;
 use wiremock::Mock;
 use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
+
+async fn wait_for_agent_turn_to_settle(
+    thread_manager: &codex_core::ThreadManager,
+    thread_id: ThreadId,
+) -> Result<()> {
+    let mut status = match subscribe_agent_status(thread_manager, thread_id).await {
+        Ok(status) => status,
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::ThreadNotFound(missing) if *missing == thread_id
+            ) =>
+        {
+            return Ok(());
+        }
+        Err(err) => return Err(err.into()),
+    };
+    timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            match status.borrow().clone() {
+                AgentStatus::Completed(_) | AgentStatus::Shutdown | AgentStatus::NotFound => {
+                    return Ok(());
+                }
+                AgentStatus::PendingInit | AgentStatus::Running => {}
+                status @ (AgentStatus::Interrupted | AgentStatus::Errored(_)) => {
+                    anyhow::bail!("agent reached {status:?} before completing");
+                }
+            }
+            if status.changed().await.is_err() {
+                anyhow::bail!(
+                    "agent status channel closed before settling from {:?}",
+                    status.borrow().clone()
+                );
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for agent {thread_id} to settle"))??;
+    Ok(())
+}
+
+async fn wait_for_spawned_child(
+    thread_manager: &codex_core::ThreadManager,
+    root_thread_id: ThreadId,
+) -> Result<ThreadId> {
+    timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            if let Some(thread_id) = thread_manager
+                .list_thread_ids()
+                .await
+                .into_iter()
+                .find(|thread_id| *thread_id != root_thread_id)
+            {
+                return thread_id;
+            }
+            tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for a published child of {root_thread_id}"))
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recover_turn_restores_cyber_access_program_without_making_it_sticky() -> Result<()> {
@@ -298,7 +365,12 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
     ] {
         let is_v2 = namespace == "collaboration";
         let spawn_arguments = if is_v2 {
-            json!({"message": "inspect the repository", "task_name": "worker", "fork_turns": fork_turns})
+            json!({
+                "message": "inspect the repository",
+                "task_message": "inspect the repository",
+                "task_name": "worker",
+                "fork_turns": fork_turns,
+            })
         } else {
             json!({"message": "inspect the repository"})
         };
@@ -338,6 +410,7 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
                     .features
                     .enable(Feature::Collab)
                     .expect("enable multi-agent tools");
+                config.agent_allow_history_forks = true;
                 if is_v2 {
                     config
                         .features
@@ -347,27 +420,29 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
             })
             .build_with_auto_env(&server)
             .await?;
-        let mut created_threads = test.thread_manager.subscribe_thread_created();
         submit(&test, Some(CyberAccessProgram::DaybreakRed)).await?;
-        let child_id = created_threads.recv().await?;
-        let child = test.thread_manager.get_thread(child_id).await?;
-        wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+        let child_id =
+            wait_for_spawned_child(&test.thread_manager, test.session_configured.thread_id).await?;
+        wait_for_agent_turn_to_settle(&test.thread_manager, child_id).await?;
 
+        // Each mock serves one response, but Wiremock can evaluate its recording matcher more
+        // than once for that request.
         let child_programs = |requests: &responses::ResponseMock| {
             requests
                 .requests()
-                .iter()
-                .filter(|request| {
-                    request.body_json()["client_metadata"]["thread_id"] == json!(child_id)
-                })
-                .map(|request| request.body_json()["access_programs"].clone())
-                .collect::<Vec<_>>()
+                .into_iter()
+                .next()
+                .map(|request| vec![request.body_json()["access_programs"].clone()])
+                .unwrap_or_default()
         };
-        assert_eq!(
+        let mut observed_programs = vec![(
+            format!("namespace={namespace}, fork_turns={fork_turns}, initial"),
             child_programs(&initial_child_request),
+        )];
+        let mut expected_programs = vec![(
+            format!("namespace={namespace}, fork_turns={fork_turns}, initial"),
             vec![json!({"cyber": "daybreak_red"})],
-            "namespace={namespace}, fork_turns={fork_turns}"
-        );
+        )];
 
         for (program, expected, reload) in [
             (
@@ -388,9 +463,18 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
             ),
         ] {
             if reload {
-                let child = test.thread_manager.get_thread(child_id).await?;
-                child.shutdown_and_wait().await?;
-                test.thread_manager.remove_thread(&child_id).await;
+                match test.thread_manager.get_thread(child_id).await {
+                    Ok(child) => {
+                        child.shutdown_and_wait().await?;
+                        test.thread_manager.remove_thread(&child_id).await;
+                    }
+                    Err(err)
+                        if matches!(
+                            err.details(),
+                            CodexErrorDetails::ThreadNotFound(missing) if *missing == child_id
+                        ) => {}
+                    Err(err) => return Err(err.into()),
+                }
             }
             let mut reply_sequence = Vec::new();
             if reload && !is_v2 {
@@ -404,16 +488,24 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
                     responses::ev_completed("resp-resume"),
                 ]));
             }
+            let followup_arguments = if is_v2 {
+                json!({
+                    "target": "worker",
+                    "message": "inspect the tests too",
+                    "task_message": "inspect the tests too",
+                })
+            } else {
+                json!({
+                    "target": child_id.to_string(),
+                    "message": "inspect the tests too",
+                })
+            };
             reply_sequence.push(responses::sse(vec![
                 responses::ev_function_call_with_namespace(
                     "followup-worker",
                     namespace,
                     if is_v2 { "followup_task" } else { "send_input" },
-                    &json!({
-                        "target": if is_v2 { "worker".to_string() } else { child_id.to_string() },
-                        "message": "inspect the tests too",
-                    })
-                    .to_string(),
+                    &followup_arguments.to_string(),
                 ),
                 responses::ev_completed("resp-followup"),
             ]));
@@ -424,15 +516,26 @@ async fn cyber_access_program_is_inherited_by_child_turns() -> Result<()> {
                 final_response("resp-child-next"),
             )
             .await;
-            submit(&test, program).await?;
-            let child = test.thread_manager.get_thread(child_id).await?;
-            wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-            assert_eq!(
-                child_programs(&followup_child_request),
-                vec![expected],
-                "namespace={namespace}, fork_turns={fork_turns}, reload={reload}"
+            if let Err(err) = submit(&test, program).await {
+                panic!(
+                    "parent follow-up failed for namespace={namespace}, fork_turns={fork_turns}, \
+                     program={program:?}, reload={reload}: {err:#}"
+                );
+            }
+            timeout(Duration::from_secs(/*secs*/ 15), async {
+                while child_programs(&followup_child_request).is_empty() {
+                    tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+                }
+            })
+            .await?;
+            wait_for_agent_turn_to_settle(&test.thread_manager, child_id).await?;
+            let case = format!(
+                "namespace={namespace}, fork_turns={fork_turns}, program={program:?}, reload={reload}"
             );
+            observed_programs.push((case.clone(), child_programs(&followup_child_request)));
+            expected_programs.push((case, vec![expected]));
         }
+        assert_eq!(observed_programs, expected_programs);
     }
     Ok(())
 }
@@ -499,7 +602,8 @@ async fn cyber_access_program_changes_on_one_websocket_with_response_reuse() -> 
 }
 
 async fn submit(test: &TestCodex, program: Option<CyberAccessProgram>) -> Result<()> {
-    test.codex
+    let submission = test
+        .codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: "hello".to_owned(),
@@ -510,12 +614,25 @@ async fn submit(test: &TestCodex, program: Option<CyberAccessProgram>) -> Result
                 ..Default::default()
             }),
         )
-        .await?;
-    let event = wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_) | EventMsg::Error(_))
-    })
+        .await
+        .map_err(|err| anyhow::anyhow!("cyber program {program:?} submission failed: {err}"))?;
+    let turn_id = match submission {
+        TurnInputSubmission::Started { turn_id } | TurnInputSubmission::Steered { turn_id } => {
+            turn_id
+        }
+        TurnInputSubmission::NotSubmitted { reason } => {
+            anyhow::bail!("cyber program {program:?} was not submitted: {reason:?}");
+        }
+    };
+    let event = wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(event) if event.turn_id == turn_id),
+    )
     .await;
-    if let EventMsg::Error(error) = event {
+    let EventMsg::TurnComplete(event) = event else {
+        unreachable!("event predicate only matches the submitted turn completion");
+    };
+    if let Some(error) = event.error {
         anyhow::bail!("cyber program {program:?}: {error:?}");
     }
     Ok(())

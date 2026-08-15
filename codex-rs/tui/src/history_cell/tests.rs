@@ -626,7 +626,7 @@ fn unified_exec_interaction_cell_renders_completed_output_check() {
 }
 
 #[test]
-fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics() {
+fn final_message_separator_includes_short_worked_label_and_runtime_metrics() {
     let summary = RuntimeMetricsSummary {
         tool_calls: RuntimeMetricTotals {
             count: 3,
@@ -657,11 +657,14 @@ fn final_message_separator_hides_short_worked_label_and_includes_runtime_metrics
         turn_ttft_ms: 0,
         turn_ttfm_ms: 0,
     };
-    let cell = FinalMessageSeparator::new(Some(12), Some(summary));
+    let cell = FinalMessageSeparator::new(
+        Some(FinalMessageSeparatorTiming::TurnCompleted(12)),
+        Some(summary),
+    );
     let rendered = render_lines(&cell.display_lines(/*width*/ 600));
 
     assert_eq!(rendered.len(), 1);
-    assert!(!rendered[0].contains("Worked for"));
+    assert!(rendered[0].contains("Worked for 12s"));
     assert!(rendered[0].contains("Local tools: 3 calls (2.5s)"));
     assert!(rendered[0].contains("Inference: 2 calls (1.2s)"));
     assert!(rendered[0].contains("WebSocket: 1 events send (700ms)"));
@@ -686,11 +689,40 @@ fn runtime_metrics_label_rounds_fractional_tbt_milliseconds() {
 
 #[test]
 fn final_message_separator_includes_worked_label_after_one_minute() {
-    let cell = FinalMessageSeparator::new(Some(61), /*runtime_metrics*/ None);
+    let cell = FinalMessageSeparator::new(
+        Some(FinalMessageSeparatorTiming::TurnCompleted(61)),
+        /*runtime_metrics*/ None,
+    );
     let rendered = render_lines(&cell.display_lines(/*width*/ 200));
 
     assert_eq!(rendered.len(), 1);
     assert!(rendered[0].contains("Worked for"));
+}
+
+#[test]
+fn final_message_separator_timing_snapshot() {
+    let checkpoint = FinalMessageSeparator::new(
+        Some(FinalMessageSeparatorTiming::ElapsedCheckpoint(18)),
+        /*runtime_metrics*/ None,
+    );
+    let completed = FinalMessageSeparator::new(
+        Some(FinalMessageSeparatorTiming::TurnCompleted(125)),
+        /*runtime_metrics*/ None,
+    );
+    let rendered = [
+        render_lines(&checkpoint.display_lines(/*width*/ 60)),
+        render_lines(&completed.display_lines(/*width*/ 60)),
+    ]
+    .concat()
+    .join("\n");
+
+    insta::assert_snapshot!(
+        rendered,
+        @r"
+    ─ 18s elapsed ──────────────────────────────────────────────
+    ─ Worked for 2m 05s ────────────────────────────────────────
+    "
+    );
 }
 
 #[test]

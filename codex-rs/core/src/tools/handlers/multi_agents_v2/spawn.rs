@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::control::ResponseObserverKind;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::next_thread_spawn_depth;
@@ -74,6 +75,11 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     id: call_id,
                     tool: CollabAgentTool::SpawnAgent,
                     status,
+                    observe_commentary: None,
+                    wake_on_completion: None,
+                    target_messages: None,
+                    queue_input: None,
+                    deadline_at_ms: None,
                     sender_thread_id,
                     receiver_thread_ids,
                     receiver_agents: Vec::new(),
@@ -82,6 +88,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     reasoning_effort: agent_snapshot
                         .and_then(|snapshot| snapshot.reasoning_effort.clone()),
                     agents_states,
+                    completion_presentation_agent_ids: None,
                 },
                 started_at_ms,
                 completed_at_ms,
@@ -223,6 +230,7 @@ async fn handle_spawn_agent(
                     multi_agent_v2_usage_hints,
                     cyber_access_program: turn.cyber_access_program,
                     response_observation: Default::default(),
+                    response_observer: ResponseObserverKind::Native,
                 },
             ),
     )

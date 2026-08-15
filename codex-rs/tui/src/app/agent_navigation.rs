@@ -18,21 +18,30 @@
 //! order. Once a thread id is observed it keeps its place in the cycle even if the entry is later
 //! updated or marked closed.
 
+use super::agent_observation_display::AgentResponseObservationBinding;
+use super::agent_observation_display::AgentResponseObservationDisplay;
+use super::agent_observation_display::AgentResponseObservationState;
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
+use codex_app_server_protocol::AgentAlias;
+use codex_app_server_protocol::AgentAliasState;
+use codex_app_server_protocol::AgentFinalResponseHandling;
+use codex_app_server_protocol::AgentResponseHandling;
+use codex_protocol::MAIN_AGENT_NICKNAME;
 use codex_protocol::ThreadId;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum WakeSubscriptionBinding {
-    NextTurn,
-    Bound,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AgentAliasEntry {
+    pub(crate) agent_ref: u64,
+    pub(crate) nickname: Option<String>,
+    pub(crate) state: AgentAliasState,
 }
 
 /// Small state container for multi-agent picker ordering and labeling.
@@ -54,8 +63,12 @@ pub(crate) struct AgentNavigationState {
     parent_threads: HashMap<ThreadId, ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
-    /// Live V1 wake subscriptions keyed by `(observer, target)`.
-    wake_subscriptions: HashMap<(ThreadId, ThreadId), WakeSubscriptionBinding>,
+    /// Live response observation keyed by `(observer, target)`.
+    response_observations: AgentResponseObservationState,
+    /// Source threads holding response handling for the target's next user-authored turn.
+    pending_reserved_prompt_sources: HashMap<ThreadId, ThreadId>,
+    /// Durable root-scoped identities keyed by canonical thread UUID.
+    aliases: HashMap<ThreadId, AgentAliasEntry>,
     /// Coalesces root refreshes while rejecting replies from a previous session.
     pub(super) picker_refresh: Option<(ThreadId, Uuid)>,
 }
@@ -95,6 +108,135 @@ impl AgentNavigationState {
     /// this stays optional.
     pub(crate) fn get(&self, thread_id: &ThreadId) -> Option<&AgentPickerThreadEntry> {
         self.threads.get(thread_id)
+    }
+
+    pub(crate) fn is_running(&self, thread_id: ThreadId) -> bool {
+        self.threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running && !entry.is_closed)
+    }
+
+    pub(crate) fn alias(&self, thread_id: ThreadId) -> Option<&AgentAliasEntry> {
+        self.aliases.get(&thread_id)
+    }
+
+    pub(crate) fn root_thread_id(&self) -> Option<ThreadId> {
+        self.aliases.iter().find_map(|(thread_id, alias)| {
+            (alias.agent_ref == 1 && alias.state != AgentAliasState::Transferred)
+                .then_some(*thread_id)
+        })
+    }
+
+    pub(crate) fn thread_id_for_ref(&self, agent_ref: u64) -> Option<ThreadId> {
+        self.aliases.iter().find_map(|(thread_id, alias)| {
+            (alias.agent_ref == agent_ref && alias.state != AgentAliasState::Transferred)
+                .then_some(*thread_id)
+        })
+    }
+
+    pub(crate) fn thread_id_for_nickname(&self, nickname: &str) -> Option<ThreadId> {
+        if nickname.eq_ignore_ascii_case(MAIN_AGENT_NICKNAME) {
+            return self.root_thread_id();
+        }
+        self.aliases.iter().find_map(|(thread_id, alias)| {
+            (alias.nickname.as_deref() == Some(nickname)
+                && alias.state != AgentAliasState::Transferred)
+                .then_some(*thread_id)
+        })
+    }
+
+    pub(crate) fn control_selector(&self, thread_id: ThreadId) -> Option<String> {
+        self.aliases.get(&thread_id).map(|alias| {
+            if alias.agent_ref == 1 {
+                MAIN_AGENT_NICKNAME.to_string()
+            } else {
+                alias.agent_ref.to_string()
+            }
+        })
+    }
+
+    pub(crate) fn replace_aliases(&mut self, aliases: Vec<AgentAlias>) {
+        let aliases = aliases
+            .into_iter()
+            .filter_map(|alias| {
+                let thread_id = ThreadId::from_string(&alias.thread_id).ok()?;
+                let agent_ref = alias
+                    .agent_ref
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| *value > 0)?;
+                Some((
+                    thread_id,
+                    AgentAliasEntry {
+                        agent_ref,
+                        nickname: alias.nickname,
+                        state: alias.state,
+                    },
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+        for (thread_id, alias) in &aliases {
+            if let Some(entry) = self.threads.get_mut(thread_id) {
+                // A durable alias is the authoritative user-facing nickname. In particular, an
+                // adoption may intentionally omit a colliding historical nickname rather than
+                // exposing a label that resolves to another agent.
+                entry.agent_nickname.clone_from(&alias.nickname);
+            }
+        }
+        self.aliases = aliases;
+    }
+
+    pub(crate) fn upsert_alias(
+        &mut self,
+        thread_id: ThreadId,
+        agent_ref: u64,
+        nickname: Option<String>,
+        state: AgentAliasState,
+    ) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.agent_nickname.clone_from(&nickname);
+        }
+        self.aliases.insert(
+            thread_id,
+            AgentAliasEntry {
+                agent_ref,
+                nickname,
+                state,
+            },
+        );
+        self.order_by_agent_ref();
+    }
+
+    pub(crate) fn authoritative_nickname(
+        &self,
+        thread_id: ThreadId,
+        metadata_nickname: Option<String>,
+    ) -> Option<String> {
+        self.aliases
+            .get(&thread_id)
+            .map_or(metadata_nickname, |alias| alias.nickname.clone())
+    }
+
+    /// Reconciles cold-discovered row order with durable root-scoped spawn/adoption order.
+    pub(crate) fn order_by_agent_ref(&mut self) {
+        let previous_positions = self
+            .order
+            .iter()
+            .enumerate()
+            .map(|(index, thread_id)| (*thread_id, index))
+            .collect::<HashMap<_, _>>();
+        let aliases = &self.aliases;
+        self.order.sort_by_key(|thread_id| {
+            (
+                aliases
+                    .get(thread_id)
+                    .map_or(u64::MAX, |alias| alias.agent_ref),
+                previous_positions
+                    .get(thread_id)
+                    .copied()
+                    .unwrap_or(usize::MAX),
+            )
+        });
     }
 
     /// Returns whether the picker cache currently knows about any threads.
@@ -178,6 +320,8 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
+        self.response_observations.mark_target_running(thread_id);
+        self.pending_reserved_prompt_sources.remove(&thread_id);
         if self
             .threads
             .get(&thread_id)
@@ -186,11 +330,6 @@ impl AgentNavigationState {
             return;
         }
         self.stopped_threads.remove(&thread_id);
-        for ((_, target), binding) in &mut self.wake_subscriptions {
-            if *target == thread_id && *binding == WakeSubscriptionBinding::NextTurn {
-                *binding = WakeSubscriptionBinding::Bound;
-            }
-        }
         self.set_running(thread_id, /*is_running*/ true);
     }
 
@@ -201,9 +340,7 @@ impl AgentNavigationState {
 
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
         if !is_running {
-            self.wake_subscriptions.retain(|(_, target), binding| {
-                *target != thread_id || *binding == WakeSubscriptionBinding::NextTurn
-            });
+            self.response_observations.mark_target_stopped(thread_id);
         }
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
@@ -237,18 +374,112 @@ impl AgentNavigationState {
         self.parent_threads.get(&thread_id).copied()
     }
 
-    /// Records a V1 wake subscription for one observer/target pair.
-    pub(crate) fn note_wake_subscription(
+    pub(crate) fn child_count(&self, thread_id: ThreadId) -> usize {
+        self.parent_threads
+            .values()
+            .filter(|parent_thread_id| **parent_thread_id == thread_id)
+            .count()
+    }
+
+    pub(crate) fn depth(&self, thread_id: ThreadId) -> usize {
+        let mut depth = 0;
+        let mut current = thread_id;
+        let mut visited = HashSet::new();
+        while visited.insert(current) {
+            let Some(parent) = self.parent_thread_id(current) else {
+                break;
+            };
+            depth += 1;
+            current = parent;
+        }
+        depth
+    }
+
+    pub(crate) fn display_name(
+        &self,
+        thread_id: ThreadId,
+        primary_thread_id: Option<ThreadId>,
+    ) -> String {
+        let is_primary = primary_thread_id == Some(thread_id);
+        self.threads
+            .get(&thread_id)
+            .map(|entry| {
+                if !is_primary
+                    && entry.agent_nickname.is_none()
+                    && entry.agent_role.is_none()
+                    && let Some(agent_path) = entry
+                        .agent_path
+                        .as_deref()
+                        .filter(|agent_path| !agent_path.trim().is_empty())
+                {
+                    return agent_path.trim().to_string();
+                }
+                format_agent_picker_item_name(
+                    entry.agent_nickname.as_deref(),
+                    entry.agent_role.as_deref(),
+                    is_primary,
+                )
+            })
+            .unwrap_or_else(|| {
+                format_agent_picker_item_name(
+                    /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
+                )
+            })
+    }
+
+    pub(crate) fn note_response_observation(
         &mut self,
         observer: ThreadId,
         target: ThreadId,
-        binding: WakeSubscriptionBinding,
+        binding: AgentResponseObservationBinding,
+        response_handling: Option<AgentResponseHandling>,
     ) {
-        self.wake_subscriptions.insert((observer, target), binding);
+        self.response_observations
+            .note(observer, target, binding, response_handling);
     }
 
+    pub(crate) fn replace_user_final_response_observation(
+        &mut self,
+        observer: ThreadId,
+        target: ThreadId,
+        binding: AgentResponseObservationBinding,
+        final_response: AgentFinalResponseHandling,
+    ) {
+        self.response_observations.replace_final_response(
+            observer,
+            target,
+            binding,
+            final_response,
+        );
+    }
+
+    #[cfg(test)]
     pub(crate) fn has_wake_subscription(&self, observer: ThreadId, target: ThreadId) -> bool {
-        self.wake_subscriptions.contains_key(&(observer, target))
+        self.response_observations.has_wake(observer, target)
+    }
+
+    pub(crate) fn response_observation(
+        &self,
+        observer: ThreadId,
+        target: ThreadId,
+    ) -> Option<AgentResponseObservationDisplay> {
+        self.response_observations.get(observer, target)
+    }
+
+    pub(crate) fn clear_response_observation(&mut self, observer: ThreadId, target: ThreadId) {
+        self.response_observations.remove(observer, target);
+    }
+
+    pub(crate) fn reserve_prompt_response(&mut self, source: ThreadId, target: ThreadId) {
+        self.pending_reserved_prompt_sources.insert(target, source);
+    }
+
+    pub(crate) fn reserved_prompt_source(&self, target: ThreadId) -> Option<ThreadId> {
+        self.pending_reserved_prompt_sources.get(&target).copied()
+    }
+
+    pub(crate) fn clear_reserved_prompt_response(&mut self, target: ThreadId) {
+        self.pending_reserved_prompt_sources.remove(&target);
     }
 
     /// Marks a thread as closed without removing it from the traversal cache.
@@ -267,8 +498,8 @@ impl AgentNavigationState {
                 /*is_closed*/ true,
             );
         }
-        self.wake_subscriptions
-            .retain(|(observer, target), _| *observer != thread_id && *target != thread_id);
+        self.response_observations.remove_thread(thread_id);
+        self.pending_reserved_prompt_sources.remove(&thread_id);
     }
 
     /// Drops all cached picker state.
@@ -280,7 +511,9 @@ impl AgentNavigationState {
         self.order.clear();
         self.parent_threads.clear();
         self.stopped_threads.clear();
-        self.wake_subscriptions.clear();
+        self.response_observations.clear();
+        self.pending_reserved_prompt_sources.clear();
+        self.aliases.clear();
         self.picker_refresh = None;
     }
 
@@ -294,8 +527,8 @@ impl AgentNavigationState {
         self.order.retain(|candidate| *candidate != thread_id);
         self.parent_threads.remove(&thread_id);
         self.stopped_threads.remove(&thread_id);
-        self.wake_subscriptions
-            .retain(|(observer, target), _| *observer != thread_id && *target != thread_id);
+        self.response_observations.remove_thread(thread_id);
+        self.pending_reserved_prompt_sources.remove(&thread_id);
     }
 
     /// Returns whether there is at least one tracked thread other than the primary one.
@@ -394,31 +627,21 @@ impl AgentNavigationState {
         }
 
         let thread_id = current_displayed_thread_id?;
-        let is_primary = primary_thread_id == Some(thread_id);
-        Some(
-            self.threads
-                .get(&thread_id)
-                .map(|entry| {
-                    if !is_primary
-                        && let Some(agent_path) = entry
-                            .agent_path
-                            .as_deref()
-                            .filter(|agent_path| !agent_path.trim().is_empty())
-                    {
-                        return format!("`{agent_path}`");
-                    }
-                    format_agent_picker_item_name(
-                        entry.agent_nickname.as_deref(),
-                        entry.agent_role.as_deref(),
-                        is_primary,
-                    )
-                })
-                .unwrap_or_else(|| {
-                    format_agent_picker_item_name(
-                        /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
-                    )
-                }),
-        )
+        let label = self.display_name(thread_id, primary_thread_id);
+        let has_path_label = primary_thread_id != Some(thread_id)
+            && self.threads.get(&thread_id).is_some_and(|entry| {
+                entry.agent_nickname.is_none()
+                    && entry.agent_role.is_none()
+                    && entry
+                        .agent_path
+                        .as_deref()
+                        .is_some_and(|agent_path| !agent_path.trim().is_empty())
+            });
+        Some(if has_path_label {
+            format!("`{label}`")
+        } else {
+            label
+        })
     }
 
     /// Builds the `/subagents` picker subtitle from the same canonical bindings used by key handling.
@@ -433,222 +656,8 @@ impl AgentNavigationState {
             previous.content, next.content
         )
     }
-
-    #[cfg(test)]
-    /// Returns only the ordered thread ids for focused tests of traversal invariants.
-    ///
-    /// This helper exists so tests can assert on ordering without embedding the full picker entry
-    /// payload in every expectation.
-    pub(crate) fn ordered_thread_ids(&self) -> Vec<ThreadId> {
-        self.ordered_threads()
-            .into_iter()
-            .map(|(thread_id, _)| thread_id)
-            .collect()
-    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    fn populated_state() -> (AgentNavigationState, ThreadId, ThreadId, ThreadId) {
-        let mut state = AgentNavigationState::default();
-        let main_thread_id =
-            ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
-        let first_agent_id =
-            ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread");
-        let second_agent_id =
-            ThreadId::from_string("00000000-0000-0000-0000-000000000103").expect("valid thread");
-
-        state.upsert(
-            main_thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            /*is_closed*/ false,
-        );
-        state.upsert(
-            first_agent_id,
-            Some("Robie".to_string()),
-            Some("explorer".to_string()),
-            /*is_closed*/ false,
-        );
-        state.upsert(
-            second_agent_id,
-            Some("Bob".to_string()),
-            Some("worker".to_string()),
-            /*is_closed*/ false,
-        );
-
-        (state, main_thread_id, first_agent_id, second_agent_id)
-    }
-
-    #[test]
-    fn upsert_preserves_first_seen_order() {
-        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
-
-        state.upsert(
-            first_agent_id,
-            Some("Robie".to_string()),
-            Some("worker".to_string()),
-            /*is_closed*/ true,
-        );
-
-        assert_eq!(
-            state.ordered_thread_ids(),
-            vec![main_thread_id, first_agent_id, second_agent_id]
-        );
-    }
-
-    #[test]
-    fn parent_thread_id_tracks_immediate_parent_until_removal() {
-        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
-
-        state.set_parent_thread_id(first_agent_id, Some(main_thread_id));
-        state.set_parent_thread_id(second_agent_id, Some(first_agent_id));
-
-        assert_eq!(
-            state.parent_thread_id(second_agent_id),
-            Some(first_agent_id)
-        );
-        state.remove(first_agent_id);
-        assert_eq!(state.parent_thread_id(first_agent_id), None);
-        assert_eq!(
-            state.parent_thread_id(second_agent_id),
-            Some(first_agent_id)
-        );
-        state.clear();
-        assert_eq!(state.parent_thread_id(second_agent_id), None);
-    }
-
-    #[test]
-    fn wake_subscriptions_are_observer_relative_and_end_with_the_target_turn() {
-        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
-
-        state.note_wake_subscription(
-            main_thread_id,
-            first_agent_id,
-            WakeSubscriptionBinding::Bound,
-        );
-        state.note_wake_subscription(
-            first_agent_id,
-            second_agent_id,
-            WakeSubscriptionBinding::Bound,
-        );
-
-        assert!(state.has_wake_subscription(main_thread_id, first_agent_id));
-        assert!(state.has_wake_subscription(first_agent_id, second_agent_id));
-        assert!(!state.has_wake_subscription(main_thread_id, second_agent_id));
-
-        state.mark_stopped(first_agent_id);
-
-        assert!(!state.has_wake_subscription(main_thread_id, first_agent_id));
-        assert!(
-            state.has_wake_subscription(first_agent_id, second_agent_id),
-            "an observer's own turn ending must not cancel its target subscription"
-        );
-
-        state.mark_closed(first_agent_id);
-
-        assert!(!state.has_wake_subscription(first_agent_id, second_agent_id));
-
-        state.note_wake_subscription(
-            main_thread_id,
-            second_agent_id,
-            WakeSubscriptionBinding::NextTurn,
-        );
-        state.mark_stopped(second_agent_id);
-        assert!(state.has_wake_subscription(main_thread_id, second_agent_id));
-        state.mark_running(second_agent_id);
-        state.mark_stopped(second_agent_id);
-        assert!(!state.has_wake_subscription(main_thread_id, second_agent_id));
-    }
-
-    #[test]
-    fn upsert_preserves_known_identity_when_update_omits_metadata() {
-        let mut state = AgentNavigationState::default();
-        let thread_id = ThreadId::new();
-        state.upsert(
-            thread_id,
-            Some("Herschel".to_string()),
-            Some("default".to_string()),
-            /*is_closed*/ true,
-        );
-
-        state.upsert(
-            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-            /*is_closed*/ false,
-        );
-
-        assert_eq!(
-            state.get(&thread_id),
-            Some(&AgentPickerThreadEntry {
-                agent_nickname: Some("Herschel".to_string()),
-                agent_role: Some("default".to_string()),
-                agent_path: None,
-                is_running: false,
-                is_closed: false,
-            })
-        );
-    }
-
-    #[test]
-    fn picker_refresh_rejects_responses_from_before_clear() {
-        let mut state = AgentNavigationState::default();
-        let thread_id = ThreadId::new();
-        let stale_request = state
-            .begin_picker_refresh(thread_id)
-            .expect("first picker refresh");
-
-        assert_eq!(state.begin_picker_refresh(thread_id), None);
-        state.clear();
-        let current_request = state
-            .begin_picker_refresh(thread_id)
-            .expect("refresh after session reset");
-
-        assert!(!state.finish_picker_refresh(thread_id, stale_request));
-        assert!(state.finish_picker_refresh(thread_id, current_request));
-    }
-
-    #[test]
-    fn adjacent_thread_id_wraps_in_spawn_order() {
-        let (state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
-
-        assert_eq!(
-            state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Next),
-            Some(main_thread_id)
-        );
-        assert_eq!(
-            state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Previous),
-            Some(first_agent_id)
-        );
-        assert_eq!(
-            state.adjacent_thread_id(Some(main_thread_id), AgentNavigationDirection::Previous),
-            Some(second_agent_id)
-        );
-    }
-
-    #[test]
-    fn picker_subtitle_mentions_shortcuts() {
-        let previous: Span<'static> = previous_agent_shortcut().into();
-        let next: Span<'static> = next_agent_shortcut().into();
-        let subtitle = AgentNavigationState::picker_subtitle();
-
-        assert!(subtitle.contains(previous.content.as_ref()));
-        assert!(subtitle.contains(next.content.as_ref()));
-    }
-
-    #[test]
-    fn active_agent_label_tracks_current_thread() {
-        let (state, main_thread_id, first_agent_id, _) = populated_state();
-
-        assert_eq!(
-            state.active_agent_label(Some(first_agent_id), Some(main_thread_id)),
-            Some("Robie [explorer]".to_string())
-        );
-        assert_eq!(
-            state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
-            Some("Main [default]".to_string())
-        );
-    }
-}
+#[path = "agent_navigation_tests.rs"]
+mod tests;

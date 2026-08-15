@@ -272,6 +272,7 @@ use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
 use crate::auto_review_denials;
 use crate::auto_review_denials::RecentAutoReviewDenials;
+use crate::bottom_pane::AgentPromptTarget;
 use crate::bottom_pane::ApplyPatchApprovalRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::BottomPane;
@@ -377,6 +378,7 @@ mod pets;
 mod session_flow;
 mod session_header;
 use self::session_header::SessionHeader;
+pub(crate) mod agent_command;
 mod hook_lifecycle;
 mod hooks;
 mod interaction;
@@ -1025,6 +1027,10 @@ impl ChatWidget {
             Some("Main".to_string()),
             Some("default".to_string()),
         );
+    }
+
+    pub(crate) fn set_agent_prompt_targets(&mut self, targets: Vec<AgentPromptTarget>) {
+        self.bottom_pane.set_agent_prompt_targets(targets);
     }
 
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.

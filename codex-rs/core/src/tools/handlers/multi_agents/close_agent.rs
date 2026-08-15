@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v1;
 use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
@@ -41,10 +42,15 @@ async fn handle_close_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
-    let agent_id = parse_agent_id_target(&args.target)?;
+    let agent_id = resolve_controlled_v1_agent_target(&session, &args.target).await?;
     if agent_id == session.thread_id {
         return Err(FunctionCallError::RespondToModel(
             "an agent cannot close itself; return your result instead".to_string(),
+        ));
+    }
+    if agent_id == ThreadId::from(session.services.agent_control.session_id()) {
+        return Err(FunctionCallError::RespondToModel(
+            "a child agent cannot close Main".to_string(),
         ));
     }
     let receiver_agent = session.services.agent_control.get_agent_metadata(agent_id);

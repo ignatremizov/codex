@@ -15,6 +15,7 @@ pub(super) struct ThreadEventSnapshot {
     pub(super) turns: Vec<Turn>,
     pub(super) events: Vec<ThreadBufferedEvent>,
     pub(super) input_state: Option<ThreadInputState>,
+    pub(super) active_turn_timing: Option<(String, Instant)>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +55,8 @@ pub(super) struct ThreadEventStore {
     pub(super) turn_history_complete: bool,
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
     pub(super) pending_interactive_replay: PendingInteractiveReplayState,
-    pub(super) active_turn_id: Option<String>,
+    active_turn_id: Option<String>,
+    active_turn_started_at: Option<Instant>,
     pub(super) pending_interrupt_turn_id: Option<String>,
     pub(super) input_state: Option<ThreadInputState>,
     pub(super) capacity: usize,
@@ -101,6 +103,7 @@ impl ThreadEventStore {
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
+            active_turn_started_at: None,
             pending_interrupt_turn_id: None,
             input_state: None,
             capacity,
@@ -135,11 +138,20 @@ impl ThreadEventStore {
     pub(super) fn set_turns(&mut self, turns: Vec<Turn>) {
         self.recap_progress
             .merge(recap::RecapProgress::from_turns(&turns));
-        self.active_turn_id = turns
+        let has_authoritative_turns = !turns.is_empty();
+        let active_turn_id = turns
             .iter()
             .rev()
             .find(|turn| matches!(turn.status, TurnStatus::InProgress))
             .map(|turn| turn.id.clone());
+        if let Some(active_turn_id) = active_turn_id {
+            self.set_active_turn_id(active_turn_id);
+        } else {
+            self.clear_active_turn_id();
+            if has_authoritative_turns {
+                self.clear_pending_turn_start();
+            }
+        }
         self.turns = turns;
         self.turn_history_complete = true;
     }
@@ -157,21 +169,23 @@ impl ThreadEventStore {
             .note_server_notification(notification.as_ref());
         match notification.as_ref() {
             ServerNotification::TurnStarted(turn) => {
-                self.active_turn_id = Some(turn.turn.id.clone());
+                self.set_active_turn_id(turn.turn.id.clone());
             }
             ServerNotification::TurnCompleted(turn) => {
                 if matches!(turn.turn.status, TurnStatus::Completed) {
                     self.recap_progress.completed_turns += 1;
                 }
                 if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str()) {
-                    self.active_turn_id = None;
+                    self.clear_active_turn_id();
+                    self.clear_pending_turn_start();
                 }
                 if self.pending_interrupt_turn_id.as_deref() == Some(turn.turn.id.as_str()) {
                     self.pending_interrupt_turn_id = None;
                 }
             }
             ServerNotification::ThreadClosed(_) => {
-                self.active_turn_id = None;
+                self.clear_active_turn_id();
+                self.clear_pending_turn_start();
                 self.pending_interrupt_turn_id = None;
             }
             _ => {}
@@ -239,7 +253,8 @@ impl ThreadEventStore {
         self.turns = response.thread.turns.clone();
         self.turn_history_complete = true;
         self.buffer.retain(Self::event_survives_thread_rollback);
-        self.active_turn_id = None;
+        self.clear_active_turn_id();
+        self.clear_pending_turn_start();
     }
 
     pub(super) fn snapshot(&self) -> ThreadEventSnapshot {
@@ -263,6 +278,10 @@ impl ThreadEventStore {
                 .cloned()
                 .collect(),
             input_state: self.input_state.clone(),
+            // The bounded event buffer may evict turn transitions, while this store keeps the
+            // current active turn independently. Carry its process-local timing separately from
+            // optional composer state so first-time replay remains lifecycle-correct.
+            active_turn_timing: self.active_turn_timing(),
         }
     }
 
@@ -313,8 +332,42 @@ impl ThreadEventStore {
         self.active_turn_id.as_deref()
     }
 
+    pub(super) fn active_turn_timing(&self) -> Option<(String, Instant)> {
+        self.active_turn_id.clone().zip(self.active_turn_started_at)
+    }
+
+    pub(super) fn set_input_state(&mut self, input_state: Option<ThreadInputState>) {
+        if let Some((turn_id, started_at)) = input_state
+            .as_ref()
+            .and_then(ThreadInputState::active_turn_timing)
+            && self.active_turn_id.as_deref() == Some(turn_id.as_str())
+        {
+            // The focused widget starts its clock after notification routing. Prefer that exact
+            // origin when it agrees with the store's authoritative active-turn identity.
+            self.active_turn_started_at = Some(started_at);
+        }
+        self.input_state = input_state;
+    }
+
+    pub(super) fn set_active_turn_id(&mut self, turn_id: String) {
+        self.clear_pending_turn_start();
+        if self.active_turn_id.as_ref() != Some(&turn_id) {
+            self.active_turn_id = Some(turn_id);
+            self.active_turn_started_at = Some(Instant::now());
+        } else if self.active_turn_started_at.is_none() {
+            self.active_turn_started_at = Some(Instant::now());
+        }
+    }
+
     pub(super) fn clear_active_turn_id(&mut self) {
         self.active_turn_id = None;
+        self.active_turn_started_at = None;
+    }
+
+    fn clear_pending_turn_start(&mut self) {
+        if let Some(input_state) = self.input_state.as_mut() {
+            input_state.user_turn_pending_start = false;
+        }
     }
 }
 
@@ -597,6 +650,10 @@ mod tests {
         let thread_id = ThreadId::new();
         store.push_notification(turn_started_notification(thread_id, "turn-1"));
         assert_eq!(store.active_turn_id(), Some("turn-1"));
+        let turn_timing = store.active_turn_timing();
+
+        store.push_notification(turn_started_notification(thread_id, "turn-1"));
+        assert_eq!(store.active_turn_timing(), turn_timing);
 
         store.push_notification(turn_completed_notification(
             thread_id,
@@ -654,9 +711,12 @@ mod tests {
             test_turn("turn-2", TurnStatus::InProgress, Vec::new()),
         ];
 
-        let store =
+        let mut store =
             ThreadEventStore::new_with_session(/*capacity*/ 8, session.clone(), turns.clone());
         assert_eq!(store.active_turn_id(), Some("turn-2"));
+        let turn_timing = store.active_turn_timing();
+        store.set_session(session.clone(), turns.clone());
+        assert_eq!(store.active_turn_timing(), turn_timing);
 
         let mut refreshed_store = ThreadEventStore::new(/*capacity*/ 8);
         refreshed_store.set_session(session, turns);
@@ -672,6 +732,7 @@ mod tests {
         store.clear_active_turn_id();
 
         assert_eq!(store.active_turn_id(), None);
+        assert_eq!(store.active_turn_timing(), None);
     }
 
     #[test]

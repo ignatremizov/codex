@@ -3,6 +3,9 @@ use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::UserAgentControlAction;
+use codex_protocol::items::UserAgentControlItem;
+use codex_protocol::items::UserAgentControlStatus;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::MessagePhase;
@@ -197,6 +200,78 @@ fn projects_optional_completed_item_lifecycle_timestamps() {
 }
 
 #[test]
+fn projects_user_agent_control_as_a_completed_standalone_turn() {
+    let target_thread_id = ThreadId::new();
+    let item = TurnItem::UserAgentControl(UserAgentControlItem {
+        id: "control-1".to_string(),
+        action: UserAgentControlAction::Prompt,
+        authored_selector: Some("2".to_string()),
+        target_thread_id: Some(target_thread_id),
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        agent_ref: Some(2),
+        nickname: Some("Anscombe".to_string()),
+        role: Some("reviewer".to_string()),
+        prompt_preview: Some("Review the latest diff.".to_string()),
+        resumed_target: false,
+        fork_mode: None,
+        observe_commentary: Some(true),
+        final_response: Some(AgentResponseFinalDelivery::Wake),
+        status: UserAgentControlStatus::Succeeded,
+        error: None,
+    });
+
+    assert_eq!(
+        project(item_completed(
+            ThreadId::default(),
+            "control-1",
+            item.clone()
+        )),
+        ThreadHistoryChangeSet {
+            changed_turns: vec![ThreadHistoryTurnChange {
+                turn_id: "control-1".to_string(),
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }],
+            changed_items: vec![ThreadHistoryItemChange {
+                turn_id: "control-1".to_string(),
+                item: ThreadItem::from(item),
+                started_at_ms: Some(100),
+                completed_at_ms: Some(123),
+            }],
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn projects_user_agent_control_inside_an_active_turn_without_completing_it() {
+    let item = TurnItem::UserAgentControl(UserAgentControlItem::succeeded(
+        UserAgentControlAction::Prompt,
+    ));
+
+    assert_eq!(
+        project(item_completed(
+            ThreadId::default(),
+            "active-turn",
+            item.clone()
+        )),
+        ThreadHistoryChangeSet {
+            changed_items: vec![ThreadHistoryItemChange {
+                turn_id: "active-turn".to_string(),
+                item: ThreadItem::from(item),
+                started_at_ms: Some(100),
+                completed_at_ms: Some(123),
+            }],
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
 fn projects_inter_agent_response_items_into_paginated_history() {
     let mut item = ResponseItem::AgentMessage {
         id: Some(ResponseItemId::with_suffix("amsg", "task")),
@@ -264,6 +339,8 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
             observer_thread_id: ThreadId::new(),
             target_thread_id: ThreadId::new(),
             target_turn_id: Some("target-turn".to_string()),
+            task_preview: None,
+            promoted_task_context: None,
             pending_commentary: true,
             commentary_after_sequences: vec![0],
             commentary_admissions: Vec::new(),

@@ -28,6 +28,7 @@ use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SessionSource;
 use once_cell::sync::Lazy;
 
@@ -65,6 +66,16 @@ pub fn set_thread_manager_test_mode(enabled: bool) {
 
 pub fn set_deterministic_process_ids(enabled: bool) {
     unified_exec::set_deterministic_process_ids_for_tests(enabled);
+}
+
+pub async fn subscribe_agent_status(
+    thread_manager: &ThreadManager,
+    thread_id: ThreadId,
+) -> codex_protocol::error::Result<tokio::sync::watch::Receiver<AgentStatus>> {
+    Ok(thread_manager
+        .get_thread_including_pending(thread_id)
+        .await?
+        .subscribe_status())
 }
 
 pub fn auth_manager_from_auth(auth: CodexAuth) -> Arc<AuthManager> {

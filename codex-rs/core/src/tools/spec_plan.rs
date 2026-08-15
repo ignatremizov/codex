@@ -711,14 +711,14 @@ fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn collab_tools_enabled(turn_context: &TurnContext) -> bool {
-    match turn_context.multi_agent_version {
-        MultiAgentVersion::Disabled => false,
-        MultiAgentVersion::V1 => !exceeds_thread_spawn_depth_limit(
-            next_thread_spawn_depth(&turn_context.session_source),
-            turn_context.config.agent_max_depth,
-        ),
-        MultiAgentVersion::V2 => true,
-    }
+    turn_context.multi_agent_version != MultiAgentVersion::Disabled
+}
+
+fn v1_agent_lifecycle_tools_enabled(turn_context: &TurnContext) -> bool {
+    !exceeds_thread_spawn_depth_limit(
+        next_thread_spawn_depth(&turn_context.session_source),
+        turn_context.config.agent_max_depth,
+    )
 }
 
 fn required_child_management_tool_names(turn_context: &TurnContext) -> Vec<ToolName> {
@@ -1404,32 +1404,39 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 exposure,
             );
         } else {
-            let agent_type_description =
-                agent_type_description(turn_context, context.default_agent_type_description);
             let exposure = if search_tool_enabled(turn_context, context.model_info) {
                 ToolExposure::Deferred
             } else {
                 ToolExposure::Direct
             };
-            registry.add_with_exposure(
-                SpawnAgentHandler::new(SpawnAgentToolOptions {
-                    available_models: turn_context.available_models.clone(),
-                    agent_type_description,
-                    expose_agent_type: crate::agent::role::spawn_tool_spec::has_available_roles(
-                        &turn_context.config.agent_roles,
-                    ),
-                    hide_agent_type_model_reasoning: false,
-                    expose_spawn_agent_model_overrides: true,
-                    usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                    message_delivery: turn_context.config.multi_agent_v2.message_delivery,
-                }),
-                exposure,
-            );
+            let lifecycle_tools_enabled = v1_agent_lifecycle_tools_enabled(turn_context);
+            if lifecycle_tools_enabled {
+                let agent_type_description =
+                    agent_type_description(turn_context, context.default_agent_type_description);
+                registry.add_with_exposure(
+                    SpawnAgentHandler::new(SpawnAgentToolOptions {
+                        available_models: turn_context.available_models.clone(),
+                        agent_type_description,
+                        expose_agent_type: crate::agent::role::spawn_tool_spec::has_available_roles(
+                            &turn_context.config.agent_roles,
+                        ),
+                        hide_agent_type_model_reasoning: false,
+                        expose_spawn_agent_model_overrides: true,
+                        usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                        message_delivery: turn_context.config.multi_agent_v2.message_delivery,
+                    }),
+                    exposure,
+                );
+            }
             registry.add_with_exposure(SendInputHandler, exposure);
-            registry.add_with_exposure(ResumeAgentHandler, exposure);
-            registry
-                .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
-            registry.add_with_exposure(CloseAgentHandler, exposure);
+            if lifecycle_tools_enabled {
+                registry.add_with_exposure(ResumeAgentHandler, exposure);
+                registry.add_with_exposure(
+                    WaitAgentHandler::new(context.wait_agent_timeouts),
+                    exposure,
+                );
+                registry.add_with_exposure(CloseAgentHandler, exposure);
+            }
         }
     }
 }

@@ -177,6 +177,7 @@ use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use codex_rmcp_client::ElicitationAction;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
@@ -2835,6 +2836,8 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         observer_thread_id: session.thread_id,
         target_thread_id: child_thread_id,
         target_turn_id: Some("child-turn".to_string()),
+        task_preview: None,
+        promoted_task_context: None,
         pending_commentary: false,
         commentary_after_sequences: Vec::new(),
         commentary_admissions: Vec::new(),
@@ -2925,6 +2928,84 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
             })
             .count(),
         1
+    );
+}
+
+#[tokio::test]
+async fn response_observation_replacement_persists_task_and_policy_in_one_record() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+    let session = Arc::new(session);
+    let child_thread_id = ThreadId::new();
+    let task_item = ResponseItem::Message {
+        id: Some(new_user_agent_task_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<user_agent_task>review the durable policy</user_agent_task>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let observation = codex_protocol::protocol::AgentResponseObservation {
+        observer_thread_id: session.thread_id,
+        target_thread_id: child_thread_id,
+        target_turn_id: Some("child-turn".to_string()),
+        task_preview: Some("review the durable policy".to_string()),
+        promoted_task_context: Some(
+            codex_protocol::protocol::AgentResponsePromotedTaskContext::from_response_item(
+                &task_item,
+            )
+            .expect("valid promoted task context"),
+        ),
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
+        final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: None,
+        committed_delivery_response_item_ids: Vec::new(),
+    };
+    store
+        .fail_agent_response_observation_flushes_after(
+            /*successful_flushes*/ 0, /*failed_flushes*/ 1,
+        )
+        .await;
+
+    assert!(
+        !session
+            .persist_agent_response_observation_replacement(std::slice::from_ref(&observation))
+            .await
+    );
+
+    let history = session
+        .services
+        .thread_store
+        .load_rollback_history(codex_thread_store::LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load canonical replacement record");
+    let persisted = codex_protocol::rollout::rollout_without_exact_rollback_ranges(&history.items);
+    let replacement_records = persisted
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                RolloutItem::AgentResponseObservation(persisted)
+                    if persisted == &observation
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replacement_records,
+        vec![RolloutItem::AgentResponseObservation(observation)]
+    );
+    assert!(
+        session.clone_history().await.raw_items().is_empty(),
+        "an uncertain durability result must require reload instead of mutating live context"
     );
 }
 

@@ -4,6 +4,8 @@ use crate::command_exec::StartCommandExecParams;
 use crate::config_manager::ConfigManager;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::invalid_params;
+use crate::image_url::REMOTE_IMAGE_URL_ERROR;
+use crate::image_url::is_remote_image_url;
 use crate::models::supported_models;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
@@ -28,6 +30,18 @@ use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
+use codex_app_server_protocol::AgentAlias;
+use codex_app_server_protocol::AgentAliasListParams;
+use codex_app_server_protocol::AgentAliasListResponse;
+use codex_app_server_protocol::AgentAliasState;
+use codex_app_server_protocol::AgentControlAction;
+use codex_app_server_protocol::AgentControlOutcome;
+use codex_app_server_protocol::AgentControlParams;
+use codex_app_server_protocol::AgentControlResponse;
+use codex_app_server_protocol::AgentFinalResponseHandling;
+use codex_app_server_protocol::AgentObservationBinding;
+use codex_app_server_protocol::AgentObservationMode;
+use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::AppListUpdatedNotification;
 use codex_app_server_protocol::AppSummary;
 use codex_app_server_protocol::AppTemplateSummary;
@@ -354,6 +368,12 @@ use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
+use codex_core::UserAgentFinalResponseHandling;
+use codex_core::UserAgentForkMode;
+use codex_core::UserAgentObservationBinding;
+use codex_core::UserAgentObservationMode;
+use codex_core::UserAgentResponseHandling;
+use codex_core::UserMessageAdmission;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::NetworkProxyAuditMetadata;
@@ -443,6 +463,10 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::UserAgentControlAction as CoreUserAgentControlAction;
+use codex_protocol::items::UserAgentControlItem;
+use codex_protocol::items::UserAgentControlStatus as CoreUserAgentControlStatus;
+use codex_protocol::items::UserAgentForkMode as CoreUserAgentForkMode;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentResponseFinalDelivery;
@@ -572,6 +596,34 @@ mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;
 mod windows_sandbox_processor;
+
+fn validate_user_input_image_urls(input: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
+    if input.iter().any(|item| {
+        matches!(
+            item,
+            V2UserInput::Image { url, .. } if is_remote_image_url(url)
+        )
+    }) {
+        return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
+    }
+    Ok(())
+}
+
+fn validate_v2_input_limit(items: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
+    let actual_chars: usize = items.iter().map(V2UserInput::text_char_count).sum();
+    if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+        let mut error = invalid_params(format!(
+            "Input exceeds the maximum length of {MAX_USER_INPUT_TEXT_CHARS} characters."
+        ));
+        error.data = Some(serde_json::json!({
+            "input_error_code": INPUT_TOO_LARGE_ERROR_CODE,
+            "max_chars": MAX_USER_INPUT_TEXT_CHARS,
+            "actual_chars": actual_chars,
+        }));
+        return Err(error);
+    }
+    Ok(())
+}
 
 pub(crate) use account_processor::AccountRequestProcessor;
 pub(crate) use apps_processor::AppsRequestProcessor;

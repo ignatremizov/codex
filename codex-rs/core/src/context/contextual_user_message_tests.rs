@@ -1,9 +1,12 @@
 use super::*;
+use crate::context::AgentContextIdentity;
 use crate::context::ContextualUserFragment;
 use crate::context::InternalContextSource;
 use crate::context::InternalModelContextFragment;
 use crate::context::McpServerUseInstructions;
 use crate::context::SubagentNotification;
+use crate::context::UserAgentTask;
+use codex_protocol::ThreadId;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::ContentItemKind;
@@ -70,6 +73,24 @@ fn detects_subagent_notification_fragment_case_insensitively() {
     assert!(SubagentNotification::matches_text(
         "<SUBAGENT_NOTIFICATION>{}</subagent_notification>"
     ));
+}
+
+#[test]
+fn detects_user_agent_task_fragment() {
+    let rendered = UserAgentTask::new(
+        AgentContextIdentity::V1 {
+            agent_id: ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
+                .expect("valid thread id"),
+            agent_ref: Some(2),
+            nickname: Some("Pascal".to_string()),
+        },
+        "Review the lifecycle change.",
+    )
+    .render();
+
+    assert!(is_contextual_user_fragment(&ContentItem::InputText {
+        text: rendered
+    }));
 }
 
 #[test]

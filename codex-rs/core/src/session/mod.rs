@@ -24,6 +24,7 @@ use crate::compact;
 use crate::compact::CompactedHistoryMetadata;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
+use crate::context::AgentContextIdentity;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
 use crate::context::GuardianPolicy;
@@ -279,6 +280,7 @@ pub(crate) use self::input_queue::classify_pending_input_follow_up;
 use self::input_queue::is_mcp_server_use_context_input_item;
 pub(crate) use self::response_observation::AgentResponseEvent;
 pub(crate) use self::response_observation::AgentResponseSubscription;
+pub(crate) use self::response_observation::InputTurnAdmissionPolicy;
 pub(crate) use self::response_observation::InputTurnAdmissionResolution;
 pub(crate) use self::response_observation::agent_response_events_from_rollout;
 use self::review::spawn_review_thread;
@@ -324,6 +326,7 @@ impl RawEventDelivery {
 #[derive(Debug, PartialEq)]
 pub enum SteerInputError {
     NoActiveTurn(Vec<UserInput>),
+    ActiveTurnPresent { actual: String },
     ExpectedTurnMismatch { expected: String, actual: String },
     ActiveTurnNotSteerable { turn_kind: NonSteerableTurnKind },
     EmptyInput,
@@ -3582,6 +3585,30 @@ impl Session {
             .await;
     }
 
+    /// Persist one standalone event through a durability barrier before publishing it.
+    pub(crate) async fn send_event_raw_flushed(&self, event: Event) -> std::io::Result<()> {
+        if self.live_thread().is_none() {
+            return Err(std::io::Error::other(
+                "session persistence is disabled for standalone event",
+            ));
+        }
+        self.prepare_raw_sub_agent_terminal_presentation(&event);
+        let delivery = self
+            .send_event_raw_prepared_with_rollout_suffix(
+                event,
+                EventPersistence::Flushed,
+                Vec::new(),
+            )
+            .await;
+        if delivery.persisted {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(
+                "standalone event rollout append failed",
+            ))
+        }
+    }
+
     /// Delivers an event without creating a local rollout for a thread that has not materialized.
     pub(crate) async fn send_event_raw_without_materializing_rollout(&self, event: Event) {
         let persist = match self.current_rollout_path().await {
@@ -5740,6 +5767,26 @@ impl Session {
         self.set_multi_agent_version_if_unset(selected)
     }
 
+    async fn current_model_visible_agent_identity(
+        &self,
+        multi_agent_version: MultiAgentVersion,
+    ) -> AgentContextIdentity {
+        self.services
+            .agent_control
+            .model_visible_agent_identity_for_version(multi_agent_version, self.thread_id)
+            .await
+            .unwrap_or_else(|err| {
+                warn!(
+                    thread_id = %self.thread_id,
+                    %err,
+                    "failed to resolve source-relative agent identity"
+                );
+                AgentContextIdentity::Canonical {
+                    agent_id: self.thread_id,
+                }
+            })
+    }
+
     #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
     async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[ResponseItem]) {
         for item in items {
@@ -5919,9 +5966,8 @@ impl Session {
             }
             separate_developer_sections.push(
                 crate::context::TokenBudgetContext::new(
-                    session_source
-                        .get_agent_path()
-                        .unwrap_or_else(codex_protocol::AgentPath::root),
+                    self.current_model_visible_agent_identity(turn_context.multi_agent_version)
+                        .await,
                     auto_compact_window_ids.first_window_id,
                     auto_compact_window_ids.previous_window_id,
                     auto_compact_window_ids.window_id,
@@ -6509,6 +6555,26 @@ impl Session {
         client_user_message_id: Option<String>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<InputTurnAdmissionResolution, SteerInputError> {
+        self.steer_input_with_response_observation_boundary_and_policy(
+            input,
+            additional_context,
+            expected_turn_id,
+            client_user_message_id,
+            responsesapi_client_metadata,
+            InputTurnAdmissionPolicy::AnyTurn,
+        )
+        .await
+    }
+
+    async fn steer_input_with_response_observation_boundary_and_policy(
+        &self,
+        input: Vec<UserInput>,
+        additional_context: BTreeMap<String, AdditionalContextEntry>,
+        expected_turn_id: Option<&str>,
+        client_user_message_id: Option<String>,
+        responsesapi_client_metadata: Option<HashMap<String, String>>,
+        policy: InputTurnAdmissionPolicy,
+    ) -> Result<InputTurnAdmissionResolution, SteerInputError> {
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
             return Err(SteerInputError::NoActiveTurn(input));
@@ -6518,6 +6584,12 @@ impl Session {
             return Err(SteerInputError::NoActiveTurn(input));
         };
         let active_turn_id = &active_task.turn_context.sub_id;
+
+        if policy == InputTurnAdmissionPolicy::IdleOnly {
+            return Err(SteerInputError::ActiveTurnPresent {
+                actual: active_turn_id.clone(),
+            });
+        }
 
         if let Some(expected_turn_id) = expected_turn_id
             && expected_turn_id != active_turn_id

@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::MentionBinding;
@@ -136,8 +137,20 @@ pub(crate) struct ThreadInputState {
     pub(super) submit_pending_steers_after_interrupt: bool,
     pub(super) current_collaboration_mode: CollaborationMode,
     pub(super) active_collaboration_mask: Option<CollaborationModeMask>,
-    pub(super) task_running: bool,
-    pub(super) agent_turn_running: bool,
+    pub(super) pending_start_task_running: bool,
+    // Process-local active-turn timing used only across live TUI thread switches.
+    pub(super) active_turn_id: Option<String>,
+    pub(super) turn_started_at: Option<Instant>,
+}
+
+impl ThreadInputState {
+    pub(crate) fn active_turn_timing(&self) -> Option<(String, Instant)> {
+        self.active_turn_id.clone().zip(self.turn_started_at)
+    }
+
+    pub(crate) fn set_active_turn_timing(&mut self, timing: Option<(String, Instant)>) {
+        (self.active_turn_id, self.turn_started_at) = timing.unzip();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

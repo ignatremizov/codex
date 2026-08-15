@@ -1583,6 +1583,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.set_feature_enabled(Feature::PreventIdleSleep, /*enabled*/ true);
+    let turn_started_at = Instant::now();
 
     let pending_history = UserMessageHistoryRecord::Override(UserMessageHistoryOverride {
         text: "submitted history".to_string(),
@@ -1610,8 +1611,9 @@ async fn restore_thread_input_state_applies_running_state_policy() {
         submit_pending_steers_after_interrupt: true,
         current_collaboration_mode: chat.current_collaboration_mode.clone(),
         active_collaboration_mask: chat.active_collaboration_mask.clone(),
-        task_running: true,
-        agent_turn_running: true,
+        pending_start_task_running: true,
+        active_turn_id: Some("turn-1".to_string()),
+        turn_started_at: Some(turn_started_at),
     };
     chat.restore_thread_input_state(
         Some(input_state.clone()),
@@ -1621,6 +1623,8 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     );
 
     assert!(chat.turn_lifecycle.agent_turn_running);
+    assert_eq!(chat.turn_lifecycle.started_at(), Some(turn_started_at));
+    assert_eq!(chat.turn_lifecycle.last_turn_id.as_deref(), Some("turn-1"));
     assert!(chat.turn_lifecycle.sleep_inhibitor.is_turn_running());
     assert!(chat.bottom_pane.is_task_running());
     assert!(chat.input_queue.user_turn_pending_start);
@@ -1628,6 +1632,11 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     let captured_input_state = chat
         .capture_thread_input_state()
         .expect("thread input state");
+    assert_eq!(captured_input_state.turn_started_at, Some(turn_started_at));
+    assert_eq!(
+        captured_input_state.active_turn_id.as_deref(),
+        Some("turn-1")
+    );
     assert!(captured_input_state.submit_pending_steers_after_interrupt);
     assert_eq!(
         captured_input_state.safety_buffering_prompt,
@@ -1662,6 +1671,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     );
 
     assert!(!chat.turn_lifecycle.agent_turn_running);
+    assert_eq!(chat.turn_lifecycle.started_at(), None);
     assert!(!chat.turn_lifecycle.sleep_inhibitor.is_turn_running());
     assert!(!chat.bottom_pane.is_task_running());
     assert!(!chat.input_queue.user_turn_pending_start);

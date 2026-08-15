@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::status::is_final;
 use crate::session::session::Session;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
@@ -66,23 +67,31 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        let receiver_thread_ids = parse_agent_id_targets(args.targets)?;
+        if args.targets.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "agent targets must be non-empty".to_string(),
+            ));
+        }
+        let mut receiver_thread_ids = Vec::with_capacity(args.targets.len());
+        let mut target_by_thread_id = HashMap::with_capacity(args.targets.len());
+        for target in args.targets {
+            let receiver_thread_id = resolve_controlled_v1_agent_target(&session, &target).await?;
+            if receiver_thread_id == session.thread_id {
+                return Err(FunctionCallError::RespondToModel(
+                    "an agent cannot wait on itself; continue the current turn directly"
+                        .to_string(),
+                ));
+            }
+            receiver_thread_ids.push(receiver_thread_id);
+            target_by_thread_id.insert(receiver_thread_id, target);
+        }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
-        let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
                 .agent_control
                 .get_agent_metadata(*receiver_thread_id)
                 .unwrap_or_default();
-            target_by_thread_id.insert(
-                *receiver_thread_id,
-                agent_metadata
-                    .agent_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| receiver_thread_id.to_string()),
-            );
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname: agent_metadata.agent_nickname,

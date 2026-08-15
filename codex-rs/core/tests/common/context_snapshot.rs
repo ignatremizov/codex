@@ -623,7 +623,7 @@ mod tests {
                 { "type": "input_text", "text": "<permissions instructions>...</permissions instructions>" },
                 {
                     "type": "input_text",
-                    "text": "<tools>\nDeferred tool namespaces:\n- multi_agent_v1: Tools for spawning and managing sub-agents.\n</tools>"
+                    "text": "<tools>\nDeferred tool namespaces:\n- multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.\n</tools>"
                 }
             ]
         })];
@@ -636,7 +636,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "00:message/developer[2]:\n    [01] <PERMISSIONS_INSTRUCTIONS>\n    [02] <tools>\n         Deferred tool namespaces:\n         - multi_agent_v1: Tools for spawning and managing sub-agents.\n         </tools>"
+            "00:message/developer[2]:\n    [01] <PERMISSIONS_INSTRUCTIONS>\n    [02] <tools>\n         Deferred tool namespaces:\n         - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.\n         </tools>"
         );
     }
 

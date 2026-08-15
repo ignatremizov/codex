@@ -1,27 +1,19 @@
 use codex_protocol::models::ContentItemKind;
-use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
+use serde_json::Value;
 
+use super::AgentContextIdentity;
 use super::ContextualUserFragment;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SubagentNotification {
-    pub(crate) agent_reference: String,
-    pub(crate) agent_id: ThreadId,
+    agent: AgentContextIdentity,
     pub(crate) status: AgentStatus,
 }
 
 impl SubagentNotification {
-    pub(crate) fn new(
-        agent_reference: impl Into<String>,
-        agent_id: ThreadId,
-        status: AgentStatus,
-    ) -> Self {
-        Self {
-            agent_reference: agent_reference.into(),
-            agent_id,
-            status,
-        }
+    pub(crate) fn new(agent: AgentContextIdentity, status: AgentStatus) -> Self {
+        Self { agent, status }
     }
 }
 
@@ -43,13 +35,8 @@ impl ContextualUserFragment for SubagentNotification {
     }
 
     fn body(&self) -> String {
-        format!(
-            "\n{}\n",
-            serde_json::json!({
-                "agent_path": &self.agent_reference,
-                "agent_id": self.agent_id,
-                "status": &self.status,
-            })
-        )
+        let mut fields = self.agent.json_fields();
+        fields.insert("status".to_string(), serde_json::json!(&self.status));
+        format!("\n{}\n", Value::Object(fields))
     }
 }

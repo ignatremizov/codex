@@ -11,6 +11,12 @@ mod thread_metadata;
 
 pub use backfill_state::BackfillState;
 pub use backfill_state::BackfillStatus;
+pub use graph::AgentAliasAllocation;
+pub use graph::AgentAliasForkReservation;
+pub use graph::AgentAliasRecord;
+pub use graph::AgentAliasState;
+pub use graph::AgentAliasTransfer;
+pub use graph::AgentAliasTransferRequest;
 pub use graph::DirectionalThreadSpawnEdgeStatus;
 pub use log::LogEntry;
 pub use log::LogQuery;

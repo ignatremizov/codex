@@ -15,6 +15,9 @@ use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
+use codex_protocol::protocol::AgentResponseObservation;
+use codex_protocol::protocol::AgentResponsePromotedTaskContext;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
@@ -25,6 +28,7 @@ use codex_protocol::security_risk::SecurityRiskScore;
 use codex_rollout::ModelContextScan;
 use codex_rollout::ModelContextScanProgress;
 use core_test_support::responses::strip_metadata_from_items;
+use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -105,6 +109,52 @@ fn completion_context_item() -> ResponseItem {
     );
     communication.id = Some(new_sub_agent_completion_context_response_item_id());
     communication.to_model_input_item()
+}
+
+fn promoted_task_context_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(new_user_agent_task_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<user_agent_task>review the durable policy</user_agent_task>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+#[tokio::test]
+async fn reconstruction_restores_promoted_task_from_atomic_observation_snapshot() {
+    let (session, turn_context) = make_session_and_context().await;
+    let task = promoted_task_context_item();
+    let observation = AgentResponseObservation {
+        observer_thread_id: session.thread_id,
+        target_thread_id: ThreadId::new(),
+        target_turn_id: Some("child-turn".to_string()),
+        task_preview: Some("review the durable policy".to_string()),
+        promoted_task_context: Some(
+            AgentResponsePromotedTaskContext::from_response_item(&task)
+                .expect("valid promoted task context"),
+        ),
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        baseline_final_delivery: AgentResponseFinalDelivery::PresentationOnly,
+        final_delivery: AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: None,
+        committed_delivery_response_item_ids: Vec::new(),
+    };
+    let rollout_items = vec![
+        RolloutItem::AgentResponseObservation(observation.clone()),
+        RolloutItem::AgentResponseObservation(observation),
+    ];
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, vec![task]);
 }
 
 #[tokio::test]

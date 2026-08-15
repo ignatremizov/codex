@@ -1,5 +1,6 @@
 use crate::CodexAppsToolsCache;
 use crate::agent::AgentControl;
+use crate::agent::control::setup_cleanup::SetupCleanupGuard;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -20,6 +21,7 @@ use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::LocalAgentGraphStore;
+use codex_agent_graph_store::ReserveForkAgentAliasesRequest;
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::TurnStatus;
@@ -48,6 +50,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::error::CodexErr;
@@ -71,6 +74,7 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::turn_input::TurnStartOptions;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 use codex_rollout::state_db::StateDbHandle;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::InMemoryThreadStore;
@@ -87,6 +91,7 @@ use codex_thread_store::StoredThreadHistory;
 use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadStore;
 use codex_thread_store::ThreadStoreError;
+use codex_thread_store::ThreadWriterReservation;
 use codex_thread_store::UpdateThreadMetadataParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_git_discovery::GitRootDiscovery;
@@ -96,6 +101,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -105,6 +111,7 @@ use tokio::sync::broadcast;
 use tracing::instrument;
 use tracing::warn;
 
+mod owned_resume;
 mod v2_spawn_resume;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
@@ -161,6 +168,52 @@ impl Drop for TempCodexHomeGuard {
     }
 }
 
+async fn cleanup_unpublished_history_fork(
+    state: Arc<ThreadManagerState>,
+    thread: Arc<CodexThread>,
+    discard_alias_reservations: bool,
+) -> CodexResult<()> {
+    let thread_id = thread.session.thread_id();
+    let _lifecycle_guard = state.agent_lifecycle_lock(thread_id).lock_owned().await;
+    if !state.thread_instance_is_current_or_pending(&thread).await {
+        return Ok(());
+    }
+    let fork_session_id = thread.session.session_id();
+    let fork_persistence = thread.session.live_thread().cloned();
+    let mut cleanup_errors = Vec::new();
+    if let Err(err) = thread.shutdown_and_wait().await {
+        cleanup_errors.push(format!("failed to shut down unpublished fork: {err}"));
+    }
+    let removed = state.remove_thread_if_current(&thread, || {}).await;
+    if removed.is_none() {
+        return Ok(());
+    }
+    if let Some(fork_persistence) = fork_persistence
+        && let Err(err) = fork_persistence.discard().await
+    {
+        cleanup_errors.push(format!("failed to discard unpublished fork history: {err}"));
+    }
+    if discard_alias_reservations
+        && let Some(agent_graph_store) = state.agent_graph_store()
+        && agent_graph_store.supports_agent_aliases()
+        && let Err(err) = agent_graph_store
+            .discard_fork_agent_alias_reservations(fork_session_id)
+            .await
+    {
+        cleanup_errors.push(format!(
+            "failed to discard unpublished fork alias reservations: {err}"
+        ));
+    }
+    if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(CodexErr::Fatal(format!(
+            "failed to roll back unpublished fork {thread_id}: {}",
+            cleanup_errors.join("; ")
+        )))
+    }
+}
+
 /// Represents a newly created Codex thread (formerly called a conversation), including the first event
 /// (which is [`EventMsg::SessionConfigured`]).
 pub struct NewThread {
@@ -178,10 +231,30 @@ pub(crate) struct ThreadSpawnResult {
     pub(crate) thread: Arc<CodexThread>,
     pub(crate) session_configured: SessionConfiguredEvent,
     pub(crate) runtime_origin: ThreadRuntimeOrigin,
+    pub(crate) setup_cleanup: Option<SetupCleanupGuard>,
 }
 
 impl ThreadSpawnResult {
-    fn into_new_thread(self) -> NewThread {
+    pub(crate) fn attach_setup_cleanup(&mut self, setup_cleanup: SetupCleanupGuard) {
+        debug_assert!(self.setup_cleanup.is_none());
+        self.setup_cleanup = Some(setup_cleanup);
+    }
+
+    pub(crate) fn disarm_setup_cleanup(&mut self) {
+        if let Some(setup_cleanup) = self.setup_cleanup.take() {
+            setup_cleanup.disarm();
+        }
+    }
+
+    pub(crate) async fn rollback_setup_cleanup(&mut self) -> CodexResult<()> {
+        let Some(setup_cleanup) = self.setup_cleanup.take() else {
+            return Ok(());
+        };
+        setup_cleanup.rollback().await
+    }
+
+    fn into_new_thread(mut self) -> NewThread {
+        self.disarm_setup_cleanup();
         NewThread {
             thread_id: self.thread_id,
             thread: self.thread,
@@ -194,6 +267,13 @@ impl ThreadSpawnResult {
 pub(crate) enum ThreadRuntimeOrigin {
     Created,
     Existing,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ThreadRuntimePublication {
+    #[default]
+    Immediate,
+    Deferred,
 }
 
 // TODO(ccunningham): Add an explicit non-interrupting live-turn snapshot once
@@ -308,6 +388,7 @@ struct ThreadSpawnRequest {
     inherited_environments: Option<TurnEnvironmentSnapshot>,
     inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     user_shell_override: Option<crate::shell::Shell>,
+    runtime_publication: ThreadRuntimePublication,
 }
 
 impl ThreadSpawnRequest {
@@ -326,6 +407,7 @@ impl ThreadSpawnRequest {
             inherited_environments: None,
             inherited_exec_policy: None,
             user_shell_override: None,
+            runtime_publication: ThreadRuntimePublication::Immediate,
         }
     }
 }
@@ -370,6 +452,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
     pub(crate) client_mcp_extensions_override: Option<ClientMcpExtensions>,
+    pub(crate) runtime_publication: ThreadRuntimePublication,
 }
 
 /// Shared, `Arc`-owned state for [`ThreadManager`]. This `Arc` is required to have a single
@@ -377,6 +460,12 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 /// function to require an `Arc<&Self>`.
 pub(crate) struct ThreadManagerState {
     threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    /// Runtimes whose exclusive writer is live but whose setup has not committed.
+    ///
+    /// Weak values reserve IDs without keeping an abandoned startup alive. Normal lookup and
+    /// listing deliberately ignore this map; only lifecycle cleanup, MCP invalidation, and
+    /// response-observer internals may resolve a pending runtime.
+    pending_threads: RwLock<HashMap<ThreadId, Weak<CodexThread>>>,
     thread_created_tx: broadcast::Sender<ThreadId>,
     thread_id_generator: ThreadIdGenerator,
     auth_manager: Arc<AuthManager>,
@@ -512,6 +601,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                pending_threads: RwLock::new(HashMap::new()),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 models_manager,
@@ -662,6 +752,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                pending_threads: RwLock::new(HashMap::new()),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
@@ -743,15 +834,26 @@ impl ThreadManager {
     /// Refreshes every loaded thread and marks threads that are still being created.
     pub async fn invalidate_mcp_runtimes(&self) {
         self.invalidate_starting_mcp_runtimes();
-        let threads = self
+        // Snapshot pending before published runtimes. Publication moves in that direction while
+        // holding the pending boundary first, so the runtime appears in at least one snapshot.
+        let mut threads = self
             .state
-            .threads
+            .pending_threads
             .read()
             .await
             .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for thread in threads {
+            .filter_map(Weak::upgrade)
+            .map(|thread| (thread.session.thread_id(), thread))
+            .collect::<HashMap<_, _>>();
+        threads.extend(
+            self.state
+                .threads
+                .read()
+                .await
+                .iter()
+                .map(|(thread_id, thread)| (*thread_id, Arc::clone(thread))),
+        );
+        for thread in threads.into_values() {
             thread.session.request_mcp_runtime_refresh();
         }
     }
@@ -1144,41 +1246,14 @@ impl ThreadManager {
         {
             return Ok(restored_thread);
         }
-        let _lifecycle_guard = match &initial_history {
-            InitialHistory::Resumed(resumed) => {
-                let lifecycle_lock = self.state.agent_lifecycle_lock(resumed.conversation_id);
-                Some(lifecycle_lock.lock_owned().await)
-            }
-            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
-        };
-
-        let agent_control = self.agent_control_for_config(&config);
-        let (session_source, thread_source) = initial_history
-            .get_resumed_session_sources()
-            .unwrap_or_else(|| (self.state.session_source.clone(), None));
-        if let InitialHistory::Resumed(resumed) = &initial_history
-            && initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2)
-            && !session_source.is_non_root_agent()
-        {
-            agent_control
-                .restore_v2_agent_metadata(&config, resumed.conversation_id)
-                .await;
-        }
-        let options = StartThreadOptions {
+        self.resume_thread_with_current_owner(
+            config,
             initial_history,
-            session_source: Some(session_source),
-            thread_source,
+            auth_manager,
             parent_trace,
             client_mcp_extensions,
-            ..StartThreadOptions::new(config)
-        };
-        Box::pin(self.state.spawn_thread(ThreadSpawnRequest::new(
-            options,
-            auth_manager,
-            agent_control,
-        )))
+        )
         .await
-        .map(ThreadSpawnResult::into_new_thread)
     }
 
     pub(crate) async fn start_thread_with_user_shell_override_for_tests(
@@ -1481,6 +1556,86 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        let imports_agent_alias_reservations = matches!(
+            &history,
+            InitialHistory::Resumed(_) | InitialHistory::Forked(_)
+        );
+        let source_session_id = if imports_agent_alias_reservations {
+            match source_thread_id {
+                Some(source_thread_id) => {
+                    let live_session_id = self
+                        .state
+                        .get_thread(source_thread_id)
+                        .await
+                        .ok()
+                        .map(|thread| thread.session.session_id());
+                    let graph_session_id = if live_session_id.is_none()
+                        && let Some(agent_graph_store) = self.state.agent_graph_store()
+                        && agent_graph_store.supports_agent_aliases()
+                    {
+                        match agent_graph_store
+                            .find_current_agent_alias_by_thread(source_thread_id)
+                            .await
+                            .map_err(|err| {
+                                CodexErr::Fatal(format!(
+                                    "failed to resolve alias owner for fork source \
+                                     {source_thread_id}: {err}"
+                                ))
+                            })? {
+                            Some(alias) => Some(alias.session_id),
+                            None => {
+                                let mut root_thread_id = source_thread_id;
+                                let mut visited = HashSet::new();
+                                loop {
+                                    if !visited.insert(root_thread_id) {
+                                        return Err(CodexErr::Fatal(format!(
+                                            "cannot resolve alias root for fork source \
+                                             {source_thread_id}: persisted spawn graph is cyclic \
+                                             at {root_thread_id}"
+                                        )));
+                                    }
+                                    let Some(parent_thread_id) = agent_graph_store
+                                        .find_thread_spawn_parent(root_thread_id)
+                                        .await
+                                        .map_err(|err| {
+                                            CodexErr::Fatal(format!(
+                                                "failed to resolve spawn parent for fork source \
+                                                 {root_thread_id}: {err}"
+                                            ))
+                                        })?
+                                    else {
+                                        break;
+                                    };
+                                    root_thread_id = parent_thread_id;
+                                }
+                                (root_thread_id != source_thread_id)
+                                    .then(|| SessionId::from(root_thread_id))
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    live_session_id
+                        .or(graph_session_id)
+                        .or_else(|| {
+                            history
+                                .get_rollout_items()
+                                .iter()
+                                .rev()
+                                .find_map(|item| match item {
+                                    RolloutItem::SessionMeta(meta_line) => {
+                                        Some(meta_line.meta.session_id)
+                                    }
+                                    _ => None,
+                                })
+                        })
+                        .or(Some(SessionId::from(source_thread_id)))
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
         let multi_agent_version = self
             .state
             .effective_multi_agent_version_for_spawn(
@@ -1507,9 +1662,63 @@ impl ThreadManager {
             ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
         request.forked_from_thread_id = source_thread_id;
         request.fork_persistence = fork_persistence;
-        Box::pin(self.state.spawn_thread(request))
-            .await
-            .map(ThreadSpawnResult::into_new_thread)
+        if imports_agent_alias_reservations {
+            request.runtime_publication = ThreadRuntimePublication::Deferred;
+        }
+        let forked = Box::pin(self.state.spawn_thread(request)).await?;
+        let mut setup_cleanup = imports_agent_alias_reservations.then(|| {
+            SetupCleanupGuard::new(
+                "history fork",
+                cleanup_unpublished_history_fork(
+                    Arc::clone(&self.state),
+                    Arc::clone(&forked.thread),
+                    /*discard_alias_reservations*/ true,
+                ),
+            )
+        });
+        if let Some(source_session_id) = source_session_id
+            && let Some(agent_graph_store) = self.state.agent_graph_store()
+            && agent_graph_store.supports_agent_aliases()
+            && let Err(err) = agent_graph_store
+                .reserve_agent_aliases_for_fork(ReserveForkAgentAliasesRequest {
+                    source_session_id,
+                    fork_session_id: forked.thread.session.session_id(),
+                })
+                .await
+        {
+            if let Some(setup_cleanup) = setup_cleanup.take()
+                && let Err(cleanup_err) = setup_cleanup.rollback().await
+            {
+                return Err(CodexErr::Fatal(format!(
+                    "failed to reserve inherited agent aliases for fork {}: {err}; {cleanup_err}",
+                    forked.thread_id
+                )));
+            }
+            return Err(CodexErr::Fatal(format!(
+                "failed to reserve inherited agent aliases for fork {}: {err}",
+                forked.thread_id
+            )));
+        }
+        if imports_agent_alias_reservations
+            && let Err(err) = self.state.publish_thread(&forked.thread).await
+        {
+            if let Some(setup_cleanup) = setup_cleanup.take()
+                && let Err(cleanup_err) = setup_cleanup.rollback().await
+            {
+                return Err(CodexErr::Fatal(format!(
+                    "failed to publish fork {}: {err}; {cleanup_err}",
+                    forked.thread_id
+                )));
+            }
+            return Err(CodexErr::Fatal(format!(
+                "failed to publish fork {}: {err}",
+                forked.thread_id
+            )));
+        }
+        if let Some(setup_cleanup) = setup_cleanup.take() {
+            setup_cleanup.disarm();
+        }
+        Ok(forked.into_new_thread())
     }
 
     pub(crate) fn agent_control(&self) -> AgentControl {
@@ -1616,6 +1825,27 @@ impl ThreadManagerState {
         self.agent_graph_store.clone()
     }
 
+    /// Reserve rollout writers while a separate store commits agent-graph ownership.
+    ///
+    /// Agent aliases and rollout writers live behind different persistence boundaries. Holding
+    /// this reservation prevents another process from reopening a transferred subtree member
+    /// between the graph snapshot and its ownership commit.
+    pub(crate) async fn reserve_thread_writers(
+        &self,
+        thread_ids: Vec<ThreadId>,
+    ) -> CodexResult<ThreadWriterReservation> {
+        self.thread_store
+            .reserve_thread_writers(thread_ids)
+            .await
+            .map_err(|err| match err {
+                ThreadStoreError::Conflict { message }
+                | ThreadStoreError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
+                err => CodexErr::Fatal(format!(
+                    "failed to reserve transferred agent rollout writers: {err}"
+                )),
+            })
+    }
+
     pub(crate) async fn list_thread_ids(&self) -> Vec<ThreadId> {
         self.threads
             .read()
@@ -1655,6 +1885,50 @@ impl ThreadManagerState {
             Some(thread) if !thread.session_source.is_internal() => Ok(thread.clone()),
             Some(_) | None => Err(CodexErr::ThreadNotFound(thread_id)),
         }
+    }
+
+    /// Resolve a published or setup-pending runtime for internal response delivery.
+    ///
+    /// Pending runtimes must not escape through ordinary thread discovery. This lookup exists so
+    /// an already-running initial child turn can persist an explicitly requested response
+    /// observation before the outer spawn finishes publishing that child.
+    pub(crate) async fn get_thread_including_pending(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<Arc<CodexThread>> {
+        if let Some(thread) = self
+            .pending_threads
+            .read()
+            .await
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+            && !thread.session_source.is_internal()
+        {
+            return Ok(thread);
+        }
+        self.get_thread(thread_id).await
+    }
+
+    pub(crate) async fn thread_instance_is_current_or_pending(
+        &self,
+        thread: &Arc<CodexThread>,
+    ) -> bool {
+        let thread_id = thread.session.thread_id();
+        if self
+            .pending_threads
+            .read()
+            .await
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+            .is_some_and(|pending| Arc::ptr_eq(&pending, thread))
+        {
+            return true;
+        }
+        self.threads
+            .read()
+            .await
+            .get(&thread_id)
+            .is_some_and(|current| Arc::ptr_eq(current, thread))
     }
 
     pub(crate) async fn read_stored_thread(
@@ -1698,6 +1972,32 @@ impl ThreadManagerState {
                     "failed to load model context for thread {thread_id}: {err}"
                 )),
             })
+    }
+
+    pub(crate) async fn load_agent_model_context(
+        &self,
+        thread_id: ThreadId,
+        history_mode: ThreadHistoryMode,
+    ) -> CodexResult<Option<Vec<RolloutItem>>> {
+        match history_mode {
+            ThreadHistoryMode::Legacy => Ok(self
+                .read_stored_thread(ReadThreadParams {
+                    thread_id,
+                    include_archived: true,
+                    include_history: true,
+                })
+                .await?
+                .history
+                .map(|history| history.items)),
+            ThreadHistoryMode::Paginated => Ok(Some(
+                self.load_latest_model_context(LoadThreadHistoryParams {
+                    thread_id,
+                    include_archived: true,
+                })
+                .await?
+                .items,
+            )),
+        }
     }
 
     pub(crate) async fn load_canonical_thread_history(
@@ -1758,6 +2058,25 @@ impl ThreadManagerState {
             .await
     }
 
+    pub(crate) async fn send_idle_user_input_to_thread(
+        &self,
+        thread: &Arc<CodexThread>,
+        op: Op,
+        parent_turn_id: Option<String>,
+    ) -> CodexResult<(String, crate::session::InputTurnAdmissionResolution)> {
+        debug_assert!(matches!(op, Op::UserInput { .. }));
+        let thread_id = thread.session.thread_id();
+        if let Some(ops_log) = &self.ops_log
+            && let Ok(mut log) = ops_log.lock()
+        {
+            log.push((thread_id, op.clone()));
+        }
+        thread
+            .io
+            .submit_idle_user_input_with_turn_admission(thread.session.as_ref(), op, parent_turn_id)
+            .await
+    }
+
     pub(crate) async fn send_accepted_completion_to_thread(
         &self,
         thread: &Arc<CodexThread>,
@@ -1802,6 +2121,17 @@ impl ThreadManagerState {
         on_removed: impl FnOnce(),
     ) -> Option<Arc<CodexThread>> {
         let thread_id = thread.session.thread_id();
+        let mut pending_threads = self.pending_threads.write().await;
+        pending_threads.retain(|_, pending| pending.strong_count() != 0);
+        if pending_threads
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+            .is_some_and(|pending| Arc::ptr_eq(&pending, thread))
+        {
+            pending_threads.remove(&thread_id);
+            on_removed();
+            return Some(Arc::clone(thread));
+        }
         let mut threads = self.threads.write().await;
         let is_current = threads
             .get(&thread_id)
@@ -1818,12 +2148,67 @@ impl ThreadManagerState {
         removed
     }
 
+    /// Remove `thread` when it is current, or run cleanup while its ID remains unpublished.
+    ///
+    /// Deferred startup owns process-local metadata before the runtime enters `threads`. Cleanup
+    /// may release that state while the exact pending reservation remains current, or while both
+    /// maps are empty for this ID. A different current instance owns any metadata that may have
+    /// replaced it.
+    pub(crate) async fn remove_thread_if_current_or_cleanup_if_absent(
+        &self,
+        thread: &Arc<CodexThread>,
+        on_safe_cleanup: impl FnOnce(),
+    ) -> Option<Arc<CodexThread>> {
+        let thread_id = thread.session.thread_id();
+        let mut pending_threads = self.pending_threads.write().await;
+        pending_threads.retain(|_, pending| pending.strong_count() != 0);
+        if pending_threads
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+            .is_some_and(|pending| Arc::ptr_eq(&pending, thread))
+        {
+            pending_threads.remove(&thread_id);
+            on_safe_cleanup();
+            return Some(Arc::clone(thread));
+        }
+        if pending_threads
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+            .is_some()
+        {
+            return None;
+        }
+        let mut threads = self.threads.write().await;
+        let Some(current) = threads.get(&thread_id) else {
+            on_safe_cleanup();
+            return None;
+        };
+        if !Arc::ptr_eq(current, thread) {
+            return None;
+        }
+        thread.session.prepare_for_thread_removal();
+        let removed = threads.remove(&thread_id);
+        if let Some(thread) = removed.as_ref() {
+            thread.session.finish_thread_removal();
+        }
+        on_safe_cleanup();
+        removed
+    }
+
     /// Run cleanup only while no thread instance is registered for `thread_id`.
     pub(crate) async fn run_if_thread_absent(
         &self,
         thread_id: ThreadId,
         on_absent: impl FnOnce(),
     ) -> bool {
+        let pending_threads = self.pending_threads.read().await;
+        if pending_threads
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+            .is_some()
+        {
+            return false;
+        }
         let threads = self.threads.write().await;
         if threads.contains_key(&thread_id) {
             return false;
@@ -2027,7 +2412,7 @@ impl ThreadManagerState {
         &self,
         config: Config,
         agent_control: AgentControl,
-    ) -> CodexResult<NewThread> {
+    ) -> CodexResult<ThreadSpawnResult> {
         Box::pin(self.spawn_new_thread_with_source(
             config,
             agent_control,
@@ -2040,6 +2425,7 @@ impl ThreadManagerState {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         ))
         .await
     }
@@ -2058,7 +2444,8 @@ impl ThreadManagerState {
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
-    ) -> CodexResult<NewThread> {
+        runtime_publication: ThreadRuntimePublication,
+    ) -> CodexResult<ThreadSpawnResult> {
         let client_mcp_extensions = self.client_mcp_extensions_for_child(parent_thread_id).await;
         let options = StartThreadOptions {
             history_mode,
@@ -2075,9 +2462,8 @@ impl ThreadManagerState {
         request.forked_from_thread_id = forked_from_thread_id;
         request.inherited_environments = inherited_environments;
         request.inherited_exec_policy = inherited_exec_policy;
-        Box::pin(self.spawn_thread(request))
-            .await
-            .map(ThreadSpawnResult::into_new_thread)
+        request.runtime_publication = runtime_publication;
+        Box::pin(self.spawn_thread(request)).await
     }
 
     pub(crate) async fn resume_thread_with_history_with_source(
@@ -2094,6 +2480,7 @@ impl ThreadManagerState {
             inherited_environments,
             inherited_exec_policy,
             client_mcp_extensions_override,
+            runtime_publication,
         } = options;
         let client_mcp_extensions = match client_mcp_extensions_override {
             Some(client_mcp_extensions) => client_mcp_extensions,
@@ -2118,6 +2505,7 @@ impl ThreadManagerState {
         request.parent_thread_id = parent_thread_id;
         request.inherited_environments = inherited_environments;
         request.inherited_exec_policy = inherited_exec_policy;
+        request.runtime_publication = runtime_publication;
         Box::pin(self.spawn_thread(request)).await
     }
 
@@ -2136,7 +2524,8 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
         thread_extension_init: ExtensionDataInit,
-    ) -> CodexResult<NewThread> {
+        runtime_publication: ThreadRuntimePublication,
+    ) -> CodexResult<ThreadSpawnResult> {
         let client_mcp_extensions = self.client_mcp_extensions_for_child(parent_thread_id).await;
         let options = StartThreadOptions {
             initial_history,
@@ -2154,9 +2543,8 @@ impl ThreadManagerState {
         request.forked_from_thread_id = forked_from_thread_id;
         request.inherited_environments = inherited_environments;
         request.inherited_exec_policy = inherited_exec_policy;
-        Box::pin(self.spawn_thread(request))
-            .await
-            .map(ThreadSpawnResult::into_new_thread)
+        request.runtime_publication = runtime_publication;
+        Box::pin(self.spawn_thread(request)).await
     }
 
     async fn client_mcp_extensions_for_child(
@@ -2172,7 +2560,7 @@ impl ThreadManagerState {
             .unwrap_or_default()
     }
 
-    /// Spawn a new thread with optional history and register it with the manager.
+    /// Spawn a new thread with optional history and optionally defer manager publication.
     async fn spawn_thread(&self, request: ThreadSpawnRequest) -> CodexResult<ThreadSpawnResult> {
         let ThreadSpawnRequest {
             options,
@@ -2184,6 +2572,7 @@ impl ThreadManagerState {
             inherited_environments,
             inherited_exec_policy,
             user_shell_override,
+            runtime_publication,
         } = request;
         let StartThreadOptions {
             config,
@@ -2231,6 +2620,7 @@ impl ThreadManagerState {
                         session_configured: thread.session_configured(),
                         thread,
                         runtime_origin: ThreadRuntimeOrigin::Existing,
+                        setup_cleanup: None,
                     });
                 }
                 // Keep the stale runtime discoverable until its fallback final outcome is
@@ -2247,9 +2637,15 @@ impl ThreadManagerState {
             InitialHistory::Resumed(_) | InitialHistory::Forked(_)
         ) {
             let mut response_items = Vec::new();
+            let mut user_agent_task_context_ids = HashSet::new();
             for item in initial_history.get_rollout_items() {
                 match item {
                     RolloutItem::ResponseItem(envelope) => {
+                        if let Some(id) = envelope.item.id()
+                            && is_user_agent_task_context_response_item_id(id.as_str())
+                        {
+                            user_agent_task_context_ids.insert(id.clone());
+                        }
                         response_items.push(envelope.item.clone());
                     }
                     RolloutItem::Compacted(compacted) => {
@@ -2411,14 +2807,37 @@ impl ThreadManagerState {
             session.services.mcp_runtime.enable_full_access_form_input();
         }
         let new_thread = self
-            .finalize_thread_spawn(session, io, tracked_session_source)
+            .finalize_thread_spawn(session, io, tracked_session_source, runtime_publication)
             .await?;
+        let startup_cleanup = (runtime_publication == ThreadRuntimePublication::Deferred
+            && new_thread.runtime_origin == ThreadRuntimeOrigin::Created)
+            .then(|| {
+                SetupCleanupGuard::new("deferred thread startup", {
+                    let thread = Arc::clone(&new_thread.thread);
+                    async move {
+                        let persistence = thread.session.live_thread().cloned();
+                        let shutdown_result = thread.shutdown_and_wait().await;
+                        let persistence_result = match persistence {
+                            Some(persistence) => persistence.discard().await.map_err(|err| {
+                                CodexErr::Fatal(format!(
+                                    "failed to discard cancelled deferred thread history: {err}"
+                                ))
+                            }),
+                            None => Ok(()),
+                        };
+                        shutdown_result.and(persistence_result)
+                    }
+                })
+            });
         new_thread.thread.emit_thread_ready_lifecycle().await;
         if source_changed_during_startup.load(Ordering::Acquire) {
             new_thread.thread.session.request_mcp_runtime_refresh();
         }
         if is_resumed_thread {
             new_thread.thread.emit_thread_resume_lifecycle().await;
+        }
+        if let Some(startup_cleanup) = startup_cleanup {
+            startup_cleanup.disarm();
         }
         Ok(new_thread)
     }
@@ -2428,6 +2847,7 @@ impl ThreadManagerState {
         session: Arc<Session>,
         io: SessionIo,
         session_source: SessionSource,
+        runtime_publication: ThreadRuntimePublication,
     ) -> CodexResult<ThreadSpawnResult> {
         let thread_id = session.thread_id();
         let event = io.next_event().await?;
@@ -2441,26 +2861,56 @@ impl ThreadManagerState {
             }
         };
 
-        let insertion = {
+        let insertion = if runtime_publication == ThreadRuntimePublication::Deferred {
+            let mut pending_threads = self.pending_threads.write().await;
+            pending_threads.retain(|_, pending| pending.strong_count() != 0);
+            let threads = self.threads.read().await;
+            if threads.contains_key(&thread_id) || pending_threads.contains_key(&thread_id) {
+                Err(io)
+            } else {
+                let thread = Arc::new(CodexThread::new(
+                    session,
+                    io,
+                    session_configured.clone(),
+                    session_configured.rollout_path.clone(),
+                    session_source,
+                ));
+                pending_threads.insert(thread_id, Arc::downgrade(&thread));
+                Ok(ThreadSpawnResult {
+                    thread_id,
+                    thread,
+                    session_configured,
+                    runtime_origin: ThreadRuntimeOrigin::Created,
+                    setup_cleanup: None,
+                })
+            }
+        } else {
+            let mut pending_threads = self.pending_threads.write().await;
+            pending_threads.retain(|_, pending| pending.strong_count() != 0);
             let mut threads = self.threads.write().await;
-            match threads.entry(thread_id) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    let thread = Arc::new(CodexThread::new(
-                        session,
-                        io,
-                        session_configured.clone(),
-                        session_configured.rollout_path.clone(),
-                        session_source,
-                    ));
-                    entry.insert(thread.clone());
-                    Ok(ThreadSpawnResult {
-                        thread_id,
-                        thread,
-                        session_configured,
-                        runtime_origin: ThreadRuntimeOrigin::Created,
-                    })
+            if pending_threads.contains_key(&thread_id) {
+                Err(io)
+            } else {
+                match threads.entry(thread_id) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let thread = Arc::new(CodexThread::new(
+                            session,
+                            io,
+                            session_configured.clone(),
+                            session_configured.rollout_path.clone(),
+                            session_source,
+                        ));
+                        entry.insert(thread.clone());
+                        Ok(ThreadSpawnResult {
+                            thread_id,
+                            thread,
+                            session_configured,
+                            runtime_origin: ThreadRuntimeOrigin::Created,
+                            setup_cleanup: None,
+                        })
+                    }
+                    std::collections::hash_map::Entry::Occupied(_) => Err(io),
                 }
-                std::collections::hash_map::Entry::Occupied(_) => Err(io),
             }
         };
         match insertion {
@@ -2474,6 +2924,42 @@ impl ThreadManagerState {
         Err(CodexErr::InvalidRequest(format!(
             "thread {thread_id} is already running"
         )))
+    }
+
+    pub(crate) async fn publish_thread(&self, thread: &Arc<CodexThread>) -> CodexResult<()> {
+        let thread_id = thread.session.thread_id();
+        let mut pending_threads = self.pending_threads.write().await;
+        pending_threads.retain(|_, pending| pending.strong_count() != 0);
+        let mut threads = self.threads.write().await;
+        match threads.entry(thread_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                if let Some(pending) = pending_threads.get(&thread_id).and_then(Weak::upgrade)
+                    && !Arc::ptr_eq(&pending, thread)
+                {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "thread {thread_id} is already starting"
+                    )));
+                }
+                pending_threads.remove(&thread_id);
+                entry.insert(Arc::clone(thread));
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(entry)
+                if Arc::ptr_eq(entry.get(), thread) =>
+            {
+                if pending_threads
+                    .get(&thread_id)
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|pending| Arc::ptr_eq(&pending, thread))
+                {
+                    pending_threads.remove(&thread_id);
+                }
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(_) => Err(CodexErr::InvalidRequest(
+                format!("thread {thread_id} is already running"),
+            )),
+        }
     }
 
     pub(crate) fn notify_thread_created(&self, thread_id: ThreadId) {

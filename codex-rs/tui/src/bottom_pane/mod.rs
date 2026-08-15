@@ -106,6 +106,8 @@ pub(crate) struct MentionBinding {
     /// Canonical mention target (for example `app://...` or absolute SKILL.md path).
     pub(crate) path: String,
 }
+mod agent_command_highlight;
+mod agent_target_popup;
 mod chat_composer;
 mod chat_composer_history;
 mod command_popup;
@@ -121,6 +123,9 @@ pub(crate) mod prompt_args;
 mod skill_popup;
 mod skills_toggle_view;
 pub(crate) mod slash_commands;
+pub(crate) use agent_target_popup::AGENT_TARGET_ACTION_CHOICES;
+pub(crate) use agent_target_popup::AgentPromptTarget;
+pub(crate) use agent_target_popup::is_agent_target_action;
 pub(crate) use footer::CollaborationModeIndicator;
 pub(crate) use footer::GoalStatusIndicator;
 #[cfg(test)]
@@ -475,6 +480,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_agent_prompt_targets(&mut self, targets: Vec<AgentPromptTarget>) {
+        self.composer.set_agent_prompt_targets(targets);
+        self.request_redraw();
+    }
+
     pub fn set_connectors_enabled(&mut self, enabled: bool) {
         self.composer.set_connectors_enabled(enabled);
     }
@@ -566,11 +576,6 @@ impl BottomPane {
 
     pub fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
         self.status.as_ref()
-    }
-
-    pub(crate) fn status_elapsed(&self) -> Option<Duration> {
-        self.is_task_running
-            .then(|| self.status_timer.elapsed_at(Instant::now()))
     }
 
     pub(crate) fn reset_status_timer(&mut self, elapsed: Duration) {

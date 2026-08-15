@@ -14,6 +14,7 @@ use super::RecommendedPluginsInstructions;
 use super::SubagentCommentary;
 use super::SubagentNotification;
 use super::TurnAborted;
+use super::UserAgentTask;
 use super::UserInstructions;
 use super::UserShellCommand;
 use super::world_state::EnvironmentsState;
@@ -28,6 +29,7 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     TurnAborted::matches_text,
     SubagentCommentary::matches_text,
     SubagentNotification::matches_text,
+    UserAgentTask::matches_text,
     InternalModelContextFragment::matches_text,
     RecommendedPluginsInstructions::matches_text,
     LegacyUnifiedExecProcessLimitWarning::matches_text,

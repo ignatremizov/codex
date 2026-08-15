@@ -335,6 +335,11 @@ impl ChatWidget {
                 /*deadline_at_ms*/ None,
             ),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
+            item @ ThreadItem::UserAgentControl { .. } => {
+                if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
+                    self.add_boxed_history(Box::new(cell));
+                }
+            }
             ThreadItem::DynamicToolCall { .. } => {}
             ThreadItem::Sleep(_) => {}
         }

@@ -1,4 +1,5 @@
 use codex_protocol::AgentPath;
+use codex_protocol::MAIN_AGENT_NICKNAME;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
@@ -35,6 +36,7 @@ struct ActiveAgents {
     agent_tree: HashMap<String, AgentMetadata>,
     thread_paths: HashMap<ThreadId, RegisteredAgent>,
     used_agent_nicknames: HashSet<String>,
+    durable_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
 }
 
@@ -187,6 +189,7 @@ impl AgentRegistry {
             .or_insert_with(|| AgentMetadata {
                 agent_id: Some(thread_id),
                 agent_path: Some(AgentPath::root()),
+                agent_nickname: Some(MAIN_AGENT_NICKNAME.to_string()),
                 ..Default::default()
             })
             .agent_id;
@@ -437,19 +440,31 @@ impl AgentRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let agent_nickname = if let Some(preferred) = preferred {
+            if preferred.eq_ignore_ascii_case(MAIN_AGENT_NICKNAME) {
+                return None;
+            }
             preferred.to_string()
         } else {
+            let names = names
+                .iter()
+                .copied()
+                .filter(|name| !name.eq_ignore_ascii_case(MAIN_AGENT_NICKNAME))
+                .collect::<Vec<_>>();
             if names.is_empty() {
                 return None;
             }
-            let available_names: Vec<String> = names
-                .iter()
-                .map(|name| format_agent_nickname(name, active_agents.nickname_reset_count))
-                .filter(|name| !active_agents.used_agent_nicknames.contains(name))
-                .collect();
-            if let Some(name) = available_names.choose(&mut rand::rng()) {
-                name.clone()
-            } else {
+            loop {
+                let available_names: Vec<String> = names
+                    .iter()
+                    .map(|name| format_agent_nickname(name, active_agents.nickname_reset_count))
+                    .filter(|name| {
+                        !active_agents.used_agent_nicknames.contains(name)
+                            && !active_agents.durable_agent_nicknames.contains(name)
+                    })
+                    .collect();
+                if let Some(name) = available_names.choose(&mut rand::rng()) {
+                    break name.clone();
+                }
                 active_agents.used_agent_nicknames.clear();
                 active_agents.nickname_reset_count += 1;
                 if let Some(metrics) = codex_otel::global() {
@@ -459,16 +474,23 @@ impl AgentRegistry {
                         &[],
                     );
                 }
-                format_agent_nickname(
-                    names.choose(&mut rand::rng())?,
-                    active_agents.nickname_reset_count,
-                )
             }
         };
         active_agents
             .used_agent_nicknames
             .insert(agent_nickname.clone());
         Some(agent_nickname)
+    }
+
+    pub(crate) fn reserve_durable_agent_nicknames(
+        &self,
+        nicknames: impl IntoIterator<Item = String>,
+    ) {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .durable_agent_nicknames
+            .extend(nicknames);
     }
 
     fn reserve_agent_path(&self, agent_path: &AgentPath) -> Result<()> {

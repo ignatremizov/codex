@@ -57,10 +57,40 @@ pub(crate) async fn repair_legacy_recency_migration_version(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
-    let Some(recency_migration) = migrator
+    repair_legacy_migration_version(
+        pool, migrator, /*legacy_version*/ 38, /*current_version*/ 39,
+    )
+    .await
+}
+
+/// Move the released fork's agent-alias migration out of the upstream
+/// migration-number sequence before SQLx validates and applies migrations.
+///
+/// Fork 0.148 shipped agent aliases as migration 49. Upstream 0.149 later
+/// assigned that version to projects, so the alias migration now lives in a
+/// high fork-owned namespace. Matching by checksum makes this safe for both
+/// existing fork databases and databases that already applied upstream's
+/// projects migration.
+pub(crate) async fn repair_legacy_agent_alias_migration_version(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    repair_legacy_migration_version(
+        pool, migrator, /*legacy_version*/ 49, /*current_version*/ 10_049,
+    )
+    .await
+}
+
+async fn repair_legacy_migration_version(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+    legacy_version: i64,
+    current_version: i64,
+) -> anyhow::Result<()> {
+    let Some(current_migration) = migrator
         .migrations
         .iter()
-        .find(|migration| migration.version == 39)
+        .find(|migration| migration.version == current_version)
     else {
         return Ok(());
     };
@@ -74,7 +104,7 @@ pub(crate) async fn repair_legacy_recency_migration_version(
         return Ok(());
     }
 
-    let legacy_recency_needs_repair = sqlx::query_scalar::<_, i64>(
+    let legacy_migration_needs_repair = sqlx::query_scalar::<_, i64>(
         r#"
 SELECT 1
 FROM _sqlx_migrations
@@ -85,13 +115,13 @@ WHERE version = ?
   )
         "#,
     )
-    .bind(38_i64)
-    .bind(recency_migration.checksum.as_ref())
-    .bind(recency_migration.version)
+    .bind(legacy_version)
+    .bind(current_migration.checksum.as_ref())
+    .bind(current_migration.version)
     .fetch_optional(pool)
     .await?
     .is_some();
-    if !legacy_recency_needs_repair {
+    if !legacy_migration_needs_repair {
         return Ok(());
     }
 
@@ -106,11 +136,11 @@ WHERE version = ?
   )
         "#,
     )
-    .bind(recency_migration.version)
-    .bind(recency_migration.description.as_ref())
-    .bind(38_i64)
-    .bind(recency_migration.checksum.as_ref())
-    .bind(recency_migration.version)
+    .bind(current_migration.version)
+    .bind(current_migration.description.as_ref())
+    .bind(legacy_version)
+    .bind(current_migration.checksum.as_ref())
+    .bind(current_migration.version)
     .execute(pool)
     .await?;
     Ok(())

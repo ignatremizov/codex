@@ -30,7 +30,6 @@ impl AgentControl {
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-        child_reference: &str,
         response_rx: &mut AgentResponseSubscription,
         child_multi_agent_version: MultiAgentVersion,
         child_lifecycle_generation: u64,
@@ -71,7 +70,6 @@ impl AgentControl {
                     .deliver_v1_commentary_observation(
                         parent,
                         child,
-                        child_reference,
                         &turn_id,
                         &delivery,
                         lifecycle_guard,
@@ -168,7 +166,6 @@ impl AgentControl {
                             .deliver_v1_commentary(
                                 parent,
                                 child,
-                                child_reference,
                                 &turn_id,
                                 &item_id,
                                 &text,
@@ -301,7 +298,6 @@ impl AgentControl {
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-        child_reference: &str,
         turn_id: &str,
         item_id: &str,
         text: &str,
@@ -330,7 +326,6 @@ impl AgentControl {
         self.deliver_v1_commentary_observation_after_claim(
             parent,
             child,
-            child_reference,
             turn_id,
             &delivery,
             DurableResponseDelivery {
@@ -353,7 +348,6 @@ impl AgentControl {
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-        child_reference: &str,
         turn_id: &str,
         item_id: &str,
         text: &str,
@@ -389,7 +383,6 @@ impl AgentControl {
         self.deliver_v1_commentary_observation_after_claim(
             parent,
             child,
-            child_reference,
             turn_id,
             &delivery,
             DurableResponseDelivery {
@@ -411,7 +404,6 @@ impl AgentControl {
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-        child_reference: &str,
         turn_id: &str,
         delivery: &codex_protocol::protocol::AgentResponseCommentaryDelivery,
         target_lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
@@ -433,7 +425,6 @@ impl AgentControl {
         self.deliver_v1_commentary_observation_after_claim(
             parent,
             child,
-            child_reference,
             turn_id,
             delivery,
             DurableResponseDelivery {
@@ -457,11 +448,25 @@ impl AgentControl {
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-        child_reference: &str,
         turn_id: &str,
         delivery: &codex_protocol::protocol::AgentResponseCommentaryDelivery,
         durable_delivery: DurableResponseDelivery,
     ) -> bool {
+        let Ok(state) = self.upgrade() else {
+            return false;
+        };
+        let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await else {
+            return false;
+        };
+        if parent_thread.session.presentation_id() != parent {
+            return false;
+        }
+        let Ok(agent) = self
+            .model_visible_agent_identity(&parent_thread, child.thread_id)
+            .await
+        else {
+            return false;
+        };
         let Some(child_agent_path) = self.observation_agent_path(child.thread_id) else {
             return false;
         };
@@ -473,8 +478,7 @@ impl AgentControl {
             parent_agent_path,
             Vec::new(),
             format_subagent_commentary_message(
-                child_reference,
-                child.thread_id,
+                agent,
                 turn_id,
                 &delivery.source_item_id,
                 &delivery.text,
@@ -556,7 +560,8 @@ impl AgentControl {
                 let Ok(state) = self.upgrade() else {
                     return false;
                 };
-                let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+                let Ok(parent_thread) = state.get_thread_including_pending(parent_thread_id).await
+                else {
                     return false;
                 };
                 let is_idle_codex_exec = parent_thread
@@ -599,7 +604,8 @@ impl AgentControl {
                 let Ok(state) = self.upgrade() else {
                     return false;
                 };
-                let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+                let Ok(parent_thread) = state.get_thread_including_pending(parent_thread_id).await
+                else {
                     return false;
                 };
                 if parent_thread.session.presentation_id() != terminal.presentation.parent() {
@@ -669,11 +675,19 @@ impl AgentControl {
         let Ok(state) = self.upgrade() else {
             return false;
         };
-        let message = format_subagent_notification_message(
-            child_reference,
-            terminal.presentation.child().thread_id,
-            &terminal.status,
-        );
+        let Ok(parent_thread) = state.get_thread_including_pending(parent_thread_id).await else {
+            return false;
+        };
+        if parent_thread.session.presentation_id() != terminal.presentation.parent() {
+            return false;
+        }
+        let Ok(agent) = self
+            .model_visible_agent_identity(&parent_thread, terminal.presentation.child().thread_id)
+            .await
+        else {
+            return false;
+        };
+        let message = format_subagent_notification_message(agent, &terminal.status);
         let Some(child_agent_path) =
             self.observation_agent_path(terminal.presentation.child().thread_id)
         else {
@@ -690,12 +704,6 @@ impl AgentControl {
             /*trigger_turn*/ false,
         );
         communication.id = Some(response_item_id.clone());
-        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
-            return false;
-        };
-        if parent_thread.session.presentation_id() != terminal.presentation.parent() {
-            return false;
-        }
         let committed_observations = self.response_observation_committed_snapshots(
             terminal.presentation.parent(),
             terminal.presentation.child(),
@@ -802,11 +810,22 @@ impl AgentControl {
         terminal: &WatcherTerminalPresentation,
         durable_delivery: DurableResponseDelivery,
     ) -> bool {
-        let message = format_subagent_notification_message(
-            child_reference,
-            terminal.presentation.child().thread_id,
-            &terminal.status,
-        );
+        let Ok(state) = self.upgrade() else {
+            return false;
+        };
+        let Ok(parent_thread) = state.get_thread_including_pending(parent_thread_id).await else {
+            return false;
+        };
+        if parent_thread.session.presentation_id() != terminal.presentation.parent() {
+            return false;
+        }
+        let Ok(agent) = self
+            .model_visible_agent_identity(&parent_thread, terminal.presentation.child().thread_id)
+            .await
+        else {
+            return false;
+        };
+        let message = format_subagent_notification_message(agent, &terminal.status);
         let Some(child_agent_path) =
             self.observation_agent_path(terminal.presentation.child().thread_id)
         else {
@@ -914,7 +933,7 @@ impl AgentControl {
         let Ok(state) = self.upgrade() else {
             return false;
         };
-        let Ok(parent_thread) = state.get_thread(parent.thread_id).await else {
+        let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await else {
             return false;
         };
         if parent_thread.session.presentation_id() != parent {
@@ -950,7 +969,7 @@ impl AgentControl {
         }
 
         if let Ok(state) = self.upgrade()
-            && let Ok(parent_thread) = state.get_thread(parent.thread_id).await
+            && let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await
             && parent_thread.session.presentation_id() == parent
         {
             // Neither failed durability barrier is authoritative. Quarantine the live parent so a
@@ -964,5 +983,61 @@ impl AgentControl {
         Err(CodexErr::Fatal(format!(
             "{failed_operation}; its compensating response-observation update also failed to persist, so the durable subscription outcome is unknown; refresh the thread before continuing"
         )))
+    }
+
+    pub(super) async fn rollback_installed_response_observer_if_current(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        registration_id: uuid::Uuid,
+        mut target_turn_ids: Vec<Option<String>>,
+    ) -> CodexResult<()> {
+        let _transaction = self.acquire_response_observation_transaction(parent).await;
+        let removed_bound_wake = match self.revoke_response_observation_if_registration_is_current(
+            parent,
+            child,
+            registration_id,
+        ) {
+            super::presentation::ConditionalResponseObservationRevocation::Replaced => {
+                return Ok(());
+            }
+            super::presentation::ConditionalResponseObservationRevocation::Missing => false,
+            super::presentation::ConditionalResponseObservationRevocation::Revoked {
+                removed_bound_wake,
+            } => removed_bound_wake,
+        };
+        target_turn_ids.sort();
+        target_turn_ids.dedup();
+        let observations = target_turn_ids
+            .into_iter()
+            .flat_map(|target_turn_id| {
+                self.response_observation_audit_snapshots(parent, child, target_turn_id)
+            })
+            .collect::<Vec<_>>();
+        if !self
+            .persist_response_observation_updates(parent, observations)
+            .await
+        {
+            if let Ok(state) = self.upgrade()
+                && let Ok(parent_thread) =
+                    state.get_thread_including_pending(parent.thread_id).await
+                && parent_thread.session.presentation_id() == parent
+            {
+                parent_thread
+                    .session
+                    .submission_admission
+                    .rollback_requires_reload();
+            }
+            return Err(CodexErr::Fatal(
+                "failed to persist cancellation of resumed agent response observation; refresh \
+                 the observer thread before continuing"
+                    .to_string(),
+            ));
+        }
+        drop(_transaction);
+        if removed_bound_wake {
+            self.recheck_thread_idle_lifecycle(parent).await;
+        }
+        Ok(())
     }
 }

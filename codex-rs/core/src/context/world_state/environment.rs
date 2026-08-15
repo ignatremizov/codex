@@ -95,6 +95,7 @@ impl EnvironmentsState {
             network: self.network.clone(),
             filesystem: self.filesystem.clone(),
             subagents: self.subagents.clone(),
+            clear_subagents: false,
         }
     }
 }
@@ -146,6 +147,7 @@ impl WorldStateSection for EnvironmentsState {
             || current.timezone != previous.timezone
             || current.network != previous.network
             || current.filesystem != previous.filesystem;
+        let subagents_changed = current.subagents != previous.subagents;
         let multiple_environments = self.environments.len() > 1;
         let previous_multiple_environments = previous.environments.len() > 1;
         let mut updates = self
@@ -172,7 +174,7 @@ impl WorldStateSection for EnvironmentsState {
             && updates
                 .values()
                 .all(|update| matches!(update, EnvironmentUpdate::Current(_)));
-        (!updates.is_empty() || turn_context_values_changed).then(|| {
+        (!updates.is_empty() || turn_context_values_changed || subagents_changed).then(|| {
             Box::new(RenderedEnvironments {
                 updates,
                 legacy_single,
@@ -185,6 +187,7 @@ impl WorldStateSection for EnvironmentsState {
                 network: self.network.clone(),
                 filesystem: self.filesystem.clone(),
                 subagents: self.subagents.clone(),
+                clear_subagents: subagents_changed && self.subagents.is_none(),
             }) as Box<dyn ContextualUserFragment>
         })
     }
@@ -223,6 +226,7 @@ struct RenderedEnvironments {
     network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
     subagents: Option<String>,
+    clear_subagents: bool,
 }
 
 enum EnvironmentUpdate {
@@ -307,6 +311,8 @@ impl ContextualUserFragment for RenderedEnvironments {
                 rendered.push('\n');
             }
             rendered.push_str("  </subagents>\n");
+        } else if self.clear_subagents {
+            rendered.push_str("  <subagents />\n");
         }
         rendered
     }

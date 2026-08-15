@@ -428,6 +428,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn capture_thread_input_state(&self) -> Option<ThreadInputState> {
+        let turn_started_at = self.turn_lifecycle.started_at();
         let draft = self.bottom_pane.composer_draft_snapshot();
         let composer = ThreadComposerState {
             text: draft.text,
@@ -472,8 +473,10 @@ impl ChatWidget {
                 .submit_pending_steers_after_interrupt,
             current_collaboration_mode: self.current_collaboration_mode.clone(),
             active_collaboration_mask: self.active_collaboration_mask.clone(),
-            task_running: self.bottom_pane.is_task_running(),
-            agent_turn_running: self.turn_lifecycle.agent_turn_running,
+            pending_start_task_running: self.input_queue.user_turn_pending_start
+                && self.bottom_pane.is_task_running(),
+            active_turn_id: turn_started_at.and(self.turn_lifecycle.last_turn_id.clone()),
+            turn_started_at,
         })
     }
 
@@ -483,17 +486,26 @@ impl ChatWidget {
         restore_mode: ThreadInputStateRestoreMode,
     ) {
         let preserve_in_flight_turn = restore_mode.preserve_in_flight_turn;
-        let restored_task_running =
-            preserve_in_flight_turn && input_state.as_ref().is_some_and(|state| state.task_running);
+        let restored_pending_start_task = preserve_in_flight_turn
+            && input_state.as_ref().is_some_and(|state| {
+                state.pending_start_task_running && state.user_turn_pending_start
+            });
         if let Some(input_state) = input_state {
             self.input_queue.recovered_queue = input_state.recovered_queue;
+            let restored_active_turn_id = if preserve_in_flight_turn {
+                input_state.active_turn_id.clone()
+            } else {
+                None
+            };
             self.current_collaboration_mode = input_state.current_collaboration_mode;
             self.active_collaboration_mask = input_state.active_collaboration_mask;
             self.safety_buffering_prompt = input_state.safety_buffering_prompt;
-            self.turn_lifecycle.restore_running(
-                preserve_in_flight_turn && input_state.agent_turn_running,
-                Instant::now(),
-            );
+            if preserve_in_flight_turn && let Some(started_at) = input_state.turn_started_at {
+                self.turn_lifecycle.restore_running_since(started_at);
+                self.turn_lifecycle.last_turn_id = restored_active_turn_id;
+            } else {
+                self.turn_lifecycle.finish();
+            }
             self.input_queue.user_turn_pending_start =
                 preserve_in_flight_turn && input_state.user_turn_pending_start;
             self.input_queue.submit_pending_steers_after_interrupt =
@@ -554,8 +566,7 @@ impl ChatWidget {
                 UserMessageHistoryRecord::UserMessageText,
             );
         } else {
-            self.turn_lifecycle
-                .restore_running(/*running*/ false, Instant::now());
+            self.turn_lifecycle.finish();
             self.safety_buffering_prompt = None;
             self.input_queue.clear();
             self.restore_composer_state(Default::default());
@@ -565,15 +576,27 @@ impl ChatWidget {
         let effort = self.effective_reasoning_effort();
         self.bottom_pane
             .set_active_reasoning_effort_baseline(effort.as_ref());
-        self.turn_lifecycle
-            .restore_running(self.turn_lifecycle.agent_turn_running, Instant::now());
         self.update_task_running_state();
-        if restored_task_running && !self.bottom_pane.is_task_running() {
+        if restored_pending_start_task && !self.bottom_pane.is_task_running() {
             self.bottom_pane.set_task_running(/*running*/ true);
             self.refresh_status_surfaces();
         }
         self.refresh_pending_input_preview();
         self.request_redraw();
+    }
+
+    pub(crate) fn restore_active_turn(&mut self, turn_id: &str, started_at: Instant) {
+        self.turn_lifecycle.restore_running_since(started_at);
+        self.turn_lifecycle.last_turn_id = Some(turn_id.to_string());
+        self.update_task_running_state();
+    }
+
+    pub(crate) fn restore_replayed_turn_origin(&mut self, turn_id: &str, started_at: Instant) {
+        if self.turn_lifecycle.agent_turn_running
+            && self.turn_lifecycle.last_turn_id.as_deref() == Some(turn_id)
+        {
+            self.restore_active_turn(turn_id, started_at);
+        }
     }
 
     pub(crate) fn set_queue_autosend_suppressed(&mut self, suppressed: bool) {

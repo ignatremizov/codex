@@ -47,6 +47,7 @@ use crate::WaitForEnvironmentToolConfig;
 use crate::config::CurrentTimeReminderConfig;
 use crate::config::MultiAgentMessageDelivery;
 use crate::environment_selection::TurnEnvironmentState;
+use crate::mcp_tool_exposure::McpToolExposure;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::TurnToolFunctionInfo;
 use crate::responses_metadata::TurnToolNamespacesInfo;
@@ -522,7 +523,7 @@ fn build_internal_guardian_tool_router(
     session: &Session,
     step_context: &StepContext,
 ) -> ToolRouter {
-    let mcp_tool_exposure = crate::mcp_tool_exposure::McpToolExposure {
+    let mcp_tool_exposure = McpToolExposure {
         direct_tools: HashMap::new(),
         deferred_tools: None,
     };
@@ -2930,7 +2931,42 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
     let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
         panic!("expected visible tool_search spec");
     };
-    assert!(description.contains("- Multi-agent tools: Spawn and manage sub-agents."));
+    assert!(description.contains("- Multi-agent tools: Communicate with and manage sub-agents."));
+}
+
+#[tokio::test]
+async fn v1_max_depth_agents_retain_send_input_without_lifecycle_tools() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::Collab, /*enabled*/ true);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        update_config(turn, |config| {
+            config.agent_max_depth = 2;
+        });
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 2,
+            agent_path: Some(
+                AgentPath::try_from("/root/worker/reviewer").expect("valid agent path"),
+            ),
+            agent_nickname: Some("Noether".to_string()),
+            agent_role: Some("reviewer".to_string()),
+        });
+    })
+    .await;
+
+    assert_eq!(
+        plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &["send_input".to_string()]
+    );
+    plan.assert_visible_contains(&[MULTI_AGENT_V1_NAMESPACE]);
+    plan.assert_visible_lacks(&["spawn_agent", "resume_agent", "wait_agent", "close_agent"]);
+    let send_input = ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "send_input").to_string();
+    plan.assert_registered_contains(&[&send_input]);
+    for lifecycle_tool in ["spawn_agent", "resume_agent", "wait_agent", "close_agent"] {
+        let lifecycle_tool =
+            ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, lifecycle_tool).to_string();
+        plan.assert_registered_lacks(&[&lifecycle_tool]);
+    }
 }
 
 #[tokio::test]

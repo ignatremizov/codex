@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::control::ResponseObserverKind;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
@@ -131,17 +132,19 @@ async fn handle_spawn_agent(
             multi_agent_v2_usage_hints: None,
             cyber_access_program: turn.cyber_access_program,
             response_observation: args.w,
+            response_observer: ResponseObserverKind::Native,
         },
     ))
     .await
     .map_err(collab_spawn_error);
-    let (new_thread_id, new_agent_metadata, status) = match &result {
+    let (new_thread_id, new_agent_metadata, status, new_agent_ref) = match &result {
         Ok(spawned_agent) => (
             Some(spawned_agent.thread_id),
             Some(spawned_agent.metadata.clone()),
             spawned_agent.status.clone(),
+            spawned_agent.agent_ref,
         ),
-        Err(_) => (None, None, AgentStatus::NotFound),
+        Err(_) => (None, None, AgentStatus::NotFound, None),
     };
     let agent_snapshot = match new_thread_id {
         Some(thread_id) => {
@@ -220,6 +223,7 @@ async fn handle_spawn_agent(
     Ok(SpawnAgentResult {
         agent_id: new_thread_id.to_string(),
         nickname,
+        agent_ref: new_agent_ref.map(|agent_ref| agent_ref.to_string()),
     })
 }
 
@@ -247,6 +251,8 @@ struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentResult {
     agent_id: String,
     nickname: Option<String>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    agent_ref: Option<String>,
 }
 
 impl ToolOutput for SpawnAgentResult {

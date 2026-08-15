@@ -8,6 +8,7 @@ use std::borrow::Cow;
 
 use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
+use super::repair_legacy_agent_alias_migration_version;
 use super::repair_legacy_recency_migration_version;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
@@ -816,6 +817,82 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .migrations
         .iter()
         .filter(|migration| migration.version >= 38)
+        .map(|migration| (migration.version, migration.checksum.to_vec()))
+        .collect::<Vec<_>>();
+    assert_eq!(applied, expected);
+
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn repairs_released_agent_alias_migration_before_applying_upstream_projects() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let state_path = sqlite.state_db_path();
+    let pool = sqlite
+        .open_read_write_pool(&state_path)
+        .await
+        .expect("sqlite database should open");
+    migrator_through(/*version*/ 48)
+        .run(&pool)
+        .await
+        .expect("pre-collision migrations should apply");
+
+    let agent_alias_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == 10_049)
+        .expect("agent alias migration should exist");
+    let mut legacy_migrations = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| migration.version <= 48)
+        .cloned()
+        .collect::<Vec<_>>();
+    legacy_migrations.push(Migration::new(
+        49,
+        agent_alias_migration.description.clone(),
+        agent_alias_migration.migration_type,
+        agent_alias_migration.sql.clone(),
+        agent_alias_migration.no_tx,
+    ));
+    Migrator::with_migrations(legacy_migrations)
+        .run(&pool)
+        .await
+        .expect("released agent alias migration should apply as version 49");
+
+    repair_legacy_agent_alias_migration_version(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("released migration history should be repaired");
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("upstream and fork migrations should apply after repair");
+
+    let applied = sqlx::query(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 49 ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("applied migrations should load")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<i64, _>("version"),
+            row.get::<Vec<u8>, _>("checksum"),
+        )
+    })
+    .collect::<Vec<_>>();
+    let expected = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| migration.version >= 49)
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);

@@ -65,6 +65,7 @@ pub(super) async fn make_test_app() -> App {
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
         agents_overview: Default::default(),
+        queued_agent_prompts: HashMap::new(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
         active_thread_id: None,

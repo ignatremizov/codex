@@ -280,6 +280,63 @@ fn serialize_environment_context_with_subagents() {
 }
 
 #[test]
+fn environment_context_updates_when_subagent_roster_changes() {
+    let without_subagents = environment_state(
+        [environment(
+            "local",
+            PathUri::from_abs_path(&test_abs_path("/repo")),
+            fake_shell_name(),
+        )],
+        Some("2026-02-26".to_string()),
+        Some("America/Los_Angeles".to_string()),
+        /*network*/ None,
+        /*subagents*/ None,
+    );
+    let with_subagents = environment_state(
+        [environment(
+            "local",
+            PathUri::from_abs_path(&test_abs_path("/repo")),
+            fake_shell_name(),
+        )],
+        Some("2026-02-26".to_string()),
+        Some("America/Los_Angeles".to_string()),
+        /*network*/ None,
+        Some("- 2: Pascal".to_string()),
+    );
+
+    let without_snapshot = without_subagents.snapshot();
+    let with_snapshot = with_subagents.snapshot();
+    let added = with_subagents
+        .render_diff(PreviousSectionState::Known(&without_snapshot))
+        .expect("adding a subagent should render a world-state update")
+        .render();
+    let cleared = without_subagents
+        .render_diff(PreviousSectionState::Known(&with_snapshot))
+        .expect("removing the last subagent should render a world-state update")
+        .render();
+
+    assert_eq!(
+        [added, cleared],
+        [
+            r#"<environment_context>
+  <current_date>2026-02-26</current_date>
+  <timezone>America/Los_Angeles</timezone>
+  <subagents>
+    - 2: Pascal
+  </subagents>
+</environment_context>"#
+                .to_string(),
+            r#"<environment_context>
+  <current_date>2026-02-26</current_date>
+  <timezone>America/Los_Angeles</timezone>
+  <subagents />
+</environment_context>"#
+                .to_string(),
+        ],
+    );
+}
+
+#[test]
 fn serialize_environment_context_with_multiple_selected_environments() {
     let local_cwd = test_path_buf("/repo/local");
     let remote_cwd = test_path_buf("/repo/remote");

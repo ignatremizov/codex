@@ -30,6 +30,14 @@ use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::AgentAlias;
+use codex_app_server_protocol::AgentAliasListParams;
+use codex_app_server_protocol::AgentAliasListResponse;
+use codex_app_server_protocol::AgentControlAction;
+use codex_app_server_protocol::AgentControlOutcome;
+use codex_app_server_protocol::AgentControlParams;
+use codex_app_server_protocol::AgentControlResponse;
+use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -189,6 +197,14 @@ enum ForkPresentation {
 pub(crate) enum ThreadHistorySupport {
     Paginated,
     LegacyOnly,
+}
+
+pub(crate) enum QueuedAgentPromptAdmission {
+    Admitted {
+        audit_warning: Option<String>,
+        post_admission_warning: Option<String>,
+    },
+    TargetActive,
 }
 
 fn bootstrap_request_error(context: &'static str, err: TypedRequestError) -> color_eyre::Report {
@@ -1290,6 +1306,26 @@ impl AppServerSession {
             .wrap_err("turn/start failed in TUI")
     }
 
+    /// Starts a turn without overriding the target thread's sticky settings.
+    pub(crate) async fn turn_start_with_thread_defaults(
+        &mut self,
+        thread_id: ThreadId,
+        items: Vec<UserInput>,
+    ) -> Result<TurnStartResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::TurnStart {
+                request_id,
+                params: TurnStartParams {
+                    thread_id: thread_id.to_string(),
+                    input: items,
+                    ..TurnStartParams::default()
+                },
+            })
+            .await
+            .wrap_err("turn/start failed for direct agent prompt")
+    }
+
     pub(crate) async fn turn_interrupt(
         &mut self,
         thread_id: ThreadId,
@@ -1591,6 +1627,243 @@ impl AppServerSession {
         Ok(())
     }
 
+    pub(crate) async fn agent_aliases(&self, root_thread_id: ThreadId) -> Result<Vec<AgentAlias>> {
+        load_agent_aliases(&self.request_handle(), root_thread_id).await
+    }
+
+    pub(crate) async fn prompt_agent(
+        &mut self,
+        source_thread_id: ThreadId,
+        target: String,
+        authored_selector: String,
+        input: Vec<UserInput>,
+        response_handling: Option<AgentResponseHandling>,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: Some(authored_selector),
+                    action: AgentControlAction::Prompt {
+                        target,
+                        input,
+                        response_handling,
+                    },
+                },
+            })
+            .await
+            .wrap_err("agent/control prompt failed in TUI")
+    }
+
+    pub(crate) async fn prompt_agent_reserved_turn(
+        &mut self,
+        source_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+        input: Vec<UserInput>,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: None,
+                    action: AgentControlAction::ReservedPrompt {
+                        target: target_thread_id.to_string(),
+                        input,
+                    },
+                },
+            })
+            .await
+            .wrap_err("agent/control reserved prompt failed in TUI")
+    }
+
+    pub(crate) async fn admit_queued_agent_prompt(
+        &mut self,
+        source_thread_id: ThreadId,
+        expected_target_thread_id: ThreadId,
+        target: String,
+        authored_selector: String,
+        input: Vec<UserInput>,
+        response_handling: Option<AgentResponseHandling>,
+    ) -> Result<QueuedAgentPromptAdmission> {
+        let request_id = self.next_request_id();
+        let result: std::result::Result<AgentControlResponse, TypedRequestError> = self
+            .client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: Some(authored_selector),
+                    action: AgentControlAction::QueuedPrompt {
+                        target,
+                        input,
+                        response_handling,
+                    },
+                },
+            })
+            .await;
+        match result {
+            Ok(AgentControlResponse {
+                outcome:
+                    AgentControlOutcome::Prompted {
+                        target_thread_id,
+                        post_admission_warning,
+                        ..
+                    },
+                audit_warning,
+            }) if ThreadId::from_string(&target_thread_id).ok()
+                == Some(expected_target_thread_id) =>
+            {
+                Ok(QueuedAgentPromptAdmission::Admitted {
+                    audit_warning,
+                    post_admission_warning,
+                })
+            }
+            Ok(response) => Err(color_eyre::eyre::eyre!(
+                "agent/control queued prompt returned {response:?}, expected target \
+                 {expected_target_thread_id}"
+            )),
+            Err(TypedRequestError::Server { source, .. })
+                if source
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("targetActive") =>
+            {
+                Ok(QueuedAgentPromptAdmission::TargetActive)
+            }
+            Err(error) => {
+                Err(error).wrap_err("agent/control queued prompt admission failed in TUI")
+            }
+        }
+    }
+
+    pub(crate) async fn spawn_agent(
+        &mut self,
+        source_thread_id: ThreadId,
+        role: Option<String>,
+        authored_selector: Option<String>,
+        input: Option<Vec<UserInput>>,
+        fork_mode: codex_app_server_protocol::AgentForkMode,
+        response_handling: Option<AgentResponseHandling>,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector,
+                    action: AgentControlAction::Spawn {
+                        role,
+                        input,
+                        fork_mode,
+                        response_handling,
+                    },
+                },
+            })
+            .await
+            .wrap_err("agent/control spawn failed in TUI")
+    }
+
+    pub(crate) async fn resume_agent(
+        &mut self,
+        source_thread_id: ThreadId,
+        target: String,
+        authored_selector: String,
+        response_handling: Option<AgentResponseHandling>,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: Some(authored_selector),
+                    action: AgentControlAction::Resume {
+                        target,
+                        response_handling,
+                    },
+                },
+            })
+            .await
+            .wrap_err("agent/control resume failed in TUI")
+    }
+
+    pub(crate) async fn interrupt_agent(
+        &mut self,
+        source_thread_id: ThreadId,
+        target: String,
+        authored_selector: String,
+        input: Option<Vec<UserInput>>,
+        response_handling: Option<AgentResponseHandling>,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: Some(authored_selector),
+                    action: AgentControlAction::Interrupt {
+                        target,
+                        input,
+                        response_handling,
+                    },
+                },
+            })
+            .await
+            .wrap_err("agent/control interrupt failed in TUI")
+    }
+
+    pub(crate) async fn close_agent(
+        &mut self,
+        source_thread_id: ThreadId,
+        target: String,
+        authored_selector: String,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: Some(authored_selector),
+                    action: AgentControlAction::Close { target },
+                },
+            })
+            .await
+            .wrap_err("agent/control close failed in TUI")
+    }
+
+    pub(crate) async fn observe_agent(
+        &mut self,
+        source_thread_id: ThreadId,
+        target: String,
+        authored_selector: String,
+        response_handling: codex_app_server_protocol::AgentObservationMode,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: Some(authored_selector),
+                    action: AgentControlAction::Observe {
+                        target,
+                        response_handling,
+                    },
+                },
+            })
+            .await
+            .wrap_err("agent/control observe failed in TUI")
+    }
+
     pub(crate) async fn review_start(
         &mut self,
         thread_id: ThreadId,
@@ -1718,6 +1991,37 @@ impl AppServerSession {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
         RequestId::Integer(request_id)
+    }
+}
+
+pub(crate) async fn load_agent_aliases(
+    request_handle: &AppServerRequestHandle,
+    root_thread_id: ThreadId,
+) -> Result<Vec<AgentAlias>> {
+    let mut aliases = Vec::new();
+    let mut cursor = None;
+    loop {
+        let response: AgentAliasListResponse = request_handle
+            .request_typed(ClientRequest::AgentAliasList {
+                request_id: RequestId::String(Uuid::new_v4().to_string()),
+                params: AgentAliasListParams {
+                    root_thread_id: root_thread_id.to_string(),
+                    cursor: cursor.clone(),
+                    limit: Some(100),
+                },
+            })
+            .await
+            .wrap_err("agentAlias/list failed in TUI")?;
+        aliases.extend(response.data);
+        let Some(next_cursor) = response.next_cursor else {
+            return Ok(aliases);
+        };
+        if cursor.as_ref() == Some(&next_cursor) {
+            return Err(color_eyre::eyre::eyre!(
+                "agentAlias/list repeated cursor {next_cursor}"
+            ));
+        }
+        cursor = Some(next_cursor);
     }
 }
 

@@ -1216,7 +1216,12 @@ async fn final_worked_for_uses_cumulative_turn_duration_snapshot() {
             combined.contains("Worked for 2m 05s"),
             "expected final separator to use cumulative turn duration, got:\n{combined}"
         );
-        assert_chatwidget_snapshot!("final_worked_for_uses_cumulative_turn_duration", combined);
+        let elapsed_checkpoint = combined
+            .lines()
+            .find(|line| line.starts_with("─ ") && line.contains(" elapsed "))
+            .expect("expected an elapsed checkpoint separator");
+        let normalized = combined.replacen(elapsed_checkpoint, "─ <elapsed checkpoint>", 1);
+        assert_chatwidget_snapshot!("final_worked_for_uses_cumulative_turn_duration", normalized);
     }
 }
 

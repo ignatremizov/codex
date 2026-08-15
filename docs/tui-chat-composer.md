@@ -34,7 +34,7 @@ The solution is to detect paste-like _bursts_ and buffer them into a single expl
 `ChatComposer` effectively combines two small state machines:
 
 1. **UI mode**: which popup (if any) is active.
-   - `ActivePopup::None | Command | File | Skill`
+   - `ActivePopup::None | AgentTarget | Command | File | Skill | MentionV2`
 2. **Paste burst**: transient detection state for non-bracketed paste.
    - implemented by `PasteBurst`
 

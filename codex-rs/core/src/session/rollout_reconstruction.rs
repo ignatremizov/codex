@@ -7,6 +7,7 @@ use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -206,6 +207,17 @@ fn sub_agent_completion_context_response_item_ids(
         .iter()
         .filter_map(|item| item.item.id())
         .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn collect_user_agent_task_context_response_item_ids(
+    items: &[ResponseItemEnvelope],
+) -> HashSet<ResponseItemId> {
+    items
+        .iter()
+        .filter_map(ResponseItemEnvelope::id)
+        .filter(|id| is_user_agent_task_context_response_item_id(id.as_str()))
         .cloned()
         .collect()
 }
@@ -576,6 +588,8 @@ impl Session {
         }
         let mut completion_context_response_item_ids =
             sub_agent_completion_context_response_item_ids(history.annotated_items());
+        let mut user_agent_task_context_response_item_ids =
+            collect_user_agent_task_context_response_item_ids(history.annotated_items());
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
         // instead of an eagerly loaded `&[RolloutItem]`.
@@ -587,8 +601,13 @@ impl Session {
             match item {
                 RolloutItem::ResponseItem(response_item) => {
                     if response_item.id().is_some_and(|id| {
-                        is_sub_agent_completion_context_response_item_id(id.as_str())
-                            && !completion_context_response_item_ids.insert(id.clone())
+                        let duplicate_completion =
+                            is_sub_agent_completion_context_response_item_id(id.as_str())
+                                && !completion_context_response_item_ids.insert(id.clone());
+                        let duplicate_task =
+                            is_user_agent_task_context_response_item_id(id.as_str())
+                                && !user_agent_task_context_response_item_ids.insert(id.clone());
+                        duplicate_completion || duplicate_task
                     }) {
                         continue;
                     }
@@ -610,8 +629,19 @@ impl Session {
                         turn_context.model_info().truncation_policy.into(),
                     );
                 }
-                RolloutItem::InterAgentCommunicationMetadata { .. }
-                | RolloutItem::AgentResponseObservation(_) => {}
+                RolloutItem::AgentResponseObservation(observation) => {
+                    if let Some(task_item) = observation.promoted_task_context_item()
+                        && task_item.id().is_none_or(|id| {
+                            user_agent_task_context_response_item_ids.insert(id.clone())
+                        })
+                    {
+                        history.record_items(
+                            std::iter::once(&task_item),
+                            turn_context.model_info.truncation_policy.into(),
+                        );
+                    }
+                }
+                RolloutItem::InterAgentCommunicationMetadata { .. } => {}
                 RolloutItem::Compacted(compacted) => {
                     if skipped_compacted_items
                         .iter()
@@ -638,6 +668,10 @@ impl Session {
                             sub_agent_completion_context_response_item_ids(
                                 history.annotated_items(),
                             );
+                        user_agent_task_context_response_item_ids =
+                            collect_user_agent_task_context_response_item_ids(
+                                history.annotated_items(),
+                            );
                     } else {
                         saw_legacy_compaction_without_replacement_history = true;
                         // Legacy rollouts without `replacement_history` should rebuild the
@@ -661,6 +695,10 @@ impl Session {
                             sub_agent_completion_context_response_item_ids(
                                 history.annotated_items(),
                             );
+                        user_agent_task_context_response_item_ids =
+                            collect_user_agent_task_context_response_item_ids(
+                                history.annotated_items(),
+                            );
                     }
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
@@ -670,6 +708,10 @@ impl Session {
                             repaired_prefix_len.min(history.annotated_items().len());
                         completion_context_response_item_ids =
                             sub_agent_completion_context_response_item_ids(
+                                history.annotated_items(),
+                            );
+                        user_agent_task_context_response_item_ids =
+                            collect_user_agent_task_context_response_item_ids(
                                 history.annotated_items(),
                             );
                     }

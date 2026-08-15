@@ -11,9 +11,13 @@ use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
+use crate::context::AgentContextIdentity;
+use crate::context::ContextualUserFragment;
+use crate::context::UserAgentTask;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::CompletionSubmissionAdmission;
+use crate::session::InputTurnAdmissionPolicy;
 use crate::session::emit_subagent_session_started;
 use crate::session::multi_agents::ResolvedMultiAgentV2UsageHints;
 use crate::session_prefix::format_inter_agent_completion_message;
@@ -28,7 +32,9 @@ use arc_swap::ArcSwapOption;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
+use codex_agent_graph_store::AgentAlias;
 use codex_protocol::AgentPath;
+use codex_protocol::MAIN_AGENT_NICKNAME;
 use codex_protocol::ResponseItemId;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -57,8 +63,8 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
 use codex_protocol::turn_input::CyberAccessProgram;
-use codex_protocol::turn_input::TurnInputMode;
-use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
+use codex_protocol::turn_input::TurnInputRequest;
+use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_thread_store::LoadThreadHistoryParams;
@@ -71,10 +77,22 @@ use std::sync::Weak;
 use tokio::sync::watch;
 use tracing::warn;
 
+struct CompletionWatcherSetup {
+    registration_id: uuid::Uuid,
+    target_turn_ids: Vec<Option<String>>,
+}
+
+type CompletionWatcherSetupSink = Arc<std::sync::Mutex<Option<CompletionWatcherSetup>>>;
+
+pub(crate) use self::aliases::AgentResumeOwnership;
+pub(crate) use self::aliases::AgentResumePlan;
+pub(super) use self::aliases::ThreadSpawnPersistence;
+pub(crate) use self::aliases::agent_alias_lifecycle_status;
 pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
 pub(crate) use self::legacy::LiveAgentMetadataDisposition;
 pub(crate) use self::presentation::AgentTerminalPresentation;
+pub(in crate::agent) use self::presentation::ReplacedFinalResponseObservationBinding;
 use self::presentation::ResponseObservationBinding;
 use self::presentation::ResponseObservationBindingPublication;
 pub(crate) use self::presentation::ResponseObservationDeliveryCommit;
@@ -86,12 +104,16 @@ pub(crate) use self::presentation::TerminalPresentationDelivery;
 use self::presentation::WaitAgentPresentations;
 use self::residency::V2Residency;
 use self::response_delivery::WatcherTerminalPoll;
+pub(crate) use self::resume_registration::ControlledResumeRegistration;
+pub(crate) use self::resume_registration::ControlledResumeRegistrationCommit;
 
 const ROOT_LAST_TASK_MESSAGE: &str = "Main thread";
+const USER_AGENT_TASK_PREVIEW_MAX_CHARS: usize = 240;
 
 enum InitialTerminalObservation {
     FutureTurnsOnly,
     ReconcileIfAdvancedFrom(AgentStatus),
+    ReconcileOrObserveNextFrom(AgentStatus),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,15 +133,81 @@ struct DurableResponseDelivery {
     target_lifecycle_guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
+pub(crate) struct ReservedResponseObservationSubmission {
+    pub(crate) submission_id: String,
+    pub(crate) target_turn_id: String,
+    pub(crate) response_observation: ResponseObservationPolicy,
+    pub(crate) post_admission_warning: Option<String>,
+}
+
+pub(crate) struct ResponseObservationSubmission {
+    pub(crate) submission_id: String,
+    pub(crate) post_admission_warning: Option<String>,
+}
+
+pub(crate) struct ResumeUserInputAdmission {
+    pub(crate) input: Vec<UserInput>,
+    pub(crate) observer: SessionPresentationId,
+    pub(crate) response_observation: ResponseObservationPolicy,
+    pub(crate) admission_policy: InputTurnAdmissionPolicy,
+    pub(crate) task_preview: Option<String>,
+}
+
+impl ResponseObservationSubmission {
+    fn into_strict_result(self) -> CodexResult<String> {
+        match self.post_admission_warning {
+            Some(message) => Err(CodexErr::Fatal(message)),
+            None => Ok(self.submission_id),
+        }
+    }
+}
+
+fn post_admission_response_observation_warning(
+    failed_operation: &str,
+    admitted_input: &str,
+    rollback: CodexResult<()>,
+) -> String {
+    match rollback {
+        Ok(()) => format!(
+            "{failed_operation}; {admitted_input} was already admitted and requested response \
+             handling was rolled back"
+        ),
+        Err(err) => format!("{err}; {admitted_input} was already admitted"),
+    }
+}
+
+enum ObservedInputTaskContext {
+    None,
+    UserAuthored(String),
+}
+
+struct ObservedUserInputAdmission {
+    input: Vec<UserInput>,
+    start_options: TurnStartOptions,
+    observer: SessionPresentationId,
+    response_observation: ResponseObservationPolicy,
+    admission_policy: InputTurnAdmissionPolicy,
+    task_context: ObservedInputTaskContext,
+}
+
 impl InitialTerminalObservation {
     fn observes_future_turns(&self) -> bool {
         matches!(self, Self::FutureTurnsOnly)
     }
 
+    fn retains_idle_next_turn(&self) -> bool {
+        matches!(
+            self,
+            Self::FutureTurnsOnly | Self::ReconcileOrObserveNextFrom(_)
+        )
+    }
+
     fn target_turn_id(&self, active_turn_id: Option<String>) -> Option<String> {
         match self {
             Self::FutureTurnsOnly => None,
-            Self::ReconcileIfAdvancedFrom(_) => active_turn_id,
+            Self::ReconcileIfAdvancedFrom(_) | Self::ReconcileOrObserveNextFrom(_) => {
+                active_turn_id
+            }
         }
     }
 
@@ -135,6 +223,7 @@ impl InitialTerminalObservation {
                 status: snapshot_status,
             },
             Self::ReconcileIfAdvancedFrom(previous_status)
+            | Self::ReconcileOrObserveNextFrom(previous_status)
                 if !crate::agent::status::is_final(&previous_status) =>
             {
                 // A final outcome from an older turn can arrive after a newer turn has started.
@@ -169,21 +258,26 @@ impl InitialTerminalObservation {
                     }
                 }
             }
-            Self::ReconcileIfAdvancedFrom(_) => InitialTerminalReconciliation {
-                terminal: None,
-                status: snapshot_status,
-            },
+            Self::ReconcileIfAdvancedFrom(_) | Self::ReconcileOrObserveNextFrom(_) => {
+                InitialTerminalReconciliation {
+                    terminal: None,
+                    status: snapshot_status,
+                }
+            }
         }
     }
 }
 
+mod aliases;
 mod execution;
 mod legacy;
 mod presentation;
 mod residency;
 mod response_delivery;
 mod response_observer;
+mod resume_registration;
 mod service_tier;
+pub(crate) mod setup_cleanup;
 mod spawn;
 mod user_authorization;
 
@@ -204,6 +298,17 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) multi_agent_v2_usage_hints: Option<ResolvedMultiAgentV2UsageHints>,
     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
     pub(crate) response_observation: ResponseObservationPolicy,
+    pub(crate) response_observer: ResponseObserverKind,
+}
+
+/// Selects how a spawned agent's response observation is presented to its source thread.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ResponseObserverKind {
+    /// Follow the source thread's native multi-agent protocol.
+    #[default]
+    Native,
+    /// Use the durable, exact-turn observation contract exposed by user control and V1 tools.
+    Durable,
 }
 
 enum InterAgentSubmission<'a> {
@@ -259,6 +364,8 @@ pub(crate) struct LiveAgent {
     pub(crate) thread_id: ThreadId,
     pub(crate) metadata: AgentMetadata,
     pub(crate) status: AgentStatus,
+    pub(crate) agent_ref: Option<u64>,
+    pub(crate) post_admission_warning: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -274,10 +381,20 @@ pub(crate) struct ListedAgent {
 /// An `AgentControl` instance is intended to be created at most once per root thread/session
 /// tree. That same `AgentControl` is then shared with every sub-agent spawned from that root,
 /// which keeps the registry scoped to that root thread rather than the entire `ThreadManager`.
+#[derive(Clone, Copy)]
+enum AgentControlSessionBinding {
+    Unbound(SessionId),
+    Bound(SessionId),
+}
+
 #[derive(Clone)]
 pub(crate) struct AgentControl {
-    /// session_id is equal to the root thread's ID.
-    session_id: SessionId,
+    /// ID shared by the whole agent control session. This means every sub-agents from a common
+    /// root share the same session ID.
+    ///
+    /// Low-level callers can construct a control before a root session exists. That unbound state
+    /// retains one stable placeholder ID until the root session is bound.
+    session_binding: AgentControlSessionBinding,
     /// Weak handle back to the global thread registry/state.
     /// This is `Weak` to avoid reference cycles and shadow persistence of the form
     /// `ThreadManagerState -> CodexThread -> Session -> SessionServices -> ThreadManagerState`.
@@ -312,7 +429,7 @@ impl AgentControl {
         rollout_budget: Option<RolloutBudgetConfig>,
     ) -> Self {
         let control = Self {
-            session_id: SessionId::default(),
+            session_binding: AgentControlSessionBinding::Unbound(SessionId::default()),
             manager,
             thread_id_generator,
             state: Arc::default(),
@@ -329,13 +446,23 @@ impl AgentControl {
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
-        self.session_id = session_id;
+        self.session_binding = AgentControlSessionBinding::Bound(session_id);
         self.agent_execution_limiter.initialize(max_threads);
         self
     }
 
     pub(crate) fn session_id(&self) -> SessionId {
-        self.session_id
+        match self.session_binding {
+            AgentControlSessionBinding::Unbound(session_id)
+            | AgentControlSessionBinding::Bound(session_id) => session_id,
+        }
+    }
+
+    pub(crate) fn bound_session_id(&self) -> Option<SessionId> {
+        match self.session_binding {
+            AgentControlSessionBinding::Unbound(_) => None,
+            AgentControlSessionBinding::Bound(session_id) => Some(session_id),
+        }
     }
 
     pub(crate) fn generate_thread_id(&self) -> ThreadId {
@@ -379,15 +506,140 @@ impl AgentControl {
         observer: SessionPresentationId,
         response_observation: ResponseObservationPolicy,
     ) -> CodexResult<String> {
+        self.send_input_observing_response_with_policy(
+            agent_id,
+            input,
+            start_options,
+            observer,
+            response_observation,
+            InputTurnAdmissionPolicy::AnyTurn,
+            ObservedInputTaskContext::None,
+        )
+        .await?
+        .into_strict_result()
+    }
+
+    pub(crate) async fn send_user_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<UserInput>,
+        parent_turn_id: Option<String>,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+        task_preview: Option<String>,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        self.send_input_observing_response_with_policy(
+            agent_id,
+            input,
+            TurnStartOptions {
+                parent_turn_id,
+                ..Default::default()
+            },
+            observer,
+            response_observation,
+            InputTurnAdmissionPolicy::AnyTurn,
+            task_preview.map_or(
+                ObservedInputTaskContext::None,
+                ObservedInputTaskContext::UserAuthored,
+            ),
+        )
+        .await
+    }
+
+    pub(crate) async fn send_idle_user_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<UserInput>,
+        parent_turn_id: Option<String>,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+        task_preview: Option<String>,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        self.send_input_observing_response_with_policy(
+            agent_id,
+            input,
+            TurnStartOptions {
+                parent_turn_id,
+                ..Default::default()
+            },
+            observer,
+            response_observation,
+            InputTurnAdmissionPolicy::IdleOnly,
+            task_preview.map_or(
+                ObservedInputTaskContext::None,
+                ObservedInputTaskContext::UserAuthored,
+            ),
+        )
+        .await
+    }
+
+    async fn send_input_observing_response_with_policy(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<UserInput>,
+        start_options: TurnStartOptions,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+        admission_policy: InputTurnAdmissionPolicy,
+        task_context: ObservedInputTaskContext,
+    ) -> CodexResult<ResponseObservationSubmission> {
         let state = self.upgrade()?;
         let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
-        let _submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
+        self.send_input_observing_response_with_policy_locked(
+            agent_id,
+            &state,
+            ObservedUserInputAdmission {
+                input,
+                start_options,
+                observer,
+                response_observation,
+                admission_policy,
+                task_context,
+            },
+        )
+        .await
+    }
+
+    async fn send_input_observing_response_with_policy_locked(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        admission: ObservedUserInputAdmission,
+    ) -> CodexResult<ResponseObservationSubmission> {
         let thread = state.get_thread(agent_id).await?;
+        self.send_input_observing_response_to_retained_thread_locked(
+            agent_id, state, &thread, admission,
+        )
+        .await
+    }
+
+    async fn send_input_observing_response_to_retained_thread_locked(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        thread: &Arc<CodexThread>,
+        admission: ObservedUserInputAdmission,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        let ObservedUserInputAdmission {
+            input,
+            start_options,
+            observer,
+            response_observation,
+            admission_policy,
+            task_context,
+        } = admission;
+        self.require_current_agent_ownership(agent_id).await?;
+        self.ensure_execution_capacity_for_retained_thread_start(thread)
+            .await?;
+        let _submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
         let child_lifecycle_generation = state.agent_lifecycle_generation(agent_id);
-        // Observation semantics belong to this V1 caller. A V2 target still publishes the common
-        // response stream and must not silently discard the caller's `w` policy.
-        let observes_v1_response = agent_id != observer.thread_id;
+        // Durable observation semantics belong to this caller. A V2 target still publishes the
+        // common response stream and must not silently discard a V1 tool or user-control policy.
+        let observes_response = agent_id != observer.thread_id;
+        let observed_task_preview = observes_response
+            .then(|| render_input_preview(&input))
+            .and_then(non_empty_task_message);
         let _response_observation_transaction = self
             .acquire_response_observation_transaction(observer)
             .await;
@@ -396,24 +648,29 @@ impl AgentControl {
         let child = thread.session.presentation_id();
         let previous_relationship =
             self.response_observation_relationship_snapshot(observer, child);
+        let publishes_response_observation = observes_response
+            && (response_observation.commentary()
+                || response_observation.final_response() != FinalResponseObservation::None);
         self.ensure_v1_response_observer_for_thread(
-            &state,
-            &thread,
+            state,
+            thread,
             observer,
             child_lifecycle_generation,
             response_observation,
             /*retain_passive_completion_relationship*/ false,
             binding,
             InitialTerminalObservation::FutureTurnsOnly,
+            /*task_preview*/ None,
         )
         .await?;
         let send_result = self
             .send_input_to_retained_thread(
                 agent_id,
-                &state,
-                &thread,
+                state,
+                thread,
                 input,
                 start_options,
+                admission_policy,
             )
             .await;
         let (submission_id, resolution) = match send_result {
@@ -427,10 +684,8 @@ impl AgentControl {
                 return Err(err);
             }
         };
-        if observes_v1_response
-            && (response_observation.commentary()
-                || response_observation.final_response() != FinalResponseObservation::None)
-        {
+        let mut post_admission_warning = None;
+        if publishes_response_observation {
             self.bind_response_observation_turn_at_sequence(
                 observer,
                 child,
@@ -440,6 +695,7 @@ impl AgentControl {
                     resolution.minimum_event_sequence,
                     resolution.after_item_id.clone(),
                 )),
+                observed_task_preview,
                 ResponseObservationBindingPublication::Deferred,
             );
             if !self
@@ -447,18 +703,22 @@ impl AgentControl {
                 .await
             {
                 let message = "failed to persist response observation state";
-                self.rollback_response_observation_relationship_locked(
-                    observer,
-                    child,
-                    previous_relationship,
-                    Some(resolution.target_turn_id.clone()),
+                let warning = post_admission_response_observation_warning(
                     message,
-                )
-                .await?;
-                return Err(CodexErr::Fatal(message.to_string()));
+                    "target input",
+                    self.rollback_response_observation_relationship_locked(
+                        observer,
+                        child,
+                        previous_relationship.clone(),
+                        Some(resolution.target_turn_id.clone()),
+                        message,
+                    )
+                    .await,
+                );
+                tracing::warn!(%agent_id, warning, "agent input committed without durable response observation");
+                post_admission_warning = Some(warning);
             }
-            self.publish_response_observation_binding();
-        } else if observes_v1_response
+        } else if observes_response
             && !self
                 .persist_response_observation_updates(
                     observer,
@@ -471,17 +731,365 @@ impl AgentControl {
                 .await
         {
             let message = "failed to persist response observation audit state";
-            self.rollback_response_observation_relationship_locked(
-                observer,
-                child,
-                previous_relationship,
-                Some(resolution.target_turn_id),
+            let warning = post_admission_response_observation_warning(
                 message,
-            )
-            .await?;
-            return Err(CodexErr::Fatal(message.to_string()));
+                "target input",
+                self.rollback_response_observation_relationship_locked(
+                    observer,
+                    child,
+                    previous_relationship.clone(),
+                    Some(resolution.target_turn_id.clone()),
+                    message,
+                )
+                .await,
+            );
+            tracing::warn!(%agent_id, warning, "agent input committed without durable response audit");
+            post_admission_warning = Some(warning);
         }
-        Ok(submission_id)
+        if post_admission_warning.is_none()
+            && let ObservedInputTaskContext::UserAuthored(task_preview) = task_context
+            && let Err(err) = self
+                .persist_user_agent_task_context(observer, agent_id, task_preview)
+                .await
+        {
+            let message = format!("failed to persist user agent task context: {err}");
+            let warning = post_admission_response_observation_warning(
+                &message,
+                "target input",
+                self.rollback_response_observation_relationship_locked(
+                    observer,
+                    child,
+                    previous_relationship,
+                    Some(resolution.target_turn_id.clone()),
+                    &message,
+                )
+                .await,
+            );
+            tracing::warn!(
+                %agent_id,
+                warning,
+                "user agent prompt committed without durable source task context"
+            );
+            post_admission_warning = Some(warning);
+        }
+        if publishes_response_observation && post_admission_warning.is_none() {
+            // Explicit-admission watchers wait for this publication. Keep task linkage ahead of
+            // commentary or final delivery so the source model can interpret the response.
+            self.publish_response_observation_binding();
+        }
+        Ok(ResponseObservationSubmission {
+            submission_id,
+            post_admission_warning,
+        })
+    }
+
+    /// Admit an idle target turn using its reserved response policy.
+    ///
+    /// Prompt-less user spawns install a durable `NextTurn` observation before the child becomes
+    /// visible. Re-registering the policy at first input could duplicate commentary admission or
+    /// promote presentation-only delivery back to passive delivery, so this path binds that exact
+    /// reservation to the admitted turn instead.
+    pub(crate) async fn send_input_using_reserved_response_observation(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<UserInput>,
+        parent_turn_id: Option<String>,
+        observer: SessionPresentationId,
+    ) -> CodexResult<ReservedResponseObservationSubmission> {
+        let state = self.upgrade()?;
+        let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+        self.require_current_agent_ownership(agent_id).await?;
+        self.ensure_execution_capacity_for_thread_start(agent_id, /*starts_turn*/ true)
+            .await?;
+        let _submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
+        let thread = state.get_thread(agent_id).await?;
+        let child = thread.session.presentation_id();
+        let _response_observation_transaction = self
+            .acquire_response_observation_transaction(observer)
+            .await;
+        let Some(response_observation) =
+            self.pending_next_turn_response_observation(observer, child)
+        else {
+            return Err(CodexErr::InvalidRequest(format!(
+                "agent {agent_id} has no reserved next-turn response observation"
+            )));
+        };
+
+        let observed_task_preview = non_empty_task_message(render_input_preview(&input));
+        let task_preview = if response_observation.has_model_visible_delivery() {
+            observed_task_preview.clone()
+        } else {
+            None
+        };
+
+        let previous_relationship =
+            self.response_observation_relationship_snapshot(observer, child);
+        let send_result = self
+            .send_input_to_retained_thread(
+                agent_id,
+                &state,
+                &thread,
+                input,
+                TurnStartOptions {
+                    parent_turn_id,
+                    ..Default::default()
+                },
+                InputTurnAdmissionPolicy::AnyTurn,
+            )
+            .await;
+        let (submission_id, resolution) = match send_result {
+            Ok(result) => result,
+            Err(err) => {
+                self.restore_response_observation_relationship_snapshot(
+                    observer,
+                    child,
+                    previous_relationship,
+                );
+                return Err(err);
+            }
+        };
+        self.bind_response_observation_turn_at_sequence(
+            observer,
+            child,
+            &resolution.target_turn_id,
+            ResponseObservationBinding::NextTurn,
+            Some((
+                resolution.minimum_event_sequence,
+                resolution.after_item_id.clone(),
+            )),
+            observed_task_preview,
+            ResponseObservationBindingPublication::Deferred,
+        );
+        let mut post_admission_warning = if !self
+            .persist_response_observation_snapshot(observer, child)
+            .await
+        {
+            let message = "failed to persist reserved response observation state";
+            // The target turn was admitted, so the reserved next-turn policy is consumed even
+            // though its exact-turn snapshot failed. Restoring the pre-admission relationship
+            // would incorrectly apply the one-shot reservation to a later turn.
+            let _ =
+                self.finish_response_observation_turn(observer, child, &resolution.target_turn_id);
+            let consumed_relationship =
+                self.response_observation_relationship_snapshot(observer, child);
+            let warning = post_admission_response_observation_warning(
+                message,
+                "target input",
+                self.rollback_response_observation_relationship_locked(
+                    observer,
+                    child,
+                    consumed_relationship,
+                    Some(resolution.target_turn_id.clone()),
+                    message,
+                )
+                .await,
+            );
+            tracing::warn!(%agent_id, warning, "reserved agent input committed without durable response observation");
+            Some(warning)
+        } else {
+            None
+        };
+        if post_admission_warning.is_none()
+            && let Some(task_preview) = task_preview
+            && let Err(err) = self
+                .persist_user_agent_task_context(observer, agent_id, task_preview)
+                .await
+        {
+            let message = format!("failed to persist reserved user agent task context: {err}");
+            let _ =
+                self.finish_response_observation_turn(observer, child, &resolution.target_turn_id);
+            let consumed_relationship =
+                self.response_observation_relationship_snapshot(observer, child);
+            let warning = post_admission_response_observation_warning(
+                &message,
+                "target input",
+                self.rollback_response_observation_relationship_locked(
+                    observer,
+                    child,
+                    consumed_relationship,
+                    Some(resolution.target_turn_id.clone()),
+                    &message,
+                )
+                .await,
+            );
+            tracing::warn!(
+                %agent_id,
+                warning,
+                "reserved agent prompt committed without durable source task context"
+            );
+            post_admission_warning = Some(warning);
+        }
+        if post_admission_warning.is_none() {
+            self.publish_response_observation_binding();
+        }
+        Ok(ReservedResponseObservationSubmission {
+            submission_id,
+            target_turn_id: resolution.target_turn_id,
+            response_observation,
+            post_admission_warning,
+        })
+    }
+
+    pub(crate) async fn persist_user_agent_task_context(
+        &self,
+        observer: SessionPresentationId,
+        agent_id: ThreadId,
+        task_preview: String,
+    ) -> CodexResult<()> {
+        let Some((parent_thread, task_item)) = self
+            .prepare_user_agent_task_context_item(observer, agent_id, task_preview)
+            .await?
+        else {
+            return Ok(());
+        };
+        let parent_turn = parent_thread.session.new_default_turn().await;
+        parent_thread
+            .session
+            .record_conversation_items_silently(
+                parent_turn.as_ref(),
+                std::slice::from_ref(&task_item),
+            )
+            .await;
+        parent_thread.session.flush_rollout().await.map_err(|err| {
+            CodexErr::Fatal(format!("failed to persist user agent task context: {err}"))
+        })
+    }
+
+    async fn prepare_user_agent_task_context_item(
+        &self,
+        observer: SessionPresentationId,
+        agent_id: ThreadId,
+        task_preview: String,
+    ) -> CodexResult<Option<(Arc<CodexThread>, ResponseItem)>> {
+        let Some(task_preview) = compact_user_agent_task_preview(task_preview) else {
+            return Ok(None);
+        };
+
+        let state = self.upgrade()?;
+        let parent_thread = state
+            .get_thread_including_pending(observer.thread_id)
+            .await?;
+        if parent_thread.session.presentation_id() != observer {
+            return Err(CodexErr::InvalidRequest(
+                "agent response observer is no longer current".to_string(),
+            ));
+        }
+        let agent = self
+            .model_visible_agent_identity(&parent_thread, agent_id)
+            .await?;
+        let task = UserAgentTask::new(agent, task_preview);
+        let task_fragment = task.render();
+        if parent_thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .iter()
+            .any(|item| {
+                matches!(
+                    item,
+                    ResponseItem::Message { role, content, .. }
+                        if role == "user"
+                            && content.iter().any(|content| {
+                                matches!(
+                                    content,
+                                    ContentItem::InputText { text }
+                                        if text == &task_fragment
+                                )
+                            })
+                )
+            })
+        {
+            return Ok(None);
+        }
+        let task_item = ResponseItem::Message {
+            id: Some(new_user_agent_task_context_response_item_id()),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: task_fragment,
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        Ok(Some((parent_thread, task_item)))
+    }
+
+    async fn model_visible_agent_identity(
+        &self,
+        parent_thread: &CodexThread,
+        agent_id: ThreadId,
+    ) -> CodexResult<AgentContextIdentity> {
+        self.model_visible_agent_identity_for_version(
+            parent_thread
+                .multi_agent_version()
+                .unwrap_or(MultiAgentVersion::V1),
+            agent_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn model_visible_agent_identity_for_version(
+        &self,
+        multi_agent_version: MultiAgentVersion,
+        agent_id: ThreadId,
+    ) -> CodexResult<AgentContextIdentity> {
+        let metadata = self.get_agent_metadata(agent_id);
+        let alias = match multi_agent_version {
+            MultiAgentVersion::V1 => self.find_session_agent_alias(agent_id).await?,
+            MultiAgentVersion::Disabled | MultiAgentVersion::V2 => None,
+        };
+        Ok(self.model_visible_agent_identity_from_parts(
+            multi_agent_version,
+            agent_id,
+            metadata,
+            alias,
+        ))
+    }
+
+    fn model_visible_agent_identity_from_parts(
+        &self,
+        multi_agent_version: MultiAgentVersion,
+        agent_id: ThreadId,
+        metadata: Option<AgentMetadata>,
+        alias: Option<AgentAlias>,
+    ) -> AgentContextIdentity {
+        let metadata_nickname = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_nickname.clone());
+        let metadata_path = metadata.and_then(|metadata| metadata.agent_path);
+        match multi_agent_version {
+            MultiAgentVersion::V1 => {
+                let agent_ref = alias.as_ref().map(|alias| alias.agent_ref);
+                let nickname = alias
+                    .and_then(|alias| alias.nickname)
+                    .or(metadata_nickname)
+                    .or_else(|| {
+                        self.bound_session_id()
+                            .is_some_and(|session_id| ThreadId::from(session_id) == agent_id)
+                            .then(|| MAIN_AGENT_NICKNAME.to_string())
+                    });
+                AgentContextIdentity::V1 {
+                    agent_id,
+                    agent_ref,
+                    nickname,
+                }
+            }
+            MultiAgentVersion::Disabled | MultiAgentVersion::V2 => {
+                let agent_path = metadata_path.or_else(|| {
+                    self.bound_session_id()
+                        .is_some_and(|session_id| ThreadId::from(session_id) == agent_id)
+                        .then(AgentPath::root)
+                });
+                match agent_path {
+                    Some(agent_path) => AgentContextIdentity::V2 {
+                        agent_id,
+                        agent_path,
+                    },
+                    None => AgentContextIdentity::Canonical { agent_id },
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -503,6 +1111,7 @@ impl AgentControl {
             &thread,
             input,
             start_options,
+            InputTurnAdmissionPolicy::AnyTurn,
         )
         .await
     }
@@ -514,16 +1123,21 @@ impl AgentControl {
         thread: &Arc<CodexThread>,
         input: Vec<UserInput>,
         start_options: TurnStartOptions,
+        admission_policy: InputTurnAdmissionPolicy,
     ) -> CodexResult<(String, crate::session::InputTurnAdmissionResolution)> {
         // V1 deliberately forwards task input unchanged. Direct agent-to-agent replies remain
         // explicit, while commentary and final-response observation cover routine return traffic.
         let last_task_message = non_empty_task_message(render_input_preview(&input));
+        let mode = match admission_policy {
+            InputTurnAdmissionPolicy::AnyTurn => TurnInputMode::StartOrSteer,
+            InputTurnAdmissionPolicy::IdleOnly => TurnInputMode::StartIfIdle,
+        };
         let send_result = thread
             .io
             .submit_turn_input_with_admission(
                 thread.session.as_ref(),
                 TurnInputRequest::user_input(input).on_start(start_options),
-                TurnInputMode::StartOrSteer,
+                mode,
             )
             .await;
         let result = self
@@ -723,7 +1337,7 @@ impl AgentControl {
                     .to_string(),
             ));
         }
-        let parent_thread = state.get_thread(parent_thread_id).await?;
+        let parent_thread = state.get_thread_including_pending(parent_thread_id).await?;
         if parent_thread.session.presentation_id() != presentation.parent() {
             return Err(CodexErr::ThreadNotFound(parent_thread_id));
         }
@@ -798,7 +1412,7 @@ impl AgentControl {
             ));
         }
         loop {
-            let parent_thread = state.get_thread(parent_thread_id).await?;
+            let parent_thread = state.get_thread_including_pending(parent_thread_id).await?;
             if parent_thread.session.presentation_id() != presentation.parent() {
                 return Err(CodexErr::ThreadNotFound(parent_thread_id));
             }
@@ -1061,6 +1675,9 @@ impl AgentControl {
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
+        let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+        self.require_current_agent_ownership(agent_id).await?;
         let thread = state.get_thread(agent_id).await?;
         let send_result = state
             .send_op_to_thread(
@@ -1072,6 +1689,47 @@ impl AgentControl {
             .await;
         self.handle_thread_request_result(&state, &thread, send_result)
             .await
+    }
+
+    /// Interrupt the current task and admit its user-authored follow-up under one lifecycle lock.
+    ///
+    /// The target session processes both submissions in mailbox order. Retaining the lifecycle
+    /// boundary across both enqueues prevents another agent-control mutation from inserting work
+    /// between the interrupt and its intended next turn.
+    pub(crate) async fn interrupt_agent_with_user_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<UserInput>,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+        task_preview: Option<String>,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        let state = self.upgrade()?;
+        let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+        self.require_current_agent_ownership(agent_id).await?;
+        let thread = state.get_thread(agent_id).await?;
+        let interrupt_result = state
+            .send_op_to_thread(&thread, Op::Interrupt, /*parent_turn_id*/ None)
+            .await;
+        self.handle_thread_request_result(&state, &thread, interrupt_result)
+            .await?;
+        self.send_input_observing_response_with_policy_locked(
+            agent_id,
+            &state,
+            ObservedUserInputAdmission {
+                input,
+                start_options: TurnStartOptions::default(),
+                observer,
+                response_observation,
+                admission_policy: InputTurnAdmissionPolicy::AnyTurn,
+                task_context: task_preview.map_or(
+                    ObservedInputTaskContext::None,
+                    ObservedInputTaskContext::UserAuthored,
+                ),
+            },
+        )
+        .await
     }
 
     async fn handle_thread_request_result<T>(
@@ -1237,22 +1895,44 @@ impl AgentControl {
         &self,
         parent_thread_id: ThreadId,
     ) -> String {
+        let Ok(state) = self.upgrade() else {
+            return String::new();
+        };
+        let Ok(parent_thread) = state.get_thread_including_pending(parent_thread_id).await else {
+            return String::new();
+        };
         let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
             return String::new();
         };
+        let multi_agent_version = parent_thread
+            .multi_agent_version()
+            .unwrap_or(MultiAgentVersion::V1);
+        let mut aliases = if multi_agent_version == MultiAgentVersion::V1 {
+            self.list_session_agent_aliases()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|alias| (alias.thread_id, alias))
+                .collect::<HashMap<_, _>>()
+        } else {
+            HashMap::new()
+        };
 
-        agents
-            .into_iter()
-            .map(|(thread_id, metadata)| {
-                let reference = metadata
-                    .agent_path
-                    .as_ref()
-                    .map(|agent_path| agent_path.name().to_string())
-                    .unwrap_or_else(|| thread_id.to_string());
-                format_subagent_context_line(reference.as_str(), metadata.agent_nickname.as_deref())
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut lines = Vec::with_capacity(agents.len());
+        for (thread_id, metadata) in agents {
+            let agent_nickname = metadata.agent_nickname.clone();
+            let agent = self.model_visible_agent_identity_from_parts(
+                multi_agent_version,
+                thread_id,
+                Some(metadata),
+                aliases.remove(&thread_id),
+            );
+            lines.push(format_subagent_context_line(
+                &agent,
+                agent_nickname.as_deref(),
+            ));
+        }
+        lines.join("\n")
     }
 
     pub(crate) async fn list_agents(
@@ -1342,7 +2022,33 @@ impl AgentControl {
         child_reference: String,
         child_agent_path: Option<AgentPath>,
         response_observation: ResponseObservationPolicy,
+        response_observer: ResponseObserverKind,
         initial_terminal_observation: InitialTerminalObservation,
+    ) -> CodexResult<AgentStatus> {
+        self.maybe_start_completion_watcher_tracked(
+            child_thread,
+            session_source,
+            child_reference,
+            child_agent_path,
+            response_observation,
+            response_observer,
+            initial_terminal_observation,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn maybe_start_completion_watcher_tracked(
+        &self,
+        child_thread: &Arc<CodexThread>,
+        session_source: Option<SessionSource>,
+        child_reference: String,
+        child_agent_path: Option<AgentPath>,
+        response_observation: ResponseObservationPolicy,
+        response_observer: ResponseObserverKind,
+        initial_terminal_observation: InitialTerminalObservation,
+        setup_sink: Option<&CompletionWatcherSetupSink>,
     ) -> CodexResult<AgentStatus> {
         if !response_observation.commentary()
             && response_observation.final_response() == FinalResponseObservation::None
@@ -1358,12 +2064,11 @@ impl AgentControl {
         let Ok(state) = self.upgrade() else {
             return Ok(child_thread.agent_status().await);
         };
-        let Ok(parent_thread) = state.get_thread(parent_thread_id).await else {
+        let Ok(parent_thread) = state.get_thread_including_pending(parent_thread_id).await else {
             return Ok(child_thread.agent_status().await);
         };
-        let observer_multi_agent_version = parent_thread
-            .multi_agent_version()
-            .unwrap_or(MultiAgentVersion::V1);
+        let observer_multi_agent_version =
+            response_observer_multi_agent_version(&parent_thread, response_observer);
         let parent = parent_thread.session.presentation_id();
         let child = child_thread.session.presentation_id();
         let child_thread_id = child.thread_id;
@@ -1422,6 +2127,22 @@ impl AgentControl {
             response_snapshot.next_event_sequence,
             response_snapshot.last_commentary_item_id,
         );
+        if let (Some(watcher_registration), Some(setup_sink)) =
+            (watcher_registration.as_ref(), setup_sink)
+        {
+            let target_turn_ids = self
+                .response_observation_snapshots(parent, child)
+                .into_iter()
+                .map(|observation| observation.target_turn_id)
+                .collect();
+            *setup_sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(CompletionWatcherSetup {
+                    registration_id: watcher_registration.registration_id(),
+                    target_turn_ids,
+                });
+        }
         if observer_multi_agent_version == MultiAgentVersion::V1
             && !self
                 .persist_response_observation_snapshot(parent, child)
@@ -1467,7 +2188,6 @@ impl AgentControl {
                     .next_watcher_terminal(
                         parent,
                         child,
-                        child_reference.as_str(),
                         &mut response_rx,
                         observer_multi_agent_version,
                         child_lifecycle_generation,
@@ -1713,6 +2433,14 @@ impl AgentControl {
         agent_role: Option<String>,
         preferred_agent_nickname: Option<String>,
     ) -> CodexResult<AgentMetadata> {
+        if preferred_agent_nickname
+            .as_deref()
+            .is_some_and(|nickname| nickname.eq_ignore_ascii_case(MAIN_AGENT_NICKNAME))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "Main is reserved for the root thread".to_string(),
+            ));
+        }
         if let Some(agent_path) = agent_path.as_ref() {
             reservation.reserve_agent_path(agent_path)?;
         }
@@ -1738,6 +2466,14 @@ impl AgentControl {
         agent_role: Option<String>,
         agent_nickname: Option<String>,
     ) -> CodexResult<AgentMetadata> {
+        if agent_nickname
+            .as_deref()
+            .is_some_and(|nickname| nickname.eq_ignore_ascii_case(MAIN_AGENT_NICKNAME))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "Main is reserved for the root thread".to_string(),
+            ));
+        }
         if let Some(agent_path) = agent_path.as_ref() {
             reservation.reserve_agent_path(agent_path)?;
         }
@@ -1892,41 +2628,6 @@ impl AgentControl {
         Ok(children_by_parent)
     }
 
-    /// Persist a child edge after its runtime and observation relationship are ready.
-    ///
-    /// The caller must hold the direct parent's lifecycle guard through this call so a
-    /// concurrent subtree close cannot take its final membership snapshot first.
-    async fn persist_thread_spawn_edge_for_source(
-        &self,
-        child_thread: &crate::CodexThread,
-        child_thread_id: ThreadId,
-        session_source: Option<&SessionSource>,
-    ) {
-        let Some(parent_thread_id) = session_source.and_then(SessionSource::parent_thread_id)
-        else {
-            return;
-        };
-        if child_thread.config_snapshot().await.ephemeral {
-            return;
-        }
-        let Ok(state) = self.upgrade() else {
-            return;
-        };
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return;
-        };
-        if let Err(err) = agent_graph_store
-            .upsert_thread_spawn_edge(
-                parent_thread_id,
-                child_thread_id,
-                codex_agent_graph_store::ThreadSpawnEdgeStatus::Open,
-            )
-            .await
-        {
-            warn!("failed to persist thread-spawn edge: {err}");
-        }
-    }
-
     async fn live_thread_spawn_descendants(
         &self,
         root_thread_id: ThreadId,
@@ -1954,6 +2655,18 @@ impl AgentControl {
     }
 }
 
+fn response_observer_multi_agent_version(
+    parent_thread: &CodexThread,
+    response_observer: ResponseObserverKind,
+) -> MultiAgentVersion {
+    match response_observer {
+        ResponseObserverKind::Native => parent_thread
+            .multi_agent_version()
+            .unwrap_or(MultiAgentVersion::V1),
+        ResponseObserverKind::Durable => MultiAgentVersion::V1,
+    }
+}
+
 fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> bool {
     if prefix.is_root() {
         return true;
@@ -1969,6 +2682,8 @@ fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> b
 }
 
 pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
+    // TODO(fork): Coalesce typed attachment markers with numbered placeholders already present in
+    // text so agent-control previews do not render duplicates such as `[image][Image #1]`.
     input
         .iter()
         .map(|item| match item {
@@ -1993,6 +2708,19 @@ pub(crate) fn render_input_preview(input: &[UserInput]) -> String {
 
 fn non_empty_task_message(message: String) -> Option<String> {
     (!message.is_empty()).then_some(message)
+}
+
+fn compact_user_agent_task_preview(task_preview: String) -> Option<String> {
+    let mut chars = task_preview.chars();
+    let mut task_preview = chars
+        .by_ref()
+        .take(USER_AGENT_TASK_PREVIEW_MAX_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        task_preview.pop();
+        task_preview.push('…');
+    }
+    (!task_preview.is_empty()).then_some(task_preview)
 }
 
 fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {

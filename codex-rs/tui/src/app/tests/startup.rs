@@ -6,9 +6,9 @@ use crate::tui::FrameRequester;
 use app_test_support::create_fake_parented_rollout_with_source;
 use codex_app_server_protocol::ToolRequestUserInputOption;
 use codex_app_server_protocol::ToolRequestUserInputQuestion;
-use codex_utils_approval_presets::builtin_approval_presets;
 use codex_protocol::protocol::SessionSource as RolloutSessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_utils_approval_presets::builtin_approval_presets;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -704,7 +704,7 @@ async fn auto_declined_mcp_elicitations_do_not_leave_startup_quarantine_armed() 
                 .note_server_request(&request);
             let event = ThreadBufferedEvent::Request(Box::new(request));
             if replay {
-                app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
+                app.handle_thread_event_replay(event, ReplayKind::ResumeInitialMessages);
             } else {
                 app.handle_thread_event_now(event);
             }

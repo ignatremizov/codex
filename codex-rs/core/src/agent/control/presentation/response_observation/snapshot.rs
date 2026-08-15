@@ -14,53 +14,22 @@ impl AgentControl {
                 relationship.persistence == ResponseObservationPersistence::Durable
             })
             .map(|relationship| {
-                let mut snapshots = Vec::with_capacity(relationship.turns.len().saturating_add(1));
-                let empty_pending = ResponseTurnObservation::default();
-                let pending = relationship
-                    .pending_next_turn
-                    .as_ref()
-                    .unwrap_or(&empty_pending);
-                snapshots.push(AgentResponseObservation {
-                    observer_thread_id: parent.thread_id,
-                    target_thread_id: child.thread_id,
-                    target_turn_id: None,
-                    pending_commentary: !pending.commentary_admissions.is_empty(),
-                    commentary_after_sequences: Vec::new(),
-                    commentary_admissions: pending.commentary_admissions.clone(),
-                    commentary_delivery: pending.commentary_delivery.clone(),
-                    baseline_final_delivery: relationship.baseline_final_response.into(),
-                    final_delivery: pending.final_response.into(),
-                    final_delivery_response_item_id: pending
-                        .final_delivery_response_item_id
-                        .clone(),
-                    committed_delivery_response_item_ids: pending
-                        .committed_delivery_response_item_ids
-                        .clone(),
-                });
-                let mut turns = relationship.turns.iter().collect::<Vec<_>>();
-                turns.sort_by_key(|(turn_id, _)| *turn_id);
-                snapshots.extend(turns.into_iter().map(|(turn_id, observation)| {
-                    AgentResponseObservation {
-                        observer_thread_id: parent.thread_id,
-                        target_thread_id: child.thread_id,
-                        target_turn_id: Some(turn_id.clone()),
-                        pending_commentary: !observation.commentary_admissions.is_empty(),
-                        commentary_after_sequences: Vec::new(),
-                        commentary_admissions: observation.commentary_admissions.clone(),
-                        commentary_delivery: observation.commentary_delivery.clone(),
-                        baseline_final_delivery: relationship.baseline_final_response.into(),
-                        final_delivery: observation.final_response.into(),
-                        final_delivery_response_item_id: observation
-                            .final_delivery_response_item_id
-                            .clone(),
-                        committed_delivery_response_item_ids: observation
-                            .committed_delivery_response_item_ids
-                            .clone(),
-                    }
-                }));
-                snapshots
+                response_observation_snapshots_for_relationship(parent, child, relationship)
             })
             .unwrap_or_default()
+    }
+
+    pub(in crate::agent::control) fn prepared_response_observation_replacement_snapshots(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        prepared: &PreparedFinalResponseObservationReplacement,
+    ) -> Vec<AgentResponseObservation> {
+        response_observation_snapshots_for_relationship(
+            parent,
+            child,
+            &prepared.replacement_relationship,
+        )
     }
 
     pub(crate) fn response_observation_snapshots_for_parent(
@@ -98,6 +67,8 @@ impl AgentControl {
             observer_thread_id: parent.thread_id,
             target_thread_id: child.thread_id,
             target_turn_id,
+            task_preview: None,
+            promoted_task_context: None,
             pending_commentary: false,
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),
@@ -175,6 +146,8 @@ impl AgentControl {
             observer_thread_id: commit.parent.thread_id,
             target_thread_id: commit.child.thread_id,
             target_turn_id: Some(commit.turn_id.clone()),
+            task_preview: None,
+            promoted_task_context: None,
             pending_commentary: false,
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),
@@ -218,4 +191,61 @@ impl AgentControl {
             })
             .collect()
     }
+}
+
+fn response_observation_snapshots_for_relationship(
+    parent: SessionPresentationId,
+    child: SessionPresentationId,
+    relationship: &ResponseObserverRelationship,
+) -> Vec<AgentResponseObservation> {
+    if relationship.persistence != ResponseObservationPersistence::Durable {
+        return Vec::new();
+    }
+    let mut snapshots = Vec::with_capacity(relationship.turns.len().saturating_add(1));
+    let empty_pending = ResponseTurnObservation::default();
+    let pending = relationship
+        .pending_next_turn
+        .as_ref()
+        .unwrap_or(&empty_pending);
+    snapshots.push(AgentResponseObservation {
+        observer_thread_id: parent.thread_id,
+        target_thread_id: child.thread_id,
+        target_turn_id: None,
+        task_preview: pending.task_preview.clone(),
+        promoted_task_context: None,
+        pending_commentary: !pending.commentary_admissions.is_empty(),
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: pending.commentary_admissions.clone(),
+        commentary_delivery: pending.commentary_delivery.clone(),
+        baseline_final_delivery: relationship.baseline_final_response.into(),
+        final_delivery: pending.final_response.into(),
+        final_delivery_response_item_id: pending.final_delivery_response_item_id.clone(),
+        committed_delivery_response_item_ids: pending.committed_delivery_response_item_ids.clone(),
+    });
+    let mut turns = relationship.turns.iter().collect::<Vec<_>>();
+    turns.sort_by_key(|(turn_id, _)| *turn_id);
+    snapshots.extend(
+        turns
+            .into_iter()
+            .map(|(turn_id, observation)| AgentResponseObservation {
+                observer_thread_id: parent.thread_id,
+                target_thread_id: child.thread_id,
+                target_turn_id: Some(turn_id.clone()),
+                task_preview: observation.task_preview.clone(),
+                promoted_task_context: None,
+                pending_commentary: !observation.commentary_admissions.is_empty(),
+                commentary_after_sequences: Vec::new(),
+                commentary_admissions: observation.commentary_admissions.clone(),
+                commentary_delivery: observation.commentary_delivery.clone(),
+                baseline_final_delivery: relationship.baseline_final_response.into(),
+                final_delivery: observation.final_response.into(),
+                final_delivery_response_item_id: observation
+                    .final_delivery_response_item_id
+                    .clone(),
+                committed_delivery_response_item_ids: observation
+                    .committed_delivery_response_item_ids
+                    .clone(),
+            }),
+    );
+    snapshots
 }

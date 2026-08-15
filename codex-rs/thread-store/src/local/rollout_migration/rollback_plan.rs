@@ -1,13 +1,16 @@
-//! Decides which legacy records remain visible after historical rollback.
+//! Decides which non-paginated records remain visible after historical rollback.
 //!
-//! Legacy rollback removes logical instruction turns, not a physical suffix of the rollout file.
-//! Most records happen to be ordered that way, but late completion events can target an older
-//! surviving turn after a newer turn has started. This planner keeps compact per-record ownership
-//! metadata for SQLite visibility, then combines it with `rollback_replay`'s cold-resume answer
-//! before the writer makes its second streaming pass.
+//! Non-paginated rollback removes logical instruction turns, not a physical suffix of the rollout
+//! file. Most records happen to be ordered that way, but late completion events can target an
+//! older surviving turn after a newer turn has started. This planner keeps compact per-record
+//! ownership metadata for SQLite visibility, then combines it with `rollback_replay`'s cold-resume
+//! answer before the writer makes its second streaming pass.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
+use codex_protocol::ResponseItemId;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
@@ -15,6 +18,7 @@ use codex_protocol::protocol::UserMessageEvent;
 use codex_rollout::CompactedItem;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 
 use super::migration_error;
 use super::rollback;
@@ -27,12 +31,19 @@ struct CompactionFrame {
     boundary_depth: usize,
     owner: Option<usize>,
     item: CompactedItem,
+    rollback_turns: u32,
 }
 
 #[derive(Clone)]
 struct PendingUserResponse {
     boundary: usize,
     content: Vec<ContentItem>,
+}
+
+#[derive(Clone, Copy)]
+struct IdentifiedResponseRecord {
+    response_index: usize,
+    metadata_index: Option<usize>,
 }
 
 /// Compact plan keyed by parsed source-record index.
@@ -85,6 +96,9 @@ pub(super) struct RollbackPlanner {
     pending_context_records: Vec<usize>,
     pending_user_response: Option<PendingUserResponse>,
     pending_delivery_boundary: Option<usize>,
+    pending_delivery_metadata_index: Option<usize>,
+    identified_response_records: HashMap<ResponseItemId, IdentifiedResponseRecord>,
+    committed_delivery_response_item_ids: HashSet<ResponseItemId>,
     turn_boundaries: HashMap<String, usize>,
     compactions: Vec<CompactionFrame>,
     model_replay: ModelReplayPlanner,
@@ -101,6 +115,9 @@ impl RollbackPlanner {
             pending_context_records: Vec::new(),
             pending_user_response: None,
             pending_delivery_boundary: None,
+            pending_delivery_metadata_index: None,
+            identified_response_records: HashMap::new(),
+            committed_delivery_response_item_ids: HashSet::new(),
             turn_boundaries: HashMap::new(),
             compactions: Vec::new(),
             model_replay: ModelReplayPlanner::new(),
@@ -120,22 +137,36 @@ impl RollbackPlanner {
             }
             _ => None,
         };
-        let paired_delivery_boundary = match (&self.pending_delivery_boundary, &line.item) {
-            (Some(boundary), RolloutItem::ResponseItem(response))
-                if matches!(&response.item, ResponseItem::AgentMessage { .. }) =>
-            {
-                Some(*boundary)
+        let paired_delivery = match (
+            self.pending_delivery_boundary,
+            self.pending_delivery_metadata_index,
+            &line.item,
+        ) {
+            (
+                Some(boundary),
+                Some(metadata_index),
+                RolloutItem::ResponseItem(response),
+            ) if matches!(&response.item, ResponseItem::AgentMessage { .. }) => {
+                Some((boundary, metadata_index))
             }
             _ => None,
         };
         self.pending_user_response = None;
         self.pending_delivery_boundary = None;
+        self.pending_delivery_metadata_index = None;
 
         match &line.item {
             RolloutItem::SessionMeta(_) => self.record_boundaries[index] = None,
             RolloutItem::ResponseItem(response) => {
-                if let Some(boundary) = paired_delivery_boundary {
+                if let Some((boundary, _)) = paired_delivery {
                     self.record_boundaries[index] = Some(boundary);
+                } else if response
+                    .id()
+                    .is_some_and(|id| is_user_agent_task_context_response_item_id(id.as_str()))
+                {
+                    // A user-authored agent task is out-of-band context paired with durable child
+                    // work, not part of whichever source-model turn happened to surround it.
+                    self.record_boundaries[index] = None;
                 } else if rollback::counts_as_boundary(&response.item) {
                     let boundary = self.start_boundary(index);
                     if let ResponseItem::Message { role, content, .. } = &response.item
@@ -151,6 +182,16 @@ impl RollbackPlanner {
                     // previous turn. Keep that fallback owner so rollback drops it when there is
                     // no later turn to attach it to.
                     self.pending_context_records.push(index);
+                }
+                if let Some(response_item_id) = response.id() {
+                    self.identified_response_records.insert(
+                        response_item_id.clone(),
+                        IdentifiedResponseRecord {
+                            response_index: index,
+                            metadata_index: paired_delivery
+                                .map(|(_, metadata_index)| metadata_index),
+                        },
+                    );
                 }
             }
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
@@ -183,6 +224,14 @@ impl RollbackPlanner {
                 let boundary = paired_user_boundary.unwrap_or_else(|| self.start_boundary(index));
                 self.record_boundaries[index] = Some(boundary);
             }
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if matches!(&event.item, TurnItem::UserAgentControl(_)) =>
+            {
+                // User-authored control-plane audit is not model-turn context. Keep it visible
+                // across rollback instead of assigning it to the source model turn whose
+                // presentation it may share.
+                self.record_boundaries[index] = None;
+            }
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
                 self.assign_targeted_record(index, Some(event.turn_id.as_str()));
             }
@@ -195,6 +244,7 @@ impl RollbackPlanner {
             RolloutItem::InterAgentCommunicationMetadata { .. } => {
                 let boundary = self.start_boundary(index);
                 self.pending_delivery_boundary = Some(boundary);
+                self.pending_delivery_metadata_index = Some(index);
             }
             RolloutItem::Compacted(item) => {
                 let owner = self
@@ -207,6 +257,7 @@ impl RollbackPlanner {
                     boundary_depth: self.boundary_stack.len(),
                     owner,
                     item: item.clone(),
+                    rollback_turns: 0,
                 });
             }
             RolloutItem::TurnContext(_) => {
@@ -222,9 +273,32 @@ impl RollbackPlanner {
             RolloutItem::TokenUsageRecord(record) => {
                 self.assign_targeted_record(index, Some(record.turn_id.as_str()));
             }
-            RolloutItem::AgentResponseObservation(_)
-            | RolloutItem::WorldState(_)
-            | RolloutItem::RealtimeItem(_) => {}
+            RolloutItem::AgentResponseObservation(observation) => {
+                // Response observation is durable out-of-band delivery state. It belongs to the
+                // target turn named by the snapshot, not to whichever source-model rollback
+                // boundary happened to surround the persistence write.
+                self.record_boundaries[index] = None;
+                self.committed_delivery_response_item_ids.extend(
+                    observation
+                        .committed_delivery_response_item_ids
+                        .iter()
+                        .cloned(),
+                );
+                for response_item_id in &observation.committed_delivery_response_item_ids {
+                    let Some(record) = self
+                        .identified_response_records
+                        .get(response_item_id)
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    self.record_boundaries[record.response_index] = None;
+                    if let Some(metadata_index) = record.metadata_index {
+                        self.record_boundaries[metadata_index] = None;
+                    }
+                }
+            }
+            RolloutItem::WorldState(_) | RolloutItem::RealtimeItem(_) => {}
             RolloutItem::SecurityRiskScore(_) => self.record_boundaries[index] = None,
         }
 
@@ -236,6 +310,7 @@ impl RollbackPlanner {
             record_boundaries,
             boundary_alive,
             compactions,
+            committed_delivery_response_item_ids,
             model_replay,
             ..
         } = self;
@@ -244,14 +319,32 @@ impl RollbackPlanner {
             .into_iter()
             .filter_map(|mut frame| {
                 if Some(frame.record_index) == replay_anchor {
-                    frame.item.replacement_history = Some(Vec::new());
                     frame.item.mcp_resource_origins = None;
+                    let replacement_history =
+                        frame.item.replacement_history.get_or_insert_default();
+                    replacement_history.retain(|item| {
+                        item.id()
+                            .is_some_and(|id| committed_delivery_response_item_ids.contains(id))
+                    });
                     return Some((frame.record_index, frame.item));
                 }
-                frame
+                if frame
                     .owner
-                    .is_none_or(|boundary| boundary_alive[boundary])
-                    .then_some((frame.record_index, frame.item))
+                    .is_some_and(|boundary| !boundary_alive[boundary])
+                {
+                    return None;
+                }
+                if frame.rollback_turns > 0
+                    && let Some(replacement_history) = frame.item.replacement_history.as_mut()
+                {
+                    frame.item.mcp_resource_origins = None;
+                    rollback::drop_last_n_user_turns(
+                        replacement_history,
+                        frame.rollback_turns,
+                        &committed_delivery_response_item_ids,
+                    );
+                }
+                Some((frame.record_index, frame.item))
             })
             .collect::<HashMap<_, _>>();
         RollbackPlan {
@@ -322,17 +415,16 @@ impl RollbackPlanner {
             let post_compaction_turns = depth_before.saturating_sub(frame.boundary_depth);
             let remaining = count.saturating_sub(post_compaction_turns);
             if remaining > 0 {
-                frame.item.mcp_resource_origins = None;
-                let replacement_history =
-                    frame.item.replacement_history.as_mut().ok_or_else(|| {
-                        migration_error(
-                            "legacy rollback crosses a compaction without replacement history",
-                        )
-                    })?;
-                rollback::drop_last_n_user_turns(
-                    replacement_history,
-                    u32::try_from(remaining).unwrap_or(u32::MAX),
-                );
+                if frame.item.replacement_history.is_none() {
+                    return Err(migration_error(
+                        "non-paginated rollback crosses a compaction without replacement history",
+                    ));
+                }
+                // Rewrite at `finish`, after later delivery observations have had a chance to
+                // identify response items that must survive the history cut.
+                frame.rollback_turns = frame
+                    .rollback_turns
+                    .saturating_add(u32::try_from(remaining).unwrap_or(u32::MAX));
             }
         }
         self.active_turn_id = None;
@@ -340,6 +432,7 @@ impl RollbackPlanner {
         self.pending_context_records.clear();
         self.pending_user_response = None;
         self.pending_delivery_boundary = None;
+        self.pending_delivery_metadata_index = None;
         Ok(())
     }
 }
@@ -388,3 +481,7 @@ fn user_response_matches_event(content: &[ContentItem], event: &UserMessageEvent
         && event.local_images.is_empty()
         && event.local_audio.is_empty()
 }
+
+#[cfg(test)]
+#[path = "rollback_plan_tests.rs"]
+mod tests;

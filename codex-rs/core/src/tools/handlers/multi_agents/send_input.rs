@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::control::render_input_preview;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
@@ -45,7 +46,13 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SendInputArgs = parse_arguments(&arguments)?;
-        let receiver_thread_id = parse_agent_id_target(&args.target)?;
+        let receiver_thread_id = resolve_controlled_v1_agent_target(&session, &args.target).await?;
+        if receiver_thread_id == session.thread_id {
+            return Err(FunctionCallError::RespondToModel(
+                "an agent cannot send input to itself; continue the current turn directly"
+                    .to_string(),
+            ));
+        }
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = render_input_preview(&input_items);
         let receiver_agent = session

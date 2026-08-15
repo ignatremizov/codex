@@ -924,7 +924,7 @@ impl TurnRequestProcessor {
 
     async fn thread_inject_items_response_inner(
         &self,
-        request_id: &ConnectionRequestId,
+        _request_id: &ConnectionRequestId,
         params: ThreadInjectItemsParams,
     ) -> Result<ThreadInjectItemsResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
@@ -987,7 +987,7 @@ impl TurnRequestProcessor {
         self.outgoing
             .record_request_turn_id(request_id, &params.expected_turn_id)
             .await;
-        if let Err(error) = Self::validate_v2_input_limit(&params.input) {
+        if let Err(error) = validate_v2_input_limit(&params.input) {
             self.track_error_response(
                 request_id,
                 &error,

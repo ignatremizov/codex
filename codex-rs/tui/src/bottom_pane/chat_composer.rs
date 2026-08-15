@@ -220,6 +220,15 @@ use ratatui::widgets::WidgetRef;
 
 use codex_protocol::openai_models::ReasoningEffort;
 
+use super::agent_command_highlight::AgentCommandHighlightKind;
+use super::agent_command_highlight::agent_command_highlights;
+use super::agent_target_popup::AGENT_OBSERVATION_MODE_CHOICES;
+use super::agent_target_popup::AgentPromptTarget;
+use super::agent_target_popup::AgentTargetCompletion;
+use super::agent_target_popup::AgentTargetCompletionScope;
+use super::agent_target_popup::AgentTargetPopup;
+use super::agent_target_popup::agent_target_completion;
+use super::agent_target_popup::is_agent_target_action;
 use super::chat_composer_history::ChatComposerHistory;
 use super::chat_composer_history::HistoryEntry;
 use super::chat_composer_history::HistoryEntryResponse;
@@ -288,6 +297,7 @@ use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::TextElement;
 
 mod agents_navigation;
+mod agent_target_input;
 mod attachment_state;
 mod completion_target;
 mod draft_state;
@@ -463,6 +473,7 @@ pub(crate) struct ChatComposer {
     skills: Option<Vec<SkillMetadata>>,
     plugins: Option<Vec<PluginCapabilitySummary>>,
     task_mentions: Option<Vec<crate::task_mentions::TaskMention>>,
+    agent_prompt_targets: Vec<AgentPromptTarget>,
     mcp_server_names: Vec<String>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
     collaboration_modes_enabled: bool,
@@ -508,7 +519,7 @@ struct ComposerDraft {
     cursor: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerDraftSnapshot {
     pub(crate) text: String,
     pub(crate) cursor: usize,
@@ -643,6 +654,7 @@ impl ChatComposer {
             skills: None,
             plugins: None,
             task_mentions: None,
+            agent_prompt_targets: Vec::new(),
             mcp_server_names: Vec::new(),
             connectors_snapshot: None,
             collaboration_modes_enabled: false,
@@ -787,6 +799,14 @@ impl ChatComposer {
         };
         *task_mentions = matches;
         self.refresh_mentions_v2_popup_candidates();
+    }
+
+    pub(crate) fn set_agent_prompt_targets(&mut self, targets: Vec<AgentPromptTarget>) {
+        if self.agent_prompt_targets == targets {
+            return;
+        }
+        self.agent_prompt_targets = targets;
+        self.sync_popups();
     }
 
     /// Refreshes an open mention catalog when skill or plugin metadata changes.
@@ -995,6 +1015,9 @@ impl ChatComposer {
         let footer_spacing = Self::footer_spacing(footer_hint_height);
         let footer_total_height = footer_hint_height + footer_spacing;
         let popup_constraint = match &self.popups.active {
+            ActivePopup::AgentTarget(popup) => {
+                Constraint::Max(popup.calculate_required_height(area.width))
+            }
             ActivePopup::Command(popup) => {
                 Constraint::Max(popup.calculate_required_height(area.width))
             }
@@ -1978,6 +2001,7 @@ impl ChatComposer {
         }
 
         let result = match &mut self.popups.active {
+            ActivePopup::AgentTarget(_) => self.handle_key_event_with_agent_target_popup(key_event),
             ActivePopup::Command(_) => self.handle_key_event_with_slash_popup(key_event),
             ActivePopup::File(_) => self.handle_key_event_with_file_popup(key_event),
             ActivePopup::Skill(_) => self.handle_key_event_with_skill_popup(key_event),
@@ -3970,7 +3994,10 @@ impl ChatComposer {
             && mention_target.is_none();
         self.sync_command_popup(allow_command_popup);
 
-        if matches!(self.popups.active, ActivePopup::Command(_)) {
+        if matches!(
+            self.popups.active,
+            ActivePopup::AgentTarget(_) | ActivePopup::Command(_)
+        ) {
             if self.popups.current_file_query.is_some() {
                 self.app_event_tx
                     .send(AppEvent::StartFileSearch(String::new()));
@@ -4010,7 +4037,10 @@ impl ChatComposer {
         self.popups.dismissed_file_token = None;
         if matches!(
             self.popups.active,
-            ActivePopup::File(_) | ActivePopup::Skill(_) | ActivePopup::MentionV2(_)
+            ActivePopup::AgentTarget(_)
+                | ActivePopup::File(_)
+                | ActivePopup::Skill(_)
+                | ActivePopup::MentionV2(_)
         ) {
             self.popups.active = ActivePopup::None;
         }
@@ -4033,7 +4063,10 @@ impl ChatComposer {
         self.popups.dismissed_command_token = None;
 
         if !allow {
-            if matches!(self.popups.active, ActivePopup::Command(_)) {
+            if matches!(
+                self.popups.active,
+                ActivePopup::AgentTarget(_) | ActivePopup::Command(_)
+            ) {
                 self.popups.active = ActivePopup::None;
             }
             return;
@@ -4047,6 +4080,9 @@ impl ChatComposer {
             caret_on_first_line && slash_input.is_editing_command_name(first_line, cursor);
         let is_editing_mcp_args =
             caret_on_first_line && slash_input.is_editing_mcp_args(first_line, cursor);
+        let agent_target = caret_on_first_line
+            .then(|| agent_target_completion(first_line, cursor))
+            .flatten();
         let command_filter_text = caret_on_first_line
             .then(|| slash_input::command_popup_filter_text(first_line, cursor))
             .flatten();
@@ -4055,11 +4091,68 @@ impl ChatComposer {
         // file-search popup over the slash popup so users can insert a file path
         // as an argument to the command (e.g., "/review @docs/...").
         if Self::current_at_token(&self.draft.textarea).is_some() {
-            if matches!(self.popups.active, ActivePopup::Command(_)) {
+            if matches!(
+                self.popups.active,
+                ActivePopup::AgentTarget(_) | ActivePopup::Command(_)
+            ) {
                 self.popups.active = ActivePopup::None;
             }
             return;
         }
+
+        if (!self.agent_prompt_targets.is_empty()
+            || agent_target.as_ref().is_some_and(|completion| {
+                completion.scope == AgentTargetCompletionScope::ObservationMode
+            }))
+            && let Some(completion) = agent_target
+        {
+            if self
+                .popups
+                .dismissed_agent_target
+                .as_ref()
+                .is_some_and(|(scope, query)| {
+                    *scope == completion.scope && query == &completion.query
+                })
+            {
+                if matches!(self.popups.active, ActivePopup::AgentTarget(_)) {
+                    self.popups.active = ActivePopup::None;
+                }
+                return;
+            }
+            self.popups.dismissed_agent_target = None;
+            let targets = match completion.scope {
+                AgentTargetCompletionScope::ObservationMode => AGENT_OBSERVATION_MODE_CHOICES
+                    .map(|(selector, label)| AgentPromptTarget {
+                        thread_id: None,
+                        selector: selector.to_string(),
+                        label: label.to_string(),
+                    })
+                    .to_vec(),
+                AgentTargetCompletionScope::Any | AgentTargetCompletionScope::ExistingTarget => {
+                    self.agent_prompt_targets.clone()
+                }
+            };
+            match &mut self.popups.active {
+                ActivePopup::AgentTarget(popup) => {
+                    popup.set_targets(targets);
+                    popup.set_scope(completion.scope);
+                    popup.set_query(&completion.query);
+                }
+                _ => {
+                    self.popups.active = ActivePopup::AgentTarget(AgentTargetPopup::new(
+                        targets,
+                        &completion.query,
+                        completion.scope,
+                    ));
+                }
+            }
+            return;
+        }
+        self.popups.dismissed_agent_target = None;
+        if matches!(self.popups.active, ActivePopup::AgentTarget(_)) {
+            self.popups.active = ActivePopup::None;
+        }
+
         match &mut self.popups.active {
             ActivePopup::Command(popup) => {
                 if is_editing_mcp_args {
@@ -4621,6 +4714,7 @@ impl ChatComposer {
             + 2
             + match &self.popups.active {
                 ActivePopup::None => footer_total_height,
+                ActivePopup::AgentTarget(c) => c.calculate_required_height(width),
                 ActivePopup::Command(c) => c.calculate_required_height(width),
                 ActivePopup::File(c) => c.calculate_required_height(),
                 ActivePopup::Skill(c) => c.calculate_required_height(width),
@@ -4646,6 +4740,9 @@ impl ChatComposer {
         let [composer_rect, remote_images_rect, textarea_rect, popup_rect] =
             self.layout_areas_with_textarea_right_reserve(area, textarea_right_reserve);
         match &self.popups.active {
+            ActivePopup::AgentTarget(popup) => {
+                popup.render_ref(popup_rect, buf);
+            }
             ActivePopup::Command(popup) => {
                 popup.render_ref(popup_rect, buf);
             }
@@ -4947,6 +5044,23 @@ impl ChatComposer {
                     .render_ref_masked(textarea_rect, buf, &mut state, mask_char);
             } else {
                 let mut highlights = self.plugin_at_mention_highlights();
+                highlights.extend(
+                    agent_command_highlights(
+                        self.draft.textarea.text(),
+                        &self.agent_prompt_targets,
+                    )
+                    .into_iter()
+                    .map(|highlight| {
+                        let style = match highlight.kind {
+                            AgentCommandHighlightKind::Command => Style::default().cyan(),
+                            AgentCommandHighlightKind::Action
+                            | AgentCommandHighlightKind::Option => Style::default().magenta(),
+                            AgentCommandHighlightKind::KnownTarget => Style::default().green(),
+                            AgentCommandHighlightKind::UnknownTarget => Style::default().yellow(),
+                        };
+                        (highlight.range, style)
+                    }),
+                );
                 let search_highlight_style =
                     Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
                 highlights.extend(
@@ -5651,6 +5765,56 @@ mod tests {
         insta::assert_snapshot!(
             "plugin_at_mentions_render_with_plugin_accent",
             format!("text:    {text}\nmagenta: {magenta}")
+        );
+    }
+
+    #[test]
+    fn agent_commands_render_with_semantic_highlights_snapshot() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_agent_prompt_targets(vec![AgentPromptTarget {
+            thread_id: Some(
+                ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
+                    .expect("valid thread id"),
+            ),
+            selector: "2".to_string(),
+            label: "Sagan [default]".to_string(),
+        }]);
+        let command = "/agent close 2 w:x keep prompt plain";
+        composer.set_text_content(command.to_string(), Vec::new(), Vec::new());
+
+        let area = Rect::new(0, 0, 60, 5);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+
+        let textarea_row = 1;
+        let mut rendered = String::new();
+        let mut styles = String::new();
+        for x in LIVE_PREFIX_COLS..LIVE_PREFIX_COLS + command.len() as u16 {
+            let cell = &buf[(x, textarea_row)];
+            rendered.push(cell.symbol().chars().next().unwrap_or(' '));
+            styles.push(match cell.style().fg {
+                Some(Color::Cyan) => 'c',
+                Some(Color::Magenta) => 'm',
+                Some(Color::Green) => 'g',
+                Some(Color::Yellow) => 'y',
+                _ => '.',
+            });
+        }
+
+        insta::assert_snapshot!(
+            format!("text:  {rendered}\nstyle: {styles}"),
+            @r"
+        text:  /agent close 2 w:x keep prompt plain
+        style: cccccc.mmmmm.g.mmm..................
+        "
         );
     }
 

@@ -1,4 +1,6 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_resumable_v1_agent_target;
+use crate::agent::control::AgentResumeOwnership;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
@@ -47,9 +49,7 @@ async fn handle_resume_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: ResumeAgentArgs = parse_arguments(&arguments)?;
-    let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
-        FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
-    })?;
+    let receiver_thread_id = resolve_resumable_v1_agent_target(&session, &args.id).await?;
     if receiver_thread_id == session.thread_id {
         return Err(FunctionCallError::RespondToModel(
             "an agent cannot resume itself; continue the current turn directly".to_string(),
@@ -60,26 +60,33 @@ async fn handle_resume_agent(
         .agent_control
         .get_agent_metadata(receiver_thread_id)
         .unwrap_or_default();
+    let resume_plan = session
+        .services
+        .agent_control
+        .plan_agent_resume(receiver_thread_id)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let child_depth = next_thread_spawn_depth(&turn.session_source);
-    let max_depth = turn.config.agent_max_depth;
-    if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
+    if resume_plan.ownership.transfers_ownership()
+        && exceeds_thread_spawn_depth_limit(child_depth, turn.config.agent_max_depth)
+    {
         return Err(FunctionCallError::RespondToModel(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
+    let mut status = resume_plan.status;
+    let was_not_found = matches!(status, AgentStatus::NotFound);
+    let task_name = resume_plan
+        .ownership
+        .transfers_ownership()
+        .then(|| format!("model-adopt-{}", uuid::Uuid::now_v7()));
     let resumed_session_source = thread_spawn_source(
         session.thread_id(),
         &turn.session_source,
         child_depth,
         /*agent_role*/ None,
-        /*task_name*/ None,
+        task_name,
     )?;
-    let mut status = session
-        .services
-        .agent_control
-        .get_status(receiver_thread_id)
-        .await;
-    let was_not_found = matches!(status, AgentStatus::NotFound);
     let mut live_adoption_error = None;
     if !was_not_found {
         match session
@@ -132,6 +139,8 @@ async fn handle_resume_agent(
             &turn,
             receiver_thread_id,
             resumed_session_source.clone(),
+            resume_plan.ownership,
+            args.id.clone(),
         ))
         .await
         {
@@ -254,20 +263,49 @@ async fn try_resume_closed_agent(
     turn: &Arc<TurnContext>,
     receiver_thread_id: ThreadId,
     session_source: SessionSource,
+    ownership: AgentResumeOwnership,
+    authored_selector: String,
 ) -> Result<(), FunctionCallError> {
     let config = build_agent_resume_config(turn.as_ref())?;
-    Box::pin(session.services.agent_control.resume_agent_from_rollout(
-        config,
-        receiver_thread_id,
-        session_source,
-        // The handler's post-resume adoption pass applies the requested policy once,
-        // including for standalone rollouts whose persisted source has no parent.
-        ResponseObservationPolicy::from_parts(
-            /*commentary*/ false,
-            FinalResponseObservation::None,
-        ),
-    ))
-    .await
-    .map(|_| ())
-    .map_err(|err| collab_agent_error(receiver_thread_id, err))
+    let result = match ownership {
+        AgentResumeOwnership::CurrentRoot => {
+            session
+                .services
+                .agent_control
+                .resume_agent_from_rollout(
+                    config,
+                    receiver_thread_id,
+                    session_source,
+                    ResponseObservationPolicy::from_parts(
+                        /*commentary*/ false,
+                        FinalResponseObservation::None,
+                    ),
+                )
+                .await
+        }
+        AgentResumeOwnership::Transfer {
+            previous_session_id,
+        } => {
+            session
+                .services
+                .agent_control
+                .resume_agent_from_rollout_adopting(
+                    config,
+                    receiver_thread_id,
+                    session_source,
+                    // The handler's post-resume adoption pass applies the requested policy once,
+                    // including for standalone rollouts whose persisted source has no parent.
+                    ResponseObservationPolicy::from_parts(
+                        /*commentary*/ false,
+                        FinalResponseObservation::None,
+                    ),
+                    previous_session_id,
+                    authored_selector,
+                )
+                .await
+        }
+    };
+    result
+        .map(|_| ())
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))
 }

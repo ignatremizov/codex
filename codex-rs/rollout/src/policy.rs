@@ -93,9 +93,9 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
     match ev {
         EventMsg::ItemCompleted(event) => {
             // Paginated rollouts store TurnItems.
-            // Legacy rollouts keep items with no reconstructible raw ResponseItem or legacy
-            // equivalent. Collab tool calls need their canonical item because the raw function
-            // call/output pair does not retain enough presentation metadata for thread replay.
+            // Non-paginated rollouts keep items with no reconstructible raw ResponseItem or older
+            // event equivalent. Collab tool calls need their canonical item because the raw
+            // function call/output pair does not retain enough presentation metadata for replay.
             matches!(history_mode, ThreadHistoryMode::Paginated)
                 || matches!(
                     &event.item,
@@ -103,6 +103,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                         | TurnItem::Plan(_)
                         | TurnItem::Extension(ExtensionItem::Sleep(_))
                         | TurnItem::CollabAgentToolCall(_)
+                        | TurnItem::UserAgentControl(_)
                 )
                 || matches!(
                     &event.item,
@@ -122,7 +123,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::TurnComplete(_)
         | EventMsg::ThreadSettingsApplied(_) => true,
 
-        // Only persist these legacy events when the thread's history mode is Legacy.
+        // Only persist these older events when the thread is non-paginated.
         // New, paginated rollouts persist ItemCompleted events with TurnItems.
         EventMsg::UserMessage(_)
         | EventMsg::AgentMessage(_)

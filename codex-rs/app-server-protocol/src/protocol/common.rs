@@ -692,6 +692,18 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadBackgroundTerminalsTerminateResponse,
     },
+    #[experimental("agentAlias/list")]
+    AgentAliasList => "agentAlias/list" {
+        params: v2::AgentAliasListParams,
+        serialization: thread_id(params.root_thread_id),
+        response: v2::AgentAliasListResponse,
+    },
+    #[experimental("agent/control")]
+    AgentControl => "agent/control" {
+        params: v2::AgentControlParams,
+        serialization: thread_id(params.source_thread_id),
+        response: v2::AgentControlResponse,
+    },
     ThreadRollback => "thread/rollback" {
         params: v2::ThreadRollbackParams,
         serialization: thread_id(params.thread_id),
