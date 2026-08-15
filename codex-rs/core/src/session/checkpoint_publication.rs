@@ -3,6 +3,10 @@
 use super::*;
 use codex_extension_api::RestoredSkillsInventory;
 
+#[cfg(test)]
+#[path = "user_agent_checkpoint_tests.rs"]
+mod tests;
+
 impl Session {
     pub(super) async fn publish_compacted_history(
         &self,
@@ -95,6 +99,30 @@ impl Session {
                 retained.push(completion.item.clone());
             }
         }
+        let task_contexts = self
+            .response_observation_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .task_contexts
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let trusted_tasks = task_contexts
+            .iter()
+            .filter_map(|task| task.item.id().map(|id| (id.clone(), task.item.clone())))
+            .collect();
+        // Model replacements and extension contributions are not canonical task authority.
+        // Preserve reserved identity only for the exact acknowledged envelope.
+        completion_replay::normalize_unproven_tasks(&mut items, &trusted_tasks);
+        completion_replay::normalize_unproven_tasks(&mut retained, &trusted_tasks);
+        for task in &task_contexts {
+            if source.contains(&task.item)
+                && !metadata.completion_source_items.contains(&task.item.item)
+            {
+                items.retain(|item| item != &task.item);
+                retained.push(task.item.clone());
+            }
+        }
         let boundary = items
             .iter()
             .position(|envelope| {
@@ -130,6 +158,15 @@ impl Session {
             .agent_control
             .response_observation_snapshots_for_parent(self.presentation_id());
         let mut observation_artifacts = Vec::new();
+        for task in task_contexts {
+            if canonical_items.contains(&task.item) {
+                observation_artifacts.push(RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: false,
+                });
+                observation_artifacts.push(RolloutItem::ResponseItem(task.item));
+                observation_artifacts.push(RolloutItem::AgentResponseObservation(task.observation));
+            }
+        }
         for completion in &state.acknowledged_completion_contexts {
             let Some(id) = completion.item.id() else {
                 continue;

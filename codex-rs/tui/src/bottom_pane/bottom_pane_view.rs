@@ -2,12 +2,14 @@ use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::keymap::KeymapContextSet;
+use crate::keymap::ListKeymap;
 use crate::render::renderable::Renderable;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use crossterm::event::KeyEvent;
 use std::time::Instant;
 
 use super::CancellationEvent;
+use super::list_selection_view::SelectionViewParams;
 
 /// Reason an active bottom-pane view finished.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +56,16 @@ pub(crate) trait BottomPaneView: Renderable {
     /// across external refreshes.
     fn selected_index(&self) -> Option<usize> {
         None
+    }
+
+    /// Refresh list contents while retaining this view's interactive state.
+    /// Non-list views reject the update without changing their contents.
+    fn refresh_selection_view(
+        &mut self,
+        _params: SelectionViewParams,
+        _keymap: ListKeymap,
+    ) -> bool {
+        false
     }
 
     /// Apply a matching background suggestion when this view supports text prefills.

@@ -1,3 +1,5 @@
+use codex_protocol::SessionId;
+use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -9,6 +11,71 @@ pub enum ThreadSpawnEdgeStatus {
     Open,
     /// The child thread has been closed from the parent/child graph's perspective.
     Closed,
+}
+
+/// Root-scoped alias state projected from ownership and the canonical spawn edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAliasState {
+    /// The target remains part of the current live or resumable root.
+    Active,
+    /// The target was closed but its aliases remain reserved.
+    Closed,
+    /// Ownership moved to another root while this historical alias remains reserved.
+    Transferred,
+}
+
+/// Root-scoped short identities for one canonical thread UUID.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAlias {
+    pub session_id: SessionId,
+    pub thread_id: ThreadId,
+    pub agent_ref: u64,
+    pub nickname: Option<String>,
+    pub state: AgentAliasState,
+}
+
+/// Inputs for atomically allocating a child alias and its current parent edge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllocateAgentAliasRequest {
+    pub session_id: SessionId,
+    pub parent_thread_id: ThreadId,
+    pub child_thread_id: ThreadId,
+    pub nickname: Option<String>,
+}
+
+/// Root namespaces participating in a history-bearing fork reservation import.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReserveForkAgentAliasesRequest {
+    pub source_session_id: SessionId,
+    pub fork_session_id: SessionId,
+}
+
+/// Inputs for atomically transferring one thread and its persisted subtree into a new root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferAgentAliasRequest {
+    pub expected_previous_session_id: Option<SessionId>,
+    /// Descendants reserved by the caller before entering the ownership transaction.
+    pub expected_descendant_thread_ids: Vec<ThreadId>,
+    pub new_session_id: SessionId,
+    pub new_parent_thread_id: ThreadId,
+    pub thread_id: ThreadId,
+    pub nickname: Option<String>,
+    pub authored_selector: String,
+}
+
+/// Durable alias and ownership details produced by an exclusive transfer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentAliasTransfer {
+    AlreadyOwned {
+        alias: AgentAlias,
+    },
+    Transferred {
+        alias: AgentAlias,
+        previous_session_id: Option<SessionId>,
+        previous_parent_thread_id: Option<ThreadId>,
+        transferred_at_ms: i64,
+    },
 }
 
 #[cfg(test)]

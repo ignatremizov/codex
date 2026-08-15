@@ -35,9 +35,20 @@ struct SpawnAgentThreadInheritance {
 /// provide user input directly, making an uncontextualized inter-agent communication
 /// unrepresentable.
 #[allow(clippy::large_enum_variant)]
-enum SpawnInitialInput {
+pub(super) enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
+    UserControlled {
+        input: Option<Vec<UserInput>>,
+        task_preview: Option<String>,
+    },
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
+}
+
+pub(super) struct SpawnedAgent {
+    pub(super) agent: LiveAgent,
+    pub(super) alias: Option<codex_agent_graph_store::AgentAlias>,
+    pub(super) post_admission_warning: Option<String>,
+    pub(super) input_outcome: Option<crate::agent::UserAgentInputOutcome>,
 }
 
 fn default_agent_nickname_list() -> Vec<&'static str> {
@@ -235,19 +246,42 @@ impl LocalAgentControl {
         tokio::spawn(async move {
             Box::pin(control.spawn_agent_owned(config, initial_input, session_source, options))
                 .await
+                .map(|spawned| spawned.agent)
         })
         .await
         .map_err(|error| CodexErr::Fatal(format!("agent spawn worker failed: {error}")))?
     }
 
-    async fn spawn_agent_owned(
+    pub(super) async fn spawn_agent_owned(
         &self,
         config: Config,
         initial_input: SpawnInitialInput,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
-    ) -> CodexResult<LiveAgent> {
+    ) -> CodexResult<SpawnedAgent> {
         let state = self.upgrade()?;
+        let parent = match session_source
+            .as_ref()
+            .and_then(SessionSource::parent_thread_id)
+        {
+            Some(parent_id) => Some(state.get_thread(parent_id).await?),
+            None => None,
+        };
+        let _parent_guard = match &parent {
+            Some(parent) => Some(
+                state
+                    .v2_spawn_resume_lock(parent.session.thread_id())
+                    .try_lock_owned()
+                    .map_err(|_| {
+                        CodexErr::InvalidRequest(
+                            "spawn owner is busy; retry after its current lifecycle operation"
+                                .into(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        self.sync_durable_agent_nickname_reservations().await?;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -336,6 +370,7 @@ impl LocalAgentControl {
                     None
                 };
                 Box::pin(state.spawn_new_thread_with_source(
+                    crate::thread_manager::ThreadRegistration::Deferred,
                     config.clone(),
                     self.clone(),
                     session_source,
@@ -353,11 +388,33 @@ impl LocalAgentControl {
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
         agent_metadata.agent_id = Some(new_thread.thread_id);
-        reservation.commit(agent_metadata.clone());
-        if let Some(residency_slot) = residency_slot {
-            residency_slot.commit(new_thread.thread_id);
+        if notification_source
+            .as_ref()
+            .is_some_and(SessionSource::is_non_root_agent)
+        {
+            new_thread.thread.ensure_rollout_materialized().await;
+            if let Err(error) = new_thread.thread.session.flush_rollout().await {
+                return Err(self
+                    .cleanup_unpublished_restoration(&new_thread.thread, error)
+                    .await);
+            }
         }
-
+        let persisted = match self
+            .persist_thread_spawn_for_source(
+                new_thread.thread.as_ref(),
+                new_thread.thread_id,
+                notification_source.as_ref(),
+                super::aliases::ThreadSpawnPersistence::New,
+            )
+            .await
+        {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                return Err(self
+                    .cleanup_unpublished_restoration(&new_thread.thread, error)
+                    .await);
+            }
+        };
         if let Some(SessionSource::SubAgent(
             subagent_source @ SubAgentSource::ThreadSpawn {
                 parent_thread_id, ..
@@ -398,31 +455,46 @@ impl LocalAgentControl {
             .unwrap_or_else(|| new_thread.thread_id.to_string());
         // Attach before exposing the child or submitting its first input so an early failure
         // cannot publish a watcher-owned terminal without a consumer.
-        self.maybe_start_completion_watcher(
-            &new_thread.thread,
-            notification_source.clone(),
-            child_reference,
-            agent_metadata.agent_path.clone(),
-            new_thread
-                .thread
-                .multi_agent_version()
-                .unwrap_or(MultiAgentVersion::V1),
-        )
-        .await;
-
-        if matches!(
-            notification_source.as_ref(),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
-        ) {
-            new_thread.thread.ensure_rollout_materialized().await;
+        if let (Some(parent), Some(source)) = (&parent, notification_source.clone())
+            && let Err(error) = self.bind_completion_watcher_with_parent(
+                &new_thread.thread,
+                parent,
+                source,
+                child_reference,
+                agent_metadata.agent_path.clone(),
+                new_thread
+                    .thread
+                    .multi_agent_version()
+                    .unwrap_or(MultiAgentVersion::V1),
+            )
+        {
+            return Err(self
+                .cleanup_unpublished_spawn(&new_thread.thread, error)
+                .await);
         }
 
-        self.persist_thread_spawn_edge_for_source(
-            new_thread.thread.as_ref(),
-            new_thread.thread_id,
-            notification_source.as_ref(),
-        )
-        .await;
+        if notification_source.is_some() {
+            if let Err(error) = state
+                .publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
+                    if !reservation.commit_if_absent(agent_metadata.clone()) {
+                        return Err(CodexErr::InvalidRequest(
+                            "spawn registration changed during setup".into(),
+                        ));
+                    }
+                    Ok(())
+                })
+                .await
+            {
+                return Err(self
+                    .cleanup_unpublished_spawn(&new_thread.thread, error)
+                    .await);
+            }
+        } else {
+            reservation.commit(agent_metadata.clone());
+        }
+        if let Some(residency_slot) = residency_slot {
+            residency_slot.commit(new_thread.thread_id);
+        }
 
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
@@ -431,7 +503,53 @@ impl LocalAgentControl {
             cyber_access_program: options.cyber_access_program,
             ..Default::default()
         };
+        let mut post_admission_warning = None;
+        let mut input_outcome = None;
         let submission = match initial_input {
+            SpawnInitialInput::UserControlled {
+                input,
+                task_preview,
+            } => {
+                let observer = parent.as_ref().ok_or_else(|| {
+                    CodexErr::InvalidRequest("user spawn requires its exact source runtime".into())
+                })?;
+                match input {
+                    Some(input) => match self
+                        .send_user_input_observing_response(
+                            new_thread.thread_id,
+                            input,
+                            start_options,
+                            observer.session.presentation_id(),
+                            options.response_observation,
+                            task_preview,
+                        )
+                        .await
+                    {
+                        Ok(submission) => {
+                            input_outcome = Some(submission.input_outcome);
+                            post_admission_warning = submission.post_admission_warning;
+                            Ok(submission.submission_id)
+                        }
+                        Err(error) => Err(error),
+                    },
+                    None => {
+                        let _transaction = self
+                            .acquire_response_observation_transaction(
+                                observer.session.presentation_id(),
+                            )
+                            .await;
+                        self.install_response_observer(
+                            observer,
+                            &new_thread.thread,
+                            options.response_observation,
+                            ResponseObservationBinding::NextTurn,
+                            super::response_observer::ResponseObserverStart::FutureOnly,
+                        )
+                        .await
+                        .map(|()| String::new())
+                    }
+                }
+            }
             SpawnInitialInput::UserInput(input) => {
                 if let Some(parent_id) = notification_source
                     .as_ref()
@@ -477,10 +595,15 @@ impl LocalAgentControl {
         }
         state.notify_thread_created(new_thread.thread_id);
 
-        Ok(LiveAgent {
-            thread_id: new_thread.thread_id,
-            metadata: agent_metadata,
-            status: self.get_status(new_thread.thread_id).await,
+        Ok(SpawnedAgent {
+            agent: LiveAgent {
+                thread_id: new_thread.thread_id,
+                metadata: agent_metadata,
+                status: self.get_status(new_thread.thread_id).await,
+            },
+            alias: persisted.alias,
+            post_admission_warning,
+            input_outcome,
         })
     }
 
@@ -800,6 +923,7 @@ impl LocalAgentControl {
 
         state
             .fork_thread_with_source(
+                crate::thread_manager::ThreadRegistration::Deferred,
                 config.clone(),
                 InitialHistory::Forked(forked_rollout_items),
                 destination_history_mode,

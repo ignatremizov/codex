@@ -1,0 +1,7 @@
+---
+source: tui/src/app/agent_control_pane_tests.rs
+assertion_line: 597
+expression: "[app.thread_label(main_thread_id),\napp.thread_label(child_thread_id)].join(\"\\n\")"
+---
+Main [default]
+Hume

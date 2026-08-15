@@ -54,6 +54,7 @@ pub enum TurnItem {
     DynamicToolCall(DynamicToolCallItem),
     CollabAgentToolCall(CollabAgentToolCallItem),
     SubAgentActivity(SubAgentActivityItem),
+    UserAgentControl(UserAgentControlItem),
     /// Hosted Responses API web-search item handled directly by core.
     ///
     /// Standalone web search uses Self::Extension instead because its display
@@ -94,6 +95,89 @@ pub struct FunctionCallOutputItem {
     #[ts(optional)]
     pub namespace: Option<String>,
     pub output: FunctionCallOutputBody,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct UserAgentControlItem {
+    pub id: String,
+    pub action: UserAgentControlAction,
+    pub authored_selector: Option<String>,
+    pub target_thread_id: Option<ThreadId>,
+    pub previous_owner_session_id: Option<crate::SessionId>,
+    pub new_owner_session_id: Option<crate::SessionId>,
+    pub agent_ref: Option<u64>,
+    pub nickname: Option<String>,
+    pub role: Option<String>,
+    pub prompt_preview: Option<String>,
+    pub resumed_target: bool,
+    pub fork_mode: Option<UserAgentForkMode>,
+    pub observe_commentary: Option<bool>,
+    pub final_response: Option<crate::protocol::AgentResponseFinalDelivery>,
+    #[serde(default)]
+    pub target_messages: Option<bool>,
+    #[serde(default)]
+    pub queue_input: Option<bool>,
+    pub status: UserAgentControlStatus,
+    pub error: Option<String>,
+}
+
+impl UserAgentControlItem {
+    pub fn succeeded(action: UserAgentControlAction) -> Self {
+        Self {
+            id: new_item_id(),
+            action,
+            authored_selector: None,
+            target_thread_id: None,
+            previous_owner_session_id: None,
+            new_owner_session_id: None,
+            agent_ref: None,
+            nickname: None,
+            role: None,
+            prompt_preview: None,
+            resumed_target: false,
+            fork_mode: None,
+            observe_commentary: None,
+            final_response: None,
+            target_messages: None,
+            queue_input: None,
+            status: UserAgentControlStatus::Succeeded,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentControlAction {
+    Spawn,
+    Prompt,
+    QueuedPrompt,
+    Resume,
+    Interrupt,
+    Close,
+    Observe,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentControlStatus {
+    Succeeded,
+    Failed,
+    /// Input may have been accepted; canonical state must be reconciled before retrying.
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentForkMode {
+    None,
+    All,
+    LastNTurns { turns: u32 },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -795,6 +879,7 @@ impl TurnItem {
             TurnItem::DynamicToolCall(item) => item.id.clone(),
             TurnItem::CollabAgentToolCall(item) => item.id.clone(),
             TurnItem::SubAgentActivity(item) => item.id.clone(),
+            TurnItem::UserAgentControl(item) => item.id.clone(),
             TurnItem::WebSearch(item) => item.id.clone(),
             TurnItem::ImageView(item) => item.id.clone(),
             TurnItem::Extension(item) => item.id().to_string(),

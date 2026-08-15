@@ -155,13 +155,27 @@ impl ThreadManagerState {
             )));
         }
 
+        let session_source = if self
+            .current_agent_alias(resume.child_thread_id)
+            .await?
+            .is_some()
+        {
+            owner
+                .canonical_controlled_resume_source(
+                    resume.child_thread_id,
+                    resume.session_source.clone(),
+                )
+                .await?
+        } else {
+            resume.session_source.clone()
+        };
         let restored_thread = match resume.edge_status {
             ThreadSpawnEdgeStatus::Open => {
                 owner
                     .ensure_v2_agent_loaded_from_history(
                         config.clone(),
                         resume.child_thread_id,
-                        resume.session_source.clone(),
+                        session_source.clone(),
                         initial_history.clone(),
                         client_mcp_extensions.clone(),
                     )
@@ -172,7 +186,7 @@ impl ThreadManagerState {
                     .resume_v2_agent_from_history(
                         config.clone(),
                         resume.child_thread_id,
-                        resume.session_source.clone(),
+                        session_source,
                         initial_history.clone(),
                         client_mcp_extensions.clone(),
                     )
@@ -315,21 +329,49 @@ async fn resolve_persisted_v2_spawn_resume(
     }) else {
         return Ok(None);
     };
-    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id, ..
-    }) = &session_meta.source
-    else {
+    if !session_meta.source.is_non_root_agent()
+        && agent_graph_store
+            .as_ref()
+            .is_none_or(|graph| !graph.supports_agent_aliases())
+    {
         return Ok(None);
-    };
+    }
     let agent_graph_store = agent_graph_store.ok_or_else(|| {
         CodexErr::InvalidRequest(format!(
             "cannot resume spawned V2 child {} because its persisted agent graph is unavailable; restore the graph state and retry",
             resumed.conversation_id
         ))
     })?;
+    let alias = if agent_graph_store.supports_agent_aliases() {
+        agent_graph_store
+            .find_current_agent_alias_by_thread(resumed.conversation_id)
+            .await
+            .map_err(|error| CodexErr::Fatal(error.to_string()))?
+    } else {
+        None
+    };
+    let (session_id, parent_thread_id) = match alias {
+        Some(alias) if ThreadId::from(alias.session_id) == resumed.conversation_id => {
+            return Ok(None);
+        }
+        Some(alias) => {
+            let parent = agent_graph_store
+                .find_thread_spawn_parent(resumed.conversation_id)
+                .await
+                .map_err(|error| CodexErr::Fatal(error.to_string()))?
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest("owned V2 child has no parent edge".into())
+                })?;
+            (alias.session_id, parent)
+        }
+        None => match session_meta.source.parent_thread_id() {
+            Some(parent) => (session_meta.session_id, parent),
+            None => return Ok(None),
+        },
+    };
 
     let closed_children = agent_graph_store
-        .list_thread_spawn_children(*parent_thread_id, Some(ThreadSpawnEdgeStatus::Closed))
+        .list_thread_spawn_children(parent_thread_id, Some(ThreadSpawnEdgeStatus::Closed))
         .await
         .map_err(|err| {
             CodexErr::Fatal(format!(
@@ -341,7 +383,7 @@ async fn resolve_persisted_v2_spawn_resume(
         ThreadSpawnEdgeStatus::Closed
     } else {
         let open_children = agent_graph_store
-            .list_thread_spawn_children(*parent_thread_id, Some(ThreadSpawnEdgeStatus::Open))
+            .list_thread_spawn_children(parent_thread_id, Some(ThreadSpawnEdgeStatus::Open))
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(
@@ -360,8 +402,8 @@ async fn resolve_persisted_v2_spawn_resume(
 
     Ok(Some(PersistedV2SpawnResume {
         child_thread_id: resumed.conversation_id,
-        parent_thread_id: *parent_thread_id,
-        session_id: session_meta.session_id,
+        parent_thread_id,
+        session_id,
         session_source: session_meta.source.clone(),
         edge_status,
     }))

@@ -93,6 +93,7 @@ impl LocalAgentControl {
         Ok(outcome)
     }
 
+    #[cfg(test)]
     pub(super) async fn maybe_start_completion_watcher(
         &self,
         child_thread: &Arc<CodexThread>,

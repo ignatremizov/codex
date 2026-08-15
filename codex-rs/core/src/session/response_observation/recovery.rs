@@ -12,6 +12,7 @@ pub(in crate::session) fn initial_agent_response_observation_state(
 ) -> AgentResponseObservationState {
     let mut state = AgentResponseObservationState::default();
     let rollout_items = initial_history.get_rollout_items();
+    state.task_contexts = codex_history::committed_user_agent_task_contexts(rollout_items);
     let canonical_items = if rollout_items
         .iter()
         .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))))

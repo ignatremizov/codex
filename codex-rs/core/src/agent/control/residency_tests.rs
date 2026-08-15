@@ -167,6 +167,7 @@ async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
         .expect("first resident slot");
     let first = state
         .spawn_new_thread_with_source(
+            crate::thread_manager::ThreadRegistration::Immediate,
             config.clone(),
             control.clone(),
             child_source.clone(),
@@ -223,6 +224,7 @@ async fn spawn_v2_subagent(
 ) -> crate::thread_manager::NewThread {
     state
         .spawn_new_thread_with_source(
+            crate::thread_manager::ThreadRegistration::Immediate,
             config,
             control.clone(),
             SessionSource::SubAgent(SubAgentSource::Other(label.to_string())),

@@ -1,0 +1,226 @@
+use super::*;
+use crate::app_event::AppEvent;
+use crate::bottom_pane::AppEventSender;
+use pretty_assertions::assert_eq;
+use tokio::sync::mpsc::unbounded_channel;
+
+fn composer_with_targets(text: &str, cursor: usize) -> ChatComposer {
+    let (tx, _rx) = unbounded_channel::<AppEvent>();
+    let mut composer = ChatComposer::new(
+        /*has_input_focus*/ true,
+        AppEventSender::new(tx),
+        /*enhanced_keys_supported*/ false,
+        "Ask Codex to do anything".to_string(),
+        /*disable_paste_burst*/ false,
+    );
+    composer.set_agent_prompt_targets(vec![
+        AgentPromptTarget {
+            thread_id: Some(
+                ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
+                    .expect("valid thread id"),
+            ),
+            selector: "2".to_string(),
+            label: "Robie [explorer]".to_string(),
+        },
+        AgentPromptTarget {
+            thread_id: Some(
+                ThreadId::from_string("019fbb08-bb4e-79e4-afdb-77de9737bebe")
+                    .expect("valid thread id"),
+            ),
+            selector: "3".to_string(),
+            label: "Herschel [worker]".to_string(),
+        },
+        AgentPromptTarget {
+            thread_id: None,
+            selector: "close".to_string(),
+            label: "Close an agent".to_string(),
+        },
+        AgentPromptTarget {
+            thread_id: None,
+            selector: "observe".to_string(),
+            label: "Change response observation".to_string(),
+        },
+        AgentPromptTarget {
+            thread_id: None,
+            selector: "reviewer".to_string(),
+            label: "New reviewer agent".to_string(),
+        },
+    ]);
+    composer.draft.textarea.set_text_clearing_elements(text);
+    composer.draft.textarea.set_cursor(cursor);
+    composer.sync_popups();
+    composer
+}
+
+#[test]
+fn completing_observe_target_advances_popup_to_observation_modes() {
+    let mut composer =
+        composer_with_targets("/agent observe 019faa", "/agent observe 019faa".len());
+
+    let result = composer
+        .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        .0;
+
+    assert_eq!(result, InputResult::None);
+    assert_eq!(composer.draft.textarea.text(), "/agent observe 2 ");
+    assert_eq!(composer.draft.textarea.cursor(), "/agent observe 2 ".len());
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected observation-mode popup");
+    };
+    assert_eq!(
+        popup.selected_target(),
+        Some(AgentPromptTarget {
+            thread_id: None,
+            selector: "passive".to_string(),
+            label: "Deliver the final response without waking".to_string(),
+        })
+    );
+}
+
+#[test]
+fn tab_completes_existing_target_after_agent_action() {
+    let mut composer = composer_with_targets("/agent close 019faa", "/agent close 019faa".len());
+    assert!(matches!(
+        composer.popups.active,
+        ActivePopup::AgentTarget(_)
+    ));
+
+    let result = composer
+        .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        .0;
+
+    assert_eq!(result, InputResult::None);
+    assert_eq!(composer.draft.textarea.text(), "/agent close 2 ");
+    assert_eq!(composer.draft.textarea.cursor(), "/agent close 2 ".len());
+    assert!(matches!(composer.popups.active, ActivePopup::None));
+}
+
+#[test]
+fn completing_agent_action_advances_popup_to_existing_targets() {
+    let mut composer = composer_with_targets("/agent clo", "/agent clo".len());
+
+    let result = composer
+        .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        .0;
+
+    assert_eq!(result, InputResult::None);
+    assert_eq!(composer.draft.textarea.text(), "/agent close ");
+    assert_eq!(composer.draft.textarea.cursor(), "/agent close ".len());
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected existing-target popup");
+    };
+    assert_eq!(
+        popup.selected_target(),
+        Some(AgentPromptTarget {
+            thread_id: Some(
+                ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
+                    .expect("valid thread id"),
+            ),
+            selector: "2".to_string(),
+            label: "Robie [explorer]".to_string(),
+        })
+    );
+}
+
+#[test]
+fn tab_completes_agent_ref_and_preserves_prompt_tail() {
+    let mut composer = composer_with_targets("/agent 019faa review this", "/agent 019faa".len());
+    assert!(matches!(
+        composer.popups.active,
+        ActivePopup::AgentTarget(_)
+    ));
+
+    let result = composer
+        .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        .0;
+
+    assert_eq!(result, InputResult::None);
+    assert_eq!(composer.draft.textarea.text(), "/agent 2 review this");
+    assert_eq!(composer.draft.textarea.cursor(), "/agent 2".len());
+    assert!(matches!(composer.popups.active, ActivePopup::None));
+}
+
+#[test]
+fn empty_agent_target_opens_active_target_popup() {
+    let composer = composer_with_targets("/agent ", "/agent ".len());
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected agent target popup");
+    };
+
+    let width = 80;
+    let footer_height = 2;
+    assert!(composer.empty_state_composer().is_none());
+    assert_eq!(
+        composer.popups.active.required_height(width, footer_height),
+        popup.calculate_required_height(width) + footer_height,
+    );
+
+    assert_eq!(
+        popup.selected_target(),
+        Some(AgentPromptTarget {
+            thread_id: Some(
+                ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
+                    .expect("valid thread id"),
+            ),
+            selector: "2".to_string(),
+            label: "Robie [explorer]".to_string(),
+        })
+    );
+}
+
+#[test]
+fn single_agent_target_renders_above_the_composer_in_overlay_mode() {
+    let composer = composer_with_targets("/agent rev", "/agent rev".len());
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected agent target popup");
+    };
+    let width = 80;
+    assert_eq!(popup.calculate_required_height(width), 1);
+    let options = composer.resolve_render_options(ComposerRenderOptions {
+        command_popup_placement: CommandPopupPlacement::Overlay,
+        ..Default::default()
+    });
+    let mut buffer = Buffer::empty(Rect::new(
+        /*x*/ 0, /*y*/ 0, width, /*height*/ 12,
+    ));
+    let height = composer
+        .desired_height_with_options(width, options)
+        .min(buffer.area.height);
+    let area = Rect::new(/*x*/ 0, buffer.area.height - height, width, height);
+    composer.render_with_options(area, &mut buffer, /*mask_char*/ None, options);
+    let menu = buffer
+        .content
+        .chunks(usize::from(width))
+        .take(usize::from(area.y))
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        menu.contains("reviewer"),
+        "agent target must remain visible: {menu}"
+    );
+    assert!(menu.contains("New reviewer agent"));
+    assert_eq!(composer.draft.textarea.text(), "/agent rev");
+}
+
+#[test]
+fn empty_eligible_target_list_does_not_open_popup() {
+    let mut composer = composer_with_targets("/agent ", "/agent ".len());
+    composer.set_agent_prompt_targets(Vec::new());
+
+    assert!(matches!(composer.popups.active, ActivePopup::None));
+}
+
+#[test]
+fn nonempty_eligible_target_list_keeps_popup_open_when_query_has_no_matches() {
+    let composer = composer_with_targets("/agent zzzz", "/agent zzzz".len());
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected agent target popup");
+    };
+
+    assert_eq!(popup.selected_target(), None);
+}

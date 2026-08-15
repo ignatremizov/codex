@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
+use crate::agent::control::ResponseObserverKind;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::MessageDeliveryMode;
@@ -85,6 +86,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     id: call_id,
                     tool: CollabAgentTool::SpawnAgent,
                     status,
+                    observe_commentary: None,
+                    wake_on_completion: None,
+                    target_messages: None,
+                    queue_input: None,
                     deadline_at_ms: None,
                     sender_thread_id,
                     receiver_thread_ids,
@@ -241,6 +246,7 @@ async fn handle_spawn_agent(
                     multi_agent_v2_usage_hints,
                     cyber_access_program: turn.cyber_access_program,
                     response_observation: Default::default(),
+                    response_observer: ResponseObserverKind::Native,
                 },
             ),
     )

@@ -255,6 +255,7 @@ use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event_sender::AppEventSender;
 use crate::auto_review_denials;
 use crate::auto_review_denials::RecentAutoReviewDenials;
+use crate::bottom_pane::AgentPromptTarget;
 use crate::bottom_pane::ApplyPatchApprovalRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::BottomPane;
@@ -366,6 +367,8 @@ mod pets;
 mod session_flow;
 mod session_header;
 use self::session_header::SessionHeader;
+pub(crate) mod agent_command;
+mod agent_input;
 mod copy_picker;
 mod hook_lifecycle;
 mod hooks;
@@ -1050,6 +1053,10 @@ impl ChatWidget {
         );
     }
 
+    pub(crate) fn set_agent_prompt_targets(&mut self, targets: Vec<AgentPromptTarget>) {
+        self.bottom_pane.set_agent_prompt_targets(targets);
+    }
+
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
     fn collab_agent_metadata(&self, thread_id: ThreadId) -> AgentMetadata {
         self.collab_agent_metadata
@@ -1555,8 +1562,8 @@ impl ChatWidget {
         }
     }
 
-    pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) {
-        self.bottom_pane.set_pending_thread_approvals(threads);
+    pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) -> bool {
+        self.bottom_pane.set_pending_thread_approvals(threads)
     }
 
     pub(crate) fn clear_thread_rename_block(&mut self) {

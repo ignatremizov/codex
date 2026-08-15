@@ -204,6 +204,10 @@ mod rollout_payload;
 pub use rollout::exact_rollback_removed_items;
 pub use rollout::is_committed_observed_response;
 pub use rollout::rollout_without_exact_rollback_ranges;
+mod user_agent_task;
+pub use user_agent_task::UserAgentTaskContextCollector;
+pub use user_agent_task::UserAgentTaskContextEvidence;
+pub use user_agent_task::committed_user_agent_task_contexts;
 
 pub use guardian_history::GuardianHistoryCheckpoint;
 

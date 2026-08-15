@@ -816,7 +816,7 @@ async fn auto_declined_mcp_elicitations_do_not_leave_startup_quarantine_armed() 
                 .note_server_request(&request);
             let event = ThreadBufferedEvent::Request(Box::new(request));
             if replay {
-                app.handle_thread_event_replay(event, ReplayKind::ThreadSnapshot);
+                app.handle_thread_event_replay(event, ReplayKind::ResumeInitialMessages);
             } else {
                 app.handle_thread_event_now(event);
             }
@@ -1406,9 +1406,28 @@ async fn owned_subagent_approval_before_thread_started_is_preserved() -> Result<
     let codex_home = tempdir()?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     app.config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+    // The stored child below needs a durable owner, not a fresh thread whose
+    // lazy recorder has not materialized any history yet.
+    let parent_thread_id = ThreadId::from_string(
+        &app_test_support::create_fake_rollout(
+            codex_home.path(),
+            "2026-01-01T00-00-00",
+            "2026-01-01T00:00:00Z",
+            "parent task",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .map_err(color_eyre::eyre::Report::msg)?,
+    )?;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
-    let parent = app_server.start_thread(&app.config).await?;
-    let parent_thread_id = parent.session.thread_id;
+    let parent = app_server
+        .resume_thread(
+            &app.local_settings,
+            app.config.clone(),
+            parent_thread_id,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
     app.enqueue_primary_thread_session(parent.session, parent.turns)
         .await?;
     let child_thread_id = ThreadId::from_string(
@@ -1631,6 +1650,7 @@ async fn ignore_same_thread_resume_allows_retrying_read_only_view() -> Result<()
             turns: vec![test_turn("running", TurnStatus::InProgress, Vec::new())],
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,

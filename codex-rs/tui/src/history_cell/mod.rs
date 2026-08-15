@@ -118,6 +118,7 @@ mod separators;
 mod session;
 mod spoken_artifacts;
 mod startup_warnings;
+mod user_agent_control;
 mod warnings;
 
 pub(crate) use activity_details::ActivityDetails;
@@ -138,6 +139,8 @@ pub(crate) use search::*;
 pub(crate) use separators::*;
 pub(crate) use session::*;
 pub(crate) use startup_warnings::StartupWarningsCell;
+pub(crate) use user_agent_control::UserAgentControlHistoryCell;
+pub(crate) use user_agent_control::new_user_agent_control;
 pub(crate) use warnings::WarningEntry;
 pub(crate) use warnings::WarningHistoryCell;
 pub(crate) use warnings::WarningId;

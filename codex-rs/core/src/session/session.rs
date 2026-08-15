@@ -1014,7 +1014,7 @@ impl Session {
             | InitialHistory::Resumed(_)
             | InitialHistory::Forked(_) => None,
         };
-        let resumed_session_id = match &initial_history {
+        let persisted_session_id = match &initial_history {
             InitialHistory::Resumed(resumed) => {
                 resumed.history.iter().rev().find_map(|item| match item {
                     RolloutItem::SessionMeta(meta_line)
@@ -1027,11 +1027,30 @@ impl Session {
             }
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
-        // Legacy subagent rollouts synthesized session_id from their own thread ID.
-        let resumed_session_id = resumed_session_id.filter(|session_id| {
-            !session_configuration.session_source.is_non_root_agent()
-                || *session_id != SessionId::from(thread_id)
-        });
+        let controlling_session_id = agent_control.bound_session_id();
+        let owner_override = thread_extension_init
+            .get::<super::AgentSessionOwnershipOverride>()
+            .map(|ownership| ownership.session_id);
+        if owner_override.is_some()
+            && (owner_override != controlling_session_id
+                || !session_configuration.session_source.is_non_root_agent())
+        {
+            return Err(anyhow::anyhow!(
+                "agent ownership override does not match its validated controller"
+            ));
+        }
+        let resumed_session_id = if session_configuration.session_source.is_non_root_agent()
+            && owner_override.is_some()
+        {
+            // Explicit adoption changes live ownership, never the historical session metadata.
+            owner_override
+        } else {
+            // Legacy subagent rollouts synthesized session_id from their own thread ID.
+            persisted_session_id.filter(|session_id| {
+                !session_configuration.session_source.is_non_root_agent()
+                    || *session_id != SessionId::from(thread_id)
+            })
+        };
         // session_id is equal to the root thread's ID.
         let session_id = resumed_session_id.unwrap_or_else(|| {
             if session_configuration.session_source.is_non_root_agent() {

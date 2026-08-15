@@ -22,6 +22,7 @@ use codex_protocol::items::ReasoningItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::McpResourceOrigin;
 use codex_protocol::mcp::McpResourceOriginCheckpoint;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ImageDetail;
@@ -1416,6 +1417,68 @@ async fn migration_preserves_answers_before_a_rolled_back_steer() {
             .collect::<Vec<_>>(),
         answers[..1]
     );
+}
+
+#[tokio::test]
+async fn migration_preserves_committed_agent_response_in_crossed_compaction() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let response_item_id = ResponseItemId::with_suffix("amsg", "committed-compaction");
+    let committed_response = ResponseItem::AgentMessage {
+        id: Some(response_item_id.clone()),
+        author: "/root/worker".to_string(),
+        recipient: "/root".to_string(),
+        content: vec![AgentMessageInputContent::InputText {
+            text: "committed response".to_string(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let observation = AgentResponseObservation {
+        observer_thread_id: thread_id,
+        target_thread_id: ThreadId::new(),
+        target_turn_id: Some("target-turn".to_string()),
+        task_preview: None,
+        promoted_task_context: None,
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+        final_delivery: AgentResponseFinalDelivery::Wake,
+        final_delivery_response_item_id: Some(response_item_id.clone()),
+        committed_delivery_response_item_ids: vec![response_item_id],
+    };
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true },
+            RolloutItem::ResponseItem(committed_response.clone().into()),
+            RolloutItem::AgentResponseObservation(observation),
+            compacted(vec![
+                input_response_message("user", "remove question"),
+                committed_response.clone(),
+            ]),
+            rolled_back(1),
+            user_message("replacement question"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate committed response through crossed compaction");
+
+    let replacement_history = read_rollout(&path)
+        .into_iter()
+        .find_map(|line| match line.item {
+            RolloutItem::Compacted(item) => item.replacement_history,
+            _ => None,
+        })
+        .expect("retained compaction");
+    assert_eq!(replacement_history, vec![committed_response.into()]);
 }
 
 #[tokio::test]

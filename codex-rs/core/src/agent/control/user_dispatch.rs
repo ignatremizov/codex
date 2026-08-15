@@ -1,0 +1,350 @@
+//! User-only admission. A successful target admission is never reported as a retryable failure.
+
+use super::response_observer::ResponseObserverStart;
+use super::*;
+use crate::agent::UserAgentInputOutcome;
+use crate::session::ObservedTurnInputSubmission;
+use codex_protocol::turn_input::NotSubmittedReason;
+use codex_protocol::turn_input::TurnInputMode;
+
+pub(crate) struct ResponseObservationSubmission {
+    pub(crate) submission_id: String,
+    pub(crate) target_turn_id: Option<String>,
+    pub(crate) input_outcome: UserAgentInputOutcome,
+    pub(crate) response_observation: ResponseObservationPolicy,
+    pub(crate) post_admission_warning: Option<String>,
+}
+
+pub(crate) struct ResumeUserInputAdmission {
+    pub(crate) input: Vec<UserInput>,
+    pub(crate) observer: SessionPresentationId,
+    pub(crate) response_observation: ResponseObservationPolicy,
+    pub(crate) admission_policy: TurnInputMode,
+    pub(crate) task_preview: Option<String>,
+}
+
+enum UserObservation {
+    Install(ResponseObservationPolicy),
+    Reserved,
+}
+
+enum UserDispatch {
+    Prompt(TurnInputMode),
+    InterruptThenPrompt,
+}
+
+struct ObservedUserInputRequest {
+    input: Vec<codex_protocol::user_input::UserInput>,
+    start_options: TurnStartOptions,
+    observer: SessionPresentationId,
+    observation: UserObservation,
+    dispatch: UserDispatch,
+    task_preview: Option<String>,
+}
+
+impl LocalAgentControl {
+    pub(super) async fn submit_user_input_to_thread_locked(
+        &self,
+        thread: &Arc<crate::CodexThread>,
+        admission: ResumeUserInputAdmission,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        self.dispatch_user_input_locked(
+            thread,
+            ObservedUserInputRequest {
+                input: admission.input,
+                start_options: TurnStartOptions::default(),
+                observer: admission.observer,
+                observation: UserObservation::Install(admission.response_observation),
+                dispatch: UserDispatch::Prompt(admission.admission_policy),
+                task_preview: admission.task_preview,
+            },
+        )
+        .await
+    }
+    pub(crate) async fn send_user_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<codex_protocol::user_input::UserInput>,
+        start_options: TurnStartOptions,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+        task_preview: Option<String>,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        self.dispatch_user_input(
+            agent_id,
+            ObservedUserInputRequest {
+                input,
+                start_options,
+                observer,
+                observation: UserObservation::Install(response_observation),
+                dispatch: UserDispatch::Prompt(TurnInputMode::StartOrSteer),
+                task_preview,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn send_idle_user_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<codex_protocol::user_input::UserInput>,
+        parent_turn_id: Option<String>,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+        task_preview: Option<String>,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        self.dispatch_user_input(
+            agent_id,
+            ObservedUserInputRequest {
+                input,
+                start_options: TurnStartOptions {
+                    parent_turn_id,
+                    ..Default::default()
+                },
+                observer,
+                observation: UserObservation::Install(response_observation),
+                dispatch: UserDispatch::Prompt(TurnInputMode::StartIfIdle),
+                task_preview,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn send_input_using_reserved_response_observation(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<codex_protocol::user_input::UserInput>,
+        parent_turn_id: Option<String>,
+        observer: SessionPresentationId,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        let task_preview = Some(render_input_preview(&input));
+        self.dispatch_user_input(
+            agent_id,
+            ObservedUserInputRequest {
+                input,
+                start_options: TurnStartOptions {
+                    parent_turn_id,
+                    ..Default::default()
+                },
+                observer,
+                observation: UserObservation::Reserved,
+                dispatch: UserDispatch::Prompt(TurnInputMode::StartIfIdle),
+                task_preview,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn interrupt_agent_with_user_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: Vec<codex_protocol::user_input::UserInput>,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+        task_preview: Option<String>,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        self.dispatch_user_input(
+            agent_id,
+            ObservedUserInputRequest {
+                input,
+                start_options: TurnStartOptions::default(),
+                observer,
+                observation: UserObservation::Install(response_observation),
+                dispatch: UserDispatch::InterruptThenPrompt,
+                task_preview,
+            },
+        )
+        .await
+    }
+
+    async fn dispatch_user_input(
+        &self,
+        agent_id: ThreadId,
+        request: ObservedUserInputRequest,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        let control = self.clone();
+        tokio::spawn(async move {
+            let state = control.upgrade()?;
+            let _lifecycle = state.acquire_live_agent_lifecycle(agent_id).await?;
+            control.require_current_agent_ownership(agent_id).await?;
+            let thread = state.get_thread(agent_id).await?;
+            control.dispatch_user_input_locked(&thread, request).await
+        })
+        .await
+        .map_err(|error| CodexErr::Fatal(format!("user input worker failed: {error}")))?
+    }
+
+    async fn dispatch_user_input_locked(
+        &self,
+        thread: &Arc<crate::CodexThread>,
+        request: ObservedUserInputRequest,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        let state = self.upgrade()?;
+        let agent_id = thread.session.thread_id();
+        let child = thread.session.presentation_id();
+        let submission = self.state.mailbox_submission(agent_id);
+        let _mailbox = Arc::clone(&submission.semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|error| CodexErr::Fatal(format!("mailbox closed: {error}")))?;
+        if !self.state.submission_is_current(agent_id, &submission) {
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        thread.session.submission_admission.check_ready()?;
+        let observer = state.get_thread(request.observer.thread_id).await?;
+        if observer.session.presentation_id() != request.observer {
+            return Err(CodexErr::ThreadNotFound(request.observer.thread_id));
+        }
+        observer.session.submission_admission.check_ready()?;
+        self.ensure_execution_capacity_for_turn_start(thread)
+            .await?;
+        let mode = match request.dispatch {
+            UserDispatch::Prompt(mode) => mode,
+            UserDispatch::InterruptThenPrompt => {
+                state
+                    .send_op_to_thread(
+                        thread,
+                        Op::Interrupt,
+                        /*parent_turn_id*/ None,
+                        /*root_turn_id*/ None,
+                    )
+                    .await?;
+                TurnInputMode::StartOrSteer
+            }
+        };
+        let _observer_admission = observer
+            .session
+            .submission_admission
+            .try_accept_completion_delivery()
+            .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".into()))?;
+        let transaction = self
+            .acquire_response_observation_transaction(request.observer)
+            .await;
+        let (policy, binding) = match request.observation {
+            UserObservation::Install(policy) => {
+                let binding = ResponseObservationBinding::ExplicitAdmission(Uuid::now_v7());
+                self.install_response_observer(
+                    &observer,
+                    thread,
+                    policy,
+                    binding,
+                    ResponseObserverStart::FutureOnly,
+                )
+                .await?;
+                if let Err(error) = self
+                    .persist_response_observation_snapshot(request.observer, child)
+                    .await
+                {
+                    self.abandon_response_observer(request.observer, child, &error.to_string());
+                    return Err(error);
+                }
+                (policy, binding)
+            }
+            UserObservation::Reserved => {
+                let policy = self
+                    .reserved_response_observation_policy(request.observer, child)
+                    .ok_or_else(|| {
+                        CodexErr::InvalidRequest("target has no reserved response policy".into())
+                    })?;
+                (policy, ResponseObservationBinding::NextTurn)
+            }
+        };
+        let last_task_message = non_empty_task_message(render_input_preview(&request.input));
+        let admitted = thread
+            .io
+            .submit_observed_turn_input(
+                thread.session.as_ref(),
+                TurnInputRequest::user_input(request.input).on_start(request.start_options),
+                mode,
+            )
+            .await;
+        let (submission_id, resolution) = match admitted {
+            Ok(ObservedTurnInputSubmission::Admitted {
+                submission_id,
+                resolution,
+            }) => (submission_id, resolution),
+            Ok(ObservedTurnInputSubmission::AdmittedWithoutObservation {
+                submission_id,
+                target_turn_id,
+                warning,
+            }) => {
+                self.abandon_response_observer(request.observer, child, &warning);
+                return Ok(ResponseObservationSubmission {
+                    submission_id,
+                    target_turn_id: Some(target_turn_id),
+                    response_observation: policy,
+                    input_outcome: UserAgentInputOutcome::Admitted,
+                    post_admission_warning: Some(format!(
+                        "{warning}; input was admitted; do not resend"
+                    )),
+                });
+            }
+            Ok(ObservedTurnInputSubmission::Indeterminate {
+                submission_id,
+                warning,
+            }) => {
+                self.abandon_response_observer(request.observer, child, &warning);
+                return Ok(ResponseObservationSubmission {
+                    submission_id,
+                    target_turn_id: None,
+                    response_observation: policy,
+                    input_outcome: UserAgentInputOutcome::Unknown,
+                    post_admission_warning: Some(format!(
+                        "{warning}; input outcome unknown; reload and reconcile before retry"
+                    )),
+                });
+            }
+            Ok(ObservedTurnInputSubmission::NotSubmitted { reason }) => {
+                if let ResponseObservationBinding::ExplicitAdmission(id) = binding {
+                    self.cancel_response_observation_admission(request.observer, child, id);
+                }
+                return Err(match reason {
+                    NotSubmittedReason::NotIdle => CodexErr::InvalidRequest(
+                        "targetActive: agent already has an active turn".into(),
+                    ),
+                    reason => CodexErr::InvalidRequest(format!(
+                        "agent input was not submitted: {reason:?}"
+                    )),
+                });
+            }
+            Err(error) => {
+                if let ResponseObservationBinding::ExplicitAdmission(id) = binding {
+                    self.cancel_response_observation_admission(request.observer, child, id);
+                }
+                return Err(error);
+            }
+        };
+        self.state
+            .update_last_task_message(agent_id, &submission, last_task_message);
+        self.bind_response_observation_turn_at_sequence(
+            request.observer,
+            child,
+            &resolution.target_turn_id,
+            binding,
+            Some((resolution.minimum_event_sequence, resolution.after_item_id)),
+            ResponseObservationBindingPublication::Deferred,
+        );
+        let result = self
+            .publish_user_task_observation(
+                &observer,
+                child,
+                Some(resolution.target_turn_id.clone()),
+                policy,
+                request.task_preview,
+                transaction,
+            )
+            .await;
+        let post_admission_warning = result.err().map(|error| {
+            self.abandon_response_observer(request.observer, child, &error.to_string());
+            format!("target input was already admitted; response observation failed: {error}; do not resend this input")
+        });
+        self.publish_response_observation_binding();
+        Ok(ResponseObservationSubmission {
+            submission_id,
+            target_turn_id: Some(resolution.target_turn_id),
+            input_outcome: UserAgentInputOutcome::Admitted,
+            response_observation: policy,
+            post_admission_warning,
+        })
+    }
+}
