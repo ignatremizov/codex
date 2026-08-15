@@ -43,6 +43,9 @@ use codex_rollout::rollout_without_exact_rollback_ranges;
 use codex_thread_store::PersistContext;
 use std::ops::ControlFlow;
 
+mod agent_alias;
+mod agent_control;
+
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 pub(super) const THREAD_LIST_MAX_LIMIT: usize = 100;
 const THREAD_LIST_MAX_EXCLUDED_IDS: usize = 100;
@@ -863,6 +866,25 @@ impl ThreadRequestProcessor {
         params: ThreadBackgroundTerminalsTerminateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.thread_background_terminals_terminate_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_alias_list(
+        &self,
+        params: AgentAliasListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.agent_alias_list_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_control(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: AgentControlParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.agent_control_response_inner(request_id, params)
             .await
             .map(|response| Some(response.into()))
     }

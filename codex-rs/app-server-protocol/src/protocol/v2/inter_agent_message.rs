@@ -21,7 +21,7 @@ const SUB_AGENT_COMMENTARY_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 
 #[derive(Deserialize)]
 struct SubAgentCommentaryEnvelope {
-    agent_path: String,
+    agent_path: Option<String>,
     agent_id: ThreadId,
     message: String,
 }
@@ -76,11 +76,15 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
 
 pub(super) fn transcript_text(author: &str, recipient: &str, text: &str) -> String {
     if let Some(SubAgentCommentaryEnvelope {
-        agent_path,
-        agent_id,
-        message,
-    }) = sub_agent_commentary_envelope(text).filter(|envelope| envelope.agent_path == author)
-    {
+        agent_id, message, ..
+    }) = sub_agent_commentary_envelope(text).filter(|envelope| {
+        match envelope.agent_path.as_deref() {
+            Some(path) => path == author,
+            // V1 uses a root communication route, but its observer-relative aliases
+            // carry a separate canonical UUID, not an invented V2 task path.
+            None => author == codex_protocol::AgentPath::ROOT,
+        }
+    }) {
         return format!(
             "{SUB_AGENT_COMMENTARY_TRANSCRIPT_PREFIX}{agent_id}{SUB_AGENT_COMMENTARY_TRANSCRIPT_SEPARATOR}{message}"
         );

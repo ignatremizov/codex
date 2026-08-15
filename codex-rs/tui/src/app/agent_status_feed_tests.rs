@@ -3,6 +3,17 @@ use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use pretty_assertions::assert_eq;
+
+#[test]
+fn source_control_audit_is_not_reported_as_the_agents_own_progress() {
+    let item = ThreadItem::from(codex_protocol::items::TurnItem::UserAgentControl(
+        codex_protocol::items::UserAgentControlItem::succeeded(
+            codex_protocol::items::UserAgentControlAction::Prompt,
+        ),
+    ));
+    assert_eq!(activity_summary(&item), None);
+}
 
 #[test]
 fn agent_status_uses_bounded_buffered_activity() {

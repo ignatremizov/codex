@@ -139,7 +139,7 @@ fn persisted_event_msg(
         | EventMsg::TurnComplete(_)
         | EventMsg::ThreadSettingsApplied(_) => Some(Cow::Borrowed(ev)),
 
-        // Only persist these legacy events when the thread's history mode is Legacy.
+        // Only persist these older events when the thread is non-paginated.
         // New, paginated rollouts persist ItemCompleted events with TurnItems.
         EventMsg::UserMessage(_)
         | EventMsg::AgentMessage(_)
@@ -245,6 +245,7 @@ fn persisted_item_completed_event<'a>(
                     | TurnItem::Plan(_)
                     | TurnItem::Extension(ExtensionItem::Sleep(_))
                     | TurnItem::CollabAgentToolCall(_)
+                    | TurnItem::UserAgentControl(_)
             ) || matches!(
                 &event.item,
                 TurnItem::SubAgentActivity(item)

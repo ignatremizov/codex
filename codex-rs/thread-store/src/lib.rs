@@ -61,6 +61,7 @@ pub use store::PersistContext;
 pub use store::ThreadStore;
 pub use store::ThreadStoreFuture;
 pub use store::ThreadStoreResumePreparation;
+pub use store::ThreadWriterReservation;
 pub use thread_attachments::AddThreadAttachmentParams;
 pub use thread_attachments::ListThreadAttachmentThreadsParams;
 pub use thread_attachments::ListThreadAttachmentsParams;

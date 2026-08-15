@@ -106,6 +106,11 @@ fn select(
     positions: Vec<usize>,
     records: Vec<(usize, Option<usize>, RolloutLine)>,
 ) -> ThreadStoreResult<Vec<RolloutLine>> {
+    let mut provenance = super::context_provenance::ContextProvenance::default();
+    for item in &canonical {
+        provenance.observe(item);
+    }
+    let proofs = provenance.finish();
     let mut intervals = Vec::new();
     for (index, item) in canonical.iter().enumerate() {
         if let RolloutItem::EventMsg(EventMsg::ThreadRolledBack(event)) = item
@@ -143,7 +148,7 @@ fn select(
     }
     // Exact ranges have already been applied. Only surviving count-only markers reach either
     // forward ownership replay or reverse compaction replay, so mixed histories do not double pop.
-    let mut planner = RollbackPlanner::new();
+    let mut planner = RollbackPlanner::new(proofs);
     for line in &lines {
         planner.observe(line)?;
     }

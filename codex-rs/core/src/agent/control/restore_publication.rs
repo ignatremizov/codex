@@ -5,7 +5,7 @@ use crate::codex_thread::CodexThread;
 use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 
 impl LocalAgentControl {
-    pub(super) async fn publish_restored_agent(
+    pub(crate) async fn publish_restored_agent(
         &self,
         thread: &Arc<CodexThread>,
         parent: Option<&Arc<CodexThread>>,
@@ -40,12 +40,15 @@ impl LocalAgentControl {
         }
         let graph = state.agent_graph_store();
         let parent_id = thread.session_source.parent_thread_id();
-        let checked_graph = if thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+        let checked_graph = if (thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+            || graph
+                .as_ref()
+                .is_some_and(|graph| graph.supports_agent_aliases()))
             && let Some(parent_id) = parent_id
         {
             let graph = graph.ok_or_else(|| {
                 CodexErr::InvalidRequest(
-                    "cannot restore a V2 child without its persisted agent graph".to_string(),
+                    "cannot restore a child without its persisted agent graph".to_string(),
                 )
             })?;
             let open = graph
@@ -61,7 +64,7 @@ impl LocalAgentControl {
                     .map_err(|error| CodexErr::Fatal(error.to_string()))?;
                 if !closed.contains(&thread_id) {
                     return Err(CodexErr::InvalidRequest(
-                        "cannot restore a V2 child without its persisted spawn edge".to_string(),
+                        "cannot restore a child without its persisted spawn edge".to_string(),
                     ));
                 }
                 ThreadSpawnEdgeStatus::Closed
@@ -143,7 +146,7 @@ impl LocalAgentControl {
         Ok(residency_pin)
     }
 
-    pub(super) async fn cleanup_unpublished_restoration(
+    pub(crate) async fn cleanup_unpublished_restoration(
         &self,
         thread: &Arc<CodexThread>,
         error: CodexErr,
@@ -153,7 +156,15 @@ impl LocalAgentControl {
             .session
             .retire_agent_status_observers(crate::session::AgentStatusRetirement::RestoreRollback);
         let shutdown = thread.shutdown_and_wait().await;
-        if shutdown.is_err() {
+        if let Err(error) = &shutdown {
+            self.runtime.record_shutdown_failure(
+                crate::thread_manager::AgentTreeShutdownFailure::operation_failed(
+                    "unpublished_runtime_cleanup",
+                    "stop_child",
+                    Some(thread.session.thread_id()),
+                    codex_protocol::error::CodexErrKind::from(error).into(),
+                ),
+            );
             // Retain the runtime and the caller's restoration gate until the session-loop
             // barrier completes. A failed shutdown request is not proof of writer release.
             thread.wait_until_terminated().await;

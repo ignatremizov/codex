@@ -1,0 +1,59 @@
+//! Canonical transcript inspection from the `/agent` control pane.
+
+use super::App;
+use crate::app_server_session::AppServerSession;
+use crate::pager_overlay::Overlay;
+use crate::thread_transcript::RawReasoningVisibility;
+use crate::thread_transcript::load_session_transcript;
+use crate::tui;
+use codex_protocol::ThreadId;
+
+impl App {
+    pub(super) async fn inspect_agent_transcript(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        let raw_reasoning_visibility = if self.config.show_raw_agent_reasoning {
+            RawReasoningVisibility::Visible
+        } else {
+            RawReasoningVisibility::Hidden
+        };
+        let transcript = load_session_transcript(
+            app_server,
+            thread_id,
+            raw_reasoning_visibility,
+            Some(&self.config),
+        )
+        .await;
+        let cells = match transcript {
+            Ok(cells) => cells,
+            Err(error) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to inspect agent {thread_id}: {error}"));
+                return;
+            }
+        };
+
+        let _ = tui.enter_alt_screen();
+        let mut overlay = Overlay::new_transcript(
+            cells,
+            self.keymap.pager.clone(),
+            self.local_settings
+                .copy_on_select(&codex_terminal_detection::terminal_info()),
+            self.local_settings
+                .tui
+                .mouse_scroll_speed
+                .unwrap_or(/*default*/ 1.0),
+        )
+        .with_copy_on_select_clear_selection(
+            self.local_settings.tui.copy_on_select_clear_selection,
+        );
+        if let Overlay::Transcript(view) = &mut overlay {
+            view.set_keymap_bindings(&self.keymap);
+        }
+        self.overlay = Some(overlay);
+        tui.frame_requester().schedule_frame();
+    }
+}
