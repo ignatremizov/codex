@@ -246,7 +246,13 @@ impl LocalAgentControl {
         tokio::spawn(async move {
             Box::pin(control.spawn_agent_owned(config, initial_input, session_source, options))
                 .await
-                .map(|spawned| spawned.agent)
+                .and_then(|spawned| match spawned.post_admission_warning {
+                    Some(warning) => Err(CodexErr::InvalidRequest(format!(
+                        "agent {} exists and its input must not be resent: {warning}",
+                        spawned.agent.thread_id,
+                    ))),
+                    None => Ok(spawned.agent),
+                })
         })
         .await
         .map_err(|error| CodexErr::Fatal(format!("agent spawn worker failed: {error}")))?
@@ -259,6 +265,13 @@ impl LocalAgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<SpawnedAgent> {
+        if options.response_observation.target_messages()
+            && config.multi_agent_version_from_features() == MultiAgentVersion::V2
+        {
+            return Err(CodexErr::UnsupportedOperation(
+                "this target does not support scoped reply routes; omit m".into(),
+            ));
+        }
         let state = self.upgrade()?;
         let parent = match session_source
             .as_ref()
@@ -557,14 +570,20 @@ impl LocalAgentControl {
                 {
                     match state.get_thread(parent_id).await {
                         Ok(observer) => {
-                            self.send_input_observing_response(
+                            self.send_user_input_observing_response(
                                 new_thread.thread_id,
                                 input,
                                 start_options,
                                 observer.session.presentation_id(),
                                 options.response_observation,
+                                /*task_preview*/ None,
                             )
                             .await
+                            .map(|submission| {
+                                input_outcome = Some(submission.input_outcome);
+                                post_admission_warning = submission.post_admission_warning;
+                                submission.submission_id
+                            })
                         }
                         Err(error) => Err(error),
                     }

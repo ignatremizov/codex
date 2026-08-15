@@ -46,6 +46,7 @@ fn start_turn(state: &mut ThreadState, turn_id: &str) {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }),
     );
 }
@@ -177,6 +178,7 @@ async fn receipt_publishes_once_and_cannot_complete_a_same_id_replacement() -> R
             cwd: item.cwd,
             process_id: None,
             source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::Declined,
             command_actions: item.command_actions,
             aggregated_output: None,
@@ -463,10 +465,11 @@ async fn unobserved_or_closed_output_retires_only_the_owned_receipt() -> Result<
         let (fixture, receiver) = Fixture::new(connections).await?;
         drop(receiver);
         fixture.complete(Some(fixture.receipt.clone())).await;
-        let state = fixture.state.lock().await;
-        assert!(state.turn_summary.command_execution_receipts.is_empty());
-        assert!(state.turn_summary.command_execution_started.is_empty());
-        drop(state);
+        {
+            let state = fixture.state.lock().await;
+            assert!(state.turn_summary.command_execution_receipts.is_empty());
+            assert!(state.turn_summary.command_execution_started.is_empty());
+        }
         fixture.conversation.shutdown_and_wait().await?;
     }
     Ok(())

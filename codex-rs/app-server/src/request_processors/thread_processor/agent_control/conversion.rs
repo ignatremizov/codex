@@ -1,13 +1,19 @@
 use super::*;
+use codex_app_server_protocol::AgentForkMode;
 
-pub(super) fn agent_input_outcome(outcome: UserAgentInputOutcome) -> AgentInputOutcome {
+pub(in crate::request_processors::thread_processor) fn agent_input_outcome(
+    outcome: UserAgentInputOutcome,
+) -> AgentInputOutcome {
     match outcome {
         UserAgentInputOutcome::Admitted => AgentInputOutcome::Admitted,
+        UserAgentInputOutcome::Queued => AgentInputOutcome::Queued,
         UserAgentInputOutcome::Unknown => AgentInputOutcome::Unknown,
     }
 }
 
-pub(super) fn agent_control_error(err: CodexErr) -> JSONRPCErrorError {
+pub(in crate::request_processors::thread_processor) fn agent_control_error(
+    err: CodexErr,
+) -> JSONRPCErrorError {
     match err.details() {
         CodexErrorDetails::InvalidRequest(message)
             if message.starts_with("queued input requires an idle target;") =>
@@ -57,10 +63,11 @@ pub(super) fn user_agent_control_item(
                     CoreUserAgentForkMode::LastNTurns { turns: *turns }
                 }
             });
-            let (observe_commentary, final_response) =
-                agent_control_response_observation(*response_handling);
-            item.observe_commentary = observe_commentary;
-            item.final_response = final_response;
+            apply_agent_control_response_handling(
+                &mut item,
+                *response_handling,
+                /*queued*/ false,
+            );
         }
         AgentControlAction::Prompt {
             target,
@@ -74,10 +81,11 @@ pub(super) fn user_agent_control_item(
         } => {
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
             item.prompt_preview = agent_control_prompt_preview(input);
-            let (observe_commentary, final_response) =
-                agent_control_response_observation(*response_handling);
-            item.observe_commentary = observe_commentary;
-            item.final_response = final_response;
+            apply_agent_control_response_handling(
+                &mut item,
+                *response_handling,
+                matches!(action, AgentControlAction::QueuedPrompt { .. }),
+            );
         }
         AgentControlAction::ReservedPrompt { target: _, input } => {
             item.authored_selector = authored_selector.map(ToOwned::to_owned);
@@ -88,10 +96,11 @@ pub(super) fn user_agent_control_item(
             response_handling,
         } => {
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
-            let (observe_commentary, final_response) =
-                agent_control_response_observation(*response_handling);
-            item.observe_commentary = observe_commentary;
-            item.final_response = final_response;
+            apply_agent_control_response_handling(
+                &mut item,
+                *response_handling,
+                /*queued*/ false,
+            );
         }
         AgentControlAction::Interrupt {
             target,
@@ -101,14 +110,31 @@ pub(super) fn user_agent_control_item(
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
             item.prompt_preview = input.as_deref().and_then(agent_control_prompt_preview);
             if input.is_some() {
-                let (observe_commentary, final_response) =
-                    agent_control_response_observation(*response_handling);
-                item.observe_commentary = observe_commentary;
-                item.final_response = final_response;
+                apply_agent_control_response_handling(
+                    &mut item,
+                    *response_handling,
+                    /*queued*/ false,
+                );
             }
         }
-        AgentControlAction::Close { target, .. } => {
+        AgentControlAction::Close {
+            target,
+            response_handling,
+        } => {
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
+            let response_handling = response_handling.map(|response_handling| {
+                AgentResponseHandling::new(
+                    /*commentary*/ false,
+                    response_handling.final_response,
+                    /*target_messages*/ false,
+                    response_handling.queue_input,
+                )
+            });
+            apply_agent_control_response_handling(
+                &mut item,
+                response_handling,
+                response_handling.is_some_and(|handling| handling.queue_input),
+            );
         }
         AgentControlAction::Observe {
             target,
@@ -127,21 +153,26 @@ pub(super) fn user_agent_control_item(
 }
 
 pub(super) fn apply_agent_control_response_handling(
+    item: &mut UserAgentControlItem,
     response_handling: Option<AgentResponseHandling>,
-) -> (Option<bool>, Option<AgentResponseFinalDelivery>) {
-    let (observe_commentary, final_response) = match response_handling {
-        None => (false, AgentResponseFinalDelivery::Passive),
-        Some(AgentResponseHandling::Commentary) => (true, AgentResponseFinalDelivery::Passive),
-        Some(AgentResponseHandling::Wake) => (false, AgentResponseFinalDelivery::Wake),
-        Some(AgentResponseHandling::Presentation) => {
-            (false, AgentResponseFinalDelivery::PresentationOnly)
-        }
-        Some(AgentResponseHandling::CommentaryWake) => (true, AgentResponseFinalDelivery::Wake),
-        Some(AgentResponseHandling::CommentaryPresentation) => {
-            (true, AgentResponseFinalDelivery::PresentationOnly)
-        }
+    queued: bool,
+) {
+    let response_handling = response_handling.unwrap_or(AgentResponseHandling::new(
+        /*commentary*/ false,
+        AgentFinalResponseHandling::Passive,
+        /*target_messages*/ false,
+        /*queue_input*/ false,
+    ));
+    let final_response = match response_handling.final_response {
+        AgentFinalResponseHandling::None => AgentResponseFinalDelivery::None,
+        AgentFinalResponseHandling::Passive => AgentResponseFinalDelivery::Passive,
+        AgentFinalResponseHandling::Wake => AgentResponseFinalDelivery::Wake,
+        AgentFinalResponseHandling::Presentation => AgentResponseFinalDelivery::PresentationOnly,
     };
-    (Some(observe_commentary), Some(final_response))
+    item.observe_commentary = Some(response_handling.commentary);
+    item.final_response = Some(final_response);
+    item.target_messages = Some(response_handling.target_messages);
+    item.queue_input = Some(response_handling.queue_input || queued);
 }
 
 fn agent_control_prompt_preview(input: &[V2UserInput]) -> Option<String> {
@@ -181,15 +212,35 @@ fn agent_control_prompt_preview(input: &[V2UserInput]) -> Option<String> {
 pub(super) fn user_agent_response_handling(
     response_handling: AgentResponseHandling,
 ) -> UserAgentResponseHandling {
-    match response_handling {
-        AgentResponseHandling::Commentary => UserAgentResponseHandling::Commentary,
-        AgentResponseHandling::Wake => UserAgentResponseHandling::Wake,
-        AgentResponseHandling::Presentation => UserAgentResponseHandling::Presentation,
-        AgentResponseHandling::CommentaryWake => UserAgentResponseHandling::CommentaryWake,
-        AgentResponseHandling::CommentaryPresentation => {
-            UserAgentResponseHandling::CommentaryPresentation
-        }
-    }
+    let final_response = match response_handling.final_response {
+        AgentFinalResponseHandling::None => UserAgentFinalResponseHandling::None,
+        AgentFinalResponseHandling::Passive => UserAgentFinalResponseHandling::Passive,
+        AgentFinalResponseHandling::Wake => UserAgentFinalResponseHandling::Wake,
+        AgentFinalResponseHandling::Presentation => UserAgentFinalResponseHandling::Presentation,
+    };
+    UserAgentResponseHandling::from_parts(
+        response_handling.commentary,
+        final_response,
+        response_handling.target_messages,
+        response_handling.queue_input,
+    )
+}
+
+pub(in crate::request_processors::thread_processor) fn agent_response_handling(
+    response_handling: UserAgentResponseHandling,
+) -> AgentResponseHandling {
+    let final_response = match response_handling.final_response() {
+        UserAgentFinalResponseHandling::None => AgentFinalResponseHandling::None,
+        UserAgentFinalResponseHandling::Passive => AgentFinalResponseHandling::Passive,
+        UserAgentFinalResponseHandling::Wake => AgentFinalResponseHandling::Wake,
+        UserAgentFinalResponseHandling::Presentation => AgentFinalResponseHandling::Presentation,
+    };
+    AgentResponseHandling::new(
+        response_handling.commentary(),
+        final_response,
+        response_handling.target_messages(),
+        response_handling.queue_input(),
+    )
 }
 
 pub(super) fn user_agent_final_response_handling(

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use app_test_support::create_fake_parented_rollout_with_explicit_thread_id;
 use codex_app_server_protocol::AgentAlias;
 use codex_app_server_protocol::AgentAliasListParams;
 use codex_app_server_protocol::AgentAliasListResponse;
@@ -16,8 +17,10 @@ use codex_app_server_protocol::AgentObservationMode;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ItemCompletedNotification;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -43,11 +46,12 @@ use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use serde_json::json;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::common::DEFAULT_READ_TIMEOUT;
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
 async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result<()> {
@@ -64,7 +68,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     }))?;
     let _parent_turn = responses::mount_sse_once_match(
         &server,
-        |request| request.body_contains_text(PARENT_PROMPT),
+        |request: &wiremock::Request| responses::body_contains(request, PARENT_PROMPT),
         responses::sse(vec![
             responses::ev_response_created("resp-agent-alias-parent"),
             responses::ev_function_call_with_namespace(
@@ -79,8 +83,9 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     .await;
     let _child_turn = responses::mount_sse_once_match(
         &server,
-        |request| {
-            request.body_contains_text(CHILD_PROMPT) && !request.body_contains_text(SPAWN_CALL_ID)
+        |request: &wiremock::Request| {
+            responses::body_contains(request, CHILD_PROMPT)
+                && !responses::body_contains(request, SPAWN_CALL_ID)
         },
         responses::sse(vec![
             responses::ev_response_created("resp-agent-alias-child"),
@@ -91,7 +96,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     .await;
     let _parent_follow_up = responses::mount_sse_once_match(
         &server,
-        |request| request.body_contains_text(SPAWN_CALL_ID),
+        |request: &wiremock::Request| responses::body_contains(request, SPAWN_CALL_ID),
         responses::sse(vec![
             responses::ev_response_created("resp-agent-alias-follow-up"),
             responses::ev_assistant_message("msg-agent-alias-follow-up", "parent done"),
@@ -100,15 +105,15 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     )
     .await;
     const DIRECT_PROMPT: &str = "user-authored direct prompt";
-    let direct_prompt_turn = responses::mount_sse_once_match(
+    let direct_prompt_turn = responses::mount_sse_once_match_with_delay(
         &server,
-        |request| request.body_contains_text(DIRECT_PROMPT),
+        |request: &wiremock::Request| responses::body_contains(request, DIRECT_PROMPT),
         responses::sse(vec![
             responses::ev_response_created("resp-agent-control-prompt"),
             responses::ev_assistant_message("msg-agent-control-prompt", "direct prompt done"),
             responses::ev_completed("resp-agent-control-prompt"),
-        ])
-        .set_delay(std::time::Duration::from_secs(/*secs*/ 5)),
+        ]),
+        Duration::from_secs(/*secs*/ 5),
     )
     .await;
 
@@ -151,15 +156,11 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
                 ..
             } = completed.item
                 && id == SPAWN_CALL_ID
-            {
-                let child_thread_id = receiver_thread_ids
-                    .first()
-                    .cloned()
-                    .expect("spawn completion child id");
-                let child_nickname = receiver_agents
+                && let Some(child_thread_id) = receiver_thread_ids.first().cloned()
+                && let Some(child_nickname) = receiver_agents
                     .first()
                     .and_then(|agent| agent.agent_nickname.clone())
-                    .expect("spawn completion nickname");
+            {
                 return Ok::<_, anyhow::Error>((child_thread_id, child_nickname));
             }
         }
@@ -250,6 +251,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     let AgentControlOutcome::Prompted {
         target_thread_id,
         submission_id,
+        queued,
         post_admission_warning,
     } = response.outcome
     else {
@@ -257,6 +259,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     };
     assert_eq!(target_thread_id, child_thread_id);
     assert!(!submission_id.is_empty());
+    assert!(!queued);
     assert_eq!(post_admission_warning, None);
     let prompt_audit = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
@@ -292,6 +295,8 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             fork_mode: None,
             observe_commentary: Some(false),
             final_response: Some(AgentFinalResponseHandling::Wake),
+            target_messages: Some(false),
+            queue_input: Some(false),
             status: UserAgentControlStatus::Succeeded,
             error: None,
         }
@@ -354,16 +359,20 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             fork_mode: None,
             observe_commentary: Some(false),
             final_response: Some(AgentFinalResponseHandling::Presentation),
+            target_messages: None,
+            queue_input: None,
             status: UserAgentControlStatus::Succeeded,
             error: None,
         }
     );
-    let source_history = app
+    let request_id = app
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id.clone(),
             include_turns: true,
         })
         .await?;
+    let source_history: ThreadReadResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app.read_response(request_id)).await??;
     let persisted_controls = source_history
         .thread
         .turns
@@ -375,12 +384,12 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         persisted_controls,
         vec![prompt_audit.clone(), observe_audit.clone()]
     );
-    direct_prompt_turn.expect(1).await;
+    direct_prompt_turn.single_request();
 
     const USER_SPAWN_PROMPT: &str = "user-authored child spawn";
     let user_spawn_turn = responses::mount_sse_once_match(
         &server,
-        |request| request.body_contains_text(USER_SPAWN_PROMPT),
+        |request: &wiremock::Request| responses::body_contains(request, USER_SPAWN_PROMPT),
         responses::sse(vec![
             responses::ev_response_created("resp-agent-control-spawn"),
             responses::ev_assistant_message("msg-agent-control-spawn", "spawned child done"),
@@ -420,14 +429,14 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     assert_eq!(agent_ref.as_deref(), Some("3"));
     assert!(nickname.is_some());
     assert_eq!(post_admission_warning, None);
-    user_spawn_turn.expect(1).await;
+    user_spawn_turn.single_request();
 
     const CLOSE_PROMPT: &str = "close the child through its durable ref";
     const CLOSE_CALL_ID: &str = "close-agent-alias";
     let close_args = serde_json::to_string(&json!({ "target": "2" }))?;
     let _close_turn = responses::mount_sse_once_match(
         &server,
-        |request| request.body_contains_text(CLOSE_PROMPT),
+        |request: &wiremock::Request| responses::body_contains(request, CLOSE_PROMPT),
         responses::sse(vec![
             responses::ev_response_created("resp-agent-alias-close"),
             responses::ev_function_call_with_namespace(
@@ -442,7 +451,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     .await;
     let _close_follow_up = responses::mount_sse_once_match(
         &server,
-        |request| request.body_contains_text(CLOSE_CALL_ID),
+        |request: &wiremock::Request| responses::body_contains(request, CLOSE_CALL_ID),
         responses::sse(vec![
             responses::ev_response_created("resp-agent-alias-close-follow-up"),
             responses::ev_assistant_message("msg-agent-alias-close-follow-up", "child closed"),
@@ -508,10 +517,10 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             ..Default::default()
         })
         .await?;
-    let foreign_prompt: Result<AgentControlResponse, _> = app
-        .request(|request_id| ClientRequest::AgentControl {
-            request_id,
-            params: AgentControlParams {
+    let request_id = app
+        .send_raw_request(
+            "agent/control",
+            Some(serde_json::to_value(AgentControlParams {
                 source_thread_id: thread.id.clone(),
                 authored_selector: Some(foreign.thread.id.clone()),
                 action: AgentControlAction::Prompt {
@@ -522,13 +531,18 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
                     }],
                     response_handling: None,
                 },
-            },
-        })
-        .await;
-    let error = foreign_prompt.expect_err("foreign target must require explicit adoption");
+            })?),
+        )
+        .await?;
+    let error = app
+        .read_stream_until_error_message(RequestId::Integer(request_id))
+        .await?;
     assert!(
-        error.to_string().contains("is not controlled by this root"),
-        "unexpected foreign-target error: {error}"
+        error
+            .error
+            .message
+            .contains("is not controlled by this root"),
+        "unexpected foreign-target error: {error:?}"
     );
     let rejected_audit = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
@@ -565,6 +579,8 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             fork_mode: None,
             observe_commentary: Some(false),
             final_response: Some(AgentFinalResponseHandling::Passive),
+            target_messages: Some(false),
+            queue_input: Some(false),
             status: UserAgentControlStatus::Failed,
             error: Some(format!(
                 "agent {} is not controlled by this root; use resume_agent to adopt it",
@@ -578,7 +594,9 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
 #[tokio::test]
 async fn unaliased_legacy_child_alias_list_uses_persisted_root() -> Result<()> {
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new("http://127.0.0.1:1").write(codex_home.path())?;
+    MockResponsesConfig::new("http://127.0.0.1:1")
+        .enable_feature(Feature::Sqlite)
+        .write(codex_home.path())?;
     let sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
     let state_db = StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
     let store = LocalThreadStore::new(
@@ -650,6 +668,36 @@ async fn unaliased_legacy_child_alias_list_uses_persisted_root() -> Result<()> {
             },
         })
         .await?;
+    create_fake_parented_rollout_with_explicit_thread_id(
+        codex_home.path(),
+        "2025-01-05T10-00-00",
+        "2025-01-05T10:00:00Z",
+        "Saved root message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        ProtocolSessionSource::Cli,
+        root_thread_id,
+        root_thread_id.into(),
+        /*parent_thread_id*/ None,
+    )?;
+    create_fake_parented_rollout_with_explicit_thread_id(
+        codex_home.path(),
+        "2025-01-05T11-00-00",
+        "2025-01-05T11:00:00Z",
+        "Saved child message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        ProtocolSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: root_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: Some("legacy-worker".to_string()),
+            agent_role: Some("worker".to_string()),
+        }),
+        child_thread_id,
+        child_thread_id.into(),
+        /*parent_thread_id*/ Some(root_thread_id),
+    )?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()

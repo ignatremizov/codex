@@ -6,6 +6,7 @@ use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentInputPresentation;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::turn_input::TurnStartOptions;
@@ -29,6 +30,10 @@ pub enum TurnInput {
         client_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         acceptance_order: Option<u64>,
+    },
+    AgentInput {
+        content: Vec<UserInput>,
+        presentation: AgentInputPresentation,
     },
     FunctionCallOutput(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
     // Preserve the existing serialized format while carrying injection API metadata
@@ -67,6 +72,20 @@ mod turn_input_response_item {
     {
         ResponseItem::deserialize(deserializer).map(ResponseItemEnvelope::new)
     }
+}
+
+impl TurnInput {
+    pub(crate) fn is_prompt(&self) -> bool {
+        matches!(self, Self::UserInput { .. } | Self::AgentInput { .. })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum PromptInputKind {
+    User,
+    Agent {
+        presentation: AgentInputPresentation,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,7 +135,14 @@ pub(crate) struct InputQueue {
     pub(super) completion_commit_changed: tokio::sync::Notify,
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox: Mutex<MailboxState>,
-    idle_pending_input: Mutex<Vec<TurnInput>>,
+    idle_pending_input: Mutex<QueuedTurnInput>,
+}
+
+#[derive(Default)]
+struct QueuedTurnInput {
+    items: Vec<TurnInput>,
+    deferred: Vec<TurnInput>,
+    start_options: TurnStartOptions,
 }
 
 struct PendingMailboxCommunication {
@@ -142,7 +168,7 @@ impl InputQueue {
             completion_commit_changed: tokio::sync::Notify::new(),
             activity_tx,
             mailbox: Mutex::new(MailboxState::default()),
-            idle_pending_input: Mutex::new(Vec::new()),
+            idle_pending_input: Mutex::new(QueuedTurnInput::default()),
         }
     }
 
@@ -213,6 +239,7 @@ impl InputQueue {
                     TurnInput::InterAgentCommunication(communication) => communication.id.clone(),
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
+                    | TurnInput::AgentInput { .. }
                     | TurnInput::ResponseItem(_) => None,
                 })
                 .collect()
@@ -231,26 +258,55 @@ impl InputQueue {
     }
 
     pub(crate) async fn queued_turn_inputs(&self) -> Vec<TurnInput> {
-        self.idle_pending_input.lock().await.clone()
+        let queued = self.idle_pending_input.lock().await;
+        queued
+            .items
+            .iter()
+            .chain(&queued.deferred)
+            .cloned()
+            .collect()
     }
 
     pub(crate) async fn queue_turn_inputs(&self, input: Vec<TurnInput>) {
-        self.idle_pending_input.lock().await.extend(input);
+        self.idle_pending_input.lock().await.items.extend(input);
     }
 
     pub(crate) async fn take_queued_turn_inputs(&self) -> Vec<TurnInput> {
-        std::mem::take(&mut *self.idle_pending_input.lock().await)
+        self.take_queued_items_for_next_turn().await.0
+    }
+
+    pub(crate) async fn queue_turn_inputs_for_next_turn(
+        &self,
+        input: Vec<TurnInput>,
+        start_options: TurnStartOptions,
+    ) {
+        let mut queued = self.idle_pending_input.lock().await;
+        if !input.is_empty() && queued.deferred.is_empty() {
+            queued.start_options = start_options;
+        }
+        queued.deferred.extend(input);
+    }
+
+    pub(crate) async fn take_queued_items_for_next_turn(
+        &self,
+    ) -> (Vec<TurnInput>, TurnStartOptions) {
+        let mut queued = std::mem::take(&mut *self.idle_pending_input.lock().await);
+        queued.items.extend(queued.deferred);
+        (queued.items, queued.start_options)
     }
 
     pub(crate) async fn has_queued_turn_trigger(&self) -> bool {
-        self.idle_pending_input
-            .lock()
-            .await
+        let queued = self.idle_pending_input.lock().await;
+        queued
+            .items
             .iter()
+            .chain(&queued.deferred)
             .any(|input| match input {
                 TurnInput::InterAgentCommunication(mail) => mail.trigger_turn,
                 TurnInput::ResponseItem(_) => !super::mcp_prompt::is_mcp_use_input(input),
-                TurnInput::UserInput { .. } | TurnInput::FunctionCallOutput(_) => true,
+                TurnInput::UserInput { .. }
+                | TurnInput::AgentInput { .. }
+                | TurnInput::FunctionCallOutput(_) => true,
             })
     }
 
@@ -306,7 +362,9 @@ impl InputQueue {
             let mut queued_input = self.idle_pending_input.lock().await;
             let mut completion_mails = Vec::new();
             let mut retained_input = Vec::new();
-            for input in std::mem::take(&mut *queued_input) {
+            let deferred = std::mem::take(&mut queued_input.deferred);
+            queued_input.items.extend(deferred);
+            for input in std::mem::take(&mut queued_input.items) {
                 match input {
                     TurnInput::InterAgentCommunication(communication)
                         if completion_context_response_item_id(&communication).is_some() =>
@@ -320,7 +378,10 @@ impl InputQueue {
                     input => retained_input.push(input),
                 }
             }
-            *queued_input = retained_input;
+            queued_input.items = retained_input;
+            if queued_input.items.is_empty() {
+                queued_input.start_options = TurnStartOptions::default();
+            }
             completion_mails
         };
         let mut mailbox = self.mailbox.lock().await;
@@ -531,6 +592,7 @@ impl InputQueue {
                     }
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
+                    | TurnInput::AgentInput { .. }
                     | TurnInput::ResponseItem(_)
                     | TurnInput::InterAgentCommunication(_) => None,
                 })
@@ -627,7 +689,7 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> (Vec<TurnInput>, TurnStartOptions) {
-        let (pending_input, accepts_mailbox_delivery, mcp_boundary) = {
+        let (pending_input, accepts_mailbox_delivery, mcp_boundary, between_turns) = {
             let mut active = active_turn.lock().await;
             match active.as_mut() {
                 Some(active_turn) => {
@@ -645,18 +707,33 @@ impl InputQueue {
                     } else {
                         Vec::new()
                     };
-                    (pending_input, accepts_mailbox_delivery, boundary.is_some())
+                    (
+                        pending_input,
+                        accepts_mailbox_delivery,
+                        boundary.is_some(),
+                        active_turn.task.is_none() && !active_turn.terminal_pending,
+                    )
                 }
-                None => (Vec::new(), true, false),
+                None => (Vec::new(), true, false, true),
             }
         };
         if !accepts_mailbox_delivery || mcp_boundary {
             return (pending_input, TurnStartOptions::default());
         }
-        let mut queued = self.take_queued_turn_inputs().await;
+        let (mut queued, queued_options) = if between_turns {
+            self.take_queued_items_for_next_turn().await
+        } else {
+            (
+                std::mem::take(&mut self.idle_pending_input.lock().await.items),
+                TurnStartOptions::default(),
+            )
+        };
         queued.extend(pending_input);
         let pending_input = queued;
-        let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
+        let (mailbox_items, mut start_options) = self.drain_mailbox_input_items().await;
+        if queued_options != TurnStartOptions::default() {
+            start_options = queued_options;
+        }
         if pending_input.is_empty() {
             (mailbox_items, start_options)
         } else {
@@ -731,7 +808,9 @@ impl TurnInputQueue {
         self.items.iter().any(|input| {
             matches!(
                 input,
-                TurnInput::UserInput { .. } | TurnInput::FunctionCallOutput(_)
+                TurnInput::UserInput { .. }
+                    | TurnInput::AgentInput { .. }
+                    | TurnInput::FunctionCallOutput(_)
             )
         })
     }
@@ -742,6 +821,7 @@ mod tests {
     use super::*;
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
+    use codex_protocol::models::ContentItem;
     use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
@@ -1271,6 +1351,90 @@ mod tests {
                 TurnStartOptions::default(),
             )
         );
+    }
+
+    #[tokio::test]
+    async fn queued_turn_inputs_keep_the_trigger_that_first_requested_the_turn() {
+        let input_queue = InputQueue::new();
+        let response_item = |text: &str| {
+            TurnInput::ResponseItem(
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: text.to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            )
+        };
+        input_queue
+            .queue_turn_inputs_for_next_turn(
+                vec![response_item("first")],
+                TurnStartOptions {
+                    turn_trigger: Some("agent_wake".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        input_queue
+            .queue_turn_inputs_for_next_turn(
+                vec![response_item("second")],
+                TurnStartOptions {
+                    turn_trigger: Some("user_shell_wake".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert_eq!(
+            input_queue.take_queued_items_for_next_turn().await,
+            (
+                vec![response_item("first"), response_item("second")],
+                TurnStartOptions {
+                    turn_trigger: Some("agent_wake".to_string()),
+                    ..Default::default()
+                },
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_mail_waits_for_the_next_turn_boundary() {
+        let input_queue = InputQueue::new();
+        let mut mail = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "queued completion",
+            /*trigger_turn*/ true,
+        );
+        mail.defer_to_next_turn = true;
+        let expected = vec![TurnInput::InterAgentCommunication(mail)];
+        let options = TurnStartOptions {
+            turn_trigger: Some("agent_wake".to_string()),
+            root_turn_id: Some("originating-root-turn".to_string()),
+            ..Default::default()
+        };
+        input_queue
+            .queue_turn_inputs_for_next_turn(expected.clone(), options.clone())
+            .await;
+        let active = Mutex::new(Some(ActiveTurn {
+            terminal_pending: true,
+            ..Default::default()
+        }));
+        assert_eq!(
+            input_queue.get_pending_input(&active).await,
+            (Vec::new(), TurnStartOptions::default())
+        );
+        assert_eq!(input_queue.queued_turn_inputs().await, expected);
+        *active.lock().await = None;
+        assert_eq!(
+            input_queue.get_pending_input(&active).await,
+            (expected, options)
+        );
+        assert!(input_queue.queued_turn_inputs().await.is_empty());
     }
 
     #[tokio::test]

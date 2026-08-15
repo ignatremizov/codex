@@ -24,6 +24,7 @@ use codex_utils_output_truncation::with_serialization_allowance;
 pub(super) enum ConversationBoundary {
     Existing,
     HistoryOnly,
+    Prompt,
 }
 
 impl Session {
@@ -136,6 +137,7 @@ impl Session {
                     started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 })),
             );
             rollout_items.push(RolloutItem::EventMsg(EventMsg::TurnComplete(
@@ -155,6 +157,11 @@ impl Session {
             .await;
         let analytics = self.services.analytics_events_client.clone();
         let turn_id = turn_context.sub_id.clone();
+        let prompt_receipt = if matches!(boundary, ConversationBoundary::Prompt) {
+            self.take_queued_input_persistence(&turn_id)
+        } else {
+            None
+        };
         let receiver = self.dispatch_history_publication_with_events(
             permit,
             batch,
@@ -170,6 +177,11 @@ impl Session {
                         turn_id: turn_id.clone(),
                         metadata: image,
                     });
+                }
+                // The canonical append+flush and live installation precede this receipt.
+                // The worker owns it even when the originating task is forcibly cancelled.
+                if let Some(receipt) = prompt_receipt {
+                    let _ = receipt.send(Ok(()));
                 }
             },
         )?;

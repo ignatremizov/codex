@@ -27,6 +27,7 @@ async fn legacy_rejection_and_ambiguous_outcomes_preserve_draft_without_retry() 
             ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
                 thread_id: source_id.to_string(),
                 turn: running,
+                agent_queue: None,
             }),
             /*replay_kind*/ None,
         );
@@ -203,6 +204,7 @@ async fn legacy_rejection_and_ambiguous_outcomes_preserve_draft_without_retry() 
                     codex_app_server_protocol::TurnStartedNotification {
                         thread_id: other_id.to_string(),
                         turn: other_turn.clone(),
+                        agent_queue: None,
                     },
                 ),
             )

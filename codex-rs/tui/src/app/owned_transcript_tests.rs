@@ -462,6 +462,7 @@ async fn owned_details_escape_interrupts_work_without_starting_backtrack() -> Re
     app.open_transcript_overlay(&mut tui);
     app.chat_widget.handle_server_notification(
         ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
+            agent_queue: None,
             thread_id: thread_id.to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "active-turn".to_string(),

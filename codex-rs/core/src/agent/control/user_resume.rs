@@ -167,6 +167,8 @@ impl LocalAgentControl {
             }
             let mut descendant_guards = Vec::new();
             let mut writers = None;
+            let mut source_admissions = Vec::new();
+            let mut transferred_threads = Vec::new();
             let source = match &mut authority {
                 ResumeAuthority::Recorded
                 | ResumeAuthority::ModelControlled
@@ -216,6 +218,13 @@ impl LocalAgentControl {
                         }
                     }
                     writers = Some(state.reserve_thread_writers(descendants.clone()).await?);
+                    transferred_threads = std::iter::once(thread_id)
+                        .chain(descendants.iter().copied())
+                        .collect();
+                    source_admissions = state
+                        .agent_turn_queue
+                        .acquire_source_admissions(transferred_threads.iter().copied())
+                        .await;
                     observer_source.clone()
                 }
             };
@@ -232,6 +241,10 @@ impl LocalAgentControl {
                     authority,
                 )
                 .await?;
+            state
+                .agent_turn_queue
+                .cancel_for_threads(transferred_threads);
+            drop(source_admissions);
             drop(writers);
             drop(descendant_guards);
             drop(guard);

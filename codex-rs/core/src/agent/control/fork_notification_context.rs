@@ -1,5 +1,7 @@
 //! Remove parent-owned runtime notifications from child model context, not audit history.
 
+use crate::context::AgentReplyRoute;
+use crate::context::AttributedAgentMessage;
 use crate::context::ContextualUserFragment;
 use crate::context::SubagentNotification;
 use codex_context_fragments::set_annotated_content;
@@ -29,9 +31,14 @@ pub(super) fn retain_without_notification_context(envelope: &mut ResponseItemEnv
             .as_ref()
             .and_then(|metadata| metadata.content_item_kinds.as_ref())
             .is_some_and(|kinds| {
-                kinds
-                    .iter()
-                    .any(|kind| kind.0 == "multi_agent.subagent_notification")
+                kinds.iter().any(|kind| {
+                    matches!(
+                        kind.0.as_str(),
+                        "multi_agent.subagent_notification"
+                            | "multi_agent.agent_reply_route"
+                            | "multi_agent.attributed_agent_message"
+                    )
+                })
             })
     {
         return true;
@@ -40,13 +47,15 @@ pub(super) fn retain_without_notification_context(envelope: &mut ResponseItemEnv
         return true;
     };
     content.retain(|fragment| {
-        if fragment.kind().0 != "multi_agent.subagent_notification" {
-            return true;
-        }
         let ContentItem::InputText { text } = fragment.content() else {
             return true;
         };
-        !SubagentNotification::matches_text(text)
+        match fragment.kind().0.as_str() {
+            "multi_agent.subagent_notification" => !SubagentNotification::matches_text(text),
+            "multi_agent.agent_reply_route" => !AgentReplyRoute::matches_text(text),
+            "multi_agent.attributed_agent_message" => !AttributedAgentMessage::matches_text(text),
+            _ => true,
+        }
     });
     !content.is_empty() && set_annotated_content(&mut envelope.item, content).is_some()
 }

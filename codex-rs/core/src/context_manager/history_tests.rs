@@ -1586,7 +1586,7 @@ fn drop_last_n_user_turns_preserves_trusted_user_agent_task_context() {
     history.drop_last_n_user_turns(/*num_turns*/ 1);
 
     assert_eq!(
-        history.raw_items(),
+        raw_items(&history),
         vec![user_msg("u1"), assistant_msg("a1"), task]
     );
 }

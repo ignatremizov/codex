@@ -8,6 +8,60 @@ use crate::UserAgentObservationMode;
 use crate::UserAgentResponseHandling;
 
 #[tokio::test]
+async fn close_response_cannot_hold_a_receipt_inside_the_subtree_being_closed() {
+    let harness = AgentControlHarness::new().await;
+    let (_, root) = harness.start_thread().await;
+    let parent = root
+        .spawn_agent(
+            /*role*/ None,
+            /*input*/ None,
+            UserAgentForkMode::None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await
+        .expect("spawn parent");
+    let parent = harness
+        .manager
+        .get_thread(parent.target_thread_id)
+        .await
+        .expect("parent");
+    let child = parent
+        .spawn_agent(
+            /*role*/ None,
+            /*input*/ None,
+            UserAgentForkMode::None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await
+        .expect("spawn child");
+    let child = harness
+        .manager
+        .get_thread(child.target_thread_id)
+        .await
+        .expect("child");
+    let error = child
+        .close_agent(
+            &parent.session.thread_id().to_string(),
+            UserAgentResponseHandling::Passive,
+        )
+        .await
+        .expect_err("closing a source ancestor would strand its accepted receipt");
+    assert!(error.to_string().contains("own subtree"));
+    assert!(
+        harness
+            .manager
+            .get_thread(parent.session.thread_id())
+            .await
+            .is_ok()
+    );
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(/*secs*/ 5))
+        .await;
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
 async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;

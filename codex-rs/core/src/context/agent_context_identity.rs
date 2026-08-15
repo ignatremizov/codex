@@ -22,7 +22,7 @@ pub(crate) enum AgentContextIdentity {
 }
 
 impl AgentContextIdentity {
-    pub(super) fn json_fields(&self) -> Map<String, Value> {
+    pub(crate) fn json_fields(&self) -> Map<String, Value> {
         let mut fields = Map::new();
         match self {
             Self::V1 {

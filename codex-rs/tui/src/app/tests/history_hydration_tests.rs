@@ -59,6 +59,7 @@ async fn history_fixture(item_counts: &[usize]) -> Result<(App, tempfile::TempDi
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         })];
         for item in 0..*count {
             events.push(EventMsg::ItemCompleted(ItemCompletedEvent {

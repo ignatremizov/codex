@@ -16,11 +16,14 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewTarget as AppServerReviewTarget;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
+use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::items::AgentMessageContent;
@@ -43,7 +46,6 @@ use core_test_support::responses;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
-use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -247,7 +249,7 @@ pub(super) async fn start_recording_app_server_with_history(
         blocked_thread_list,
         failed_thread_name,
         thread_params_mode,
-        RealtimeRequestBehavior::Forward,
+        RealtimeRequestBehavior::Forward.into(),
         loader_overrides,
     )
     .await
@@ -261,6 +263,27 @@ pub(super) enum RealtimeRequestBehavior {
     AcceptSpeechAndStallStop,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentControlRequestBehavior {
+    Synthetic,
+    Forward,
+}
+
+/// Routing fixtures use synthetic controls; lifecycle tests forward to the embedded owner.
+pub(super) struct RecordingRequestBehavior {
+    realtime: RealtimeRequestBehavior,
+    agent_control: AgentControlRequestBehavior,
+}
+
+impl From<RealtimeRequestBehavior> for RecordingRequestBehavior {
+    fn from(realtime: RealtimeRequestBehavior) -> Self {
+        Self {
+            realtime,
+            agent_control: AgentControlRequestBehavior::Synthetic,
+        }
+    }
+}
+
 pub(super) async fn start_recording_realtime_speech_app_server(
     config: &Config,
     realtime_behavior: RealtimeRequestBehavior,
@@ -271,7 +294,7 @@ pub(super) async fn start_recording_realtime_speech_app_server(
         /*blocked_thread_list*/ None,
         /*failed_thread_name*/ None,
         crate::app_server_session::ThreadParamsMode::Embedded,
-        realtime_behavior,
+        realtime_behavior.into(),
         LoaderOverrides::default(),
     )
     .await
@@ -283,16 +306,29 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
     mut blocked_thread_list: Option<(ThreadId, oneshot::Sender<()>, oneshot::Receiver<()>)>,
     failed_thread_name: Option<&'static str>,
     thread_params_mode: crate::app_server_session::ThreadParamsMode,
-    realtime_behavior: RealtimeRequestBehavior,
+    request_behavior: RecordingRequestBehavior,
     loader_overrides: LoaderOverrides,
 ) -> Result<RecordingAppServer> {
+    let RecordingRequestBehavior {
+        realtime: realtime_behavior,
+        agent_control: agent_control_behavior,
+    } = request_behavior;
     let state_db =
         crate::init_state_db_for_app_server_target(config, &crate::AppServerTarget::Embedded)
             .await?;
+    // Real agent requests create threads through ConfigManager, which reloads provider
+    // settings instead of retaining mutations to the startup Config.
+    let cli_overrides = match agent_control_behavior {
+        AgentControlRequestBehavior::Forward => vec![(
+            format!("model_providers.{}", config.model_provider_id),
+            toml::Value::try_from(&config.model_provider)?,
+        )],
+        AgentControlRequestBehavior::Synthetic => Vec::new(),
+    };
     let mut embedded = crate::start_embedded_app_server(
         codex_arg0::Arg0DispatchPaths::default(),
         config.clone(),
-        Vec::new(),
+        cli_overrides,
         loader_overrides,
         /*strict_config*/ false,
         codex_config::CloudConfigBundleLoader::default(),
@@ -314,7 +350,6 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
         let mut reject_detach = false;
         let mut rollback_attempted = false;
         let mut reject_thread_list = history_capabilities == HistoryCapabilities::ThreadListFails;
-        let mut queued_prompt_attempts = HashMap::<String, usize>::new();
         loop {
             let frame = tokio::select! {
                 frame = websocket.next() => frame,
@@ -607,20 +642,41 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                 }))
                             };
                         let agent_control_response = match &request {
+                            ClientRequest::AgentControl { .. }
+                                if agent_control_behavior == AgentControlRequestBehavior::Forward =>
+                            {
+                                None
+                            }
                             ClientRequest::AgentControl { params, .. } => match &params.action {
                                 codex_app_server_protocol::AgentControlAction::Spawn {
                                     role,
                                     ..
-                                } => Some(agent_control_success(
-                                    serde_json::json!({
-                                        "type": "spawned",
-                                        "targetThreadId": ThreadId::new().to_string(),
-                                        "ref": "2",
-                                        "nickname": role,
-                                        "inputOutcome": serde_json::Value::Null,
-                                    }),
-                                    None,
-                                )),
+                                } => {
+                                    let target_thread_id = match embedded
+                                        .request(ClientRequest::ThreadStart {
+                                            request_id: RequestId::Integer(999999),
+                                            params: ThreadStartParams::default(),
+                                        })
+                                        .await
+                                    {
+                                        Ok(Ok(value)) => {
+                                            serde_json::from_value::<ThreadStartResponse>(value)
+                                                .map(|res| res.thread.id)
+                                                .unwrap_or_else(|_| ThreadId::new().to_string())
+                                        }
+                                        _ => ThreadId::new().to_string(),
+                                    };
+                                    Some(agent_control_success(
+                                        serde_json::json!({
+                                            "type": "spawned",
+                                            "targetThreadId": target_thread_id,
+                                            "ref": "2",
+                                            "nickname": role,
+                                            "inputOutcome": serde_json::Value::Null,
+                                        }),
+                                        None,
+                                    ))
+                                }
                                 codex_app_server_protocol::AgentControlAction::Prompt {
                                     target,
                                     input,
@@ -637,18 +693,6 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                             ..
                                         }
                                     );
-                                    let target_active = queued_prompt
-                                        && input.iter().any(|item| {
-                                            matches!(
-                                                item,
-                                                AppServerUserInput::Text { text, .. }
-                                                    if matches!(
-                                                        text.as_str(),
-                                                        "target became active"
-                                                            | "target active but watch fails"
-                                                    )
-                                            )
-                                        });
                                     let forced_error = input.iter().any(|item| {
                                         matches!(
                                             item,
@@ -663,33 +707,7 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                                 if text.contains("unrelated thread")
                                         )
                                     });
-                                    let committed_without_audit = input.iter().any(|item| {
-                                        matches!(
-                                            item,
-                                            AppServerUserInput::Text { text, .. }
-                                                if text == "committed without audit" || text == "lost queued reply"
-                                        )
-                                    });
-                                    let committed_without_audit_attempt =
-                                        (queued_prompt && committed_without_audit).then(|| {
-                                            let attempts = queued_prompt_attempts
-                                                .entry(target.clone())
-                                                .or_default();
-                                            *attempts += 1;
-                                            *attempts
-                                        });
-                                    let target_active =
-                                        target_active || committed_without_audit_attempt == Some(1);
-                                    Some(if target_active {
-                                        Err(JSONRPCErrorError {
-                                            code: -32602,
-                                            message: "queued input requires an idle target; active turn is `racing-turn`"
-                                                .to_string(),
-                                            data: Some(serde_json::json!({
-                                                "reason": "targetActive",
-                                            })),
-                                        })
-                                    } else if input.iter().any(|item| matches!(
+                                    Some(if input.iter().any(|item| matches!(
                                         item,
                                         AppServerUserInput::Text { text, .. } if text == "lost queued reply"
                                     )) {
@@ -698,16 +716,6 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                             message: "target reply was lost after dispatch".to_string(),
                                             data: None,
                                         })
-                                    } else if committed_without_audit {
-                                        agent_control_success(
-                                            serde_json::json!({
-                                                "type": "prompted",
-                                                "targetThreadId": target,
-                                                "submissionId": "agent-control-submission",
-                                                "inputOutcome": "admitted",
-                                            }),
-                                            Some("source audit write failed"),
-                                        )
                                     } else if forced_error {
                                         Err(JSONRPCErrorError {
                                             code: -32602,
@@ -733,7 +741,8 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                                 "type": "prompted",
                                                 "targetThreadId": target,
                                                 "submissionId": "agent-control-submission",
-                                                "inputOutcome": if unknown { "unknown" } else { "admitted" },
+                                                "inputOutcome": if unknown { "unknown" } else if queued_prompt { "queued" } else { "admitted" },
+                                                "queued": queued_prompt,
                                             }),
                                             None,
                                         )
@@ -810,15 +819,40 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                         "targetThreadId": target,
                                         "previousResponseHandling": "wake",
                                         "responseHandling": response_handling,
-                                        "binding": "activeTurn",
+                                        "binding": if params.authored_selector.as_deref()
+                                            == Some("undelivered-observation")
+                                        {
+                                            "undeliveredCompletion"
+                                        } else {
+                                            "activeTurn"
+                                        },
                                     }),
                                     None,
                                 )),
                             },
                             _ => None,
                         };
-                        if let Some(agent_control_response) = agent_control_response {
-                            match agent_control_response {
+                        let agent_queue_delete_response = match &request {
+                            ClientRequest::AgentQueueDelete { params, .. }
+                                if params.id == "00000000-0000-7000-8000-000000000003" =>
+                            {
+                                Some(Err(JSONRPCErrorError {
+                                    code: -32603,
+                                    message: "queue deletion reply lost".to_string(),
+                                    data: None,
+                                }))
+                            }
+                            ClientRequest::AgentQueueDelete { params, .. } => {
+                                Some(Ok::<_, JSONRPCErrorError>(serde_json::json!({
+                                    "id": params.id,
+                                })))
+                            }
+                            _ => None,
+                        };
+                        if let Some(synthetic_response) =
+                            agent_control_response.or(agent_queue_delete_response)
+                        {
+                            match synthetic_response {
                                 Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
                                     id: request_id,
                                     result,
@@ -924,7 +958,7 @@ async fn mount_delayed_agent_prompt_response(server: &MockServer, response_id: &
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(responses::sse_completed(response_id))
-                .set_delay(Duration::from_secs(/*secs*/ 5)),
+                .set_delay(Duration::from_secs(/*secs*/ 30)),
         )
         .mount(server)
         .await;
@@ -933,7 +967,9 @@ async fn mount_delayed_agent_prompt_response(server: &MockServer, response_id: &
 fn configure_agent_prompt_model_server(app: &mut App, server: &MockServer) {
     app.config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
     app.config.model_provider.env_key = None;
-    app.config.model_provider.experimental_bearer_token = Some("test-token".to_string());
+    app.config.model_provider.experimental_bearer_token = Some("test-token".to_string().into());
+    app.config.model_provider.requires_openai_auth = false;
+    app.config.model_provider.supports_websockets = false;
 }
 
 fn display_test_thread(app: &mut App, thread_id: ThreadId) {
@@ -983,12 +1019,16 @@ async fn promptless_spawn_routes_first_child_input_through_reserved_control() ->
     let target_thread_id = app
         .spawn_agent_from_command(
             &mut app_server,
-            source_thread_id,
-            /*role*/ None,
-            Some("new".to_string()),
-            /*prompt*/ None,
-            codex_app_server_protocol::AgentForkMode::None,
-            Some(codex_app_server_protocol::AgentResponseHandling::Presentation),
+            crate::app::SpawnAgentCommandArgs {
+                source_thread_id,
+                role: None,
+                authored_selector: Some("new".to_string()),
+                prompt: None,
+                fork_mode: codex_app_server_protocol::AgentForkMode::None,
+                response_handling: Some(
+                    codex_app_server_protocol::AgentResponseHandling::Presentation,
+                ),
+            },
         )
         .await
         .expect("prompt-less spawn should return a child thread");
@@ -1059,12 +1099,16 @@ async fn promptless_resume_routes_next_child_input_through_reserved_control() ->
     let target_thread_id = app
         .spawn_agent_from_command(
             &mut app_server,
-            source_thread_id,
-            /*role*/ None,
-            Some("new".to_string()),
-            /*prompt*/ None,
-            codex_app_server_protocol::AgentForkMode::None,
-            Some(codex_app_server_protocol::AgentResponseHandling::Presentation),
+            crate::app::SpawnAgentCommandArgs {
+                source_thread_id,
+                role: None,
+                authored_selector: Some("new".to_string()),
+                prompt: None,
+                fork_mode: codex_app_server_protocol::AgentForkMode::None,
+                response_handling: Some(
+                    codex_app_server_protocol::AgentResponseHandling::Presentation,
+                ),
+            },
         )
         .await
         .expect("prompt-less spawn should return a child thread");
@@ -1205,6 +1249,8 @@ async fn explicit_observe_replaces_current_display_policy() -> Result<()> {
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
+                target_messages: false,
+                queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
             }
@@ -1228,6 +1274,7 @@ async fn degraded_adoption_clears_optimistic_observation_and_renders_recovery() 
     let source_thread_id = ThreadId::new();
     let target_thread_id = ThreadId::new();
     display_test_thread(&mut app, source_thread_id);
+    while app_event_rx.try_recv().is_ok() {}
     app.upsert_agent_picker_thread(
         target_thread_id,
         Some("Hopper".to_string()),
@@ -1267,7 +1314,7 @@ async fn degraded_adoption_clears_optimistic_observation_and_renders_recovery() 
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    Agent ownership changed, but resume setup degraded: agent is now owned by this root; retry resume
+    ■ Agent ownership changed, but resume setup degraded: agent is now owned by this root; retry resume
     ");
 
     app_server.shutdown().await?;
@@ -1302,18 +1349,13 @@ async fn failed_queue_reply_recovers_draft_without_automatic_resend() -> Result<
         /*response_handling*/ None,
     )
     .await;
-    assert_eq!(
-        app.queued_agent_prompts.get(&target).map(VecDeque::len),
-        Some(1)
-    );
-
-    app.drain_agent_prompt_queue(&mut app_server, target).await;
     assert!(app.queued_agent_prompts.is_empty());
     let draft = app.chat_widget.composer_text_with_pending();
     assert!(draft.contains("lost queued reply"), "{draft}");
-    assert!(draft.contains(&format!("/agent {target}")), "{draft}");
+    assert!(draft.contains(&format!("/agent queue {target}")), "{draft}");
     let requests_before_retry = recorded_params(&requests, "agent/control");
-    app.drain_agent_prompt_queue(&mut app_server, target).await;
+    assert_eq!(requests_before_retry.len(), 1);
+    app.refresh_primary_agent_queue(&app_server).await;
     assert_eq!(
         recorded_params(&requests, "agent/control"),
         requests_before_retry
@@ -1411,7 +1453,7 @@ async fn direct_agent_prompt_uses_source_relative_control_with_structured_payloa
         text: prompt.to_string(),
         local_images: vec![crate::bottom_pane::LocalImageAttachment {
             placeholder: "[Image #1]".to_string(),
-            path: local_image_path.clone(),
+            path: local_image_path.clone().to_path_buf(),
         }],
         remote_image_urls: vec!["data:image/png;base64,aGVsbG8=".to_string()],
         text_elements: vec![TextElement::new(
@@ -1795,11 +1837,17 @@ async fn direct_agent_prompt_routes_closed_target_through_resume_capable_control
     .await?;
     let displayed_thread_id = ThreadId::new();
     display_test_thread(&mut app, displayed_thread_id);
-    let target_thread_id = app_server
-        .start_thread(&app.config)
-        .await?
-        .session
-        .thread_id;
+    let target_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            app.config.codex_home.as_path(),
+            "2026-01-01T00-00-00",
+            "2026-01-01T00:00:00Z",
+            "agent message",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create fake rollout"),
+    )?;
     app.upsert_agent_picker_thread(
         target_thread_id,
         Some("Robie".to_string()),
@@ -1829,7 +1877,7 @@ async fn direct_agent_prompt_routes_closed_target_through_resume_capable_control
             .iter()
             .map(|request| request.method.as_str())
             .collect::<Vec<_>>(),
-        vec!["thread/read", "agent/control", "thread/read"]
+        vec!["thread/read", "thread/read", "agent/control", "thread/read"]
     );
     assert!(
         app.agent_navigation
@@ -2002,10 +2050,26 @@ async fn interrupt_without_follow_up_refreshes_and_tracks_target_liveness() -> R
     let model_server = MockServer::start().await;
     mount_delayed_agent_prompt_response(&model_server, "interrupt-target-response").await;
     configure_agent_prompt_model_server(&mut app, &model_server);
-    let (mut app_server, requests, proxy) = start_recording_app_server(
+    // Real thread creation reloads this provider through CLI configuration, where
+    // overriding a reserved built-in provider ID is intentionally rejected.
+    app.config.model_provider_id = "agent-prompt-test".to_string();
+    app.config.model_providers.insert(
+        app.config.model_provider_id.clone(),
+        app.config.model_provider.clone(),
+    );
+    app.config.features.enable(Feature::Collab)?;
+    app.config.features.disable(Feature::MultiAgentV2)?;
+    let (mut app_server, requests, proxy) = start_recording_app_server_with_realtime_speech(
         &app.config,
+        HistoryCapabilities::CurrentWithLiveNotifications,
         /*blocked_thread_list*/ None,
         /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        RecordingRequestBehavior {
+            realtime: RealtimeRequestBehavior::Forward,
+            agent_control: AgentControlRequestBehavior::Forward,
+        },
+        LoaderOverrides::default(),
     )
     .await?;
     let started = app_server.start_thread(&app.config).await?;
@@ -2016,17 +2080,66 @@ async fn interrupt_without_follow_up_refreshes_and_tracks_target_liveness() -> R
     let target_thread_id = app
         .spawn_agent_from_command(
             &mut app_server,
-            source_thread_id,
-            /*role*/ None,
-            Some("new".to_string()),
-            Some(crate::chatwidget::UserMessage::from(
-                "keep running until interrupted",
-            )),
-            codex_app_server_protocol::AgentForkMode::None,
-            /*response_handling*/ None,
+            crate::app::SpawnAgentCommandArgs {
+                source_thread_id,
+                role: None,
+                authored_selector: Some("new".to_string()),
+                prompt: Some(crate::chatwidget::UserMessage::from(
+                    "keep running until interrupted",
+                )),
+                fork_mode: codex_app_server_protocol::AgentForkMode::None,
+                response_handling: None,
+            },
         )
         .await
         .expect("spawned target");
+    // Spawn already submitted the prompt. Wait for that turn's request rather than
+    // admitting another turn that can start immediately after the interrupt.
+    let observed_request = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if model_server
+                .received_requests()
+                .await
+                .is_some_and(|requests| {
+                    requests.iter().any(|request| {
+                        request.url.path().ends_with("/responses")
+                            && responses::request_body_bytes(request).is_some_and(|body| {
+                                String::from_utf8_lossy(&body)
+                                    .contains("keep running until interrupted")
+                            })
+                    })
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await;
+    if let Err(error) = observed_request {
+        let target = app_server
+            .thread_read(target_thread_id, /*include_turns*/ false)
+            .await
+            .map(|thread| thread.status);
+        let requests = model_server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|request| (request.method.to_string(), request.url.path().to_owned()))
+            .collect::<Vec<_>>();
+        color_eyre::eyre::bail!(
+            "spawned target did not send its prompt: target={target:?}, HTTP requests={requests:?}, {error}"
+        );
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !app.agent_navigation.is_running(target_thread_id)
+        && tokio::time::Instant::now() < deadline
+    {
+        app.refresh_agent_picker_thread_liveness(&mut app_server, target_thread_id)
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     assert!(app.agent_navigation.is_running(target_thread_id));
     requests.lock().expect("request recorder lock").clear();
 
@@ -2093,7 +2206,8 @@ async fn interrupt_without_follow_up_refreshes_and_tracks_target_liveness() -> R
 }
 
 #[tokio::test]
-async fn queue_command_admitted_to_idle_agent_keeps_queued_prompt_provenance() -> Result<()> {
+async fn queue_command_preserves_prepared_input_and_never_resends_after_source_switch() -> Result<()>
+{
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let (mut app_server, requests, proxy) = start_recording_app_server(
         &app.config,
@@ -2116,6 +2230,8 @@ async fn queue_command_admitted_to_idle_agent_keeps_queued_prompt_provenance() -
     );
     requests.lock().expect("request recorder lock").clear();
     let authored_selector = format!("id:{target_thread_id}");
+    let mut user_message = UserMessage::from("queue provenance");
+    user_message.remote_image_urls = vec!["data:image/png;base64,aGVsbG8=".to_string()];
 
     app.queue_agent_prompt_to_selector(
         &mut app_server,
@@ -2124,7 +2240,7 @@ async fn queue_command_admitted_to_idle_agent_keeps_queued_prompt_provenance() -
             kind: crate::chatwidget::agent_command::AgentSelectorKind::Id(target_thread_id),
             authored: authored_selector.clone(),
         },
-        crate::chatwidget::UserMessage::from("queue provenance"),
+        user_message,
         /*response_handling*/ None,
     )
     .await;
@@ -2144,65 +2260,27 @@ async fn queue_command_admitted_to_idle_agent_keeps_queued_prompt_provenance() -
         .expect("queued agent/control params");
     assert_eq!(params["authoredSelector"], authored_selector);
     assert_eq!(params["action"]["type"], "queuedPrompt");
-
-    app_server.shutdown().await?;
-    proxy.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn queue_command_retains_prompt_when_target_starts_during_admission() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let (mut app_server, requests, proxy) = start_recording_app_server(
-        &app.config,
-        /*blocked_thread_list*/ None,
-        /*failed_thread_name*/ None,
-    )
-    .await?;
-    let displayed_thread_id = ThreadId::new();
-    display_test_thread(&mut app, displayed_thread_id);
-    let target_thread_id = app_server
-        .start_thread(&app.config)
-        .await?
-        .session
-        .thread_id;
-    app.upsert_agent_picker_thread(
-        target_thread_id,
-        Some("Robie".to_string()),
-        Some("worker".to_string()),
-        /*is_closed*/ false,
-    );
-    requests.lock().expect("request recorder lock").clear();
-
-    app.queue_agent_prompt_to_selector(
-        &mut app_server,
-        displayed_thread_id,
-        crate::chatwidget::agent_command::AgentSelector {
-            kind: crate::chatwidget::agent_command::AgentSelectorKind::Id(target_thread_id),
-            authored: target_thread_id.to_string(),
-        },
-        crate::chatwidget::UserMessage::from("target became active"),
-        Some(codex_app_server_protocol::AgentResponseHandling::Wake),
-    )
-    .await;
-
-    let queued = app
-        .queued_agent_prompts
-        .get(&target_thread_id)
-        .expect("racing target should retain the queued prompt");
-    assert_eq!(queued.len(), 1);
+    assert_eq!(params["sourceThreadId"], displayed_thread_id.to_string());
     assert_eq!(
-        queued.front().map(QueuedAgentPrompt::preview).as_deref(),
-        Some("target became active")
+        params["action"]["input"],
+        serde_json::to_value(vec![
+            AppServerUserInput::Image {
+                image: codex_app_server_protocol::ImageReference::Inline {
+                    url: "data:image/png;base64,aGVsbG8=".to_string(),
+                },
+                detail: None,
+            },
+            AppServerUserInput::Text {
+                text: "queue provenance".to_string(),
+                text_elements: Vec::new(),
+            },
+        ])?
     );
-    assert!(
-        std::iter::from_fn(|| app_event_rx.try_recv().ok()).any(|event| matches!(
-            event,
-            AppEvent::DrainAgentPromptQueue {
-                target_thread_id: queued_target,
-            } if queued_target == target_thread_id
-        ))
-    );
+    let submitted = recorded_params(&requests, "agent/control");
+    display_test_thread(&mut app, ThreadId::new());
+    app.chat_widget.set_skills(None);
+    app.refresh_primary_agent_queue(&app_server).await;
+    assert_eq!(recorded_params(&requests, "agent/control"), submitted);
 
     app_server.shutdown().await?;
     proxy.await??;
@@ -2210,233 +2288,145 @@ async fn queue_command_retains_prompt_when_target_starts_during_admission() -> R
 }
 
 #[tokio::test]
-async fn queue_command_retains_prompt_when_live_watch_attachment_fails() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let (mut app_server, _requests, proxy) = start_recording_app_server(
+async fn queued_prompt_edit_deletes_remote_entry_before_restoring_user_input() -> Result<()> {
+    let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let (app_server, requests, proxy) = start_recording_app_server(
         &app.config,
         /*blocked_thread_list*/ None,
         /*failed_thread_name*/ None,
     )
     .await?;
-    let displayed_thread_id = ThreadId::new();
-    display_test_thread(&mut app, displayed_thread_id);
-    let unavailable_target_thread_id = ThreadId::new();
-    app.upsert_agent_picker_thread(
-        unavailable_target_thread_id,
-        Some("Robie".to_string()),
-        Some("worker".to_string()),
-        /*is_closed*/ false,
-    );
-
-    app.queue_agent_prompt_to_selector(
-        &mut app_server,
-        displayed_thread_id,
-        crate::chatwidget::agent_command::AgentSelector {
-            kind: crate::chatwidget::agent_command::AgentSelectorKind::Id(
-                unavailable_target_thread_id,
-            ),
-            authored: unavailable_target_thread_id.to_string(),
-        },
-        crate::chatwidget::UserMessage::from("target active but watch fails"),
-        /*response_handling*/ None,
-    )
-    .await;
-
-    assert_eq!(
-        app.queued_agent_prompts
-            .get(&unavailable_target_thread_id)
-            .and_then(|queue| queue.front())
-            .map(QueuedAgentPrompt::preview)
-            .as_deref(),
-        Some("target active but watch fails")
-    );
-    let rendered = std::iter::from_fn(|| app_event_rx.try_recv().ok())
-        .filter_map(|event| match event {
-            AppEvent::InsertHistoryCell(cell) => {
-                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let rendered = rendered
-        .lines()
-        .map(|line| {
-            line.split_once(": thread/").map_or_else(
-                || line.to_string(),
-                |(message, _transport_error)| format!("{message}: <transport error>"),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    insta::assert_snapshot!(rendered, @r"
-    Queued user prompt for Robie [worker].
-    Failed to watch Robie [worker]; the user prompt remains queued but may require a manual retry: <transport error>
-    ");
-
-    app_server.shutdown().await?;
-    proxy.await??;
-    Ok(())
-}
-
-#[tokio::test]
-async fn queued_prompt_committed_without_audit_is_removed_instead_of_retried() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let model_server = MockServer::start().await;
-    mount_delayed_agent_prompt_response(&model_server, "queued-audit-failure-active").await;
-    configure_agent_prompt_model_server(&mut app, &model_server);
-    let (mut app_server, requests, proxy) = start_recording_app_server(
-        &app.config,
-        /*blocked_thread_list*/ None,
-        /*failed_thread_name*/ None,
-    )
-    .await?;
-    let displayed_thread_id = ThreadId::new();
-    display_test_thread(&mut app, displayed_thread_id);
-    let target_thread_id = app_server
-        .start_thread(&app.config)
-        .await?
-        .session
-        .thread_id;
-    let started_turn = turn_start_with_thread_defaults(
-        &mut app_server,
-        target_thread_id,
-        vec![AppServerUserInput::Text {
-            text: "keep the queue target active".to_string(),
+    let primary_thread_id = ThreadId::new();
+    let target_thread_id = ThreadId::new();
+    let prompt_id =
+        uuid::Uuid::parse_str("00000000-0000-7000-8000-000000000001").expect("valid queue id");
+    app.primary_thread_id = Some(primary_thread_id);
+    display_test_thread(&mut app, primary_thread_id);
+    app.apply_primary_agent_queue(vec![codex_app_server_protocol::AgentQueueEntry {
+        id: prompt_id.to_string(),
+        source_thread_id: primary_thread_id.to_string(),
+        target_thread_id: target_thread_id.to_string(),
+        input: vec![AppServerUserInput::Text {
+            text: "review the queue lifecycle".to_string(),
             text_elements: Vec::new(),
         }],
-    )
-    .await?;
-    time::timeout(Duration::from_secs(/*secs*/ 2), async {
-        loop {
-            let thread = app_server
-                .thread_read(target_thread_id, /*include_turns*/ false)
-                .await
-                .expect("read active queue target");
-            if matches!(thread.status, ThreadStatus::Active { .. }) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
-    app.upsert_agent_picker_thread(
-        target_thread_id,
-        Some("Herschel".to_string()),
-        Some("worker".to_string()),
-        /*is_closed*/ false,
-    );
+        prompt_preview: "review the queue lifecycle".to_string(),
+        response_handling: codex_app_server_protocol::AgentResponseHandling::new(
+            /*commentary*/ false,
+            codex_app_server_protocol::AgentFinalResponseHandling::Wake,
+            /*target_messages*/ false,
+            /*queue_input*/ true,
+        ),
+        authored_selector: Some("2".to_string()),
+    }]);
     requests.lock().expect("request recorder lock").clear();
 
-    let skill_path = app.config.cwd.join("review-skill").join("SKILL.md");
-    app.chat_widget
-        .set_skills(Some(vec![codex_app_server_protocol::SkillMetadata {
-            name: "review".to_string(),
-            description: "Review this change".to_string(),
-            short_description: None,
-            interface: None,
-            dependencies: None,
-            path: skill_path.clone().abs(),
-            scope: crate::test_support::skill_scope_repo(),
-            enabled: true,
-        }]));
-    let mut queued_message = UserMessage::from("committed without audit");
-    queued_message
-        .mention_bindings
-        .push(crate::bottom_pane::MentionBinding {
-            sigil: '$',
-            mention: "review".to_string(),
-            path: skill_path.to_string_lossy().into_owned(),
-        });
-    app.queue_agent_prompt_to_selector(
-        &mut app_server,
-        displayed_thread_id,
-        crate::chatwidget::agent_command::AgentSelector {
-            kind: crate::chatwidget::agent_command::AgentSelectorKind::Id(target_thread_id),
-            authored: target_thread_id.to_string(),
-        },
-        queued_message,
-        /*response_handling*/ None,
-    )
-    .await;
+    app.edit_queued_agent_prompt(&app_server, target_thread_id, prompt_id)
+        .await;
+
+    let recorded = requests.lock().expect("request recorder lock").clone();
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|request| request.method.as_str())
+            .collect::<Vec<_>>(),
+        vec!["agentQueue/delete"]
+    );
+    assert_eq!(
+        recorded[0].params.as_ref(),
+        Some(&serde_json::json!({
+            "rootThreadId": primary_thread_id,
+            "id": prompt_id,
+        }))
+    );
+    assert!(!app.queued_agent_prompts.contains_key(&target_thread_id));
+    let restored = app.chat_widget.composer_text_with_pending();
+    assert!(restored.starts_with(&format!("/agent queue {target_thread_id} w:fq ")));
+    assert!(restored.contains("review the queue lifecycle"));
+
+    let model_prompt_id =
+        uuid::Uuid::parse_str("00000000-0000-7000-8000-000000000002").expect("valid queue id");
+    app.apply_primary_agent_queue(vec![codex_app_server_protocol::AgentQueueEntry {
+        id: model_prompt_id.to_string(),
+        source_thread_id: primary_thread_id.to_string(),
+        target_thread_id: target_thread_id.to_string(),
+        input: vec![AppServerUserInput::Text {
+            text: "model-authored queue entry".to_string(),
+            text_elements: Vec::new(),
+        }],
+        prompt_preview: "model-authored queue entry".to_string(),
+        response_handling: codex_app_server_protocol::AgentResponseHandling::new(
+            /*commentary*/ false,
+            codex_app_server_protocol::AgentFinalResponseHandling::Passive,
+            /*target_messages*/ false,
+            /*queue_input*/ true,
+        ),
+        authored_selector: None,
+    }]);
+    requests.lock().expect("request recorder lock").clear();
+
+    app.edit_queued_agent_prompt(&app_server, target_thread_id, model_prompt_id)
+        .await;
+
+    assert!(
+        requests.lock().expect("request recorder lock").is_empty(),
+        "model-authored entries should reject editing before remote mutation"
+    );
     assert_eq!(
         app.queued_agent_prompts
             .get(&target_thread_id)
             .map(VecDeque::len),
         Some(1)
     );
-    assert!(
-        requests
-            .lock()
-            .expect("request recorder lock")
-            .iter()
-            .any(|request| request.method == "agent/control"),
-        "active-target queueing must use atomic server admission before retaining local input"
-    );
+    assert_eq!(app.chat_widget.composer_text_with_pending(), restored);
 
-    app_server
-        .turn_interrupt(target_thread_id, started_turn.turn.id)
-        .await?;
-    time::timeout(Duration::from_secs(/*secs*/ 2), async {
-        loop {
-            let thread = app_server
-                .thread_read(target_thread_id, /*include_turns*/ false)
-                .await
-                .expect("read interrupted queue target");
-            if !matches!(thread.status, ThreadStatus::Active { .. }) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ambiguous_queue_delete_preserves_draft_without_resubmitting() -> Result<()> {
+    let (mut app, _events, _operations) = make_test_app_with_channels().await;
+    let (app_server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
     .await?;
+    let source = ThreadId::new();
+    let target = ThreadId::new();
+    let id = uuid::Uuid::parse_str("00000000-0000-7000-8000-000000000003")?;
+    app.primary_thread_id = Some(source);
+    display_test_thread(&mut app, source);
+    app.apply_primary_agent_queue(vec![codex_app_server_protocol::AgentQueueEntry {
+        id: id.to_string(),
+        source_thread_id: source.to_string(),
+        target_thread_id: target.to_string(),
+        input: vec![AppServerUserInput::Text {
+            text: "preserve uncertain deletion".to_string(),
+            text_elements: Vec::new(),
+        }],
+        prompt_preview: "preserve uncertain deletion".to_string(),
+        response_handling: codex_app_server_protocol::AgentResponseHandling::new(
+            /*commentary*/ false,
+            codex_app_server_protocol::AgentFinalResponseHandling::Wake,
+            /*target_messages*/ false,
+            /*queue_input*/ true,
+        ),
+        authored_selector: Some("2".to_string()),
+    }]);
 
-    // Draining from another source must not reinterpret the already prepared skill binding.
-    display_test_thread(&mut app, ThreadId::new());
-    app.chat_widget.set_skills(None);
-    app.drain_agent_prompt_queue(&mut app_server, target_thread_id)
-        .await;
+    app.edit_queued_agent_prompt(&app_server, target, id).await;
 
-    let controls = recorded_params(&requests, "agent/control");
-    let queued_control = controls.last().expect("queued admission request");
-    assert_eq!(
-        queued_control["sourceThreadId"],
-        displayed_thread_id.to_string()
-    );
-    assert_eq!(
-        queued_control["action"]["target"],
-        target_thread_id.to_string()
-    );
-    assert_eq!(
-        queued_control["action"]["input"],
-        serde_json::to_value(vec![
-            AppServerUserInput::Text {
-                text: "committed without audit".to_string(),
-                text_elements: Vec::new(),
-            },
-            AppServerUserInput::Skill {
-                name: "review".to_string(),
-                path: skill_path,
-            },
-        ])?
-    );
+    let draft = app.chat_widget.composer_text_with_pending();
     assert!(
-        !app.queued_agent_prompts.contains_key(&target_thread_id),
-        "a committed prompt must not remain available for retry"
+        draft.contains(&format!("/agent queue {target} w:fq ")),
+        "{draft}"
     );
-    let rendered = std::iter::from_fn(|| app_event_rx.try_recv().ok())
-        .filter_map(|event| match event {
-            AppEvent::InsertHistoryCell(cell) => {
-                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
-            }
-            _ => None,
-        })
-        .collect::<String>();
-    assert!(
-        rendered.contains("was removed from the queue and must not be retried"),
-        "expected non-retryable audit guidance, got: {rendered}"
-    );
-
+    assert!(draft.contains("preserve uncertain deletion"), "{draft}");
+    assert_eq!(recorded_params(&requests, "agentQueue/delete").len(), 1);
+    assert!(recorded_params(&requests, "agent/control").is_empty());
     app_server.shutdown().await?;
     proxy.await??;
     Ok(())
@@ -3827,6 +3817,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
     .chain(items.into_iter().map(|item| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -3991,6 +3982,7 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
     .chain(std::iter::once(EventMsg::ItemCompleted(
         ItemCompletedEvent {
@@ -4002,6 +3994,8 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
                 status: CollabAgentToolCallStatus::Completed,
                 observe_commentary: Some(false),
                 wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
                 deadline_at_ms: None,
                 sender_thread_id: thread_id,
                 receiver_thread_ids: vec![child_thread_id],
@@ -4515,6 +4509,7 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
     .chain((0..120).map(|index| {
         EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -5806,7 +5801,11 @@ async fn changing_directory_preserves_project_trust_permissions_history_and_hook
             fs::write(&requirements, "allowed_approvals_reviewers = [\"user\"]")?;
         }
         app.agent_navigation.set_running(child, kind == "running");
-        store.lock().await.active_turn_id = (kind == "active").then(|| "active".into());
+        if kind == "active" {
+            store.lock().await.set_active_turn_id("active".into());
+        } else {
+            store.lock().await.clear_active_turn_id();
+        }
         app.loader_overrides.system_requirements_path =
             matches!(kind, "approval" | "profile" | "reviewer").then_some(requirements.clone());
         app.harness_overrides.permission_profile =
@@ -6621,10 +6620,31 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                       Agents
                       Select an agent to watch. ⌥+← previous, ⌥+→ next.
 
-                    › 1 • Main [default] (current)  [root]
-                      2 • /root/worker              [child]
+                      Filter by ref, name, role, path, or UUID
+                    › 1 • Main [default] (current)  [root] ·
+                                                    completed
+                      2 ↳ • worker [worker]         [child] · idle
 
-                      enter select · esc back
+                      Main [default]
+                      completed · ref 1
+
+                      UUID
+                      [root]
+
+                      Nickname
+                      Main
+
+                      Model: gpt-5.6-sol
+                      Task: Saved user message
+
+                      Response: none
+                      Queued: 0
+                      Children: 1
+
+                      Enter opens this thread
+
+                      Tab opens controls for the selected agent.
+                      Tab opens controls
                     "###
                 );
                 assert_eq!(take_backfill_counts(&requests), (0, 0));
@@ -6849,6 +6869,7 @@ async fn command_center_read_only_open_requests_and_failure_preservation() -> Re
                         started_at: None,
                         model_context_window: None,
                         collaboration_mode_kind: Default::default(),
+                        agent_queue: None,
                     }),
                     EventMsg::ItemCompleted(ItemCompletedEvent {
                         thread_id,

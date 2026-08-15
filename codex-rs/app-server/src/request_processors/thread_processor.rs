@@ -34,6 +34,7 @@ use std::ops::ControlFlow;
 
 mod agent_alias;
 mod agent_control;
+mod agent_queue;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 pub(super) const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -823,6 +824,24 @@ impl ThreadRequestProcessor {
         params: AgentAliasListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         self.agent_alias_list_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_queue_list(
+        &self,
+        params: AgentQueueListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.agent_queue_list_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_queue_delete(
+        &self,
+        params: AgentQueueDeleteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.agent_queue_delete_response_inner(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -2990,6 +3009,20 @@ impl ThreadRequestProcessor {
             thread.session_id.clone_from(&fallback_thread.session_id);
             thread.ephemeral = fallback_thread.ephemeral;
             thread
+                .parent_thread_id
+                .clone_from(&fallback_thread.parent_thread_id);
+            thread
+                .agent_nickname
+                .clone_from(&fallback_thread.agent_nickname);
+            thread.agent_role.clone_from(&fallback_thread.agent_role);
+            thread.source.clone_from(&fallback_thread.source);
+            thread
+                .can_accept_direct_input
+                .clone_from(&fallback_thread.can_accept_direct_input);
+            thread
+                .thread_source
+                .clone_from(&fallback_thread.thread_source);
+            thread
         } else {
             fallback_thread
         };
@@ -3744,6 +3777,12 @@ impl ThreadRequestProcessor {
         let history_cwd = history_settings
             .map(|settings| settings.cwd.to_path_buf())
             .or_else(|| thread_history.session_cwd());
+        let has_explicit_developer_instructions = developer_instructions.is_some()
+            || request_overrides
+                .as_ref()
+                .is_some_and(|overrides| overrides.contains_key("developer_instructions"));
+        let has_explicit_workspace_override = cwd.is_some() || runtime_workspace_roots.is_some();
+        let mut restored_workspace_roots_from_history = false;
         let mut runtime_workspace_roots =
             runtime_workspace_roots.map(resolve_runtime_workspace_roots);
         if runtime_workspace_roots.is_none() {
@@ -3792,6 +3831,7 @@ impl ThreadRequestProcessor {
                     .collect::<Result<Vec<_>, _>>()?;
                 // Validation can normalize distinct saved paths to the same root.
                 runtime_workspace_roots = Some(resolve_runtime_workspace_roots(restored_roots));
+                restored_workspace_roots_from_history = true;
             }
         }
         let mut typesafe_overrides = self.build_thread_config_overrides(
@@ -3863,6 +3903,14 @@ impl ThreadRequestProcessor {
         };
         if clear_reasoning_effort {
             config.model_reasoning_effort = None;
+        }
+        config.developer_instructions_explicit = has_explicit_developer_instructions;
+        if has_explicit_workspace_override {
+            config.workspace_roots_explicit = true;
+        } else if restored_workspace_roots_from_history {
+            // Saved host settings are not a request to retarget the owner's executor.
+            // Owned child restoration must keep its captured environment attachment.
+            config.workspace_roots_explicit = false;
         }
 
         let response_history = thread_history.clone();
@@ -3982,6 +4030,7 @@ impl ThreadRequestProcessor {
                         return Ok(ControlFlow::Break(()));
                     }
                 };
+                thread.session_id = session_configured.session_id.to_string();
                 thread.thread_source = codex_thread
                     .config_snapshot()
                     .await

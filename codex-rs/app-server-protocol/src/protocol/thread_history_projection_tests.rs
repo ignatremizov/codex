@@ -7,6 +7,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserAgentControlAction;
 use codex_protocol::items::UserAgentControlItem;
 use codex_protocol::items::UserAgentControlStatus;
+use codex_protocol::items::UserAgentInputOutcome;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::MessagePhase;
@@ -248,6 +249,9 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
         fork_mode: None,
         observe_commentary: Some(true),
         final_response: Some(AgentResponseFinalDelivery::Wake),
+        target_messages: Some(false),
+        queue_input: Some(false),
+        input_outcome: Some(UserAgentInputOutcome::Admitted),
         status: UserAgentControlStatus::Succeeded,
         error: None,
     });
@@ -280,6 +284,7 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
         target_thread_id,
         agent_ref,
         action,
+        input_outcome,
         status,
         ..
     } = ThreadItem::from(item)
@@ -289,6 +294,10 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
     assert_eq!(target_thread_id, Some(expected_target_thread_id));
     assert_eq!(agent_ref, Some("2".to_string()));
     assert_eq!(action, crate::protocol::v2::UserAgentControlAction::Prompt);
+    assert_eq!(
+        input_outcome,
+        Some(crate::protocol::v2::AgentInputOutcome::Admitted)
+    );
     assert_eq!(
         status,
         crate::protocol::v2::UserAgentControlStatus::Succeeded
@@ -436,6 +445,9 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
             commentary_after_sequences: vec![0],
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_turn_id: None,
             baseline_final_delivery: AgentResponseFinalDelivery::Passive,
             final_delivery: AgentResponseFinalDelivery::Wake,
             final_delivery_response_item_id: None,

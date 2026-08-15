@@ -203,10 +203,14 @@ impl LocalAgentControl {
                     crate::session::CompletionContextDelivery::InstallNow
                 };
                 let has_mailbox_context = communication.is_some();
-                parent
+                let publication = parent
                     .session
                     .persist_completion_context(response, &reservation, delivery)
                     .await?;
+                if publication == crate::session::CompletionContextPublication::AlreadyPublished {
+                    control.claim_completion_context_response_item_id(parent_id, &context_id);
+                    return Ok(());
+                }
                 if let Some(communication) = communication {
                     parent
                         .session

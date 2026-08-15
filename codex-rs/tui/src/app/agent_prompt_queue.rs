@@ -1,19 +1,20 @@
-//! Process-lifetime queued user prompts for active agent turns.
+//! Process-lifetime queued user prompts for distinct future agent turns.
 
-use std::collections::HashMap;
-
+use codex_app_server_protocol::AgentQueueEntry;
 use codex_app_server_protocol::AgentResponseHandling;
+use codex_protocol::models::local_image_label_text;
 
-use super::agent_observation_display::AgentResponseObservationBinding;
 use super::agent_preview::compact_agent_preview;
 use super::agent_prompt::AgentPromptAdmission;
 use super::agent_prompt::AgentPromptSubmission;
 use super::*;
+use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::chatwidget::UserMessage;
 use crate::chatwidget::agent_command::AgentSelector;
+use crate::chatwidget::mention_bindings_from_user_inputs;
 
 const AGENT_PROMPT_QUEUE_VIEW_ID: &str = "agent-prompt-queue";
 const AGENT_PROMPT_QUEUE_ACTIONS_VIEW_ID: &str = "agent-prompt-queue-actions";
@@ -21,21 +22,21 @@ const AGENT_PROMPT_QUEUE_ACTIONS_VIEW_ID: &str = "agent-prompt-queue-actions";
 pub(super) struct QueuedAgentPrompt {
     id: Uuid,
     source_thread_id: ThreadId,
-    target: String,
-    authored_selector: String,
+    authored_selector: Option<String>,
     target_thread_id: ThreadId,
     user_message: UserMessage,
     input: Vec<codex_app_server_protocol::UserInput>,
+    preview: String,
     response_handling: Option<AgentResponseHandling>,
 }
 
 impl QueuedAgentPrompt {
     pub(super) fn preview(&self) -> String {
-        queued_agent_prompt_preview(&self.user_message)
+        self.preview.clone()
     }
 
-    pub(super) fn response_label(&self) -> &'static str {
-        response_handling_label(self.response_handling)
+    pub(super) fn response_label(&self) -> String {
+        response_handling_option(self.response_handling).unwrap_or_else(|| "passive".to_string())
     }
 }
 
@@ -43,10 +44,33 @@ impl QueuedAgentPrompt {
 struct QueuedAgentPromptRow {
     prompt_id: Uuid,
     preview: String,
-    response: &'static str,
+    response: String,
 }
 
 impl App {
+    pub(super) fn apply_primary_agent_queue(&mut self, queued: Vec<AgentQueueEntry>) {
+        self.queued_agent_prompts.clear();
+        for entry in queued {
+            let Some(prompt) = queued_agent_prompt_from_entry(entry) else {
+                continue;
+            };
+            self.queued_agent_prompts
+                .entry(prompt.target_thread_id)
+                .or_default()
+                .push_back(prompt);
+        }
+    }
+
+    pub(super) async fn refresh_primary_agent_queue(&mut self, app_server: &AppServerSession) {
+        let Some(primary_thread_id) = self.agent_root_thread_id() else {
+            return;
+        };
+        match app_server.agent_queued_turns(primary_thread_id).await {
+            Ok(queued) => self.apply_primary_agent_queue(queued),
+            Err(err) => tracing::warn!(%err, "failed to refresh queued agent turns"),
+        }
+    }
+
     pub(super) async fn queue_agent_prompt_to_selector(
         &mut self,
         app_server: &mut AppServerSession,
@@ -76,6 +100,7 @@ impl App {
             }
         };
         let target = target_thread_id.to_string();
+        let recovery_command = format!("/agent queue {target_thread_id}{response} ");
         if target_thread_id == source_thread_id {
             self.chat_widget.add_error_message(
                 "Queue input for the current agent with Tab in the normal composer.".to_string(),
@@ -97,208 +122,36 @@ impl App {
             .agent_prompt_availability(target_thread_id)
             .into_label()
             .unwrap_or_else(|| target_thread_id.to_string());
-        match self
+        let outcome = self
             .submit_agent_prompt_with_control(
                 app_server,
-                source_thread_id,
-                target_thread_id,
-                target.clone(),
-                selector.authored().to_string(),
-                user_message.clone(),
-                response_handling,
-                AgentPromptAdmission::Queued,
+                SubmitAgentPromptArgs {
+                    source_thread_id,
+                    thread_id: target_thread_id,
+                    target,
+                    authored_selector: selector.authored().to_string(),
+                    user_message: user_message.clone(),
+                    response_handling,
+                    admission: AgentPromptAdmission::Queued,
+                },
             )
-            .await
-        {
-            AgentPromptSubmission::Admitted { .. } => return,
+            .await;
+        match outcome {
+            AgentPromptSubmission::Admitted {
+                input_outcome: codex_app_server_protocol::AgentInputOutcome::Queued,
+                ..
+            } => {
+                self.refresh_primary_agent_queue(app_server).await;
+                self.chat_widget.add_info_message(
+                    format!("Queued input for {label}; waiting for its next turn."),
+                    /*hint*/ None,
+                );
+            }
+            AgentPromptSubmission::Admitted { .. } => {
+                self.refresh_primary_agent_queue(app_server).await;
+            }
             AgentPromptSubmission::Rejected => {
                 self.recover_agent_command(source_thread_id, recovery_command, user_message);
-                return;
-            }
-            AgentPromptSubmission::TargetActive => {}
-        }
-
-        let input = match self
-            .chat_widget
-            .agent_user_inputs_from_message(&user_message)
-            .await
-        {
-            Ok(input) => input,
-            Err(error) => {
-                self.chat_widget.add_error_message(error);
-                self.recover_agent_command(source_thread_id, recovery_command, user_message);
-                return;
-            }
-        };
-        self.queued_agent_prompts
-            .entry(target_thread_id)
-            .or_default()
-            .push_back(QueuedAgentPrompt {
-                id: Uuid::new_v4(),
-                source_thread_id,
-                target,
-                authored_selector: selector.authored().to_string(),
-                target_thread_id,
-                user_message,
-                input,
-                response_handling,
-            });
-        self.chat_widget.add_info_message(
-            format!("Queued user prompt for {label}."),
-            /*hint*/ None,
-        );
-
-        let attachment = self
-            .thread_event_channels
-            .get(&target_thread_id)
-            .map(ThreadEventChannel::attachment);
-        let live_attached = match attachment {
-            Some(ThreadEventAttachment::ExternalWriter) => {
-                Err(color_eyre::eyre::eyre!("the target is open elsewhere"))
-            }
-            Some(ThreadEventAttachment::Live) => Ok(true),
-            Some(ThreadEventAttachment::ReplayOnly) => self
-                .resume_replay_only_thread(app_server, target_thread_id)
-                .await
-                .map(|()| true),
-            None => {
-                self.attach_live_thread_for_selection(app_server, target_thread_id)
-                    .await
-            }
-        };
-        match live_attached {
-            Ok(true) => {}
-            Ok(false) => self.chat_widget.add_error_message(format!(
-                "Failed to watch {label}; the user prompt remains queued but may require a manual \
-                 retry."
-            )),
-            Err(error) => self.chat_widget.add_error_message(format!(
-                "Failed to watch {label}; the user prompt remains queued but may require a manual \
-                 retry: {error:#}"
-            )),
-        }
-
-        // Close the completion-vs-queue race: the target may have become idle after the first
-        // liveness read but before the queued item was recorded. A second authoritative read either
-        // observes the active turn or schedules admission without waiting for another notification.
-        self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
-            .await;
-        if !self.agent_navigation.is_running(target_thread_id) {
-            self.app_event_tx
-                .send(AppEvent::DrainAgentPromptQueue { target_thread_id });
-        }
-    }
-
-    pub(super) async fn drain_agent_prompt_queue(
-        &mut self,
-        app_server: &mut AppServerSession,
-        target_thread_id: ThreadId,
-    ) {
-        if !self.queued_agent_prompts.contains_key(&target_thread_id) {
-            return;
-        }
-        self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
-            .await;
-        self.sync_active_agent_label();
-        if self.agent_navigation.is_running(target_thread_id) {
-            return;
-        }
-
-        let Some(prompt) = self
-            .queued_agent_prompts
-            .get(&target_thread_id)
-            .and_then(|queue| queue.front())
-            .cloned()
-        else {
-            return;
-        };
-        let label = self
-            .agent_prompt_availability(target_thread_id)
-            .into_label()
-            .unwrap_or_else(|| target_thread_id.to_string());
-        match self
-            .submit_agent_prompt_items(
-                app_server,
-                prompt.source_thread_id,
-                prompt.target_thread_id,
-                prompt.target,
-                prompt.authored_selector,
-                prompt.input,
-                prompt.response_handling,
-                AgentPromptAdmission::Queued,
-            )
-            .await
-        {
-            Ok(outcome @ AgentPromptSubmission::Admitted { .. }) => {
-                let AgentPromptSubmission::Admitted {
-                    input_outcome,
-                    audit_warning,
-                    post_admission_warning,
-                } = &outcome
-                else {
-                    unreachable!("matched admitted outcome above")
-                };
-                self.take_queued_agent_prompt(target_thread_id, prompt.id);
-                self.refresh_primary_agent_aliases(app_server).await;
-                self.refresh_agent_picker_thread_liveness(app_server, prompt.target_thread_id)
-                    .await;
-                if *input_outcome == codex_app_server_protocol::AgentInputOutcome::Admitted
-                    && post_admission_warning.is_none()
-                    && self.agent_navigation.is_running(prompt.target_thread_id)
-                {
-                    self.agent_navigation.note_response_observation(
-                        prompt.source_thread_id,
-                        prompt.target_thread_id,
-                        AgentResponseObservationBinding::Bound,
-                        prompt.response_handling,
-                    );
-                }
-                self.sync_active_agent_label();
-                if *input_outcome == codex_app_server_protocol::AgentInputOutcome::Unknown {
-                    self.recover_agent_command(
-                        prompt.source_thread_id,
-                        format!("/agent {}", prompt.target_thread_id),
-                        prompt.user_message,
-                    );
-                    self.chat_widget.add_error_message(format!(
-                        "Queued input outcome for {label} is unknown. It was removed from the automatic \
-                         queue and retained for reconciliation. Reload the transcript before retrying."
-                    ));
-                }
-                if let Some(warning) = audit_warning {
-                    self.chat_widget.add_error_message(format!(
-                        "Queued input for {label} could not be audited; it \
-                         was removed from the queue and must not be retried: {warning}"
-                    ));
-                }
-                if let Some(warning) = post_admission_warning {
-                    self.chat_widget.add_error_message(format!(
-                        "Queued input for {label} has a delivery warning; it \
-                         was removed from the queue and must not be retried: {warning}"
-                    ));
-                }
-            }
-            Ok(AgentPromptSubmission::TargetActive) => {}
-            Ok(AgentPromptSubmission::Rejected) => {
-                unreachable!("submission helper never returns rejected")
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target_thread_id = %prompt.target_thread_id,
-                    %error,
-                    "queued agent prompt response was not authoritative; disabling automatic retry"
-                );
-                self.take_queued_agent_prompt(target_thread_id, prompt.id);
-                self.recover_agent_command(
-                    prompt.source_thread_id,
-                    format!("/agent {}", prompt.target_thread_id),
-                    prompt.user_message,
-                );
-                self.chat_widget.add_error_message(format!(
-                    "Could not confirm queued input for {label}. It was removed from the automatic \
-                     queue and retained for manual reconciliation. Reload the target transcript \
-                     before retrying: {error:#}"
-                ));
             }
         }
     }
@@ -317,35 +170,103 @@ impl App {
         }
     }
 
-    pub(super) fn edit_queued_agent_prompt(&mut self, target_thread_id: ThreadId, prompt_id: Uuid) {
-        let Some(prompt) = self.take_queued_agent_prompt(target_thread_id, prompt_id) else {
+    pub(super) async fn edit_queued_agent_prompt(
+        &mut self,
+        app_server: &AppServerSession,
+        target_thread_id: ThreadId,
+        prompt_id: Uuid,
+    ) {
+        let Some(prompt) = self
+            .queued_agent_prompts
+            .get(&target_thread_id)
+            .and_then(|queue| queue.iter().find(|prompt| prompt.id == prompt_id))
+            .cloned()
+        else {
             self.chat_widget
                 .add_error_message("That queued agent prompt is no longer available.".to_string());
             return;
         };
+        let Some(_) = prompt.authored_selector.as_deref() else {
+            self.chat_widget.add_error_message(
+                "Model-authored queued input can be removed, but not edited as user input."
+                    .to_string(),
+            );
+            return;
+        };
+        if prompt.input.iter().any(|input| {
+            matches!(
+                input,
+                codex_app_server_protocol::UserInput::LocalImage { .. }
+            )
+        }) {
+            self.chat_widget.add_error_message(
+                "This queued prompt contains an image path from another submission. Remove it and attach the image again to edit safely."
+                    .to_string(),
+            );
+            return;
+        }
+        if let Err(error) =
+            self.ensure_agent_control_admission(prompt.source_thread_id, Some(target_thread_id))
+        {
+            self.chat_widget.add_error_message(error.to_string());
+            return;
+        }
+        let Some(primary_thread_id) = self.agent_root_thread_id() else {
+            self.chat_widget
+                .add_error_message("No primary agent queue is available.".to_string());
+            return;
+        };
+        if let Err(err) = app_server
+            .delete_agent_queued_turn(primary_thread_id, prompt_id)
+            .await
+        {
+            self.chat_widget.add_error_message(format!(
+                "Could not confirm removal of the queued prompt: {err:#}. The draft is preserved; check the agent queue and conversation before sending it again."
+            ));
+            let response_option = response_handling_option(prompt.response_handling)
+                .map(|option| format!(" {option}"))
+                .unwrap_or_default();
+            self.recover_agent_command(
+                prompt.source_thread_id,
+                format!("/agent queue {target_thread_id}{response_option} "),
+                prompt.user_message,
+            );
+            self.refresh_primary_agent_queue(app_server).await;
+            return;
+        }
+        let _ = self.take_queued_agent_prompt(target_thread_id, prompt_id);
         let response_option = response_handling_option(prompt.response_handling)
             .map(|option| format!(" {option}"))
             .unwrap_or_default();
-        let command = format!(
-            "/agent queue {}{response_option} ",
-            prompt.authored_selector
-        );
+        let command = format!("/agent queue {target_thread_id}{response_option} ");
         self.chat_widget
             .dismiss_selection_view(AGENT_PROMPT_QUEUE_VIEW_ID);
         self.recover_agent_command(prompt.source_thread_id, command, prompt.user_message);
     }
 
-    pub(super) fn remove_queued_agent_prompt(
+    pub(super) async fn remove_queued_agent_prompt(
         &mut self,
+        app_server: &AppServerSession,
         target_thread_id: ThreadId,
         prompt_id: Uuid,
     ) {
-        if self
-            .take_queued_agent_prompt(target_thread_id, prompt_id)
-            .is_none()
-        {
+        let Some(primary_thread_id) = self.agent_root_thread_id() else {
             self.chat_widget
-                .add_error_message("That queued agent prompt is no longer available.".to_string());
+                .add_error_message("No primary agent queue is available.".to_string());
+            return;
+        };
+        match app_server
+            .delete_agent_queued_turn(primary_thread_id, prompt_id)
+            .await
+        {
+            Ok(()) => {
+                let _ = self.take_queued_agent_prompt(target_thread_id, prompt_id);
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to remove queued agent input: {err:#}"));
+                self.refresh_primary_agent_queue(app_server).await;
+            }
         }
         self.open_agent_prompt_queue(target_thread_id);
     }
@@ -369,11 +290,13 @@ impl App {
             return;
         };
         let preview = prompt.preview();
+        let editable = prompt.authored_selector.is_some();
         self.chat_widget
             .show_selection_view(queued_agent_prompt_actions_view_params(
                 target_thread_id,
                 prompt_id,
                 preview,
+                editable,
             ));
     }
 
@@ -407,6 +330,7 @@ fn queued_agent_prompt_actions_view_params(
     target_thread_id: ThreadId,
     prompt_id: Uuid,
     preview: String,
+    editable: bool,
 ) -> SelectionViewParams {
     SelectionViewParams {
         view_id: Some(AGENT_PROMPT_QUEUE_ACTIONS_VIEW_ID),
@@ -417,6 +341,8 @@ fn queued_agent_prompt_actions_view_params(
             SelectionItem {
                 name: "Edit".to_string(),
                 description: Some("Restore this prompt to the composer".to_string()),
+                disabled_reason: (!editable)
+                    .then(|| "Only user-authored queued prompts can be edited.".to_string()),
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::EditQueuedAgentPrompt {
                         target_thread_id,
@@ -466,7 +392,7 @@ fn agent_prompt_queue_view_params(
                 } = row;
                 SelectionItem {
                     name: preview.clone(),
-                    description: Some(response.to_string()),
+                    description: Some(response),
                     search_value: Some(preview),
                     secondary_action: Some(crate::bottom_pane::SelectionSecondaryAction {
                         key: crate::key_hint::plain(crossterm::event::KeyCode::Tab),
@@ -539,18 +465,65 @@ fn queued_agent_prompt_rows(
 
 pub(super) fn response_handling_option(
     response_handling: Option<AgentResponseHandling>,
-) -> Option<&'static str> {
-    response_handling.map(|response_handling| match response_handling {
-        AgentResponseHandling::Commentary => "w:c",
-        AgentResponseHandling::Wake => "w:f",
-        AgentResponseHandling::Presentation => "w:x",
-        AgentResponseHandling::CommentaryWake => "w:cf",
-        AgentResponseHandling::CommentaryPresentation => "w:cx",
-    })
+) -> Option<String> {
+    let response_handling = response_handling?;
+    let mut flags = String::new();
+    if response_handling.commentary {
+        flags.push('c');
+    }
+    if response_handling.final_response
+        == codex_app_server_protocol::AgentFinalResponseHandling::Wake
+    {
+        flags.push('f');
+    }
+    if response_handling.target_messages {
+        flags.push('m');
+    }
+    if response_handling.queue_input {
+        flags.push('q');
+    }
+    if response_handling.final_response
+        == codex_app_server_protocol::AgentFinalResponseHandling::Presentation
+    {
+        flags.push('x');
+    }
+    (!flags.is_empty()).then(|| format!("w:{flags}"))
 }
 
-fn response_handling_label(response_handling: Option<AgentResponseHandling>) -> &'static str {
-    response_handling_option(response_handling).unwrap_or("passive")
+fn queued_agent_prompt_from_entry(entry: AgentQueueEntry) -> Option<QueuedAgentPrompt> {
+    let id = Uuid::parse_str(&entry.id).ok()?;
+    let source_thread_id = ThreadId::from_string(&entry.source_thread_id).ok()?;
+    let target_thread_id = ThreadId::from_string(&entry.target_thread_id).ok()?;
+    let display = ChatWidget::user_message_display_from_inputs(&entry.input);
+    let local_images = display
+        .local_images
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| LocalImageAttachment {
+            placeholder: local_image_label_text(index + 1),
+            path,
+        })
+        .collect();
+    let mention_bindings = mention_bindings_from_user_inputs(&entry.input, &display.message);
+    let user_message = UserMessage {
+        text: display.message,
+        local_images,
+        remote_image_urls: display.remote_image_urls,
+        text_elements: display.text_elements,
+        mention_bindings,
+    };
+    let preview = compact_agent_preview(&entry.prompt_preview)
+        .unwrap_or_else(|| queued_agent_prompt_preview(&user_message));
+    Some(QueuedAgentPrompt {
+        id,
+        source_thread_id,
+        authored_selector: entry.authored_selector,
+        target_thread_id,
+        user_message,
+        input: entry.input,
+        preview,
+        response_handling: Some(entry.response_handling),
+    })
 }
 
 fn queued_agent_prompt_preview(user_message: &UserMessage) -> String {

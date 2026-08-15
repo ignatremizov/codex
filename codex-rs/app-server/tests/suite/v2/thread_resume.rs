@@ -3926,6 +3926,7 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         })),
     )
     .await?;
@@ -4038,6 +4039,7 @@ async fn cold_paginated_resume_omits_usage_when_its_turn_is_ambiguous() -> Resul
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         })),
     )
     .await?;
@@ -4181,6 +4183,7 @@ async fn thread_resume_token_usage_replay_ignores_stale_interrupted_tail_turn() 
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }))?,
         })
         .to_string(),
@@ -4270,6 +4273,7 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }))?,
         })
         .to_string(),
@@ -4584,6 +4588,7 @@ async fn thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }))?,
         })
         .to_string(),
