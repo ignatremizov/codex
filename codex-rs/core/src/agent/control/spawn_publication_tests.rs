@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 //! Exercises spawn cleanup against real SQLite graph writes with controlled acknowledgements.
-//! Publication must survive caller cancellation and finish before cleanup closes the edge.
+//! Publication must survive caller cancellation and finish before cleanup closes an acknowledged edge.
+//! A lost publication acknowledgement retains uncertain graph state.
 
 use super::*;
 use codex_agent_graph_store::AgentGraphStore;
@@ -181,7 +182,7 @@ async fn assert_publication_closed(
             .await
             .expect("open graph"),
         Vec::<ThreadId>::new(),
-        "rejected or cancelled spawn must close its committed edge",
+        "cancelled spawn must close its acknowledged edge",
     );
     assert_eq!(
         graph
@@ -199,8 +200,13 @@ async fn cancelled_spawn_edge_publication_cleanup(
     failure: SpawnEdgeFailure,
     committed_children: usize,
 ) {
-    let (harness, graph) = publication_harness(failure, ThreadId::new).await;
-    let parent = ThreadId::new();
+    let (mut harness, graph) = publication_harness(failure, ThreadId::new).await;
+    let (parent, parent_thread) = harness.start_thread().await;
+    harness.control = parent_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent_thread.session.session_id());
     let mut spawn = Box::pin(spawn_publication_child(&harness, parent));
     tokio::select! {
         biased;
@@ -233,18 +239,57 @@ async fn cancelled_spawn_edge_publication_cleanup(
 }
 
 #[tokio::test]
-async fn failed_spawn_edge_publication_cleanup() {
-    let (harness, graph) =
+async fn failed_spawn_edge_publication_retains_uncertain_graph() {
+    let (mut harness, graph) =
         publication_harness(SpawnEdgeFailure::ErrorAfterCommit, ThreadId::new).await;
-    let parent = ThreadId::new();
+    let (parent, parent_thread) = harness.start_thread().await;
+    harness.control = parent_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent_thread.session.session_id());
     let error = spawn_publication_child(&harness, parent)
         .await
         .expect_err("lost commit acknowledgement rejects spawn");
+    let children = graph
+        .list_thread_spawn_children(parent, /*status_filter*/ None)
+        .await
+        .expect("committed graph");
+    assert_eq!(children.len(), 1, "the store accepted exactly one child");
+    let child_id = children[0];
     assert_eq!(
         error.to_string(),
-        "Fatal error: failed to persist spawned agent relationship"
+        format!(
+            "Fatal error: failed to persist thread-spawn edge for {child_id}: agent graph store internal error: injected response loss after successful commit"
+        )
     );
-    assert_publication_closed(&harness, &graph, parent).await;
+    harness
+        .control
+        .runtime
+        .request_shutdown()
+        .wait()
+        .await
+        .expect("cleanup completes without discarding uncertain publication");
+    assert_thread_not_loaded(&harness.manager, child_id).await;
+    assert!(
+        !graph.close_attempted.is_cancelled(),
+        "a lost publication acknowledgement cannot authorize Closed",
+    );
+    assert_eq!(
+        graph
+            .list_thread_spawn_children(parent, Some(ThreadSpawnEdgeStatus::Open))
+            .await
+            .expect("open graph"),
+        children,
+        "preserve the uncertain durable publication",
+    );
+    assert_eq!(
+        graph
+            .list_thread_spawn_children(parent, Some(ThreadSpawnEdgeStatus::Closed))
+            .await
+            .expect("closed graph"),
+        Vec::<ThreadId>::new(),
+    );
 }
 
 #[test_case::test_case(SkippedPublication::Ephemeral; "ephemeral")]
@@ -253,7 +298,12 @@ async fn failed_spawn_edge_publication_cleanup() {
 async fn failed_spawn_without_publication_does_not_close_graph(skipped: SkippedPublication) {
     let (mut harness, graph) =
         publication_harness(SpawnEdgeFailure::ErrorAfterCommit, ThreadId::new).await;
-    let parent = ThreadId::new();
+    let (parent, parent_thread) = harness.start_thread().await;
+    harness.control = parent_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent_thread.session.session_id());
     let source = match skipped {
         SkippedPublication::Ephemeral => {
             harness.config.ephemeral = true;
@@ -308,9 +358,14 @@ async fn failed_spawn_without_publication_does_not_close_graph(skipped: SkippedP
 #[tokio::test]
 async fn repeated_child_id_preserves_existing_thread_and_graph() {
     let repeated_id = ThreadId::new();
-    let (harness, graph) =
+    let (mut harness, graph) =
         publication_harness(SpawnEdgeFailure::ErrorAfterCommit, move || repeated_id).await;
     let (parent, existing_thread) = harness.start_thread().await;
+    harness.control = existing_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(existing_thread.session.session_id());
     assert_eq!(parent, repeated_id);
     let children_before = graph
         .list_thread_spawn_children(parent, /*status_filter*/ None)

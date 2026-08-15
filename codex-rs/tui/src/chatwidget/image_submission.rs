@@ -9,7 +9,7 @@ use codex_protocol::models::snapshot_local_user_input;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use tokio::sync::oneshot;
 
-static IMAGE_PREPARATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(super) static IMAGE_PREPARATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub(super) struct PendingImageSubmission {
     id: uuid::Uuid,
@@ -128,7 +128,7 @@ impl ChatWidget {
     }
 }
 
-fn prepare_images(
+pub(super) fn prepare_images(
     images: Vec<LocalImageAttachment>,
     remote_bytes: usize,
 ) -> Result<Vec<UserInput>, String> {

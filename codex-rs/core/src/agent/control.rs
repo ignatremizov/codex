@@ -57,21 +57,30 @@ pub(crate) use self::runtime::LocalAgentRuntime;
 pub(in crate::agent) use spawn::effective_spawn_config;
 pub(in crate::agent) use spawn::fresh_child_history_and_tools;
 pub(in crate::agent) use spawn::inherited_dynamic_tools;
-pub(in crate::agent) use spawn_guard::PendingSpawn;
-pub(in crate::agent) use spawn_guard::SpawnOwner;
+pub(in crate::agent) use spawn_guard::PendingHostSpawn;
 
+mod aliases;
 mod api;
 mod budget;
+pub(crate) use aliases::AgentResumeOwnership;
 mod completion;
 mod completion_watcher;
 mod presentation;
 mod response_delivery;
 mod response_observer;
 mod response_submission;
+mod user_dispatch;
+mod user_observation;
+mod user_resume;
+mod user_spawn;
+pub(in crate::agent) use presentation::ReplacedFinalResponseObservationBinding;
+pub(crate) use user_dispatch::ResponseObservationSubmission;
+pub(crate) use user_dispatch::ResumeUserInputAdmission;
 mod restore_environments;
 mod restore_metadata;
 mod restore_publication;
 mod restore_v2;
+mod resume_registration;
 pub(crate) use presentation::AgentTerminalPresentation;
 pub(crate) use presentation::CompletionParentAdoption;
 pub(crate) use presentation::CompletionParentBinding;
@@ -119,6 +128,7 @@ pub(crate) struct LocalAgentControl {
     /// session_id is equal to the root thread's ID.
     session_id: SessionId,
     pub(crate) runtime: LocalAgentRuntime,
+    session_id_is_bound: bool,
 }
 
 impl Default for LocalAgentControl {
@@ -141,17 +151,23 @@ impl LocalAgentControl {
         Self {
             session_id: SessionId::default(),
             runtime: LocalAgentRuntime::new(manager, thread_id_generator, rollout_budget),
+            session_id_is_bound: false,
         }
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
         self.session_id = session_id;
         self.runtime.agent_execution_limiter.initialize(max_threads);
+        self.session_id_is_bound = true;
         self
     }
 
     pub(crate) fn session_id(&self) -> SessionId {
         self.session_id
+    }
+
+    pub(crate) fn bound_session_id(&self) -> Option<SessionId> {
+        self.session_id_is_bound.then_some(self.session_id)
     }
 
     /// Send rich user input items to an existing agent thread.
@@ -261,12 +277,25 @@ impl LocalAgentControl {
 
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
+        self.interrupt_agent_with_runtime(agent_id)
+            .await
+            .map(|(submission_id, _runtime)| submission_id)
+    }
+
+    pub(crate) async fn interrupt_agent_with_runtime(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<(String, crate::agent::UserAgentRuntime)> {
         let state = self.runtime.upgrade()?;
+        // A stopped runtime still needs exact-instance cleanup. The live-only
+        // admission helper would return NotFound before that cleanup can run.
+        let _lifecycle = state.agent_lifecycle_lock(agent_id).lock_owned().await;
         let thread = state.get_thread(agent_id).await?;
-        self.handle_thread_request_result(
-            agent_id,
-            &state,
-            &thread,
+        thread.ensure_not_unloading()?;
+        state.check_restoration_fence(agent_id)?;
+        self.require_current_agent_ownership(agent_id).await?;
+        let result = if thread.is_running() {
+            thread.session.submission_admission.check_ready()?;
             state
                 .send_op_to_thread(
                     &thread,
@@ -275,9 +304,14 @@ impl LocalAgentControl {
                     /*root_turn_id*/ None,
                     /*message_delivery*/ None,
                 )
-                .await,
-        )
-        .await
+                .await
+        } else {
+            Err(CodexErr::InternalAgentDied)
+        };
+        let result = self
+            .handle_thread_request_result(agent_id, &state, &thread, result)
+            .await?;
+        Ok((result, crate::agent::UserAgentRuntime::capture(&thread)))
     }
 
     async fn handle_thread_request_result(
@@ -486,38 +520,13 @@ impl LocalAgentControl {
         Some(parent_thread.session.inherited_environment_snapshot().await)
     }
 
-    /// Returns true after publication, or false when the source or configuration skips it.
-    async fn persist_thread_spawn_edge_for_source(
+    async fn inherited_exec_policy_for_source(
         &self,
-        ephemeral: bool,
-        child_thread_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
         session_source: Option<&SessionSource>,
-    ) -> CodexResult<bool> {
-        let Some(parent_thread_id) = session_source.and_then(SessionSource::parent_thread_id)
-        else {
-            return Ok(false);
-        };
-        if ephemeral {
-            return Ok(false);
-        }
-        let state = self.runtime.upgrade()?;
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return Ok(false);
-        };
-        if let Err(err) = agent_graph_store
-            .upsert_thread_spawn_edge(
-                parent_thread_id,
-                child_thread_id,
-                codex_agent_graph_store::ThreadSpawnEdgeStatus::Open,
-            )
-            .await
-        {
-            warn!("failed to persist thread-spawn edge: {err}");
-            return Err(CodexErr::Fatal(
-                "failed to persist spawned agent relationship".to_string(),
-            ));
-        }
-        Ok(true)
+        child_config: &Config,
+    ) -> Option<Arc<crate::exec_policy::ExecPolicyManager>> {
+        inherited_exec_policy_for_source(state, session_source, child_config).await
     }
 }
 

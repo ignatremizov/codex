@@ -5746,6 +5746,76 @@ fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
     );
 }
 
+fn assert_tagged_schema_matches_wire<T: schemars::JsonSchema>(wire: &JsonValue) {
+    let schema = serde_json::to_value(schemars::schema_for!(T)).expect("serialize schema");
+    let variant = schema["oneOf"]
+        .as_array()
+        .expect("tagged variants")
+        .iter()
+        .find(|variant| variant["properties"]["type"]["enum"][0] == wire["type"])
+        .expect("schema variant for wire discriminator");
+    let wire_fields: std::collections::BTreeSet<_> = wire
+        .as_object()
+        .expect("serialized variant object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let schema_fields: std::collections::BTreeSet<_> = variant["properties"]
+        .as_object()
+        .expect("variant schema properties")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(schema_fields, wire_fields, "variant {}", wire["type"]);
+}
+
+#[test]
+fn agent_control_schema_matches_serialized_variant_fields() {
+    // Deserialize the original wire shape so later optional fields remain covered
+    // without making this regression depend on their introducing owners.
+    let action: AgentControlAction = serde_json::from_value(json!({
+        "type": "spawn",
+        "role": null,
+        "input": null,
+        "forkMode": { "type": "none" },
+        "responseHandling": null
+    }))
+    .expect("deserialize original spawn action");
+    let action_wire = serde_json::to_value(action).expect("serialize spawn action");
+    assert_eq!(action_wire["forkMode"], json!({ "type": "none" }));
+    assert!(action_wire.get("responseHandling").is_some());
+    assert_tagged_schema_matches_wire::<AgentControlAction>(&action_wire);
+
+    let outcome: AgentControlOutcome = serde_json::from_value(json!({
+        "type": "resumed",
+        "targetThreadId": "thread-2",
+        "ref": "2",
+        "nickname": "Hopper",
+        "observationBinding": "nextTurn",
+        "postCommitWarning": null
+    }))
+    .expect("deserialize original resume outcome");
+    let outcome_wire = serde_json::to_value(outcome).expect("serialize resume outcome");
+    assert_eq!(outcome_wire["targetThreadId"], json!("thread-2"));
+    assert_eq!(outcome_wire["ref"], json!("2"));
+    assert_eq!(outcome_wire["observationBinding"], json!("nextTurn"));
+    assert_tagged_schema_matches_wire::<AgentControlOutcome>(&outcome_wire);
+
+    let binding_wire = serde_json::to_value([
+        AgentObservationBinding::ActiveTurn,
+        AgentObservationBinding::NextTurn,
+        AgentObservationBinding::UndeliveredCompletion,
+    ])
+    .expect("serialize observation bindings");
+    assert_eq!(
+        binding_wire,
+        json!(["activeTurn", "nextTurn", "undeliveredCompletion"])
+    );
+    let binding_schema = serde_json::to_value(schemars::schema_for!(AgentObservationBinding))
+        .expect("serialize observation binding schema");
+    assert_eq!(binding_schema["enum"], binding_wire);
+}
+
 /// Native path spelling survives serialization so the receiving host can validate it.
 #[test]
 fn feedback_paths_preserve_native_wire_spelling_before_host_validation() {

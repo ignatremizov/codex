@@ -29,7 +29,6 @@ use codex_history::ResponseItemEnvelope;
 use codex_history::RolloutItem;
 use codex_history::rollout_without_exact_rollback_ranges;
 use codex_prompts::ResolvedModelMessages;
-use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
@@ -40,8 +39,6 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
-use codex_thread_store::LoadThreadHistoryParams;
-use codex_thread_store::ReadThreadParams;
 
 fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool) -> bool {
     match item {
@@ -132,36 +129,6 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
     !content.is_empty() && set_annotated_content(item, content).is_some()
 }
 
-pub(super) async fn load_agent_model_context(
-    state: &ThreadManagerState,
-    thread_id: ThreadId,
-    history_mode: ThreadHistoryMode,
-) -> CodexResult<Option<codex_thread_store::StoredModelContext>> {
-    match history_mode {
-        ThreadHistoryMode::Legacy => Ok(state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: true,
-            })
-            .await?
-            .history
-            .map(|history| codex_thread_store::StoredModelContext {
-                thread_id,
-                revision: history.revision,
-                items: history.items,
-            })),
-        ThreadHistoryMode::Paginated => Ok(Some(
-            state
-                .load_latest_model_context(LoadThreadHistoryParams {
-                    thread_id,
-                    include_archived: true,
-                })
-                .await?,
-        )),
-    }
-}
-
 /// Prepare copied history while leaving startup settings and timing with the caller.
 pub(super) async fn prepare_forked_history(
     state: &ThreadManagerState,
@@ -228,15 +195,15 @@ pub(super) async fn prepare_forked_history(
 
     let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
         .then_some(ThreadHistoryMode::Paginated);
-    let forked_rollout_items =
-        load_agent_model_context(state, parent_thread_id, parent_history_mode)
-            .await?
-            .ok_or_else(|| {
-                CodexErr::Fatal(format!(
-                    "parent thread history unavailable for fork: {parent_thread_id}"
-                ))
-            })?
-            .items;
+    let forked_rollout_items = state
+        .load_agent_model_context(parent_thread_id, parent_history_mode)
+        .await?
+        .ok_or_else(|| {
+            CodexErr::Fatal(format!(
+                "parent thread history unavailable for fork: {parent_thread_id}"
+            ))
+        })?
+        .items;
 
     // Last-N selection needs the original source positions and catalog authority before
     // exact-rollback projection removes context records or turns snapshots into metadata.

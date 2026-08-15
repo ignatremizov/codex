@@ -15,7 +15,7 @@ Scenario: Mid-turn auth refresh preserves skill context and executor access. Rev
     [04] <tools>
         Deferred tool namespaces:
         - mcp__codex_apps__calendar: Plan events and manage your calendar.
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
     [05] <SKILLS_INSTRUCTIONS>
 02:message/user:

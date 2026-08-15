@@ -627,6 +627,7 @@ WHERE thread_id = ?
             | ThreadItemPayload::DynamicToolCall { .. }
             | ThreadItemPayload::CollabAgentToolCall { .. }
             | ThreadItemPayload::SubAgentActivity { .. }
+            | ThreadItemPayload::UserAgentControl { .. }
             | ThreadItemPayload::WebSearch(_)
             | ThreadItemPayload::ImageView { .. }
             | ThreadItemPayload::Sleep(_)

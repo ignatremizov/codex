@@ -302,3 +302,173 @@ fn catalog_carriers_survive_mixed_exact_and_count_only_rollback() {
         );
     }
 }
+
+#[tokio::test]
+async fn task_proofs_keep_physical_adjacency_before_mask_and_planner_replay() {
+    use codex_history::ResponseItemEnvelope;
+    use codex_protocol::ResponseItemId;
+    use codex_protocol::models::ContentItem;
+    use codex_protocol::models::ResponseItem;
+    use codex_protocol::protocol::AgentResponseFinalDelivery;
+    use codex_protocol::protocol::AgentResponseObservation;
+    use codex_protocol::protocol::AgentResponsePromotedTaskContext;
+    use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
+
+    let home = tempfile::TempDir::new().expect("temporary directory");
+    let path = home.path().join("physical-task-proof.jsonl");
+    let legacy_gap = serde_json::json!({
+        "timestamp": "2025-01-03T12:00:01Z",
+        "ordinal": 19,
+        "type": "event_msg",
+        "payload": {
+            "type": "exec_command_begin",
+            "call_id": "compatibility-gap",
+            "turn_id": "source-turn",
+            "command": ["echo", "compatibility gap"],
+            "cwd": std::env::temp_dir().to_string_lossy(),
+            "parsed_cmd": [],
+        },
+    });
+    assert!(
+        codex_rollout::decode_canonical_rollout_line(legacy_gap.clone()).is_err(),
+        "the plain cwd record must occupy only a physical compatibility position"
+    );
+    let compatibility_gap =
+        super::super::line_parser::parse_legacy_rollout_value(legacy_gap.clone())
+            .expect("normalize historical plain cwd")
+            .expect("retain compatibility-only command");
+
+    for tools in [catalog("physical-proof"), Vec::new()] {
+        for remove_task in [false, true] {
+            for (gap_after, compatibility) in [
+                (None, false),
+                (Some(0), false),
+                (Some(1), false),
+                (Some(0), true),
+                (Some(1), true),
+            ] {
+                let owner = ThreadId::new();
+                let task: ResponseItemEnvelope = ResponseItem::Message {
+                    status: None,
+                    encrypted_content: None,
+                    id: Some(new_user_agent_task_context_response_item_id()),
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "<user_agent_task>review the change</user_agent_task>".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into();
+                let metadata = line(RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: false,
+                });
+                let task_line = line(RolloutItem::ResponseItem(task.clone()));
+                let observation = line(RolloutItem::AgentResponseObservation(
+                    AgentResponseObservation {
+                        observer_thread_id: owner,
+                        target_thread_id: ThreadId::new(),
+                        target_turn_id: Some("actual-turn".to_string()),
+                        task_preview: None,
+                        promoted_task_context: AgentResponsePromotedTaskContext::from_response_item(
+                            &task.item,
+                        ),
+                        target_messages: false,
+                        queue_delivery: false,
+                        message_wake_turn_id: None,
+                        pending_commentary: false,
+                        commentary_after_sequences: Vec::new(),
+                        commentary_admissions: Vec::new(),
+                        commentary_delivery: None,
+                        baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+                        final_delivery: AgentResponseFinalDelivery::Wake,
+                        final_delivery_response_item_id: None,
+                        committed_delivery_response_item_ids: Vec::new(),
+                    },
+                ));
+                let checkpoint = RolloutLine {
+                    timestamp: "2025-01-03T12:00:37Z".to_string(),
+                    ordinal: Some(37),
+                    item: RolloutItem::Compacted(Box::new(catalog_checkpoint(
+                        owner,
+                        tools.clone(),
+                    ))),
+                };
+                let expected_catalog = RolloutLine {
+                    timestamp: checkpoint.timestamp.clone(),
+                    ordinal: checkpoint.ordinal,
+                    item: RolloutItem::DynamicToolsUpdated {
+                        thread_id: owner,
+                        tools: tools.clone(),
+                    },
+                };
+                let lines = [
+                    metadata.clone(),
+                    task_line.clone(),
+                    observation.clone(),
+                    user("removed exact input"),
+                    checkpoint,
+                    exact(if remove_task { 0 } else { 3 }, /*num_turns*/ 0),
+                ];
+                let mut bytes = Vec::new();
+                for (index, record) in lines.iter().enumerate() {
+                    serde_json::to_writer(&mut bytes, record).expect("serialize canonical record");
+                    bytes.push(b'\n');
+                    if gap_after == Some(index) {
+                        if compatibility {
+                            serde_json::to_writer(&mut bytes, &legacy_gap)
+                                .expect("serialize compatibility-only gap");
+                        } else {
+                            bytes.extend_from_slice(b"{undecodable source record");
+                        }
+                        bytes.push(b'\n');
+                    }
+                }
+                std::fs::write(&path, bytes).expect("write physical source history");
+                let mut limiter =
+                    RolloutMigrationRateLimiter::new(None).expect("unlimited migration");
+                let selected = prepare(&path, &mut limiter)
+                    .await
+                    .expect("prepare source with exact cutoff")
+                    .expect("detect exact marker");
+
+                let trusted = gap_after.is_none();
+                let mut expected = if remove_task && !trusted {
+                    vec![observation]
+                } else {
+                    let mut expected_task = task_line;
+                    if !trusted {
+                        let RolloutItem::ResponseItem(envelope) = &mut expected_task.item else {
+                            panic!("task envelope");
+                        };
+                        envelope.item.set_id(Some(ResponseItemId::with_suffix(
+                            "msg",
+                            format!("untrusted-{}", task.id().expect("task identity").as_str()),
+                        )));
+                    }
+                    vec![metadata, expected_task, observation]
+                };
+                if compatibility && !remove_task {
+                    expected.insert(
+                        gap_after.expect("compatibility gap position") + 1,
+                        compatibility_gap.clone(),
+                    );
+                }
+                expected.push(expected_catalog);
+                assert_eq!(
+                    serde_json::to_value(&selected).expect("serialize selected history"),
+                    serde_json::to_value(&expected).expect("serialize exact expected history"),
+                    "physical gap {gap_after:?}, compatibility {compatibility}, cutoff includes task {remove_task}"
+                );
+                let selected_items = selected
+                    .iter()
+                    .map(|line| line.item.clone())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    codex_history::latest_dynamic_tools(&selected_items),
+                    Some(tools.as_slice())
+                );
+            }
+        }
+    }
+}

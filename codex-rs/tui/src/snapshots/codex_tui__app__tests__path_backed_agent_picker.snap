@@ -2,15 +2,28 @@
 source: tui/src/app/tests.rs
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
-  Subagents
+  Agents
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› 1. • /root/review (needs approval)         00000000-0000-0000-0000-
-                                             000000000002
-  2. • /root/worker (wake) (needs approval)  00000000-0000-0000-0000-
-                                             000000000123
-  3. • Main [default] (current)              00000000-0000-0000-0000-
-                                             000000000001
+› • /root/review (approval)           00000000-0000-0000-0000-000000000002
+  2 • /root/worker (wake · approval)  00000000-0000-0000-0000-000000000123
+  • Main [default] (current)          00000000-0000-0000-0000-000000000001
 
-  enter select · esc back
+  /root/review
+  external
+
+  UUID
+  00000000-0000-0000-0000-000000000002
+
+  Path
+  /root/review
+
+  Response: none
+  Queued: 0
+  Children: 0
+  Approval: pending
+
+  Enter inspects this transcript
+  Tab opens controls for the selected agent.
+  Tab opens controls

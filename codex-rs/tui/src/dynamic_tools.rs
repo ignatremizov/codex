@@ -1036,6 +1036,7 @@ async fn execute_inner(
                                     | ThreadItemPayload::Plan { .. }
                                     | ThreadItemPayload::Reasoning { .. }
                                     | ThreadItemPayload::SubAgentActivity { .. }
+                                    | ThreadItemPayload::UserAgentControl { .. }
                                     | ThreadItemPayload::ImageView { .. }
                                     | ThreadItemPayload::EnteredReviewMode { .. }
                                     | ThreadItemPayload::ExitedReviewMode { .. }
@@ -1550,6 +1551,8 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                 "agentThreadId": agent_thread_id, "agentPath": agent_path,
                 "prompt": prompt
             }),
+            item @ ThreadItemPayload::UserAgentControl { .. } => serde_json::to_value(item)
+                .unwrap_or_else(|_| json!({"type": "userAgentControl"})),
             ThreadItemPayload::WebSearch(item) => json!({
                 "type": "webSearch", "id": item.id,
                 "query": truncate(&item.query, DEFAULT_OUTPUT_CHARS), "action": item.action
@@ -1584,8 +1587,20 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
             ThreadItemPayload::ExitedReviewMode { id, review } => json!({
                 "type": "exitedReviewMode", "id": id, "review": truncate(review, DEFAULT_OUTPUT_CHARS)
             }),
-            ThreadItemPayload::ContextCompaction { id, .. } => json!({
-                "type": "contextCompaction", "id": id
+            ThreadItemPayload::ContextCompaction {
+                id,
+                summary,
+                message,
+                decode_error,
+                available_skills,
+                ..
+            } => json!({
+                "type": "contextCompaction",
+                "id": id,
+                "summary": summary.as_deref().map(|text| truncate(text, DEFAULT_OUTPUT_CHARS)),
+                "message": message.as_deref().map(|text| truncate(text, DEFAULT_OUTPUT_CHARS)),
+                "decodeError": decode_error,
+                "availableSkills": available_skills
             }),
         })
         .take(20)

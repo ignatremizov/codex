@@ -17,6 +17,7 @@ use super::SubagentCommentary;
 use super::SubagentNotification;
 use super::TurnAborted;
 use super::UnsupportedMedia;
+use super::UserAgentTask;
 use super::UserGoalUpdate;
 use super::UserInstructions;
 use super::UserShellCommand;
@@ -33,6 +34,7 @@ const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     TurnAborted::matches_text,
     SubagentCommentary::matches_text,
     SubagentNotification::matches_text,
+    UserAgentTask::matches_text,
     InternalModelContextFragment::matches_text,
     // compatibility for user-role recommendation messages in existing rollouts
     RecommendedPluginsInstructions::matches_text,

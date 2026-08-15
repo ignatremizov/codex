@@ -883,7 +883,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
         "role": "developer",
         "content": [{
             "type": "input_text",
-            "text": "<tools>\nRemoved deferred tool namespaces:\n- multi_agent_v1: Tools for spawning and managing sub-agents.\nNo deferred tool namespaces remain.\n</tools>"
+            "text": "<tools>\nRemoved deferred tool namespaces:\n- multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.\nNo deferred tool namespaces remain.\n</tools>"
         }]
     }));
     expected_body2.push(expected_user_message_2);
@@ -1202,7 +1202,7 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
             "role": "developer",
             "content": [{
                 "type": "input_text",
-                "text": "<tools>\nRemoved deferred tool namespaces:\n- multi_agent_v1: Tools for spawning and managing sub-agents.\nNo deferred tool namespaces remain.\n</tools>"
+                "text": "<tools>\nRemoved deferred tool namespaces:\n- multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.\nNo deferred tool namespaces remain.\n</tools>"
             }]
         }),
         expected_user_message_2,

@@ -2,6 +2,7 @@ use super::*;
 use crate::thread_manager::NewThread;
 use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::ThreadManager;
+use crate::thread_manager::ThreadSpawnResult;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::AgentGraphStoreError;
 use codex_agent_graph_store::AgentGraphStoreFuture;
@@ -21,6 +22,9 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tokio::sync::Notify;
+
+#[path = "spawn_guard_tests.rs"]
+mod spawn_guard_tests;
 
 #[derive(Default)]
 struct FaultGraph {
@@ -43,6 +47,10 @@ impl AgentGraphStore for FaultGraph {
                 .lock()
                 .expect("graph")
                 .insert(child, (parent, status));
+            if status == ThreadSpawnEdgeStatus::Open && self.pause_open.load(Ordering::Acquire) {
+                self.open_started.notify_one();
+                self.release_open.notified().await;
+            }
             Ok(())
         })
     }
@@ -149,9 +157,10 @@ struct Fixture {
     manager: ThreadManager,
     owner: LocalAgentControl,
     parent: NewThread,
-    child: NewThread,
+    child: ThreadSpawnResult,
     graph: Arc<FaultGraph>,
     lifecycle: Arc<LifecycleRecord>,
+    store: Arc<InMemoryThreadStore>,
 }
 
 async fn fixture() -> Fixture {
@@ -165,6 +174,7 @@ async fn fixture() -> Fixture {
     let lifecycle = Arc::new(LifecycleRecord::default());
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(lifecycle.clone());
+    let store = Arc::new(InMemoryThreadStore::default());
     let manager = ThreadManager::new(
         &config,
         Arc::clone(&auth),
@@ -176,7 +186,7 @@ async fn fixture() -> Fixture {
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         crate::thread_manager::passthrough_image_store(),
-        Arc::new(InMemoryThreadStore::default()),
+        store.clone(),
         Some(graph.clone()),
         Uuid::new_v4().to_string(),
         /*attestation_provider*/ None,
@@ -206,6 +216,7 @@ async fn fixture() -> Fixture {
         .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
             prompt_cache_key: None,
             registration: crate::thread_manager::ThreadRegistrationMode::Deferred,
+            ownership_override: None,
             config: config.clone(),
             initial_history: InitialHistory::New,
             agent_control: owner.clone(),
@@ -224,8 +235,7 @@ async fn fixture() -> Fixture {
             client_mcp_extensions_override: Some(ClientMcpExtensions::default()),
         })
         .await
-        .expect("prepare unpublished child")
-        .into_new_thread();
+        .expect("prepare unpublished child");
     assert_eq!(lifecycle.for_thread(parent.thread_id), vec!["ready"]);
     assert!(lifecycle.for_thread(child.thread_id).is_empty());
     graph
@@ -245,6 +255,7 @@ async fn fixture() -> Fixture {
         child,
         graph,
         lifecycle,
+        store,
     }
 }
 
@@ -260,6 +271,7 @@ async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged
         .publish_restored_agent(
             &fixture.child.thread,
             Some(&fixture.parent.thread),
+            /*is_resumed_thread*/ false,
             /*resumed_created_at*/ None,
             || {
                 Err(CodexErr::InvalidRequest(
@@ -584,4 +596,160 @@ async fn captured_restore_owner_keeps_lifecycle_and_rejects_removed_or_foreign_p
         .shutdown_and_wait()
         .await
         .expect("close removed parent");
+}
+
+#[tokio::test]
+async fn native_spawn_waits_for_graph_ack_before_storage_and_ready_callback() {
+    let fixture = fixture().await;
+    let state = fixture.owner.runtime.upgrade().expect("manager");
+    let create_calls = fixture.store.calls().await.create_thread;
+    fixture.graph.pause_open.store(true, Ordering::Release);
+    let owner = fixture.owner.clone();
+    let config = fixture.config.clone();
+    let parent_id = fixture.parent.thread_id;
+    let spawn = tokio::spawn(async move {
+        owner
+            .spawn_agent(
+                config,
+                vec![codex_protocol::user_input::UserInput::Text {
+                    text: "child task".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: parent_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+            )
+            .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 5),
+        fixture.graph.open_started.notified(),
+    )
+    .await
+    .expect("new spawn reached its graph write");
+    let child_id = fixture
+        .graph
+        .edges
+        .lock()
+        .expect("graph")
+        .iter()
+        .find_map(|(id, (_, status))| (*status == ThreadSpawnEdgeStatus::Open).then_some(*id))
+        .expect("provisional spawn edge");
+    assert_eq!(fixture.store.calls().await.create_thread, create_calls);
+    assert!(state.get_thread(child_id).await.is_err());
+    assert!(fixture.lifecycle.for_thread(child_id).is_empty());
+    fixture.graph.release_open.notify_one();
+    let spawned = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), spawn)
+        .await
+        .expect("spawn completes after graph acknowledgement")
+        .expect("spawn worker")
+        .expect("spawn accepts input");
+    assert_eq!(spawned, child_id);
+    assert!(fixture.store.calls().await.create_thread > create_calls);
+    assert_eq!(fixture.lifecycle.for_thread(child_id), vec!["ready"]);
+    let child = state.get_thread(child_id).await.expect("published child");
+    child.shutdown_and_wait().await.expect("stop spawned child");
+    fixture
+        .child
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop prepared child");
+    fixture
+        .parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop parent");
+}
+
+#[tokio::test]
+async fn generic_owned_resume_emits_lifecycle_once_after_publication() {
+    let fixture = fixture().await;
+    fixture.parent.thread.ensure_rollout_materialized().await;
+    fixture
+        .parent
+        .thread
+        .flush_rollout()
+        .await
+        .expect("flush parent");
+    let state = fixture.owner.runtime.upgrade().expect("manager");
+    let stored = state
+        .read_stored_thread(ReadThreadParams {
+            thread_id: fixture.parent.thread_id,
+            include_archived: true,
+            include_history: true,
+        })
+        .await
+        .expect("stored parent");
+    let context = stored.history.expect("parent history");
+    let history = InitialHistory::Resumed(ResumedHistory {
+        history_revision: context.revision,
+        conversation_id: fixture.parent.thread_id,
+        history: Arc::new(context.items),
+        rollout_path: stored.rollout_path,
+    });
+    fixture
+        .child
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop prepared child");
+    fixture
+        .parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop initial parent");
+    assert_eq!(
+        fixture.lifecycle.for_thread(fixture.parent.thread_id),
+        vec!["ready"]
+    );
+    let restored = fixture
+        .manager
+        .resume_thread_with_history(
+            fixture.config.clone(),
+            history.clone(),
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await
+        .expect("resume root through the generic owned worker");
+    assert!(Arc::ptr_eq(
+        &restored.thread,
+        &state
+            .get_thread(restored.thread_id)
+            .await
+            .expect("published root"),
+    ));
+    assert_eq!(
+        fixture.lifecycle.for_thread(restored.thread_id),
+        vec!["ready", "ready", "resume"],
+    );
+    let same = fixture
+        .manager
+        .resume_thread_with_history(
+            fixture.config,
+            history,
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await
+        .expect("reuse the already published runtime");
+    assert!(Arc::ptr_eq(&restored.thread, &same.thread));
+    assert_eq!(
+        fixture.lifecycle.for_thread(restored.thread_id),
+        vec!["ready", "ready", "resume"],
+    );
+    restored
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop restored root");
 }

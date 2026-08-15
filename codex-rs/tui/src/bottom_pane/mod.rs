@@ -147,6 +147,8 @@ pub(crate) struct MentionBinding {
     /// Canonical mention target (for example `app://...` or absolute SKILL.md path).
     pub(crate) path: String,
 }
+mod agent_command_highlight;
+mod agent_target_popup;
 mod chat_composer;
 mod chat_composer_history;
 mod command_popup;
@@ -174,6 +176,9 @@ mod selection_picker_layout;
 mod skill_popup;
 mod skills_toggle_view;
 pub(crate) mod slash_commands;
+pub(crate) use agent_target_popup::AGENT_TARGET_ACTION_CHOICES;
+pub(crate) use agent_target_popup::AgentPromptTarget;
+pub(crate) use agent_target_popup::is_agent_target_action;
 pub(crate) use footer::CollaborationModeIndicator;
 pub(crate) use footer::GoalStatusIndicator;
 #[cfg(test)]
@@ -641,6 +646,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_agent_prompt_targets(&mut self, targets: Vec<AgentPromptTarget>) {
+        self.composer.set_agent_prompt_targets(targets);
+        self.request_redraw();
+    }
+
     pub fn set_connectors_enabled(&mut self, enabled: bool) {
         self.composer.set_connectors_enabled(enabled);
     }
@@ -736,11 +746,6 @@ impl BottomPane {
 
     pub fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
         self.status.as_ref()
-    }
-
-    pub(crate) fn status_elapsed(&self) -> Option<Duration> {
-        self.is_task_running
-            .then(|| self.status_timer.elapsed_at(Instant::now()))
     }
 
     pub(crate) fn reset_status_timer(&mut self, elapsed: Duration) {
@@ -1601,8 +1606,8 @@ impl BottomPane {
         true
     }
 
-    /// Replace the newest matching selection view without disturbing views stacked above it.
-    /// Preserve pending parent cleanup when an already-open child is accepted.
+    /// Refresh the newest matching selection view without disturbing views stacked above it.
+    /// Preserve its filter, selection, viewport, and pending parent cleanup.
     pub(crate) fn replace_selection_view_if_present(
         &mut self,
         view_id: &'static str,
@@ -1618,13 +1623,9 @@ impl BottomPane {
 
         let replaces_active_view = index + 1 == self.view_stack.len();
         self.apply_standard_popup_hint(&mut params);
-        let mut view = list_selection_view::ListSelectionView::new(
-            params,
-            self.app_event_tx.clone(),
-            self.keymap.list.clone(),
-        );
-        view.dismiss_after_child_accept = self.view_stack[index].dismiss_after_child_accept();
-        self.view_stack[index] = Box::new(view);
+        if !self.view_stack[index].refresh_selection_view(params, self.keymap.list.clone()) {
+            return false;
+        }
         if replaces_active_view {
             self.key_chord_reset_requested = true;
             self.schedule_active_view_frame();
@@ -1798,11 +1799,13 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    /// Update the inactive-thread approval list shown above the composer.
-    pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) {
-        if self.pending_thread_approvals.set_threads(threads) {
+    /// Update the inactive-thread approval list, returning whether its contents changed.
+    pub(crate) fn set_pending_thread_approvals(&mut self, threads: Vec<String>) -> bool {
+        let changed = self.pending_thread_approvals.set_threads(threads);
+        if changed {
             self.request_redraw();
         }
+        changed
     }
 
     #[cfg(test)]

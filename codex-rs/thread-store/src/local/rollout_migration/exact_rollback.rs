@@ -106,6 +106,19 @@ fn select(
     positions: Vec<usize>,
     records: Vec<(usize, Option<usize>, RolloutLine)>,
 ) -> ThreadStoreResult<Vec<RolloutLine>> {
+    let mut provenance = super::context_provenance::ContextProvenance::default();
+    let mut previous_position: Option<usize> = None;
+    for (position, item) in positions.iter().copied().zip(&canonical) {
+        if previous_position.is_some_and(|previous| previous.checked_add(1) != Some(position)) {
+            // A skipped or compatibility-only physical record cannot create canonical proof
+            // adjacency. Preserve canonical indices for cutoffs and use physical positions only
+            // to delimit the original proof sequence.
+            provenance.break_adjacency();
+        }
+        provenance.observe(item);
+        previous_position = Some(position);
+    }
+    let proofs = provenance.finish();
     let mut intervals = Vec::new();
     for (index, item) in canonical.iter().enumerate() {
         if let RolloutItem::EventMsg(EventMsg::ThreadRolledBack(event)) = item
@@ -122,7 +135,8 @@ fn select(
             intervals.push((positions[start], positions[index]));
         }
     }
-    let removed = codex_rollout::exact_rollback_removed_items(&canonical);
+    let removed =
+        codex_history::exact_rollback_removed_items_with_context_proofs(&canonical, &proofs);
     let mut lines = Vec::new();
     for (position, canonical_index, mut line) in records {
         let is_removed = canonical_index.map_or_else(
@@ -148,7 +162,7 @@ fn select(
     }
     // Exact ranges have already been applied. Only surviving count-only markers reach either
     // forward ownership replay or reverse compaction replay, so mixed histories do not double pop.
-    let mut planner = RollbackPlanner::new();
+    let mut planner = RollbackPlanner::new(proofs);
     for line in &lines {
         planner.observe(line)?;
     }

@@ -215,6 +215,7 @@ fn without_thread_item_media(mut item: ThreadItemPayload) -> ThreadItemPayload {
         }
         | ThreadItemPayload::CollabAgentToolCall { .. }
         | ThreadItemPayload::SubAgentActivity { .. }
+        | ThreadItemPayload::UserAgentControl { .. }
         | ThreadItemPayload::WebSearch(_)
         | ThreadItemPayload::ImageView { .. }
         | ThreadItemPayload::Sleep(_)

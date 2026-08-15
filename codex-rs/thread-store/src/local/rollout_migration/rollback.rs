@@ -20,6 +20,11 @@ use std::borrow::Borrow;
 /// about dynamically registered contextual fragments that thread-store cannot
 /// depend on.
 pub(super) fn counts_as_boundary(response: &ResponseItem) -> bool {
+    if codex_protocol::protocol::AgentResponsePromotedTaskContext::from_response_item(response)
+        .is_some()
+    {
+        return false;
+    }
     if matches!(response, ResponseItem::AgentMessage { .. }) {
         return true;
     }
@@ -31,6 +36,11 @@ pub(super) fn counts_as_boundary(response: &ResponseItem) -> bool {
 }
 
 pub(super) fn is_pre_turn_context_update(response: &ResponseItem) -> bool {
+    if codex_protocol::protocol::AgentResponsePromotedTaskContext::from_response_item(response)
+        .is_some()
+    {
+        return true;
+    }
     let ResponseItem::Message { role, content, .. } = response else {
         return false;
     };
@@ -123,6 +133,7 @@ fn is_known_contextual_user_text(text: &str) -> bool {
             ("<skill>", "</skill>"),
             ("<user_shell_command>", "</user_shell_command>"),
             ("<turn_aborted>", "</turn_aborted>"),
+            ("<subagent_commentary>", "</subagent_commentary>"),
             ("<subagent_notification>", "</subagent_notification>"),
             ("<recommended_plugins>", "</recommended_plugins>"),
             ("<goal_context>", "</goal_context>"),

@@ -32,6 +32,14 @@ impl ResponseObservationPolicy {
         self.final_response
     }
 
+    pub(crate) fn has_model_visible_delivery(self) -> bool {
+        self.commentary
+            || matches!(
+                self.final_response,
+                FinalResponseObservation::Passive | FinalResponseObservation::Wake
+            )
+    }
+
     pub(crate) fn wake_on_completion_item_value(self) -> Option<bool> {
         match self.final_response {
             FinalResponseObservation::None | FinalResponseObservation::PresentationOnly => None,

@@ -168,6 +168,10 @@ impl LocalAgentControl {
             .turns
             .entry(turn_id.to_string())
             .and_modify(|current| {
+                if pending.task_preview.is_some() {
+                    current.task_preview = pending.task_preview.clone();
+                    current.promoted_task_context = pending.promoted_task_context.clone();
+                }
                 current
                     .commentary_admissions
                     .extend(pending.commentary_admissions.iter().cloned());

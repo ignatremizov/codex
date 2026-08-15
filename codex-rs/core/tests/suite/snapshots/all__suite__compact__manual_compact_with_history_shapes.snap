@@ -12,7 +12,7 @@ Scenario: Manual /compact with prior user history compacts existing history and 
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -27,7 +27,7 @@ Scenario: Manual /compact with prior user history compacts existing history and 
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -46,7 +46,7 @@ Scenario: Manual /compact with prior user history compacts existing history and 
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -66,7 +66,7 @@ Scenario: Manual /compact with prior user history compacts existing history and 
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
@@ -92,7 +92,7 @@ Scenario: Manual /compact with prior user history compacts existing history and 
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>

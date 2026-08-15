@@ -85,6 +85,7 @@ async fn switching_from_ultra_thread_restores_configured_plan_effort() {
             turns: Vec::new(),
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -96,6 +97,7 @@ async fn switching_from_ultra_thread_restores_configured_plan_effort() {
             turns: Vec::new(),
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -126,6 +128,7 @@ async fn switching_threads_restores_session_speed_for_the_next_turn() {
         ..test_thread_session(thread_id, test_path_buf("/tmp/project"))
     };
     let snapshot = |session| ThreadEventSnapshot {
+        active_turn_timing: None,
         delegated_turns: Vec::new(),
         session: Some(session),
         turns: Vec::new(),

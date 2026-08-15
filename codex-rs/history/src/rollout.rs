@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
+use codex_protocol::ResponseItemId;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 
+use crate::ResponseItemEnvelope;
 use crate::RolloutItem;
 
 /// Computes the cumulative mask of raw rollout records removed by exact rollback markers.
@@ -15,6 +18,27 @@ use crate::RolloutItem;
 /// Trusted completion artifacts are out-of-band deliveries, retained independently of the
 /// enclosing user turn. Wait items qualify only with explicit terminal presentation ownership.
 pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
+    exact_rollback_removed_items_impl(items, None)
+}
+
+/// Computes exact rollback retention using full-envelope proofs from original physical records.
+///
+/// The caller must capture these proofs before filtering or projecting records, breaking
+/// adjacency at every skipped source record and lineage boundary. This entry point is for
+/// readers whose canonical index vector omits physical records: rebuilding proof from that
+/// vector could manufacture metadata/response adjacency. Catalog retention and rollback cutoff
+/// indices remain independent of these delivery proofs.
+pub fn exact_rollback_removed_items_with_context_proofs(
+    items: &[RolloutItem],
+    proofs: &HashMap<ResponseItemId, ResponseItemEnvelope>,
+) -> Vec<bool> {
+    exact_rollback_removed_items_impl(items, Some(proofs))
+}
+
+fn exact_rollback_removed_items_impl(
+    items: &[RolloutItem],
+    context_proofs: Option<&HashMap<ResponseItemId, ResponseItemEnvelope>>,
+) -> Vec<bool> {
     let mut starts = vec![0usize; items.len().saturating_add(1)];
     let mut ends = vec![0usize; items.len().saturating_add(1)];
     for (marker_index, item) in items.iter().enumerate() {
@@ -88,8 +112,22 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
     // the user turn whose raw range happens to contain them. Once accepted and durably appended,
     // later exact rollback must not erase them. Preserve inter-agent delivery metadata immediately
     // preceding a committed response item as part of the same durable pair.
+    let tasks = context_proofs
+        .is_none()
+        .then(|| crate::committed_user_agent_task_contexts(items));
     for index in 0..items.len() {
-        if !removed[index] || !is_sub_agent_completion_artifact(items, index) {
+        let retained_artifact = match (&items[index], context_proofs) {
+            (RolloutItem::ResponseItem(item), Some(proofs)) => {
+                item.id().and_then(|id| proofs.get(id)) == Some(item)
+            }
+            _ => {
+                let trusted_task = matches!(&items[index], RolloutItem::ResponseItem(item)
+                    if item.id().and_then(|id| tasks.as_ref()?.get(id))
+                        .is_some_and(|task| task.item == *item));
+                trusted_task || is_sub_agent_completion_artifact(items, index)
+            }
+        };
+        if !removed[index] || !retained_artifact {
             continue;
         }
         removed[index] = false;
@@ -124,6 +162,7 @@ fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool
         RolloutItem::AgentResponseObservation(_) => true,
         RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
             event.item.is_sub_agent_completion_presentation()
+                || matches!(event.item, TurnItem::UserAgentControl(_))
         }
         RolloutItem::SessionMeta(_)
         | RolloutItem::InterAgentCommunication(_)

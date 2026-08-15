@@ -756,6 +756,11 @@ impl ChatWidget {
                 deadline_at_ms,
                 &notification.turn_id,
             ),
+            item @ ThreadItemPayload::UserAgentControl { .. } => {
+                if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
+                    self.add_boxed_history(Box::new(cell));
+                }
+            }
             ThreadItemPayload::EnteredReviewMode { review, .. } if replay_kind.is_none() => {
                 self.enter_review_mode_with_hint(review, /*from_replay*/ false);
             }

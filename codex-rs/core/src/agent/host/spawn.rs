@@ -5,8 +5,7 @@ use super::invocation::ToolInvocationContext;
 use super::types::HostThreadSpawnReservation;
 use super::types::PreparedChildInheritance;
 use crate::agent::control::AgentControlInit;
-use crate::agent::control::PendingSpawn;
-use crate::agent::control::SpawnOwner;
+use crate::agent::control::PendingHostSpawn;
 use crate::agent::control::effective_spawn_config;
 use crate::agent::control::fresh_child_history_and_tools;
 use crate::agent::control::inherited_exec_policy_for_parent;
@@ -146,12 +145,7 @@ pub(super) async fn create_spawn(
         )
         .await
         .map_err(|error| error.with_agent_context(AgentErrorContext::ChildStartup))?;
-    let pending = PendingSpawn::new(
-        Arc::clone(&state),
-        child.thread_id,
-        membership,
-        SpawnOwner::Host,
-    );
+    let pending = PendingHostSpawn::new(Arc::clone(&state), child.thread_id, membership);
     child.thread.emit_thread_ready_lifecycle().await;
     child
         .thread
