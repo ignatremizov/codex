@@ -58,6 +58,7 @@ async fn unbound_native_child_rejects_replacement_parent_control() {
         manager.resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
             prompt_cache_key: None,
             registration: ThreadRegistration::Immediate,
+            ownership_override: None,
             config: harness.config.clone(),
             initial_history: history,
             agent_control: harness.manager.agent_control(),

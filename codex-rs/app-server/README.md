@@ -451,6 +451,15 @@ input for an unloaded spawned child still requires resuming that child first.
 
 Persisted V2 children can be resumed through their live owning control only when the direct parent is loaded and its ownership identity matches the recorded spawn edge. An absent or mismatched owner fails recoverably; resume does not create a detached fallback control. Generic `thread/resume` continues to accept stored child IDs and paths. Restored V2 children retain their recorded model, provider and reasoning settings; explicit developer instructions and workspace overrides follow the owner, role and permission rules described in [agent restoration lifecycle](../../docs/agent-restoration.md). Loaded sessions with subscribers or active work are not replaced; an idle session without subscribers can be replaced only after shutdown completes. Parent-driven follow-up tasks retain their separate inherited-instruction and role configuration behavior.
 
+For an owned V2 cold resume, an explicit `developerInstructions` or
+`config.developer_instructions` overrides the role's developer instructions.
+An empty string is an explicit override; omission reapplies the configured role.
+This does not override other role restrictions or the child's recorded model routing.
+
+## User-controlled agent dispatch
+
+The experimental `agentAlias/list` method lists durable aliases in a root-scoped namespace, including canonical thread IDs, refs, nicknames, and lifecycle state. The experimental `agent/control` method authorizes user-authored spawn, prompt, reserved/queued prompt, resume, interrupt, close, and observation operations from a source thread. Responses identify the canonical target and admitted submission where applicable; post-admission or audit persistence warnings do not turn committed work into retryable failures. Omitted response handling is passive, and configured close response handling is explicitly rejected until replay semantics are available. Input outcomes distinguish `admitted` work from `unknown` enqueue results; unknown inputs must be reconciled from canonical history before retrying.
+
 ## Stored thread attachments
 
 - `thread/attachment/add` — add a durable resource reference to a stored thread without loading it. Repeated writes with the same attachment type and identity key return the existing attachment.

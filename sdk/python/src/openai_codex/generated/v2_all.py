@@ -108,6 +108,64 @@ class AdditionalNetworkPermissions(BaseModel):
     enabled: bool | None = None
 
 
+class AgentAliasState(Enum):
+    active = "active"
+    closed = "closed"
+    transferred = "transferred"
+
+
+class ClosedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    target_thread_id: str
+    type: Annotated[Literal["closed"], Field(title="ClosedAgentControlOutcomeType")]
+
+
+class AgentFinalResponseHandling(Enum):
+    none = "none"
+    passive = "passive"
+    wake = "wake"
+    presentation = "presentation"
+
+
+class NoneAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["none"], Field(title="NoneAgentForkModeType")]
+
+
+class AllAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["all"], Field(title="AllAgentForkModeType")]
+
+
+class LastNTurnsAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turns: Annotated[int, Field(ge=0)]
+    type: Annotated[Literal["lastNTurns"], Field(title="LastNTurnsAgentForkModeType")]
+
+
+class AgentForkMode(RootModel[NoneAgentForkMode | AllAgentForkMode | LastNTurnsAgentForkMode]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        NoneAgentForkMode | AllAgentForkMode | LastNTurnsAgentForkMode,
+        Field(description="Parent conversation history copied into a user-spawned child."),
+    ]
+
+
+class AgentInputOutcome(Enum):
+    admitted = "admitted"
+    unknown = "unknown"
+
+
 class AgentMessageDelivery(RootModel[Literal["async"]]):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -152,6 +210,18 @@ class AgentMessageInputContent(
     root: InputTextAgentMessageInputContent | EncryptedContentAgentMessageInputContent
 
 
+class AgentObservationBinding(Enum):
+    active_turn = "activeTurn"
+    next_turn = "nextTurn"
+    undelivered_completion = "undeliveredCompletion"
+
+
+class AgentObservationMode(Enum):
+    passive = "passive"
+    wake = "wake"
+    presentation = "presentation"
+
+
 class AgentPath(RootModel[str]):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -164,6 +234,14 @@ class AgentResponseFinalDelivery(Enum):
     presentation_only = "presentation_only"
     passive = "passive"
     wake = "wake"
+
+
+class AgentResponseHandling(Enum):
+    commentary = "commentary"
+    wake = "wake"
+    presentation = "presentation"
+    commentary_wake = "commentaryWake"
+    commentary_presentation = "commentaryPresentation"
 
 
 class AllowDenyRequirement(Enum):
@@ -6690,6 +6768,50 @@ class TurnSteerResponse(BaseModel):
     turn_id: Annotated[str, Field(alias="turnId")]
 
 
+class UserAgentControlAction(Enum):
+    spawn = "spawn"
+    prompt = "prompt"
+    queued_prompt = "queued_prompt"
+    resume = "resume"
+    interrupt = "interrupt"
+    close = "close"
+    observe = "observe"
+
+
+
+class UserAgentControlStatus(Enum):
+    succeeded = "succeeded"
+    unknown = "unknown"
+    failed = "failed"
+
+
+class UserAgentForkModeValue(Enum):
+    none = "none"
+    all = "all"
+
+
+class LastNTurns(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turns: Annotated[int, Field(ge=0)]
+
+
+class LastNTurnsUserAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    last_n_turns: LastNTurns
+
+
+class UserAgentForkMode(RootModel[UserAgentForkModeValue | LastNTurnsUserAgentForkMode]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: UserAgentForkModeValue | LastNTurnsUserAgentForkMode
+
+
 class TextUserInput(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7010,6 +7132,243 @@ class AdditionalContextEntry(BaseModel):
     )
     kind: AdditionalContextKind
     value: str
+
+
+class AgentAlias(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    nickname: str | None = None
+    ref: str
+    state: AgentAliasState
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class SpawnAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    fork_mode: AgentForkMode
+    input: Annotated[
+        list[UserInput] | None,
+        Field(description="Omitted creates a real idle child without starting its first turn."),
+    ] = None
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted uses passive final-response delivery."),
+    ] = None
+    role: Annotated[
+        str | None, Field(description="Omitted selects the default child configuration.")
+    ] = None
+    type: Annotated[Literal["spawn"], Field(title="SpawnAgentControlActionType")]
+
+
+class PromptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput]
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted uses passive final-response delivery."),
+    ] = None
+    target: Annotated[
+        str, Field(description="Root-scoped ref or nickname, or a canonical thread UUID.")
+    ]
+    type: Annotated[Literal["prompt"], Field(title="PromptAgentControlActionType")]
+
+
+class ReservedPromptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput]
+    target: Annotated[str, Field(description="Canonical target thread UUID.")]
+    type: Annotated[Literal["reservedPrompt"], Field(title="ReservedPromptAgentControlActionType")]
+
+
+class QueuedPromptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput]
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted uses passive final-response delivery."),
+    ] = None
+    target: Annotated[
+        str, Field(description="Root-scoped ref or nickname, or a canonical thread UUID.")
+    ]
+    type: Annotated[Literal["queuedPrompt"], Field(title="QueuedPromptAgentControlActionType")]
+
+
+class ResumeAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted reserves passive delivery for the next admitted target turn."),
+    ] = None
+    target: Annotated[
+        str,
+        Field(
+            description="Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption."
+        ),
+    ]
+    type: Annotated[Literal["resume"], Field(title="ResumeAgentControlActionType")]
+
+
+class InterruptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput] | None = None
+    response_handling: Annotated[
+        AgentResponseHandling | None, Field(description="Valid only when `input` is present.")
+    ] = None
+    target: str
+    type: Annotated[Literal["interrupt"], Field(title="InterruptAgentControlActionType")]
+
+
+class CloseAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Controls replay of an undelivered completion after close."),
+    ] = None
+    target: str
+    type: Annotated[Literal["close"], Field(title="CloseAgentControlActionType")]
+
+
+class ObserveAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    response_handling: AgentObservationMode
+    target: str
+    type: Annotated[Literal["observe"], Field(title="ObserveAgentControlActionType")]
+
+
+class AgentControlAction(
+    RootModel[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction, Field(description='A user-authored multi-agent control operation.')]
+
+
+class SpawnedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome | None = None
+    nickname: str | None = None
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after child input admission or uncertain routing."
+        ),
+    ] = None
+    ref: str | None = None
+    target_thread_id: str
+    type: Annotated[Literal["spawned"], Field(title="SpawnedAgentControlOutcomeType")]
+
+
+class PromptedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after target input admission or uncertain routing."
+        ),
+    ] = None
+    submission_id: str
+    target_thread_id: str
+    type: Annotated[Literal["prompted"], Field(title="PromptedAgentControlOutcomeType")]
+
+
+class ReservedPromptedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after target input admission, including an indeterminate target turn after enqueue."
+        ),
+    ] = None
+    submission_id: str
+    target_thread_id: str
+    turn_id: Annotated[
+        str | None,
+        Field(
+            description="The admitted target turn when routing can prove it; null means the input outcome is indeterminate after enqueue and must not be retried automatically."
+        ),
+    ] = None
+    type: Annotated[
+        Literal["reservedPrompted"], Field(title="ReservedPromptedAgentControlOutcomeType")
+    ]
+
+
+class ResumedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    nickname: str | None = None
+    observation_binding: AgentObservationBinding | None = None
+    post_commit_warning: Annotated[
+        str | None,
+        Field(
+            description="Degradation that occurred after an exclusive ownership transfer committed."
+        ),
+    ] = None
+    ref: str | None = None
+    target_thread_id: str
+    type: Annotated[Literal["resumed"], Field(title="ResumedAgentControlOutcomeType")]
+
+
+class InterruptedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome | None = None
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after follow-up input admission or uncertain routing."
+        ),
+    ] = None
+    submission_id: str | None = None
+    target_thread_id: str
+    type: Annotated[Literal["interrupted"], Field(title="InterruptedAgentControlOutcomeType")]
+
+
+class ObservedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    binding: AgentObservationBinding
+    previous_response_handling: AgentFinalResponseHandling
+    response_handling: AgentFinalResponseHandling
+    target_thread_id: str
+    type: Annotated[Literal["observed"], Field(title="ObservedAgentControlOutcomeType")]
+
+
+class AgentControlOutcome(
+    RootModel[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome, Field(description='Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.')]
 
 
 class AppConfig(BaseModel):
@@ -10455,6 +10814,33 @@ class CollabAgentToolCallThreadItem(BaseModel):
     ] = None
 
 
+class UserAgentControlThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    action: UserAgentControlAction
+    authored_selector: Annotated[str | None, Field(alias="authoredSelector")] = None
+    error: str | None = None
+    final_response: Annotated[AgentResponseFinalDelivery | None, Field(alias="finalResponse")] = (
+        None
+    )
+    fork_mode: Annotated[UserAgentForkMode | None, Field(alias="forkMode")] = None
+    id: str
+    new_owner_session_id: Annotated[str | None, Field(alias="newOwnerSessionId")] = None
+    nickname: str | None = None
+    observe_commentary: Annotated[bool | None, Field(alias="observeCommentary")] = None
+    previous_owner_session_id: Annotated[str | None, Field(alias="previousOwnerSessionId")] = None
+    prompt_preview: Annotated[str | None, Field(alias="promptPreview")] = None
+    queue_input: Annotated[bool | None, Field(alias="queueInput")] = None
+    ref: str | None = None
+    resumed_target: Annotated[bool, Field(alias="resumedTarget")]
+    role: str | None = None
+    status: UserAgentControlStatus
+    target_messages: Annotated[bool | None, Field(alias="targetMessages")] = None
+    target_thread_id: Annotated[str | None, Field(alias="targetThreadId")] = None
+    type: Annotated[Literal["userAgentControl"], Field(title="UserAgentControlThreadItemType")]
+
+
 class WebSearchThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11941,6 +12327,7 @@ class ThreadItem(
         | DynamicToolCallThreadItem
         | CollabAgentToolCallThreadItem
         | SubAgentActivityThreadItem
+        | UserAgentControlThreadItem
         | WebSearchThreadItem
         | ImageViewThreadItem
         | SleepThreadItem
@@ -11967,6 +12354,7 @@ class ThreadItem(
         | DynamicToolCallThreadItem
         | CollabAgentToolCallThreadItem
         | SubAgentActivityThreadItem
+        | UserAgentControlThreadItem
         | WebSearchThreadItem
         | ImageViewThreadItem
         | SleepThreadItem
