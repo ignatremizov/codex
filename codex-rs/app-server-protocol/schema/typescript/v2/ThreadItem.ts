@@ -13,6 +13,7 @@ import type { UserAgentControlStatus } from "../UserAgentControlStatus";
 import type { UserAgentForkMode } from "../UserAgentForkMode";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
+import type { AgentInputOutcome } from "./AgentInputOutcome";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
 import type { CollabAgentRef } from "./CollabAgentRef";
@@ -113,6 +114,14 @@ observeCommentary: boolean | null,
  */
 wakeOnCompletion: boolean | null,
 /**
+ * Whether this call grants replies scoped to the target's admitted turn.
+ */
+targetMessages: boolean | null,
+/**
+ * Whether input waits in the target-owned queue instead of steering active work.
+ */
+queueInput: boolean | null,
+/**
  * Thread ID of the agent issuing the collab request.
  */
 senderThreadId: string,
@@ -149,7 +158,7 @@ model: string | null,
 /**
  * Resolved reasoning effort at sub-agent creation, when known.
  */
-reasoningEffort: ReasoningEffort | null, id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string, prompt: string | null, } | { "type": "userAgentControl", id: string, action: UserAgentControlAction, authoredSelector: string | null, targetThreadId: string | null, previousOwnerSessionId: string | null, newOwnerSessionId: string | null, ref: string | null, nickname: string | null, role: string | null, promptPreview: string | null, resumedTarget: boolean, forkMode: UserAgentForkMode | null, observeCommentary: boolean | null, finalResponse: AgentResponseFinalDelivery | null, targetMessages: boolean | null, queueInput: boolean | null, status: UserAgentControlStatus, error: string | null, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, summary: string | null, message: string | null, decodeError: string | null,
+reasoningEffort: ReasoningEffort | null, id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string, prompt: string | null, } | { "type": "userAgentControl", id: string, action: UserAgentControlAction, authoredSelector: string | null, targetThreadId: string | null, previousOwnerSessionId: string | null, newOwnerSessionId: string | null, ref: string | null, nickname: string | null, role: string | null, promptPreview: string | null, resumedTarget: boolean, forkMode: UserAgentForkMode | null, observeCommentary: boolean | null, finalResponse: AgentResponseFinalDelivery | null, targetMessages: boolean | null, queueInput: boolean | null, inputOutcome: AgentInputOutcome | null, status: UserAgentControlStatus, error: string | null, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, summary: string | null, message: string | null, decodeError: string | null,
 /**
  * Skill names in the model-visible inventory installed after this compaction.
  */

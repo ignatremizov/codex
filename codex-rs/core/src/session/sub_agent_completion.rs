@@ -100,7 +100,7 @@ impl Session {
                         .map(|retained| retained.item.clone())
                         .or_else(|| {
                             state
-                                .completion_runtime_provenance
+                                .completion_publication_receipts
                                 .contexts
                                 .get(&id)
                                 .cloned()
@@ -242,19 +242,16 @@ impl Session {
                 trigger_turn: false,
             },
         );
-        let runtime_only = self.live_thread().is_none();
         let id = id.clone();
         let receiver = self.dispatch_completion_publication(
             permit,
             items,
             Vec::new(),
             move |state| {
-                if runtime_only {
-                    state
-                        .completion_runtime_provenance
-                        .contexts
-                        .insert(id, envelope.clone());
-                }
+                state
+                    .completion_publication_receipts
+                    .contexts
+                    .insert(id, envelope.clone());
                 if matches!(delivery, CompletionContextDelivery::InstallNow)
                     && !state.history.raw_items().any(|item| item == &response)
                 {
@@ -336,7 +333,7 @@ impl Session {
                 self.state
                     .lock()
                     .await
-                    .completion_runtime_provenance
+                    .completion_publication_receipts
                     .presentations
                     .get(&runtime_key)
                     .cloned()
@@ -374,6 +371,7 @@ impl Session {
                         started_at: None,
                         model_context_window: None,
                         collaboration_mode_kind: Default::default(),
+                        agent_queue: None,
                     },
                 )));
             }
@@ -426,7 +424,7 @@ impl Session {
                 move |state| {
                     if let Some(receipt) = runtime_receipt {
                         state
-                            .completion_runtime_provenance
+                            .completion_publication_receipts
                             .presentations
                             .insert(runtime_key, receipt);
                     }

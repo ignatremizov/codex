@@ -1,16 +1,18 @@
 //! Typed user-authored agent lifecycle requests and source-side audit persistence.
 
 use super::*;
+use codex_app_server_protocol::AgentForkMode;
 use conversion::agent_control_error;
 use conversion::agent_final_response_handling;
 use conversion::agent_input_outcome;
 use conversion::agent_observation_binding;
+use conversion::agent_response_handling;
 use conversion::observation_mode_final_response_handling;
 use conversion::user_agent_control_item;
 use conversion::user_agent_final_response_handling;
 use conversion::user_agent_response_handling;
 
-mod conversion;
+pub(super) mod conversion;
 
 impl ThreadRequestProcessor {
     pub(super) async fn agent_control_response_inner(
@@ -131,7 +133,7 @@ impl ThreadRequestProcessor {
                         .map(user_agent_response_handling)
                         .unwrap_or_default();
                     let result = source_thread
-                        .prompt_idle_agent(&target, input, response_handling)
+                        .queue_agent_prompt(&target, input, response_handling)
                         .await
                         .map_err(agent_control_error)?;
                     self.try_attach_thread_listener(
@@ -163,26 +165,11 @@ impl ThreadRequestProcessor {
                     )
                     .await;
                     audit_item.target_thread_id = Some(result.target_thread_id);
-                    let response_handling = match result.response_handling {
-                        UserAgentResponseHandling::Passive => None,
-                        UserAgentResponseHandling::Commentary => {
-                            Some(AgentResponseHandling::Commentary)
-                        }
-                        UserAgentResponseHandling::Wake => Some(AgentResponseHandling::Wake),
-                        UserAgentResponseHandling::Presentation => {
-                            Some(AgentResponseHandling::Presentation)
-                        }
-                        UserAgentResponseHandling::CommentaryWake => {
-                            Some(AgentResponseHandling::CommentaryWake)
-                        }
-                        UserAgentResponseHandling::CommentaryPresentation => {
-                            Some(AgentResponseHandling::CommentaryPresentation)
-                        }
-                    };
-                    let (observe_commentary, final_response) =
-                        conversion::apply_agent_control_response_handling(response_handling);
-                    audit_item.observe_commentary = observe_commentary;
-                    audit_item.final_response = final_response;
+                    conversion::apply_agent_control_response_handling(
+                        &mut audit_item,
+                        Some(agent_response_handling(result.response_handling)),
+                        /*queued*/ false,
+                    );
                     audit_item.error = result.post_admission_warning.clone();
                     Ok(AgentControlOutcome::ReservedPrompted {
                         target_thread_id: result.target_thread_id.to_string(),
@@ -273,13 +260,11 @@ impl ThreadRequestProcessor {
                     target,
                     response_handling,
                 } => {
-                    if response_handling.is_some() {
-                        return Err(invalid_request(
-                            "responseHandling is not supported for close yet",
-                        ));
-                    }
+                    let response_handling = response_handling
+                        .map(user_agent_response_handling)
+                        .unwrap_or_default();
                     let target_thread_id = source_thread
-                        .close_agent(&target)
+                        .close_agent(&target, response_handling)
                         .await
                         .map_err(agent_control_error)?;
                     audit_item.target_thread_id = Some(target_thread_id);
@@ -319,6 +304,33 @@ impl ThreadRequestProcessor {
 
         match operation {
             Ok(outcome) => {
+                audit_item.input_outcome = match &outcome {
+                    AgentControlOutcome::Spawned { input_outcome, .. } => {
+                        input_outcome.map(|outcome| match outcome {
+                            AgentInputOutcome::Queued => CoreUserAgentInputOutcome::Queued,
+                            AgentInputOutcome::Admitted => CoreUserAgentInputOutcome::Admitted,
+                            AgentInputOutcome::Unknown => CoreUserAgentInputOutcome::Unknown,
+                        })
+                    }
+                    AgentControlOutcome::Prompted { input_outcome, .. }
+                    | AgentControlOutcome::ReservedPrompted { input_outcome, .. } => {
+                        Some(match input_outcome {
+                            AgentInputOutcome::Queued => CoreUserAgentInputOutcome::Queued,
+                            AgentInputOutcome::Admitted => CoreUserAgentInputOutcome::Admitted,
+                            AgentInputOutcome::Unknown => CoreUserAgentInputOutcome::Unknown,
+                        })
+                    }
+                    AgentControlOutcome::Interrupted { input_outcome, .. } => {
+                        input_outcome.map(|outcome| match outcome {
+                            AgentInputOutcome::Queued => CoreUserAgentInputOutcome::Queued,
+                            AgentInputOutcome::Admitted => CoreUserAgentInputOutcome::Admitted,
+                            AgentInputOutcome::Unknown => CoreUserAgentInputOutcome::Unknown,
+                        })
+                    }
+                    AgentControlOutcome::Resumed { .. }
+                    | AgentControlOutcome::Closed { .. }
+                    | AgentControlOutcome::Observed { .. } => None,
+                };
                 if matches!(
                     &outcome,
                     AgentControlOutcome::Spawned {
@@ -379,18 +391,6 @@ impl ThreadRequestProcessor {
                     outcome,
                     audit_warning,
                 })
-            }
-            Err(error)
-                if error
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.get("reason"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some("targetActive") =>
-            {
-                // This is an atomic queue-admission deferral, not a failed user action. The TUI
-                // keeps the process-local item queued and retries after the active turn stops.
-                Err(error)
             }
             Err(error) => {
                 audit_item.status = CoreUserAgentControlStatus::Failed;
