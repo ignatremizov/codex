@@ -330,6 +330,7 @@ impl ChatWidget {
                         return None;
                     }
                     multi_agents::background_commentary_history_cell_from_agent_message(
+                        &id,
                         &text,
                         phase.as_ref(),
                         self.local_settings.tui.agent_response_preview_lines,
@@ -556,6 +557,8 @@ impl ChatWidget {
                 status,
                 observe_commentary,
                 wake_on_completion,
+                target_messages,
+                queue_input,
                 sender_thread_id,
                 receiver_thread_ids,
                 receiver_agents,
@@ -570,6 +573,8 @@ impl ChatWidget {
                     status,
                     observe_commentary,
                     wake_on_completion,
+                    target_messages,
+                    queue_input,
                     sender_thread_id,
                     receiver_thread_ids,
                     receiver_agents,

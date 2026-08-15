@@ -4,6 +4,7 @@ pub(super) fn resolve_without_alias_store(
     target: V1AgentTarget,
     scope: V1AgentTargetScope,
     process_local_controlled: bool,
+    thread_exists: bool,
     root_thread_id: Option<ThreadId>,
 ) -> CodexResult<ThreadId> {
     if let V1AgentTarget::Nickname(nickname) = &target
@@ -20,6 +21,9 @@ pub(super) fn resolve_without_alias_store(
             Ok(thread_id)
         }
         (V1AgentTarget::Id(thread_id), V1AgentTargetScope::ControlledOnly) => {
+            if !thread_exists {
+                return Err(CodexErr::ThreadNotFound(thread_id));
+            }
             Err(CodexErr::UnsupportedOperation(format!(
                 "agent {thread_id} is not controlled by this root; use resume_agent to adopt it"
             )))

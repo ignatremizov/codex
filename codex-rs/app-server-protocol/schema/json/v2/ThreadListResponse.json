@@ -5,6 +5,15 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "AgentInputOutcome": {
+      "description": "Whether a user input submission is known to have been admitted.",
+      "enum": [
+        "admitted",
+        "queued",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "AgentMessageDelivery": {
       "enum": [
         "async"
@@ -1982,6 +1991,14 @@
                 "null"
               ]
             },
+            "queueInput": {
+              "default": null,
+              "description": "Whether input waits in the target-owned queue instead of steering active work.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "reasoningEffort": {
               "anyOf": [
                 {
@@ -2019,6 +2036,14 @@
                 }
               ],
               "description": "Current status of the collab tool call."
+            },
+            "targetMessages": {
+              "default": null,
+              "description": "Whether this call grants replies scoped to the target's admitted turn.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "tool": {
               "allOf": [
@@ -2133,6 +2158,16 @@
             },
             "id": {
               "type": "string"
+            },
+            "inputOutcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentInputOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "newOwnerSessionId": {
               "type": [

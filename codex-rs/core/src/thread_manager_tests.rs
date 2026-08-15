@@ -332,8 +332,7 @@ async fn reserved_thread_id_is_used_without_changing_normal_id_generation() {
     let resume_error = manager
         .start_thread(resumed_options)
         .await
-        .err()
-        .expect("reject reserved ID for resume");
+        .expect_err("reject reserved ID for resume");
     let generated = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
@@ -803,6 +802,7 @@ fn out_of_range_truncation_drops_pre_user_active_turn_prefix() {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         })),
         RolloutItem::ResponseItem(user_msg("u2").into()),
         RolloutItem::ResponseItem(assistant_msg("partial").into()),
@@ -3281,6 +3281,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
                     started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 })),
                 RolloutItem::ResponseItem(user_msg("hello").into()),
                 RolloutItem::ResponseItem(assistant_msg("partial").into()),

@@ -7,6 +7,7 @@ use codex_app_server_protocol::AgentControlOutcome;
 use codex_app_server_protocol::AgentControlParams;
 use codex_app_server_protocol::AgentControlResponse;
 use codex_app_server_protocol::AgentForkMode;
+use codex_app_server_protocol::AgentInputOutcome;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -21,11 +22,12 @@ use core_test_support::responses;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use pretty_assertions::assert_eq;
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-use crate::common::DEFAULT_READ_TIMEOUT;
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
 async fn user_control_interrupt_admits_structured_follow_up_in_v1_and_v2() -> Result<()> {
@@ -82,7 +84,7 @@ async fn user_control_interrupt_admits_structured_follow_up(multi_agent_v2: bool
         config.disable_feature(Feature::MultiAgentV2)
     };
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -143,6 +145,7 @@ async fn user_control_interrupt_admits_structured_follow_up(multi_agent_v2: bool
     let AgentControlOutcome::Interrupted {
         target_thread_id: interrupted_thread_id,
         submission_id,
+        input_outcome,
         post_admission_warning,
     } = interrupted.outcome
     else {
@@ -150,6 +153,7 @@ async fn user_control_interrupt_admits_structured_follow_up(multi_agent_v2: bool
     };
     assert_eq!(interrupted_thread_id, target_thread_id);
     assert!(submission_id.is_some());
+    assert_eq!(input_outcome, Some(AgentInputOutcome::Admitted));
     assert_eq!(post_admission_warning, None);
 
     drop(initial_gate_tx);

@@ -97,7 +97,7 @@ impl Session {
                         .iter()
                         .find(|retained| retained.item.item == response)
                         .map(|retained| retained.item.clone())
-                        .or_else(|| state.completion_runtime_provenance.contexts.get(&id).cloned())
+                        .or_else(|| state.completion_publication_receipts.contexts.get(&id).cloned())
                         .unwrap_or_else(|| response.clone().into())
                 };
                 let receiver = session.dispatch_completion_publication(
@@ -232,16 +232,16 @@ impl Session {
         items.insert(0, RolloutItem::InterAgentCommunicationMetadata {
             trigger_turn: false,
         });
-        let runtime_only = self.live_thread().is_none();
         let id = id.clone();
         let receiver = self.dispatch_completion_publication(
             permit,
             items,
             Vec::new(),
             move |state| {
-                if runtime_only {
-                    state.completion_runtime_provenance.contexts.insert(id, envelope.clone());
-                }
+                state
+                    .completion_publication_receipts
+                    .contexts
+                    .insert(id, envelope.clone());
                 if matches!(delivery, CompletionContextDelivery::InstallNow)
                     && !state.history.raw_items().any(|item| item == &response)
                 {
@@ -318,7 +318,7 @@ impl Session {
                     .await
                     .map_err(|error| CodexErr::Fatal(error.to_string()))?
             } else {
-                self.state.lock().await.completion_runtime_provenance.presentations
+                self.state.lock().await.completion_publication_receipts.presentations
                     .get(&runtime_key).cloned().unwrap_or_default()
             };
             if let Some(event) = &stored.item_completed
@@ -352,6 +352,7 @@ impl Session {
                         started_at: None,
                         model_context_window: None,
                         collaboration_mode_kind: Default::default(),
+                        agent_queue: None,
                     },
                 )));
             }
@@ -401,7 +402,7 @@ impl Session {
                 events,
                 move |state| {
                     if let Some(receipt) = runtime_receipt {
-                        state.completion_runtime_provenance.presentations.insert(runtime_key, receipt);
+                        state.completion_publication_receipts.presentations.insert(runtime_key, receipt);
                     }
                 },
                 || {},

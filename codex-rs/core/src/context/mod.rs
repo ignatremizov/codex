@@ -2,8 +2,12 @@
 
 mod agent_context_identity;
 mod agent_message_board_notification;
+mod legacy_agent_reply_route;
+#[cfg(test)]
+mod legacy_agent_reply_route_test_support;
 mod approved_command_prefix_saved;
 mod apps_instructions;
+mod attributed_agent_message;
 mod available_plugins_instructions;
 mod base_instructions;
 mod compacted_media;
@@ -63,9 +67,13 @@ pub(crate) mod world_state;
 
 pub(crate) use agent_context_identity::AgentContextIdentity;
 pub(crate) use agent_message_board_notification::AgentMessageBoardNotification;
+pub(crate) use legacy_agent_reply_route::LegacyAgentReplyRoute;
+#[cfg(test)]
+pub(crate) use legacy_agent_reply_route_test_support::AgentReplyRoute;
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;
 pub(crate) use apps_instructions::AppsInstructions;
+pub(crate) use attributed_agent_message::AttributedAgentMessage;
 pub(crate) use available_plugins_instructions::AvailablePluginsInstructions;
 pub(crate) use base_instructions::BaseInstructionsFragment;
 pub(crate) use codex_context_fragments::AdditionalContextDeveloperFragment;

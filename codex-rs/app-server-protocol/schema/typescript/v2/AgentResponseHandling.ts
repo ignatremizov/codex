@@ -6,4 +6,21 @@ import type { AgentFinalResponseHandling } from "./AgentFinalResponseHandling";
 /**
  * Response, reverse-message, and admission handling for one target turn.
  */
-export type AgentResponseHandling = "commentary" | "wake" | "presentation" | "commentaryWake" | "commentaryPresentation";
+export type AgentResponseHandling = {
+/**
+ * Deliver the first complete commentary item from the target turn.
+ */
+commentary: boolean,
+/**
+ * Select how the target turn's final response reaches the source.
+ */
+finalResponse: AgentFinalResponseHandling,
+/**
+ * Let the target turn send attributed input back to the source.
+ */
+targetMessages: boolean,
+/**
+ * Admit supplied input as a distinct queued target turn and queue its model-visible final
+ * response for the source's next turn.
+ */
+queueInput: boolean, };

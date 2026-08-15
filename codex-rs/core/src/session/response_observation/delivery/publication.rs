@@ -28,7 +28,7 @@ impl Session {
                         "observed response belongs to another session instance".to_string(),
                     ));
                 }
-                let (response, presentation, trigger_turn, recording_turn_id) = match payload {
+                let (response, presentation, trigger_turn, recording_turn_id, wait_turn) = match payload {
                     Payload::Context { communication, presentation, recording_turn_id } => {
                         let response = communication.to_model_input_item();
                         if response.id() != Some(&commit.response_item_id) {
@@ -36,9 +36,19 @@ impl Session {
                                 "observed response identity changed".to_string(),
                             ));
                         }
-                        (Some(response), presentation, communication.trigger_turn, recording_turn_id)
+                        (Some(response), presentation.map(|presentation| *presentation), communication.trigger_turn, recording_turn_id, None)
                     }
-                    Payload::Presentation(presentation) => (None, Some(presentation), false, None),
+                    Payload::Presentation(presentation) => (None, Some(*presentation), false, None, None),
+                    Payload::WaitCommentary { mut communication, turn_context } => {
+                        communication.set_turn_id_if_missing(&turn_context.sub_id);
+                        let response = communication.to_model_input_item();
+                        if response.id() != Some(&commit.response_item_id)
+                            || response.turn_id() != Some(turn_context.sub_id.as_str())
+                        {
+                            return Err(CodexErr::InvalidRequest("wait commentary identity changed".to_string()));
+                        }
+                        (Some(response), None, communication.trigger_turn, Some(turn_context.sub_id.clone()), Some(turn_context))
+                    }
                 };
                 let history_turn = session.new_history_only_turn().await;
                 loop {
@@ -65,6 +75,12 @@ impl Session {
                     let transaction = control.acquire_response_observation_transaction(commit.parent).await;
                     let permit = session.acquire_history_publication_barrier().await?;
                     let active = session.active_turn.lock().await;
+                    if let Some(wait_turn) = &wait_turn
+                        && active.as_ref().and_then(|active| active.task.as_ref())
+                            .is_none_or(|task| task.turn_context.sub_id != wait_turn.sub_id)
+                    {
+                        return Err(CodexErr::InvalidRequest("wait commentary turn is no longer active".to_string()));
+                    }
                     let finishing_recording_turn = if active.as_ref().is_some_and(|active| {
                         active.task.is_none() && active.terminal_pending
                     }) {
@@ -95,7 +111,7 @@ impl Session {
                             "observed input recorder belongs to another active turn".to_string(),
                         ));
                     }
-                    let turn = active_context.as_ref().unwrap_or(&history_turn);
+                    let turn = wait_turn.as_ref().or(active_context.as_ref()).unwrap_or(&history_turn);
                     let receiving_turn_id = active_context.as_ref().map(|turn| turn.sub_id.clone())
                         .or(finishing_recording_turn).or_else(|| recording_turn_id.clone());
                     let turn_id = receiving_turn_id.clone().unwrap_or_else(|| {
@@ -157,8 +173,10 @@ impl Session {
                                     state.current_time_reminder.note_recorded_items(std::slice::from_ref(&envelope.item));
                                     prepared.install(&mut state.history);
                                 }
-                                if runtime_only {
-                                    state.completion_runtime_provenance.contexts.insert(
+                                if runtime_only || codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                                    install_commit.response_item_id.as_str(),
+                                ) {
+                                    state.completion_publication_receipts.contexts.insert(
                                         install_commit.response_item_id.clone(), envelope.clone(),
                                     );
                                 }

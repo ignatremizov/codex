@@ -97,34 +97,39 @@ async fn count_only_rollback_restores_last_started_from_surviving_occurrences(
             let message = |text: &str| ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
-                content: vec![ContentItem::InputText { text: text.to_string() }],
+                content: vec![ContentItem::InputText {
+                    text: text.to_string(),
+                }],
                 phase: None,
                 internal_chat_message_metadata_passthrough: None,
             };
-            let recorded_turn = |id: &str, text: &str| vec![
-                RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                    turn_id: id.to_string(),
-                    root_turn_id: None,
-                    trace_id: None,
-                    started_at: None,
-                    model_context_window: None,
-                    collaboration_mode_kind: codex_protocol::config_types::ModeKind::Default,
-                })),
-                RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
-                    message: text.to_string(),
-                    ..Default::default()
-                })),
-                RolloutItem::ResponseItem(message(text).into()),
-                RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
-                    turn_id: id.to_string(),
-                    last_agent_message: None,
-                    error: None,
-                    started_at: None,
-                    completed_at: None,
-                    duration_ms: None,
-                    time_to_first_token_ms: None,
-                })),
-            ];
+            let recorded_turn = |id: &str, text: &str| {
+                vec![
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                        agent_queue: None,
+                        turn_id: id.to_string(),
+                        root_turn_id: None,
+                        trace_id: None,
+                        started_at: None,
+                        model_context_window: None,
+                        collaboration_mode_kind: codex_protocol::config_types::ModeKind::Default,
+                    })),
+                    RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                        message: text.to_string(),
+                        ..Default::default()
+                    })),
+                    RolloutItem::ResponseItem(message(text).into()),
+                    RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                        turn_id: id.to_string(),
+                        last_agent_message: None,
+                        error: None,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
+                        time_to_first_token_ms: None,
+                    })),
+                ]
+            };
             let mut items = Vec::new();
             let mut expected_history = Vec::<ResponseItemEnvelope>::new();
             if has_checkpoint {
@@ -222,6 +227,7 @@ async fn exact_rollback_keeps_checkpoint_metadata_and_masks_its_raw_suffix(
         RolloutItem::Compacted(checkpoint),
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
+                agent_queue: None,
                 turn_id: "removed-turn".to_string(),
                 root_turn_id: None,
                 trace_id: None,

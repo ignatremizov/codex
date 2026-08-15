@@ -451,15 +451,36 @@
       "type": "string"
     },
     "AgentResponseHandling": {
-      "description": "Response handling for one target turn.",
-      "enum": [
+      "description": "Response, reverse-message, and admission handling for one target turn.",
+      "properties": {
+        "commentary": {
+          "description": "Deliver the first complete commentary item from the target turn.",
+          "type": "boolean"
+        },
+        "finalResponse": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentFinalResponseHandling"
+            }
+          ],
+          "description": "Select how the target turn's final response reaches the source."
+        },
+        "queueInput": {
+          "description": "Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+          "type": "boolean"
+        },
+        "targetMessages": {
+          "description": "Let the target turn send attributed input back to the source.",
+          "type": "boolean"
+        }
+      },
+      "required": [
         "commentary",
-        "wake",
-        "presentation",
-        "commentaryWake",
-        "commentaryPresentation"
+        "finalResponse",
+        "queueInput",
+        "targetMessages"
       ],
-      "type": "string"
+      "type": "object"
     },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",

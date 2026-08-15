@@ -34,6 +34,7 @@ fn lifecycle_materialization_and_eviction_preserve_the_authoritative_boundary() 
     store.push_notification(ServerNotification::TurnStarted(TurnStartedNotification {
         thread_id: "thread".into(),
         turn: turn("second", TurnStatus::InProgress),
+        agent_queue: None,
     }));
     store.push_notification(ServerNotification::TurnCompleted(
         TurnCompletedNotification {
@@ -51,6 +52,7 @@ fn lifecycle_materialization_and_eviction_preserve_the_authoritative_boundary() 
     store.push_notification(ServerNotification::TurnStarted(TurnStartedNotification {
         thread_id: "thread".into(),
         turn: turn("third", TurnStatus::InProgress),
+        agent_queue: None,
     }));
     assert_eq!(materialized_thread_turns(&store), None);
 }

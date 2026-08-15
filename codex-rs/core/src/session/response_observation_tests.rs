@@ -27,6 +27,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::new_attributed_agent_message_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_item;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
@@ -65,6 +66,30 @@ fn complete_commentary_item_becomes_observable_response() {
 }
 
 #[test]
+fn attributed_agent_input_presentation_is_not_observed_as_a_response() {
+    let event = EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: ThreadId::new(),
+        turn_id: "turn-1".to_string(),
+        item: TurnItem::AgentMessage(AgentMessageItem {
+            id: new_attributed_agent_message_response_item_id().to_string(),
+            content: vec![AgentMessageContent::Text {
+                text: "Agent message from `01900000-0000-7000-8000-000000000001`:\n\nQuestion"
+                    .to_string(),
+            }],
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+            sub_agent_completion: None,
+        }),
+        started_at_ms: Some(0),
+        completed_at_ms: 1,
+    });
+
+    assert_eq!(agent_response_event(&event, /*sequence*/ 0), None);
+}
+
+#[test]
 fn canonical_commentary_recovery_matches_legacy_and_paginated_representations() {
     let thread_id = ThreadId::new();
     let turn_started = RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
@@ -74,6 +99,7 @@ fn canonical_commentary_recovery_matches_legacy_and_paginated_representations() 
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }));
     let mut response_item = ResponseItem::Message {
         id: Some(ResponseItemId::new("msg")),
@@ -247,6 +273,7 @@ fn response_snapshot_reconstructs_the_exact_last_terminal_turn() {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "completed-turn".to_string(),
@@ -287,6 +314,7 @@ fn response_snapshot_keeps_newer_completed_turn_after_delayed_historical_termina
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: "turn-b".to_string(),
@@ -295,6 +323,7 @@ fn response_snapshot_keeps_newer_completed_turn_after_delayed_historical_termina
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-b".to_string(),
@@ -348,6 +377,7 @@ async fn delayed_historical_terminal_does_not_replace_live_newer_status() {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }),
         EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-b".to_string(),
@@ -356,6 +386,7 @@ async fn delayed_historical_terminal_does_not_replace_live_newer_status() {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }),
         EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-b".to_string(),
@@ -413,6 +444,7 @@ fn response_snapshot_excludes_exactly_rolled_back_turns_for_resume_and_fork() {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         })),
         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "retained-turn".to_string(),
@@ -430,6 +462,7 @@ fn response_snapshot_excludes_exactly_rolled_back_turns_for_resume_and_fork() {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         })),
         RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
             thread_id,
@@ -675,6 +708,7 @@ async fn observer_registration_precedes_synchronous_start_and_terminal_callbacks
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
         })
         .await;

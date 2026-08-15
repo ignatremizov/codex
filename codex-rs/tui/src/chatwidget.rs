@@ -1393,6 +1393,12 @@ impl ChatWidget {
             return;
         }
 
+        let confirms_pending_steer = client_id.is_some_and(|id| {
+            self.input_queue
+                .pending_steers
+                .iter()
+                .any(|pending| pending.client_id == id)
+        });
         // Servers may omit media from receipts, so prefer the submission identity.
         if client_id.is_some() && self.last_rendered_user_message_client_id.as_deref() == client_id
         {
@@ -1429,9 +1435,9 @@ impl ChatWidget {
             self.on_identified_user_message_display(display, client_id, Some(identity));
         }
         if let Some(client_id) = client_id
-            && self.input_queue.queued_user_messages.iter().any(|message| {
+            && (confirms_pending_steer || self.input_queue.queued_user_messages.iter().any(|message| {
                 matches!(&message.delivery, MessageDelivery::Unconfirmed(Some(id)) if id == client_id)
-            })
+            }))
         {
             self.reconcile_recovered_messages(&[client_id.to_string()]);
             self.maybe_send_next_queued_input();

@@ -1813,19 +1813,20 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     assert!(!chat.bottom_pane.is_task_running());
     assert!(!chat.input_queue.user_turn_pending_start);
     assert!(!chat.input_queue.submit_pending_steers_after_interrupt);
-    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    assert_eq!(
+        chat.input_queue.pending_steers[0].history_record,
+        pending_history
+    );
     assert_eq!(chat.bottom_pane.composer_text(), "composer draft");
     assert_eq!(
         chat.safety_buffering_prompt,
         Some(UserMessage::from("buffered prompt"))
     );
-    assert_eq!(
-        chat.queued_user_message_texts(),
-        vec!["submitted to the interrupted turn", "already queued"]
-    );
+    assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
     assert_eq!(
         chat.input_queue.queued_user_message_history_records,
-        VecDeque::from([pending_history, queued_history])
+        VecDeque::from([queued_history])
     );
     assert!(!chat.maybe_send_next_queued_input());
     assert_no_submit_op(&mut op_rx);
@@ -1850,7 +1851,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     );
     assert!(chat.input_queue.pending_steers.is_empty());
     assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
-    assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
+    assert!(chat.queued_user_message_texts().is_empty());
 
     chat.restore_thread_input_state(
         /*input_state*/ None,
@@ -2390,6 +2391,7 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
                         Some(id),
                         /*from_replay*/ false,
                         "turn-1",
+                        "recovered-input",
                     );
                 }
             } else {
@@ -2406,8 +2408,21 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
             } else {
                 assert_eq!(
                     restored.queued_user_message_texts(),
-                    vec!["first message", "follow-up"]
+                    if pending_start {
+                        vec!["first message", "follow-up"]
+                    } else {
+                        vec!["follow-up"]
+                    }
                 );
+                if !pending_start {
+                    assert_eq!(
+                        restored.input_queue.pending_steers.front().map(|pending| (
+                            pending.client_id.as_str(),
+                            pending.user_message.text.as_str(),
+                        )),
+                        Some((client_id.as_str(), "first message"))
+                    );
+                }
                 assert_no_submit_op(&mut ops);
                 let notice = drain_insert_history(&mut rx)
                     .into_iter()
@@ -2657,6 +2672,7 @@ async fn image_preparation_failure_restores_full_input_without_submitting() {
                 Some(&pending_steers[0].client_id),
                 /*from_replay*/ false,
                 "turn",
+                "recovered-image-input",
             );
             chat.input_queue.suppress_queue_autosend = false;
             handle_turn_completed(&mut chat, "turn", /*duration_ms*/ None);

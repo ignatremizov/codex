@@ -100,6 +100,7 @@ fn complete_plan_turn(app: &mut App) {
     };
     for notification in [
         ServerNotification::TurnStarted(TurnStartedNotification {
+            agent_queue: None,
             thread_id: thread_id.clone(),
             turn: turn.clone(),
         }),

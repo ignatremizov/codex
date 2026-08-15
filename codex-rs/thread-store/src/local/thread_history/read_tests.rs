@@ -1031,6 +1031,7 @@ async fn search_finds_user_agent_control_audit_terms() {
     .await;
     let item = codex_app_server_protocol::ThreadItem::UserAgentControl {
         id: "control-item".to_string(),
+        input_outcome: None,
         action: codex_app_server_protocol::UserAgentControlAction::QueuedPrompt,
         authored_selector: Some("Hume".to_string()),
         target_thread_id: Some(ThreadId::new().to_string()),
@@ -1044,6 +1045,8 @@ async fn search_finds_user_agent_control_audit_terms() {
         fork_mode: None,
         observe_commentary: Some(true),
         final_response: Some(codex_app_server_protocol::AgentFinalResponseHandling::Wake),
+        target_messages: Some(true),
+        queue_input: Some(true),
         status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
         error: None,
     };

@@ -83,9 +83,9 @@ fn configure_insta_workspace_root_for_snapshot_tests() {
 #[track_caller]
 pub fn assert_regex_match<'s>(pattern: &str, actual: &'s str) -> regex_lite::Captures<'s> {
     let regex = Regex::new(pattern).expect("failed to compile regex");
-    regex
-        .captures(actual)
-        .expect("regex did not match actual value")
+    regex.captures(actual).unwrap_or_else(|| {
+        panic!("regex did not match actual value.\nPattern:\n{pattern}\nActual:\n{actual}")
+    })
 }
 
 pub fn test_path_buf_with_windows(unix_path: &str, windows_path: Option<&str>) -> PathBuf {

@@ -38,7 +38,7 @@ impl Session {
             .state
             .lock()
             .await
-            .completion_runtime_provenance
+            .completion_publication_receipts
             .contexts
             .get(id)
             .map(|envelope| envelope.item.clone()))

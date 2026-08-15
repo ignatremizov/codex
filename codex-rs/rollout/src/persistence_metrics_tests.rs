@@ -54,6 +54,7 @@ fn turn_started(turn_id: &str) -> RolloutItem {
         started_at: None,
         model_context_window: None,
         collaboration_mode_kind: Default::default(),
+        agent_queue: None,
     }))
 }
 
@@ -343,6 +344,8 @@ fn completed_wait_items_are_persisted_with_or_without_ownership() {
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,
             wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
             deadline_at_ms: None,
             sender_thread_id: ThreadId::new(),
             receiver_thread_ids: vec![child_thread_id],
@@ -395,6 +398,8 @@ fn send_input_item_is_persisted_in_both_history_modes() {
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: Some(false),
             wake_on_completion: Some(false),
+            target_messages: Some(false),
+            queue_input: Some(false),
             deadline_at_ms: None,
             sender_thread_id: ThreadId::new(),
             receiver_thread_ids: vec![receiver_thread_id],

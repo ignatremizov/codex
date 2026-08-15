@@ -934,6 +934,7 @@ pub(super) fn replay_turn_started(chat: &mut ChatWidget, replay_kind: ReplayKind
                 /*duration_ms*/ None,
                 /*error*/ None,
             ),
+            agent_queue: None,
         }),
         Some(replay_kind),
     );
@@ -1158,6 +1159,7 @@ pub(super) fn handle_turn_started(chat: &mut ChatWidget, turn_id: &str) {
                 /*duration_ms*/ None,
                 /*error*/ None,
             ),
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );

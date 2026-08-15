@@ -30,6 +30,7 @@ fn completed_snapshot_and_buffered_terminal_events_cannot_recreate_processes() {
     ));
     assert_eq!(active_snapshot_turn(&store.snapshot()), None);
     store.push_notification(ServerNotification::TurnStarted(TurnStartedNotification {
+        agent_queue: None,
         thread_id: "thread".into(),
         turn: turn("new", TurnStatus::InProgress),
     }));

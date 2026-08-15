@@ -26,6 +26,8 @@ export type { AgentMessageDelivery } from "./AgentMessageDelivery";
 export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
 export type { AgentObservationBinding } from "./AgentObservationBinding";
 export type { AgentObservationMode } from "./AgentObservationMode";
+export type { AgentQueueEntry } from "./AgentQueueEntry";
+export type { AgentQueueTurnMetadata } from "./AgentQueueTurnMetadata";
 export type { AgentResponseHandling } from "./AgentResponseHandling";
 export type { AllowDenyRequirement } from "./AllowDenyRequirement";
 export type { AnalyticsConfig } from "./AnalyticsConfig";

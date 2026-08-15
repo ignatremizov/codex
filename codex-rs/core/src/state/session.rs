@@ -74,7 +74,8 @@ pub(crate) struct SessionState {
     pub(crate) base_instructions_provenance: Option<BaseInstructionsProvenance>,
     pub(crate) history: ContextManager,
     pub(crate) acknowledged_completion_contexts: Vec<super::AcknowledgedCompletionContext>,
-    pub(crate) completion_runtime_provenance: super::completion_context::CompletionRuntimeProvenance,
+    pub(crate) completion_publication_receipts:
+        super::completion_context::CompletionPublicationReceipts,
     /// Cancels work bound to discarded history or a superseded Guardian evidence policy.
     pub(crate) history_reset: CancellationToken,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
@@ -128,7 +129,7 @@ impl SessionState {
             base_instructions_provenance: None,
             history,
             acknowledged_completion_contexts: Vec::new(),
-            completion_runtime_provenance: Default::default(),
+            completion_publication_receipts: Default::default(),
             history_reset: CancellationToken::new(),
             latest_rate_limits: None,
             latest_token_usage_record: None,

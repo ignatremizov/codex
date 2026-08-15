@@ -2,12 +2,14 @@
 
 use super::Session;
 use super::SessionIo;
+use super::Submission;
 use super::new_submission_id;
+use super::response_observation::AgentQueueTurnStartPermit;
 use super::response_observation::InputTurnAdmissionResolution;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::AgentQueueTurnMetadata;
 use codex_protocol::protocol::Op;
-use super::Submission;
 use codex_protocol::turn_input::NotSubmittedReason;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
@@ -22,6 +24,8 @@ pub(crate) enum ObservedTurnInputSubmission {
     Admitted {
         submission_id: String,
         resolution: InputTurnAdmissionResolution,
+        queue_start_permit: Option<AgentQueueTurnStartPermit>,
+        input_persisted: Option<oneshot::Receiver<CodexResult<()>>>,
     },
     NotSubmitted {
         reason: NotSubmittedReason,
@@ -45,8 +49,43 @@ impl SessionIo {
     pub(crate) async fn submit_observed_turn_input(
         &self,
         session: &Session,
+        request: TurnInputRequest,
+        mode: TurnInputMode,
+        residency_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    ) -> CodexResult<ObservedTurnInputSubmission> {
+        self.submit_observed_input(
+            session,
+            request,
+            mode,
+            /*queue_metadata*/ None,
+            residency_guard,
+        )
+        .await
+    }
+
+    pub(crate) async fn submit_observed_queued_turn_input(
+        &self,
+        session: &Session,
+        request: TurnInputRequest,
+        metadata: AgentQueueTurnMetadata,
+        residency_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    ) -> CodexResult<ObservedTurnInputSubmission> {
+        self.submit_observed_input(
+            session,
+            request,
+            TurnInputMode::StartIfIdle,
+            Some(metadata),
+            residency_guard,
+        )
+        .await
+    }
+
+    async fn submit_observed_input(
+        &self,
+        session: &Session,
         mut request: TurnInputRequest,
         mode: TurnInputMode,
+        queue_metadata: Option<AgentQueueTurnMetadata>,
         residency_guard: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
     ) -> CodexResult<ObservedTurnInputSubmission> {
         if !self
@@ -59,7 +98,15 @@ impl SessionIo {
             ));
         }
         let submission_id = new_submission_id();
-        let admission = session.register_input_turn_admission(submission_id.clone());
+        let mut admission = session.register_input_turn_admission(submission_id.clone());
+        let (queue_start_permit, input_persisted) = match queue_metadata {
+            Some(metadata) => {
+                let (permit, persisted) =
+                    session.register_queued_input_start(&submission_id, metadata);
+                (Some(permit), Some(persisted))
+            }
+            None => (None, None),
+        };
         let (reply, routing) = oneshot::channel();
         let trace = request.trace.take();
         self.submit_with_id(Submission {
@@ -75,9 +122,19 @@ impl SessionIo {
             residency_guard,
         })
         .await?;
+        admission.mark_submitted();
         let routing = match routing.await {
             Ok(Ok(routing)) => routing,
-            Ok(Err(error)) => return Err(error),
+            Ok(Err(error)) => {
+                let warning = format!(
+                    "input routing failed after enqueue: {error}; admission is unknown; do not resubmit; reload required"
+                );
+                session.quarantine_history(warning.clone());
+                return Ok(ObservedTurnInputSubmission::Indeterminate {
+                    submission_id,
+                    warning,
+                });
+            }
             Err(_) => {
                 let warning = "input routing receipt was lost after enqueue; do not resubmit; reload required".to_string();
                 session.quarantine_history(warning.clone());
@@ -89,6 +146,10 @@ impl SessionIo {
         };
         match routing {
             TurnInputSubmission::NotSubmitted { reason } => {
+                session.reject_input_turn_admission(
+                    &submission_id,
+                    CodexErr::InvalidRequest("input was not submitted".to_string()),
+                );
                 Ok(ObservedTurnInputSubmission::NotSubmitted { reason })
             }
             TurnInputSubmission::Started { turn_id } | TurnInputSubmission::Steered { turn_id } => {
@@ -97,6 +158,8 @@ impl SessionIo {
                         return Ok(ObservedTurnInputSubmission::Admitted {
                             submission_id,
                             resolution,
+                            queue_start_permit,
+                            input_persisted,
                         });
                     }
                     Some(Ok(_)) => "admission receipt belonged to another turn".to_string(),

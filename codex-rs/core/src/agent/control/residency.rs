@@ -175,6 +175,12 @@ impl V2Residency {
                     }
                 }
             };
+            // Queue insertion and admission share the lifecycle gate held above. Pending
+            // source or target work pins this exact runtime until admission or cancellation.
+            if manager.agent_turn_queue.has_pending_involving(candidate_thread_id) {
+                self.touch(candidate_thread_id);
+                continue;
+            }
             let Ok(residency_guard) =
                 Arc::clone(&candidate_thread.residency_gate).try_write_owned()
             else {
