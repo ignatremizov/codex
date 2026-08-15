@@ -6,12 +6,16 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
 
-› • /root/review (approval)           00000000-0000-0000-0000-000000000002
-  2 • /root/worker (wake · approval)  00000000-0000-0000-0000-000000000123
-  • Main [default] (current)          00000000-0000-0000-0000-000000000001
+  Filter by ref, name, role, path, or UUID
+› • /root/review (approval)           00000000-0000-0000-0000-000000000002 ·
+                                      running · approval pending
+  2 • /root/worker (wake · approval)  00000000-0000-0000-0000-000000000123 ·
+                                      running
+  • Main [default] (current)          00000000-0000-0000-0000-000000000001 ·
+                                      idle
 
   /root/review
-  external
+  running
 
   UUID
   00000000-0000-0000-0000-000000000002
@@ -24,6 +28,7 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Children: 0
   Approval: pending
 
-  Enter inspects this transcript
+  Enter opens this thread
+
   Tab opens controls for the selected agent.
   Tab opens controls

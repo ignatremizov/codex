@@ -258,10 +258,14 @@ pub(super) async fn handle(
         }
         TurnInputMode::StartIfIdle => {
             let kind = match &request.request.input {
-                SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
+                SubmittedTurnInput::UserInput { content, .. }
+                | SubmittedTurnInput::AgentInput { content, .. }
+                    if !content.is_empty() =>
+                {
                     TurnStartKind::User
                 }
                 SubmittedTurnInput::UserInput { .. }
+                | SubmittedTurnInput::AgentInput { .. }
                 | SubmittedTurnInput::ResponseItem(_)
                 | SubmittedTurnInput::AnnotatedResponseItem(_)
                 | SubmittedTurnInput::InterAgentCommunication(_) => TurnStartKind::Automatic,
@@ -364,7 +368,10 @@ pub(super) async fn handle_recovery(
 fn user_input_metadata(request: &TurnInputRequest) -> UserInputMetadata {
     UserInputMetadata {
         origin: UserInputOrigin::from_turn_trigger(request.start.turn_trigger.as_deref()),
-        response_item_uuid: request.user_item_uuid,
+        response_item_uuid: match &request.input {
+            SubmittedTurnInput::UserInput { .. } => request.user_item_uuid,
+            _ => None,
+        },
         ..Default::default()
     }
 }
@@ -388,7 +395,8 @@ async fn start_or_steer(
         ..
     } = request;
     let has_explicit_input = match &input {
-        SubmittedTurnInput::UserInput { content, .. } => !content.is_empty(),
+        SubmittedTurnInput::UserInput { content, .. }
+        | SubmittedTurnInput::AgentInput { content, .. } => !content.is_empty(),
         SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
             call_id: None,
             ..
@@ -399,7 +407,8 @@ async fn start_or_steer(
         }) => true,
         _ => {
             return Err(CodexErr::InvalidRequest(
-                "only user input or standalone function-call outputs can start or steer a turn"
+                "only user or agent input, or standalone function-call outputs, can start or \
+                 steer a turn"
                     .to_string(),
             ));
         }
@@ -531,7 +540,8 @@ impl Session {
         on_admitted: impl FnOnce(&str) + Send,
     ) -> CodexResult<TurnInputSubmission> {
         let kind = match &request.input {
-            SubmittedTurnInput::UserInput { content, .. } => {
+            SubmittedTurnInput::UserInput { content, .. }
+            | SubmittedTurnInput::AgentInput { content, .. } => {
                 if content.is_empty() {
                     TurnStartKind::Automatic
                 } else {
@@ -781,9 +791,12 @@ async fn steer(
         responsesapi_client_metadata,
         ..
     } = request;
-    if !matches!(&input, SubmittedTurnInput::UserInput { .. }) {
+    if !matches!(
+        &input,
+        SubmittedTurnInput::UserInput { .. } | SubmittedTurnInput::AgentInput { .. }
+    ) {
         return Err(CodexErr::InvalidRequest(
-            "only user input can steer a turn".to_string(),
+            "only user or agent input can steer a turn".to_string(),
         ));
     }
     let settings = PreparedTurnInputSettings::prepare(
@@ -1032,7 +1045,12 @@ impl Session {
             }
         }
 
-        if matches!(input, SubmittedTurnInput::UserInput { content, .. } if content.is_empty()) {
+        if matches!(
+            input,
+            SubmittedTurnInput::UserInput { content, .. }
+                | SubmittedTurnInput::AgentInput { content, .. }
+                if content.is_empty()
+        ) {
             return Err(NotSubmittedReason::EmptyInput);
         }
         // Compare JSON values directly instead of serialized schema text.
@@ -1144,6 +1162,17 @@ async fn pending_turn_input(
         SubmittedTurnInput::UserInput { content, client_id } => TurnInput::UserInput {
             content,
             client_id,
+            metadata: super::UserInputMetadata {
+                acceptance_order: Some(session.reserve_user_input_order().await),
+                ..input_metadata
+            },
+        },
+        SubmittedTurnInput::AgentInput {
+            content,
+            presentation,
+        } => TurnInput::AgentInput {
+            content,
+            presentation,
             metadata: super::UserInputMetadata {
                 acceptance_order: Some(session.reserve_user_input_order().await),
                 ..input_metadata

@@ -136,10 +136,10 @@ impl MockResponsesConfig {
             format!(
                 r#"
 model = "{model}"
+model_provider = "{provider_id}"
 approval_policy = "{approval_policy}"
 sandbox_mode = "{sandbox_mode}"
 {root_config}
-model_provider = "{provider_id}"
 
 {feature_config}[model_providers.{provider_id}]
 name = "{provider_name}"

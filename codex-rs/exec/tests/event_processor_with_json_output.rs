@@ -145,6 +145,7 @@ fn turn_started_emits_turn_started_event() {
 
     let collected =
         processor.collect_thread_events(ServerNotification::TurnStarted(TurnStartedNotification {
+            agent_queue: None,
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
@@ -933,6 +934,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             ThreadItemPayload::CollabAgentToolCall {
                 observe_commentary: None,
                 wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::InProgress,
@@ -954,6 +957,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             ThreadItemPayload::CollabAgentToolCall {
                 observe_commentary: None,
                 wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::Completed,

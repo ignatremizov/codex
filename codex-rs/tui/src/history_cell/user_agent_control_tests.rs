@@ -1,4 +1,5 @@
 use codex_protocol::protocol::AgentResponseFinalDelivery;
+use codex_app_server_protocol::AgentInputOutcome;
 use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
@@ -10,6 +11,7 @@ use super::*;
 fn renders_unknown_prompt_with_reconciliation_warning() {
     let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
         id: "control-unknown".to_string(),
+        input_outcome: Some(AgentInputOutcome::Unknown),
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
@@ -37,7 +39,7 @@ fn renders_unknown_prompt_with_reconciliation_warning() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    • User agent action outcome unknown for Anscombe [reviewer] (ref 2)
+    • User agent input outcome unknown for Anscombe [reviewer] (ref 2)
       └ Review the latest diff.
         Outcome unknown: reload and reconcile before retry.
     ");
@@ -47,6 +49,7 @@ fn renders_unknown_prompt_with_reconciliation_warning() {
 fn renders_successful_user_agent_prompt() {
     let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
         id: "control-1".to_string(),
+        input_outcome: Some(AgentInputOutcome::Admitted),
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
@@ -60,8 +63,8 @@ fn renders_successful_user_agent_prompt() {
         fork_mode: None,
         observe_commentary: Some(true),
         final_response: Some(AgentResponseFinalDelivery::Wake),
-        target_messages: None,
-        queue_input: None,
+        target_messages: Some(true),
+        queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
         error: None,
     })
@@ -74,15 +77,16 @@ fn renders_successful_user_agent_prompt() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    • User sent to Anscombe [reviewer] (ref 2) (commentary · wake)
+    • User sent to Anscombe [reviewer] (ref 2) (commentary · wake · allow replies)
       └ Review the latest diff.
     ");
 }
 
 #[test]
-fn renders_child_to_main_prompt_with_main_identity() {
+fn renders_legacy_child_to_main_prompt_without_claiming_admission() {
     let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
         id: "control-main".to_string(),
+        input_outcome: None,
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("main".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67268".to_string()),
@@ -96,8 +100,8 @@ fn renders_child_to_main_prompt_with_main_identity() {
         fork_mode: None,
         observe_commentary: Some(false),
         final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
-        target_messages: None,
-        queue_input: None,
+        target_messages: Some(false),
+        queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
         error: None,
     })
@@ -110,7 +114,7 @@ fn renders_child_to_main_prompt_with_main_identity() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    • User sent to Main [default] (ref 1) (presentation)
+    • User submitted input to Main [default] (ref 1) (presentation)
       └ Please confirm.
     ");
 }
@@ -119,6 +123,7 @@ fn renders_child_to_main_prompt_with_main_identity() {
 fn renders_successful_prompt_with_post_admission_warning() {
     let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
         id: "control-warning".to_string(),
+        input_outcome: Some(AgentInputOutcome::Admitted),
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
@@ -132,8 +137,8 @@ fn renders_successful_prompt_with_post_admission_warning() {
         fork_mode: None,
         observe_commentary: Some(false),
         final_response: Some(AgentResponseFinalDelivery::Wake),
-        target_messages: None,
-        queue_input: None,
+        target_messages: Some(false),
+        queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
         error: Some("target input was admitted, but response handling was rolled back".to_string()),
     })
@@ -156,6 +161,7 @@ fn renders_successful_prompt_with_post_admission_warning() {
 fn renders_successful_prompt_that_resumed_the_target() {
     let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
         id: "control-resumed-prompt".to_string(),
+        input_outcome: Some(AgentInputOutcome::Admitted),
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
@@ -169,8 +175,8 @@ fn renders_successful_prompt_that_resumed_the_target() {
         fork_mode: None,
         observe_commentary: Some(false),
         final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
-        target_messages: None,
-        queue_input: None,
+        target_messages: Some(false),
+        queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
         error: None,
     })
@@ -205,8 +211,9 @@ fn renders_successful_queued_prompt_that_resumed_the_target() {
         fork_mode: None,
         observe_commentary: Some(false),
         final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
-        target_messages: None,
-        queue_input: None,
+        target_messages: Some(false),
+        queue_input: Some(true),
+        input_outcome: Some(AgentInputOutcome::Queued),
         status: UserAgentControlStatus::Succeeded,
         error: None,
     })
@@ -219,8 +226,44 @@ fn renders_successful_queued_prompt_that_resumed_the_target() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    • User resumed and sent queued prompt to Anscombe [reviewer] (ref 2) (presentation)
+    • User queued input for Anscombe [reviewer] (ref 2) (presentation · queued turn + reply)
       └ Run the queued review.
+    ");
+}
+
+#[test]
+fn renders_successful_close_with_queued_response_replay() {
+    let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
+        id: "control-close".to_string(),
+        input_outcome: None,
+        action: UserAgentControlAction::Close,
+        authored_selector: Some("2".to_string()),
+        target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        agent_ref: Some("2".to_string()),
+        nickname: Some("Anscombe".to_string()),
+        role: Some("reviewer".to_string()),
+        prompt_preview: None,
+        resumed_target: false,
+        fork_mode: None,
+        observe_commentary: Some(false),
+        final_response: Some(AgentResponseFinalDelivery::Passive),
+        target_messages: Some(false),
+        queue_input: Some(true),
+        status: UserAgentControlStatus::Succeeded,
+        error: None,
+    })
+    .expect("control item should render");
+
+    let rendered = cell
+        .display_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    • User closed Anscombe [reviewer] (ref 2) (passive · queued turn + reply)
     ");
 }
 
@@ -228,6 +271,7 @@ fn renders_successful_queued_prompt_that_resumed_the_target() {
 fn renders_failed_user_agent_spawn() {
     let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
         id: "control-2".to_string(),
+        input_outcome: None,
         action: UserAgentControlAction::Spawn,
         authored_selector: None,
         target_thread_id: None,
@@ -241,8 +285,8 @@ fn renders_failed_user_agent_spawn() {
         fork_mode: Some(UserAgentForkMode::LastNTurns { turns: 3 }),
         observe_commentary: Some(false),
         final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
-        target_messages: None,
-        queue_input: None,
+        target_messages: Some(false),
+        queue_input: Some(false),
         status: UserAgentControlStatus::Failed,
         error: Some("agent depth limit reached".to_string()),
     })
@@ -265,6 +309,7 @@ fn renders_failed_user_agent_spawn() {
 fn renders_explicit_adoption_and_preserves_owner_audit() {
     let cell = new_user_agent_control(ThreadItemPayload::UserAgentControl {
         id: "control-3".to_string(),
+        input_outcome: None,
         action: UserAgentControlAction::Resume,
         authored_selector: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
@@ -278,8 +323,8 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
         fork_mode: None,
         observe_commentary: Some(false),
         final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
-        target_messages: None,
-        queue_input: None,
+        target_messages: Some(false),
+        queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
         error: None,
     })
@@ -300,10 +345,10 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
 
     insta::assert_snapshot!(format!("visible:\n{visible}\n\naudit:\n{audit}"), @r"
     visible:
-    • User adopted Noether [default] (ref 2) (presentation)
+    • User adopted Noether (ref 2) (presentation)
 
     audit:
-    • User adopted Noether [default] (ref 2) (presentation)
+    • User adopted Noether (ref 2) (presentation)
     Target: 019ff050-d466-73b0-b133-72ecc7c67269
     Selector: 019ff050-d466-73b0-b133-72ecc7c67269
     Ownership: unowned → 019ff050-d466-73b0-b133-72ecc7c67270

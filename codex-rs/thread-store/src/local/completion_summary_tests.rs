@@ -32,6 +32,8 @@ async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
             id: "owned-wait".to_string(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
+            target_messages: None,
+            queue_input: None,
             deadline_at_ms: None,
             observe_commentary: None,
             wake_on_completion: None,

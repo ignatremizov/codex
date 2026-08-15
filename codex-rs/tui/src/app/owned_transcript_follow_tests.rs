@@ -26,6 +26,7 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
             app.chat_widget.handle_server_notification(
                 codex_app_server_protocol::ServerNotification::TurnStarted(
                     codex_app_server_protocol::TurnStartedNotification {
+                        agent_queue: None,
                         thread_id: ThreadId::new().to_string(),
                         turn: codex_app_server_protocol::Turn {
                             id: "turn".into(),

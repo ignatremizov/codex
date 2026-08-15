@@ -76,6 +76,7 @@ async fn configured_ctrl_space_submit_wins_over_transcript_selection() -> Result
         if running {
             app.chat_widget.handle_server_notification(
                 ServerNotification::TurnStarted(TurnStartedNotification {
+                    agent_queue: None,
                     thread_id: thread_id.to_string(),
                     turn: Turn {
                         id: "turn".into(),
@@ -197,6 +198,7 @@ fn complete_plan_turn(app: &mut App) {
     };
     for notification in [
         ServerNotification::TurnStarted(TurnStartedNotification {
+            agent_queue: None,
             thread_id: thread_id.clone(),
             turn: turn.clone(),
         }),

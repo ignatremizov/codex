@@ -73,20 +73,53 @@ fn latest_persisted_resume_settings(history: &[RolloutItem]) -> Option<Persisted
         .enumerate()
         .rev()
         .find_map(|(index, item)| match item {
-            RolloutItem::TurnContext(turn_context) => Some(PersistedResumeSettings {
-                approval_policy: turn_context.approval_policy,
-                approvals_reviewer: turn_context.approvals_reviewer.or_else(|| {
-                    history[..index].iter().rev().find_map(|item| match item {
-                        RolloutItem::TurnContext(turn_context) => turn_context.approvals_reviewer,
-                        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
-                            Some(event.thread_settings.approvals_reviewer)
-                        }
-                        _ => None,
-                    })
-                }),
-                active_permission_profile: turn_context.active_permission_profile.clone(),
-                unnamed_permission_profile: None,
-            }),
+            RolloutItem::TurnContext(turn_context) => {
+                let updated_settings = turn_context.turn_id.as_ref().and_then(|turn_id| {
+                    let turn_start = history[..index].iter().rposition(|item| {
+                        matches!(
+                            item,
+                            RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                                if &event.turn_id == turn_id
+                        )
+                    })?;
+                    history[turn_start + 1..index]
+                        .iter()
+                        .rev()
+                        .find_map(|item| match item {
+                            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                                Some(&event.thread_settings)
+                            }
+                            _ => None,
+                        })
+                });
+                Some(PersistedResumeSettings {
+                    approval_policy: updated_settings
+                        .map_or(turn_context.approval_policy, |settings| {
+                            settings.approval_policy
+                        }),
+                    approvals_reviewer: updated_settings.map_or_else(
+                        || {
+                            turn_context.approvals_reviewer.or_else(|| {
+                                history[..index].iter().rev().find_map(|item| match item {
+                                    RolloutItem::TurnContext(turn_context) => {
+                                        turn_context.approvals_reviewer
+                                    }
+                                    RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+                                        event,
+                                    )) => Some(event.thread_settings.approvals_reviewer),
+                                    _ => None,
+                                })
+                            })
+                        },
+                        |settings| Some(settings.approvals_reviewer),
+                    ),
+                    unnamed_permission_profile: None,
+                    active_permission_profile: updated_settings.map_or_else(
+                        || turn_context.active_permission_profile.clone(),
+                        |settings| settings.active_permission_profile.clone(),
+                    ),
+                })
+            }
             RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
                 // History without an identifiable owner can supply a profile ID, but
                 // its raw filesystem grants may belong to another thread or executor.

@@ -60,8 +60,10 @@ impl SessionTask for PendingTask {
     }
 }
 
+#[test_case::test_case(false; "human_input")]
+#[test_case::test_case(true; "attributed_agent_input")]
 #[tokio::test]
-async fn task_finish_rejects_uploaded_audio_without_losing_other_pending_input() {
+async fn task_finish_rejects_uploaded_audio_without_losing_other_pending_input(agent_input: bool) {
     let (session, turn_context, receiver) = make_session_and_context_with_rx().await;
     session
         .spawn_task(Arc::clone(&turn_context), Vec::new(), PendingTask)
@@ -77,26 +79,35 @@ async fn task_finish_rejects_uploaded_audio_without_losing_other_pending_input()
                 .turn_state,
         )
     };
+    let content = vec![
+        UserInput::Text {
+            text: "preserve pending text".to_string(),
+            text_elements: Vec::new(),
+        },
+        UserInput::Audio {
+            audio: AudioReference::File {
+                file_id: "file_disabled_at_finish".to_string(),
+            },
+        },
+    ];
+    let input = if agent_input {
+        TurnInput::AgentInput {
+            content,
+            presentation: codex_protocol::protocol::AgentInputPresentation::Attributed(
+                "preserve pending text".to_string(),
+            ),
+            metadata: Default::default(),
+        }
+    } else {
+        TurnInput::UserInput {
+            content,
+            client_id: None,
+            metadata: Default::default(),
+        }
+    };
     session
         .input_queue
-        .extend_pending_input_for_turn_state(
-            turn_state.as_ref(),
-            vec![TurnInput::UserInput {
-                content: vec![
-                    UserInput::Text {
-                        text: "preserve pending text".to_string(),
-                        text_elements: Vec::new(),
-                    },
-                    UserInput::Audio {
-                        audio: AudioReference::File {
-                            file_id: "file_disabled_at_finish".to_string(),
-                        },
-                    },
-                ],
-                client_id: None,
-                metadata: Default::default(),
-            }],
-        )
+        .extend_pending_input_for_turn_state(turn_state.as_ref(), vec![input])
         .await;
 
     session

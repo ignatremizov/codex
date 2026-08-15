@@ -1084,15 +1084,20 @@ async fn run_hooks_and_record_accepted_inputs(
         };
     }
     let mut blocked_input = false;
+    let mut persistence_failed = false;
     let mut accepted_user_input = false;
     let mut accepted = Vec::new();
     for input_item in input {
         let filtered_input;
         let input_item = match input_item {
-            TurnInput::UserInput { content, .. } if content.iter().any(is_uploaded_audio_file) => {
+            TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+                if content.iter().any(is_uploaded_audio_file) =>
+            {
                 let mut filtered = input_item.clone();
-                let TurnInput::UserInput { content, .. } = &mut filtered else {
-                    unreachable!("cloned user input must remain user input");
+                let (TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }) =
+                    &mut filtered
+                else {
+                    unreachable!("cloned prompt input must remain prompt input");
                 };
                 content.retain(|item| !is_uploaded_audio_file(item));
                 if content.is_empty() {
@@ -1112,7 +1117,11 @@ async fn run_hooks_and_record_accepted_inputs(
                 // Prompt telemetry can contain the full text, so emit it only after hooks accept it.
                 turn_context.session_telemetry.user_prompt(content);
             }
-            if matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()) {
+            if matches!(
+                input_item,
+                TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+                    if !content.is_empty()
+            ) {
                 accepted_user_input = true;
             }
             // Tool outputs retain their durability barrier, including in mixed input batches.
@@ -1123,7 +1132,7 @@ async fn run_hooks_and_record_accepted_inputs(
             } else {
                 persist_context
             };
-            record_pending_input(
+            if let Err(error) = record_pending_input(
                 sess,
                 turn_context,
                 model_info,
@@ -1131,18 +1140,43 @@ async fn run_hooks_and_record_accepted_inputs(
                 hook_outcome.additional_contexts,
                 input_persist_context,
             )
-            .await;
+            .await
+            {
+                let warning =
+                    format!("admitted input persistence failed: {error}; do not resubmit");
+                sess.settle_queued_input_persistence(
+                    &turn_context.sub_id,
+                    Err(codex_protocol::error::CodexErr::Fatal(warning)),
+                );
+                persistence_failed = true;
+                break;
+            }
             accepted.push(input_item.clone());
         }
+    }
+    if blocked_input && !accepted_user_input {
+        sess.settle_queued_input_persistence(
+            &turn_context.sub_id,
+            Err(codex_protocol::error::CodexErr::InvalidRequest(
+                "admitted input was blocked by a hook; do not resubmit".to_string(),
+            )),
+        );
     }
     if rejected_uploaded_audio {
         return Err(uploaded_audio_disabled_error());
     }
-    Ok((blocked_input && !accepted_user_input, accepted))
+    Ok((
+        persistence_failed || (blocked_input && !accepted_user_input),
+        accepted,
+    ))
 }
 
 fn turn_input_has_uploaded_audio_file(input: &TurnInput) -> bool {
-    matches!(input, TurnInput::UserInput { content, .. } if content.iter().any(is_uploaded_audio_file))
+    matches!(
+        input,
+        TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+            if content.iter().any(is_uploaded_audio_file)
+    )
 }
 
 fn uploaded_audio_disabled_error() -> CodexErr {
@@ -1164,7 +1198,9 @@ fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
     input
         .iter()
         .filter_map(|item| match item {
-            TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+            TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. } => {
+                Some(content.as_slice())
+            }
             TurnInput::ResponseItem(_)
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::InterAgentCommunication(_) => None,
@@ -1543,7 +1579,8 @@ async fn track_turn_resolved_config_analytics(
             num_input_images: input
                 .iter()
                 .filter_map(|item| match item {
-                    TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+                    TurnInput::UserInput { content, .. }
+                    | TurnInput::AgentInput { content, .. } => Some(content.as_slice()),
                     TurnInput::ResponseItem(_)
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::InterAgentCommunication(_) => None,

@@ -71,7 +71,7 @@ pub(crate) struct AgentNavigationState {
     pub(super) pending_approvals: HashSet<ThreadId>,
     /// Thread IDs in the currently rendered picker, so a refresh can restore its cursor by ID.
     pub(super) picker_row_ids: Vec<ThreadId>,
-    /// Live response observation keyed by `(observer, target)`.
+    /// Live response observation keyed by observer, target, and exact/next-turn binding.
     response_observations: AgentResponseObservationState,
     /// Source threads holding response handling for the target's next user-authored turn.
     pending_reserved_prompt_sources: HashMap<ThreadId, ThreadId>,
@@ -527,6 +527,16 @@ impl AgentNavigationState {
 
     pub(crate) fn clear_response_observation(&mut self, observer: ThreadId, target: ThreadId) {
         self.response_observations.remove(observer, target);
+    }
+
+    pub(crate) fn clear_response_observation_binding(
+        &mut self,
+        observer: ThreadId,
+        target: ThreadId,
+        binding: AgentResponseObservationBinding,
+    ) {
+        self.response_observations
+            .remove_binding(observer, target, binding);
     }
 
     pub(crate) fn reserve_prompt_response(&mut self, source: ThreadId, target: ThreadId) {

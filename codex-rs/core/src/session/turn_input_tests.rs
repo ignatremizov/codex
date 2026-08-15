@@ -1176,29 +1176,68 @@ async fn scored_prompt_keeps_its_submission_item_id() {
         .await
         .unwrap();
     }
+    // A host UUID applies only to human input, even when an agent message follows the same route.
+    let mut agent_request = TurnInputRequest::new(SubmittedTurnInput::AgentInput {
+        content: vec![UserInput::Text {
+            text: "attributed input".to_string(),
+            text_elements: Vec::new(),
+        }],
+        presentation: codex_protocol::protocol::AgentInputPresentation::Attributed(
+            "attributed input".to_string(),
+        ),
+    });
+    agent_request.user_item_uuid = Some(Uuid::new_v4());
+    handle(
+        &session,
+        agent_request,
+        TurnInputMode::Steer {
+            expected_turn_id: turn.sub_id.clone(),
+        },
+        Uuid::now_v7().to_string(),
+    )
+    .await
+    .unwrap();
     let (pending, _) = session
         .input_queue
         .get_pending_input(&session.active_turn)
         .await;
     for input in pending {
-        let TurnInput::UserInput {
-            content,
-            client_id,
-            metadata,
-        } = input
-        else {
-            panic!("expected admitted user input");
+        let (content, prompt_kind) = match input {
+            TurnInput::UserInput {
+                content,
+                client_id,
+                metadata,
+            } => (
+                content,
+                crate::session::PromptInputKind::User {
+                    client_id,
+                    metadata,
+                },
+            ),
+            TurnInput::AgentInput { content, presentation, metadata } => {
+                assert!(metadata.response_item_uuid.is_none());
+                assert!(metadata.acceptance_order.is_some());
+                (
+                    content,
+                    crate::session::PromptInputKind::Agent {
+                        presentation,
+                        metadata,
+                    },
+                )
+            }
+            _ => panic!("expected admitted prompt input"),
         };
         session
-            .record_user_prompt_and_emit_turn_item(
+            .record_prompt_and_emit_turn_item(
                 &turn,
                 turn.model_info(),
                 &content,
-                client_id,
-                metadata,
                 codex_thread_store::PersistContext::Standard,
+                prompt_kind,
+                Vec::new(),
             )
-            .await;
+            .await
+            .unwrap();
     }
     let history = session.clone_history().await;
     let ids: Vec<_> = history
@@ -1213,10 +1252,11 @@ async fn scored_prompt_keeps_its_submission_item_id() {
             }
         })
         .collect();
-    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.len(), 4);
     assert_eq!(ids[0], format!("msg_input_{first}"));
     assert!(!ids[1].starts_with("msg_input_"));
     assert_eq!(ids[2], format!("msg_input_{second}"));
+    assert!(!ids[3].starts_with("msg_input_"));
     let ui_ids = std::iter::from_fn(|| events.try_recv().ok())
         .filter_map(|event| match event.msg {
             codex_protocol::protocol::EventMsg::ItemCompleted(event) => {

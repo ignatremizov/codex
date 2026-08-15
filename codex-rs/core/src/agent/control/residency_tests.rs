@@ -20,6 +20,101 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use test_case::test_case;
+
+#[derive(Clone, Copy)]
+enum QueuePin {
+    SourceAdmission,
+    PendingSource,
+    PendingTarget,
+}
+
+#[test_case(QueuePin::SourceAdmission; "source_admission")]
+#[test_case(QueuePin::PendingSource; "pending_source")]
+#[test_case(QueuePin::PendingTarget; "pending_target")]
+#[tokio::test]
+async fn exact_eviction_waits_for_queue_admission_and_pending_work(pin: QueuePin) {
+    use super::ThreadEvictionOutcome;
+    use crate::agent::control::AgentControlInput;
+    use crate::agent::response_observation::ResponseObservationPolicy;
+    use crate::agent::turn_queue::QueuedAgentTurn;
+
+    let mut config = test_config().await;
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("enable v2");
+    let home = tempfile::tempdir().expect("temporary home");
+    config.codex_home = home.path().to_path_buf().try_into().expect("absolute home");
+    config.cwd = config.codex_home.clone();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root");
+    let control = root
+        .thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.thread.session.session_id());
+    let state = control.runtime.upgrade().expect("live manager");
+    let membership = control.runtime.admit_start().expect("admit eviction");
+    let child = spawn_v2_subagent(&control, &state, config, root.thread_id, "queue-pin").await;
+    mark_thread_completed(&child.thread).await;
+    let source_guard = match pin {
+        QueuePin::SourceAdmission => Some(
+            state
+                .agent_turn_queue
+                .acquire_source_admission(child.thread_id)
+                .await,
+        ),
+        QueuePin::PendingSource | QueuePin::PendingTarget => {
+            let (source, target_thread_id) = match pin {
+                QueuePin::PendingSource => (child.thread.session.presentation_id(), root.thread_id),
+                QueuePin::PendingTarget => (root.thread.session.presentation_id(), child.thread_id),
+                QueuePin::SourceAdmission => unreachable!("handled above"),
+            };
+            state.agent_turn_queue.enqueue(QueuedAgentTurn {
+                id: uuid::Uuid::now_v7(),
+                control: control.clone(),
+                source,
+                target_thread_id,
+                input: AgentControlInput::User(Vec::new()),
+                start_options: Default::default(),
+                response_observation: ResponseObservationPolicy::default(),
+                task_preview: None,
+                authored_selector: None,
+                target_message_wake: None,
+            });
+            None
+        }
+    };
+    assert_eq!(
+        state
+            .try_evict_v2_thread(Arc::clone(&child.thread), &membership)
+            .await
+            .expect("try pinned eviction"),
+        ThreadEvictionOutcome::Busy
+    );
+    assert!(manager.get_thread(child.thread_id).await.is_ok());
+    drop(source_guard);
+    state.agent_turn_queue.cancel_for_threads([child.thread_id]);
+    assert_eq!(
+        state
+            .try_evict_v2_thread(child.thread, &membership)
+            .await
+            .expect("evict released runtime"),
+        ThreadEvictionOutcome::Evicted
+    );
+    drop(membership);
+    root.thread.shutdown_and_wait().await.expect("stop root");
+}
 
 #[tokio::test]
 async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {

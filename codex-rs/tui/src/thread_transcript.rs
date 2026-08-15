@@ -306,6 +306,7 @@ fn item_to_cells(
             cells.push(Arc::new(cell));
         }
         ThreadItemPayload::AgentMessage {
+            id,
             text,
             phase,
             inter_agent_source: Some(_),
@@ -313,6 +314,7 @@ fn item_to_cells(
         } => {
             if let Some(cell) =
                 crate::multi_agents::background_commentary_history_cell_from_agent_message(
+                    &id,
                     &text,
                     phase.as_ref(),
                     agent_preview_line_limits.response,
@@ -347,6 +349,7 @@ fn item_to_cells(
             )
             .or_else(|| {
                 crate::multi_agents::background_commentary_history_cell_from_agent_message(
+                    &id,
                     &text,
                     phase.as_ref(),
                     agent_preview_line_limits.response,

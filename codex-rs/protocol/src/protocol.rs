@@ -66,6 +66,7 @@ use crate::turn_input::TurnInputMode;
 use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
 use crate::turn_input::TurnStartOptions;
+use crate::user_input::UserInput;
 use codex_extension_items::image_generation::GeneratedImageRef;
 use codex_extension_items::image_generation::ImageGenerationFailure;
 use codex_extension_items::image_generation::ImageGenerationInputImage;
@@ -122,8 +123,10 @@ pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
 pub use crate::sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use crate::sub_agent_completion::SubAgentCompletionStatus;
+pub use crate::sub_agent_completion::is_attributed_agent_message_response_item_id;
 pub use crate::sub_agent_completion::is_sub_agent_completion_context_response_item_id;
 pub use crate::sub_agent_completion::is_user_agent_task_context_response_item_id;
+pub use crate::sub_agent_completion::new_attributed_agent_message_response_item_id;
 pub use crate::sub_agent_completion::new_sub_agent_completion_context_response_item_id;
 pub use crate::sub_agent_completion::new_user_agent_task_context_response_item_id;
 pub use crate::sub_agent_completion::ordinary_agent_message_response_item_id;
@@ -132,6 +135,7 @@ pub use crate::sub_agent_completion::sub_agent_completion_item_with_visibility;
 pub use crate::sub_agent_completion::sub_agent_completion_model_visibility_from_response_item_id;
 pub use crate::sub_agent_completion::sub_agent_completion_status_from_response_item_id;
 pub use crate::sub_agent_completion::sub_agent_completion_transcript;
+pub use crate::sub_agent_completion::sub_agent_completion_transcript_from_agent_message_id;
 pub use crate::sub_agent_completion::sub_agent_completion_transcript_parts;
 
 /// Open/close tags for special context blocks. Used across crates to avoid duplicated hardcoded
@@ -701,6 +705,13 @@ impl AdditionalContextEntry {
     }
 }
 
+/// Trusted presentation metadata for Core-authored agent input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AgentInputPresentation {
+    Delegated(Vec<UserInput>),
+    Attributed(String),
+}
+
 /// Submission operation
 // Keep diagnostic fields explicit so new payload fields do not enter logs by default.
 #[derive(derive_more::Debug)]
@@ -1001,6 +1012,9 @@ pub struct InterAgentCommunication {
     #[ts(optional)]
     pub internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
     pub trigger_turn: bool,
+    /// Keep the communication in the target's next-turn queue without triggering an idle turn.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_to_next_turn: bool,
 }
 
 impl InterAgentCommunication {
@@ -1020,6 +1034,7 @@ impl InterAgentCommunication {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            defer_to_next_turn: false,
         }
     }
 
@@ -1039,6 +1054,7 @@ impl InterAgentCommunication {
             encrypted_content: Some(encrypted_content),
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            defer_to_next_turn: false,
         }
     }
 
@@ -2494,6 +2510,10 @@ pub struct TurnStartedEvent {
     pub model_context_window: Option<i64>,
     #[serde(default)]
     pub collaboration_mode_kind: ModeKind,
+    /// Present when this turn was admitted from the shared agent queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_queue: Option<AgentQueueTurnMetadata>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -3655,6 +3675,26 @@ pub enum AgentResponseFinalDelivery {
     #[default]
     Passive,
     Wake,
+}
+
+/// Response handling committed when a queued agent turn is admitted.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQueueResponseHandling {
+    pub commentary: bool,
+    pub final_delivery: AgentResponseFinalDelivery,
+    pub target_messages: bool,
+}
+
+/// Queue provenance attached to the exact turn admitted from an agent queue.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQueueTurnMetadata {
+    pub queue_id: String,
+    pub source_thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub response_handling: Option<AgentQueueResponseHandling>,
 }
 
 /// Durable snapshot of commentary and final-response observation state.
@@ -5200,6 +5240,7 @@ mod tests {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn: true,
+            defer_to_next_turn: false,
         };
         communication.set_turn_id_if_missing("turn-1");
         let mut serialized_communication = communication.clone();

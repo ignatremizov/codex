@@ -531,7 +531,12 @@ async fn cancelled_guardian_network_review_fails_closed_without_rewriting_turn_s
     while !saw_turn_aborted || !saw_guardian_aborted {
         let event = tokio::time::timeout(Duration::from_secs(5), test.codex.next_event())
             .await
-            .context("timed out waiting for parent and Guardian cancellation")?
+            .with_context(|| {
+                format!(
+                    "timed out waiting for parent and Guardian cancellation \
+                     (turn_aborted={saw_turn_aborted}, guardian_aborted={saw_guardian_aborted})"
+                )
+            })?
             .context("event stream ended while waiting for cancellation")?;
         saw_turn_aborted |= matches!(&event.msg, EventMsg::TurnAborted(_));
         saw_guardian_aborted |= matches!(
@@ -1224,6 +1229,8 @@ async fn user_network_approval_once_session_and_denial_semantics(
         environment.environment_id
     )));
     assert!(approval.approval_id.is_some());
+    let first_approval_id = approval.approval_id.clone();
+    let first_approval_turn_id = approval.turn_id.clone();
     let first_approval_call_id = approval.call_id.clone();
     assert!(!approval.turn_id.is_empty());
     assert_eq!(approval.cwd, environment.cwd.clone().into());
@@ -1252,6 +1259,8 @@ async fn user_network_approval_once_session_and_denial_semantics(
                         Some(&environment.environment_id)
                     );
                     assert!(approval.approval_id.is_some());
+                    assert_ne!(approval.approval_id, first_approval_id);
+                    assert_eq!(approval.turn_id, first_approval_turn_id);
                     assert_ne!(approval.call_id, first_approval_call_id);
                     test.codex
                         .submit(Op::ExecApproval {
@@ -1338,7 +1347,7 @@ async fn user_network_approval_once_session_and_denial_semantics(
         ]),
     )
     .await;
-    submit_managed_network_turn(
+    let socks_turn_id = submit_managed_network_turn(
         &test,
         "a different protocol must prompt and the user abort must stay a user outcome",
         vec![environment.clone()],
@@ -1346,13 +1355,15 @@ async fn user_network_approval_once_session_and_denial_semantics(
         AskForApproval::OnRequest,
     )
     .await?;
-    let approval = expect_network_approval_target(
+    let approval = expect_network_approval_target_for_turn(
         &test,
         &environment.environment_id,
         &socks_target,
         NetworkApprovalProtocol::Socks5Tcp,
+        &socks_turn_id,
     )
-    .await?;
+    .await
+    .context("SOCKS network approval")?;
     test.codex
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
@@ -2700,7 +2711,8 @@ async fn owner_network_policy_follows_the_selected_remote_command() -> Result<()
     let server = start_mock_server().await;
     let mut scenarios = vec![(
         "ROOTED",
-        managed_network_unified_exec_test(&server).await?,
+        managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::RemoteAndLocal)
+            .await?,
         Some(true),
     )];
     for (scenario, configured_controller, allow_local_binding) in [
@@ -2938,8 +2950,7 @@ PYTHON"#;
             } else {
                 remote_network_proxy_request_command(&marker)
             };
-            let mut args = network_exec_args(&command);
-            args.as_object_mut().unwrap().remove("shell");
+            let mut args = network_exec_args_for_environment(&command, REMOTE_ENVIRONMENT_ID);
             args["environment_id"] = json!(REMOTE_ENVIRONMENT_ID);
             if escalated {
                 args["sandbox_permissions"] = json!("require_escalated");

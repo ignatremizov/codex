@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::*;
 use crate::bottom_pane::LocalImageAttachment;
 use codex_app_server_protocol::SkillMetadata;
-use codex_utils_absolute_path::test_support::PathExt;
+use codex_utils_absolute_path::test_support::PathBufExt;
 use pretty_assertions::assert_eq;
 
 impl App {
@@ -20,13 +20,15 @@ impl App {
         };
         self.submit_agent_prompt_with_control(
             app_server,
-            source_thread_id,
-            thread_id,
-            thread_id.to_string(),
-            thread_id.to_string(),
-            user_message,
-            /*response_handling*/ None,
-            AgentPromptAdmission::Direct,
+            SubmitAgentPromptArgs {
+                source_thread_id,
+                thread_id,
+                target: thread_id.to_string(),
+                authored_selector: thread_id.to_string(),
+                user_message,
+                response_handling: None,
+                admission: AgentPromptAdmission::Direct,
+            },
         )
         .await;
     }

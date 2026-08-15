@@ -13,6 +13,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::TurnContextItem;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout::RolloutItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
@@ -84,6 +85,19 @@ fn turn_context_item(
         effort: None,
         summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
     })
+}
+
+fn turn_started_item(turn_id: &str) -> RolloutItem {
+    RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+        turn_id: turn_id.to_string(),
+        trace_id: None,
+        started_at: None,
+        model_context_window: None,
+        collaboration_mode_kind: ModeKind::Default,
+        agent_queue: None,
+        root_turn_id: None,
+        turn_attribution: None,
+    }))
 }
 
 #[test]
@@ -240,4 +254,60 @@ fn an_unattributed_snapshot_does_not_restore_unnamed_permissions() {
     let settings =
         PersistedResumeSettings::from_history(&history, ThreadId::new()).expect("legacy settings");
     assert_eq!(settings.unnamed_permission_profile, None);
+}
+
+#[test]
+fn settings_applied_during_turn_win_over_stale_turn_context() {
+    let expected = PersistedResumeSettings {
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+        active_permission_profile: Some(ActivePermissionProfile::new("dev")),
+        unnamed_permission_profile: None,
+    };
+    let history = vec![
+        turn_started_item("turn-1"),
+        settings_item(
+            /*thread_id*/ None,
+            AskForApproval::Never,
+            ApprovalsReviewer::AutoReview,
+            Some(ActivePermissionProfile::new("dev")),
+        ),
+        turn_context_item(
+            "turn-1",
+            AskForApproval::OnRequest,
+            Some(ApprovalsReviewer::User),
+            Some(ActivePermissionProfile::read_only()),
+        ),
+    ];
+
+    assert_eq!(latest_persisted_resume_settings(&history), Some(expected));
+}
+
+#[test]
+fn unattributed_in_turn_settings_do_not_restore_unnamed_permissions() {
+    let history = vec![
+        turn_started_item("turn-1"),
+        settings_item(
+            /*thread_id*/ None,
+            AskForApproval::Never,
+            ApprovalsReviewer::AutoReview,
+            /*active_permission_profile*/ None,
+        ),
+        turn_context_item(
+            "turn-1",
+            AskForApproval::OnRequest,
+            Some(ApprovalsReviewer::User),
+            Some(ActivePermissionProfile::read_only()),
+        ),
+    ];
+
+    assert_eq!(
+        PersistedResumeSettings::from_history(&history, ThreadId::new()),
+        Some(PersistedResumeSettings {
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+            active_permission_profile: None,
+            unnamed_permission_profile: None,
+        })
+    );
 }

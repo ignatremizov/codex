@@ -38,6 +38,9 @@ pub(crate) fn new_user_agent_control(
         fork_mode,
         observe_commentary,
         final_response,
+        target_messages,
+        queue_input,
+        input_outcome,
         status,
         error,
         ..
@@ -53,17 +56,30 @@ pub(crate) fn new_user_agent_control(
         nickname.as_deref(),
         role.as_deref(),
     );
-    let mut title = vec![
-        "• ".dim(),
-        control_action_title(
-            action,
-            status,
-            prompt_preview.is_some(),
-            new_owner_session_id.is_some(),
-            resumed_target,
-        )
-        .bold(),
-    ];
+    let action_title = match input_outcome {
+        Some(codex_app_server_protocol::AgentInputOutcome::Queued) => "User queued input for",
+        Some(codex_app_server_protocol::AgentInputOutcome::Unknown) => {
+            "User agent input outcome unknown for"
+        }
+        None if status == UserAgentControlStatus::Succeeded
+            && matches!(
+                action,
+                UserAgentControlAction::Prompt | UserAgentControlAction::QueuedPrompt
+            ) =>
+        {
+            "User submitted input to"
+        }
+        Some(codex_app_server_protocol::AgentInputOutcome::Admitted) | None => {
+            control_action_title(
+                action,
+                status,
+                prompt_preview.is_some(),
+                new_owner_session_id.is_some(),
+                resumed_target,
+            )
+        }
+    };
+    let mut title = vec!["• ".dim(), action_title.bold()];
     if let Some(target) = target {
         title.push(" ".into());
         title.push(target.cyan());
@@ -74,13 +90,18 @@ pub(crate) fn new_user_agent_control(
     if let Some(fork_mode) = fork_mode {
         title.push(format!(" ({})", fork_mode_label(fork_mode)).dim());
     }
-    if let Some(response_observation) =
-        response_observation_label(observe_commentary, final_response)
-    {
+    if let Some(response_observation) = response_observation_label(
+        observe_commentary,
+        final_response,
+        target_messages,
+        queue_input,
+    ) {
         title.push(" ".into());
         title.push(
             if observe_commentary == Some(true)
                 || matches!(final_response, Some(AgentResponseFinalDelivery::Wake))
+                || target_messages == Some(true)
+                || queue_input == Some(true)
             {
                 response_observation.magenta()
             } else {
@@ -95,7 +116,9 @@ pub(crate) fn new_user_agent_control(
     {
         details.push(prompt_preview.into());
     }
-    if status == UserAgentControlStatus::Unknown {
+    if status == UserAgentControlStatus::Unknown
+        || input_outcome == Some(codex_app_server_protocol::AgentInputOutcome::Unknown)
+    {
         details.push(
             "Outcome unknown: reload and reconcile before retry."
                 .yellow()
@@ -108,7 +131,7 @@ pub(crate) fn new_user_agent_control(
         details.push(if status == UserAgentControlStatus::Failed {
             vec!["Failed: ".red(), error.red()].into()
         } else {
-            vec!["Warning: ".yellow(), error.yellow()].into()
+            vec!["Warning: ".magenta(), error.magenta()].into()
         });
     }
 
@@ -255,6 +278,8 @@ fn fork_mode_label(fork_mode: UserAgentForkMode) -> String {
 fn response_observation_label(
     observe_commentary: Option<bool>,
     final_response: Option<AgentResponseFinalDelivery>,
+    target_messages: Option<bool>,
+    queue_input: Option<bool>,
 ) -> Option<String> {
     let mut labels = Vec::new();
     if observe_commentary == Some(true) {
@@ -266,6 +291,12 @@ fn response_observation_label(
         Some(AgentResponseFinalDelivery::Wake) => labels.push("wake"),
         Some(AgentResponseFinalDelivery::PresentationOnly) => labels.push("presentation"),
         None => {}
+    }
+    if target_messages == Some(true) {
+        labels.push("allow replies");
+    }
+    if queue_input == Some(true) {
+        labels.push("queued turn + reply");
     }
     (!labels.is_empty()).then(|| format!("({})", labels.join(" · ")))
 }

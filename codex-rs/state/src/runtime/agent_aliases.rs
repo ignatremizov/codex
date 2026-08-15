@@ -1,6 +1,5 @@
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
-use sqlx::Acquire;
 use strum::AsRefStr;
 use strum::EnumString;
 
