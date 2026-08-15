@@ -1079,6 +1079,7 @@ async fn concurrent_resume_reports_that_it_adopted_the_running_runtime() {
         .state
         .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
             prompt_cache_key: None,
+            ownership_override: None,
             registration: ThreadRegistration::Immediate,
             config,
             initial_history: InitialHistory::Resumed(ResumedHistory {

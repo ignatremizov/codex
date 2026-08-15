@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/token_budget.rs
+assertion_line: 1755
 expression: snapshot
 ---
 Scenario: New context window tool installs fresh full context before the next follow-up request.
@@ -14,7 +15,7 @@ Scenario: New context window tool installs fresh full context before the next fo
 02:message/developer[3]:
     [01] <context_window>
     [02]
-        Agent name: /root
+        Agent name: Main
         First context window id: <UUID 1>
         Current context window id: <UUID 2>
         Previous context window id: <UUID 1>

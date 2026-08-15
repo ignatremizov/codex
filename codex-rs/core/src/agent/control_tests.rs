@@ -121,10 +121,8 @@ use core_test_support::responses::strip_response_item_ids;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use std::future::Future;
-use std::future::poll_fn;
 use std::sync::RwLock;
 use std::task::Context;
-use std::task::Poll;
 use std::task::Waker;
 use tempfile::TempDir;
 use tokio::time::Duration;
@@ -269,6 +267,110 @@ fn spawn_agent_call(call_id: &str) -> ResponseItem {
     }
 }
 
+#[test_case::test_case(false; "stopped runtime cleanup")]
+#[test_case::test_case(true; "durable unload retains ownership")]
+#[tokio::test]
+async fn stopped_agent_interrupt_requires_owner_and_preserves_unload_fence(sealed: bool) {
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::Collab).expect("V1 control");
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("not V2");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (_, root) = harness.start_thread().await;
+    let (_, foreign) = harness.start_thread().await;
+    let child_id = root
+        .spawn_agent(crate::UserAgentSpawnOptions::default())
+        .await
+        .expect("create idle child")
+        .target_thread_id;
+    let child = harness.manager.get_thread(child_id).await.expect("child");
+    let control = root
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.session.session_id());
+    let foreign_control = foreign
+        .session
+        .services
+        .local_agent_runtime
+        .control(foreign.session.session_id());
+    let alias = control
+        .current_agent_alias(child_id)
+        .await
+        .expect("alias lookup");
+    assert!(alias.is_some());
+    child
+        .shutdown_durably_and_wait()
+        .await
+        .expect("stop actor without removing it");
+    let foreign_error = foreign_control
+        .interrupt_agent(child_id)
+        .await
+        .expect_err("foreign root cannot clean up the stopped runtime");
+    assert!(matches!(
+        foreign_error.details(),
+        CodexErrorDetails::UnsupportedOperation(_)
+    ));
+    assert!(Arc::ptr_eq(
+        &child,
+        &harness
+            .manager
+            .get_thread(child_id)
+            .await
+            .expect("foreign request retains exact runtime")
+    ));
+    if sealed {
+        child.session.submission_admission.seal_for_unload();
+    }
+    let error = control
+        .interrupt_agent(child_id)
+        .await
+        .expect_err("stopped actor cannot accept an interrupt");
+    if sealed {
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::InvalidRequest(_)
+        ));
+        assert!(Arc::ptr_eq(
+            &child,
+            &harness
+                .manager
+                .get_thread(child_id)
+                .await
+                .expect("unload still owns the exact runtime")
+        ));
+        assert_eq!(
+            control
+                .get_agent_metadata(child_id)
+                .expect("unload retains registry identity")
+                .agent_id,
+            Some(child_id)
+        );
+    } else {
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::InternalAgentDied
+        ));
+        assert!(harness.manager.get_thread(child_id).await.is_err());
+        assert!(control.get_agent_metadata(child_id).is_none());
+    }
+    assert_eq!(
+        control
+            .current_agent_alias(child_id)
+            .await
+            .expect("durable alias remains"),
+        alias
+    );
+    assert!(child.io.durable_shutdown_succeeded());
+    root.shutdown_durably_and_wait().await.expect("stop owner");
+    foreign
+        .shutdown_durably_and_wait()
+        .await
+        .expect("stop foreign root");
+}
+
 struct AgentControlHarness {
     _home: TempDir,
     config: Config,
@@ -336,18 +438,16 @@ impl AgentControlHarness {
             .expect("thread manager should be live");
         let parent_thread_id = session_source.parent_thread_id();
         let new_thread = state
-            .spawn_new_thread_with_source(
-                config,
+            .spawn_child_thread(
+                crate::thread_manager::ThreadRegistration::Immediate,
+                StartThreadOptions {
+                    session_source: Some(session_source),
+                    thread_source: Some(ThreadSource::Subagent),
+                    ..StartThreadOptions::new(config)
+                },
                 self.control.clone(),
-                session_source,
-                /*history_mode*/ None,
                 parent_thread_id,
-                /*forked_from_thread_id*/ None,
-                /*thread_source*/ Some(ThreadSource::Subagent),
-                /*metrics_service_name*/ None,
-                /*inherited_environments*/ None,
                 /*inherited_exec_policy*/ None,
-                /*environments*/ None,
             )
             .await
             .expect("start thread with source");
@@ -890,12 +990,18 @@ async fn spawn_failure_context_survives_manager_and_fork_errors() {
 #[tokio::test]
 async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
     let harness = AgentControlHarness::new().await;
-    let state = harness.control.runtime.upgrade().expect("live manager");
-    let spawn = harness.control.spawn_agent(
+    let (parent_id, parent) = harness.start_thread().await;
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let state = control.runtime.upgrade().expect("live manager");
+    let spawn = control.spawn_agent(
         harness.config.clone(),
         text_input("hello"),
         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: ThreadId::new(),
+            parent_thread_id: parent_id,
             depth: 1,
             agent_path: None,
             agent_nickname: None,
@@ -913,7 +1019,7 @@ async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
                 .poll(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
         );
-        harness.control.runtime.request_shutdown()
+        control.runtime.request_shutdown()
     };
     let error = spawn
         .await
@@ -939,64 +1045,45 @@ async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
 #[tokio::test]
 async fn cancelled_spawn_after_input_admission_discards_child() {
     let harness = AgentControlHarness::new().await;
-    let state = harness.control.runtime.upgrade().expect("live manager");
-    let parent_id = ThreadId::new();
-    let mut spawn = harness.control.spawn(SpawnRequest {
-        caller: parent_id,
-        config: harness.config.clone(),
-        input: AgentInput::UserInput(text_input("child task")),
-        source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: parent_id,
-            depth: 1,
-            agent_path: None,
-            agent_nickname: None,
-            agent_role: None,
-        }),
-        options: SpawnAgentOptions::default(),
-    });
-    let child = poll_fn(|cx| {
-        assert!(spawn.as_mut().poll(cx).is_pending());
-        let threads = state.threads.try_read().expect("uncontended manager");
-        // On this single-thread runtime the session loop cannot consume the first
-        // input until this poll returns. Leave spawn waiting for its admission reply.
-        match threads.values().find(|thread| !thread.io.tx_sub.is_empty()) {
-            Some(child) => Poll::Ready(Arc::clone(child)),
-            None => Poll::Pending,
-        }
-    })
-    .await;
-    let child_id = child.session.thread_id();
-    // This no-op goes through the same FIFO submission loop. Its receipt proves the
-    // earlier input has been admitted, without polling the spawn future again.
-    child
-        .update_thread_settings(ThreadSettingsOverrides::default())
+    let (parent_id, parent) = harness.start_thread().await;
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let prepared = control
+        .spawn_agent_prepared(
+            harness.config.clone(),
+            super::spawn::SpawnInitialInput::UserInput(text_input("child task")),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions::default(),
+            control.runtime.admit_start().expect("spawn membership"),
+            CancellationToken::new(),
+        )
         .await
-        .expect("input admission completed before the settings barrier");
-    {
-        // Only the final status lookup now needs the manager lock. Cancel there,
-        // after input admission but before the backend can return its receipt.
-        let _threads = state.threads.write().await;
-        assert!(
-            spawn
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-                .is_pending()
-        );
-        drop(spawn);
-    }
-    assert!(
-        harness.control.get_agent_metadata(child_id).is_none(),
-        "cancelled spawn must not leave an accepted child registered"
-    );
+        .expect("prepare a receipt after confirmed input admission");
+    let child_id = prepared.spawned.agent.thread_id;
+    let child = harness.manager.get_thread(child_id).await.expect("child");
+    // Only consuming the receipt commits ownership, including after admitted input.
+    drop(prepared);
     child.wait_until_terminated().await;
-    assert_thread_not_loaded(&harness.manager, child_id).await;
-    harness
-        .control
+    control
         .runtime
         .request_shutdown()
         .wait()
         .await
         .expect("provisional cleanup releases tree membership");
+    assert!(
+        control.get_agent_metadata(child_id).is_none(),
+        "cancelled spawn must not leave an accepted child registered"
+    );
+    assert_thread_not_loaded(&harness.manager, child_id).await;
 }
 
 #[tokio::test]
@@ -1254,30 +1341,16 @@ async fn cancelled_v2_send_finishes_reload_registration() {
     };
     let mut created = harness.manager.subscribe_thread_created();
     let state = control.runtime.upgrade().unwrap();
+    let reload_gate = state.v2_spawn_resume_lock(child_id).lock_owned().await;
     let mut send = control.send(followup_request("cancelled follow-up"));
-    let (reloaded, pin_blocker) = poll_fn(|cx| {
-        assert!(send.as_mut().poll(cx).is_pending());
-        let Ok(threads) = state.threads.try_read() else {
-            return Poll::Pending;
-        };
-        let Some(reloaded) = threads.get(&child_id).cloned() else {
-            return Poll::Pending;
-        };
-        // On this single-thread runtime, intercept publication before the detached
-        // registration task can acquire its residency pin.
-        let pin_blocker = Arc::clone(&reloaded.residency_gate)
-            .try_write_owned()
-            .expect("reload registration has not acquired its pin yet");
-        Poll::Ready((reloaded, pin_blocker))
-    })
-    .await;
+    assert!(futures::poll!(&mut send).is_pending());
     tokio::task::yield_now().await;
     assert!(matches!(
         created.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
     drop(send);
-    drop(pin_blocker);
+    drop(reload_gate);
 
     assert_eq!(
         timeout(Duration::from_secs(5), created.recv())
@@ -1286,6 +1359,7 @@ async fn cancelled_v2_send_finishes_reload_registration() {
             .unwrap(),
         child_id,
     );
+    let reloaded = harness.manager.get_thread(child_id).await.unwrap();
     assert!(
         control
             .runtime
@@ -4063,13 +4137,17 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
     let turn_context = parent_thread.session.new_default_turn().await;
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
     let compacted_notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/older-worker",
-        ThreadId::new(),
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: AgentPath::try_from("/root/older-worker").expect("older worker path"),
+        },
         AgentStatus::Completed(Some("compacted runtime notification".to_string())),
     ));
     let suffix_notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/recent-worker",
-        ThreadId::new(),
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: AgentPath::try_from("/root/recent-worker").expect("recent worker path"),
+        },
         AgentStatus::Completed(Some("suffix runtime notification".to_string())),
     ));
     let quoted_notification =
@@ -5752,7 +5830,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
     assert_eq!(
         history_contains_text(
             history.raw_items(),
-            &format!("\"agent_path\":\"{child_thread_id}\"")
+            &format!("\"agent_id\":\"{child_thread_id}\"")
         ),
         true
     );
@@ -7457,3 +7535,9 @@ mod parent_binding_tests;
 
 #[path = "control_response_observation_tests.rs"]
 mod response_observation_tests;
+
+#[path = "control_user_observation_tests.rs"]
+mod user_observation_tests;
+
+#[path = "control_user_shutdown_tests.rs"]
+mod user_shutdown_tests;

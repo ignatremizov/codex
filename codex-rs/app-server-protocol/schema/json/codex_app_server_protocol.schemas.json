@@ -7184,6 +7184,687 @@
         },
         "type": "object"
       },
+      "AgentAlias": {
+        "description": "Root-scoped user-facing aliases for one canonical agent thread.",
+        "properties": {
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/definitions/v2/AgentAliasState"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "state",
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "AgentAliasState": {
+        "description": "Durable lifecycle state of an alias in one root namespace.",
+        "enum": [
+          "active",
+          "closed",
+          "transferred"
+        ],
+        "type": "string"
+      },
+      "AgentControlAction": {
+        "description": "A user-authored multi-agent control operation.",
+        "oneOf": [
+          {
+            "description": "Spawn a default or configured-role child.",
+            "properties": {
+              "fork_mode": {
+                "$ref": "#/definitions/v2/AgentForkMode"
+              },
+              "input": {
+                "description": "Omitted creates a real idle child without starting its first turn.",
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted uses passive final-response delivery."
+              },
+              "role": {
+                "description": "Omitted selects the default child configuration.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "spawn"
+                ],
+                "title": "SpawnAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "fork_mode",
+              "type"
+            ],
+            "title": "SpawnAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Send genuine user input to a controlled agent, reopening a known closed descendant.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": "array"
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted uses passive final-response delivery."
+              },
+              "target": {
+                "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "prompt"
+                ],
+                "title": "PromptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input",
+              "target",
+              "type"
+            ],
+            "title": "PromptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Admit target input using response handling reserved by spawn or resume.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": "array"
+              },
+              "target": {
+                "description": "Canonical target thread UUID.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "reservedPrompt"
+                ],
+                "title": "ReservedPromptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input",
+              "target",
+              "type"
+            ],
+            "title": "ReservedPromptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Queue input as a distinct future target turn, starting it immediately when the target is idle.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": "array"
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted uses passive final-response delivery."
+              },
+              "target": {
+                "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "queuedPrompt"
+                ],
+                "title": "QueuedPromptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input",
+              "target",
+              "type"
+            ],
+            "title": "QueuedPromptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.",
+            "properties": {
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted reserves passive delivery for the next admitted target turn."
+              },
+              "target": {
+                "description": "Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "resume"
+                ],
+                "title": "ResumeAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
+              "type"
+            ],
+            "title": "ResumeAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Interrupt the active target turn and optionally submit a follow-up after cancellation.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Valid only when `input` is present."
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "interrupt"
+                ],
+                "title": "InterruptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
+              "type"
+            ],
+            "title": "InterruptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Close a controlled agent runtime.",
+            "properties": {
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Controls replay of an undelivered completion after close."
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "close"
+                ],
+                "title": "CloseAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
+              "type"
+            ],
+            "title": "CloseAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Authoritatively replace final-response handling for one target turn.",
+            "properties": {
+              "response_handling": {
+                "$ref": "#/definitions/v2/AgentObservationMode"
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "observe"
+                ],
+                "title": "ObserveAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "response_handling",
+              "target",
+              "type"
+            ],
+            "title": "ObserveAgentControlAction",
+            "type": "object"
+          }
+        ]
+      },
+      "AgentControlOutcome": {
+        "description": "Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.",
+        "oneOf": [
+          {
+            "properties": {
+              "input_outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentInputOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "nickname": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after child input admission or uncertain routing.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "spawned"
+                ],
+                "title": "SpawnedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "SpawnedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "input_outcome": {
+                "$ref": "#/definitions/v2/AgentInputOutcome"
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after target input admission or uncertain routing.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submission_id": {
+                "type": "string"
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "prompted"
+                ],
+                "title": "PromptedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_outcome",
+              "submission_id",
+              "target_thread_id",
+              "type"
+            ],
+            "title": "PromptedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "input_outcome": {
+                "$ref": "#/definitions/v2/AgentInputOutcome"
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after target input admission, including an indeterminate target turn after enqueue.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submission_id": {
+                "type": "string"
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "turn_id": {
+                "description": "The admitted target turn when routing can prove it; null means the input outcome is indeterminate after enqueue and must not be retried automatically.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "reservedPrompted"
+                ],
+                "title": "ReservedPromptedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_outcome",
+              "submission_id",
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ReservedPromptedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "nickname": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observation_binding": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentObservationBinding"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "post_commit_warning": {
+                "description": "Degradation that occurred after an exclusive ownership transfer committed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "resumed"
+                ],
+                "title": "ResumedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ResumedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "input_outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentInputOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after follow-up input admission or uncertain routing.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submission_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "interrupted"
+                ],
+                "title": "InterruptedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "InterruptedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "closed"
+                ],
+                "title": "ClosedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ClosedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "binding": {
+                "$ref": "#/definitions/v2/AgentObservationBinding"
+              },
+              "previous_response_handling": {
+                "$ref": "#/definitions/v2/AgentFinalResponseHandling"
+              },
+              "response_handling": {
+                "$ref": "#/definitions/v2/AgentFinalResponseHandling"
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "observed"
+                ],
+                "title": "ObservedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "binding",
+              "previous_response_handling",
+              "response_handling",
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ObservedAgentControlOutcome",
+            "type": "object"
+          }
+        ]
+      },
+      "AgentFinalResponseHandling": {
+        "description": "Final-response handling selected by an explicit user observation replacement.",
+        "enum": [
+          "none",
+          "passive",
+          "wake",
+          "presentation"
+        ],
+        "type": "string"
+      },
+      "AgentForkMode": {
+        "description": "Parent conversation history copied into a user-spawned child.",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "none"
+                ],
+                "title": "NoneAgentForkModeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "NoneAgentForkMode",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "all"
+                ],
+                "title": "AllAgentForkModeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "AllAgentForkMode",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "turns": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "lastNTurns"
+                ],
+                "title": "LastNTurnsAgentForkModeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "turns",
+              "type"
+            ],
+            "title": "LastNTurnsAgentForkMode",
+            "type": "object"
+          }
+        ]
+      },
+      "AgentInputOutcome": {
+        "description": "Whether a user input submission is known to have been admitted.",
+        "enum": [
+          "admitted",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "AgentMessageDelivery": {
         "enum": [
           "async"
@@ -7259,6 +7940,24 @@
           }
         ]
       },
+      "AgentObservationBinding": {
+        "description": "Exact target work whose final-response handling was replaced.",
+        "enum": [
+          "activeTurn",
+          "nextTurn",
+          "undeliveredCompletion"
+        ],
+        "type": "string"
+      },
+      "AgentObservationMode": {
+        "description": "Authoritative final-response policy accepted by `agent/control` observe.",
+        "enum": [
+          "passive",
+          "wake",
+          "presentation"
+        ],
+        "type": "string"
+      },
       "AgentPath": {
         "type": "string"
       },
@@ -7269,6 +7968,17 @@
           "presentation_only",
           "passive",
           "wake"
+        ],
+        "type": "string"
+      },
+      "AgentResponseHandling": {
+        "description": "Response handling for one target turn.",
+        "enum": [
+          "commentary",
+          "wake",
+          "presentation",
+          "commentaryWake",
+          "commentaryPresentation"
         ],
         "type": "string"
       },
@@ -23199,6 +23909,130 @@
           {
             "properties": {
               "action": {
+                "$ref": "#/definitions/v2/UserAgentControlAction"
+              },
+              "authoredSelector": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "finalResponse": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseFinalDelivery"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "forkMode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/UserAgentForkMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "newOwnerSessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "nickname": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observeCommentary": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "previousOwnerSessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "promptPreview": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "queueInput": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resumedTarget": {
+                "type": "boolean"
+              },
+              "role": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/definitions/v2/UserAgentControlStatus"
+              },
+              "targetMessages": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "targetThreadId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "userAgentControl"
+                ],
+                "title": "UserAgentControlThreadItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "id",
+              "resumedTarget",
+              "status",
+              "type"
+            ],
+            "title": "UserAgentControlThreadItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
                 "anyOf": [
                   {
                     "$ref": "#/definitions/v2/WebSearchAction"
@@ -27006,6 +27840,60 @@
           "data"
         ],
         "type": "object"
+      },
+      "UserAgentControlAction": {
+        "enum": [
+          "spawn",
+          "prompt",
+          "queued_prompt",
+          "resume",
+          "interrupt",
+          "close",
+          "observe"
+        ],
+        "type": "string"
+      },
+      "UserAgentControlStatus": {
+        "enum": [
+          "succeeded",
+          "unknown",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "UserAgentForkMode": {
+        "oneOf": [
+          {
+            "enum": [
+              "none",
+              "all"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "last_n_turns": {
+                "properties": {
+                  "turns": {
+                    "format": "uint32",
+                    "minimum": 0.0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "turns"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "last_n_turns"
+            ],
+            "title": "LastNTurnsUserAgentForkMode",
+            "type": "object"
+          }
+        ]
       },
       "UserInput": {
         "oneOf": [

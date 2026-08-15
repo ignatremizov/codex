@@ -129,6 +129,23 @@ impl PersistContext {
     }
 }
 
+/// Exclusive writer reservations held across a higher-level lifecycle transaction.
+///
+/// Store implementations keep their concrete lock guards private. Callers retain this opaque value
+/// until the lifecycle transaction commits or rolls back, preventing any reserved thread from
+/// acquiring a live writer in the interim.
+pub struct ThreadWriterReservation {
+    _guard: Box<dyn Send>,
+}
+
+impl ThreadWriterReservation {
+    pub(crate) fn new(guard: impl Send + 'static) -> Self {
+        Self {
+            _guard: Box::new(guard),
+        }
+    }
+}
+
 /// Storage-neutral thread persistence boundary.
 pub trait ThreadStore: Any + Send + Sync {
     /// Return this store as [`Any`] for implementation-owned escape hatches.
@@ -203,6 +220,22 @@ pub trait ThreadStore: Any + Send + Sync {
         Box::pin(async {
             Err(ThreadStoreError::Unsupported {
                 operation: "resume_thread_with_preparation",
+            })
+        })
+    }
+
+    /// Exclusively reserves live-writer ownership for every supplied thread.
+    ///
+    /// Implementations must either reserve the complete set or release any partial acquisition
+    /// before returning an error. The caller holds the returned value across its external
+    /// lifecycle transaction.
+    fn reserve_thread_writers(
+        &self,
+        _thread_ids: Vec<ThreadId>,
+    ) -> ThreadStoreFuture<'_, ThreadWriterReservation> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "reserve_thread_writers",
             })
         })
     }
