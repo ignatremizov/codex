@@ -2,20 +2,21 @@
 
 use super::agent_observation_display::AgentResponseObservationBinding;
 use super::*;
-use crate::chatwidget::UserMessage;
-use codex_app_server_protocol::AgentResponseHandling;
 
 impl App {
     pub(super) async fn spawn_agent_from_command(
         &mut self,
         app_server: &mut AppServerSession,
-        source_thread_id: ThreadId,
-        role: Option<String>,
-        authored_selector: Option<String>,
-        prompt: Option<UserMessage>,
-        fork_mode: codex_app_server_protocol::AgentForkMode,
-        response_handling: Option<AgentResponseHandling>,
+        args: SpawnAgentCommandArgs,
     ) -> Option<ThreadId> {
+        let SpawnAgentCommandArgs {
+            source_thread_id,
+            role,
+            authored_selector,
+            prompt,
+            fork_mode,
+            response_handling,
+        } = args;
         let response = super::agent_prompt_queue::response_handling_option(response_handling)
             .map(|option| format!(" {option}"))
             .unwrap_or_default();
@@ -122,7 +123,9 @@ impl App {
                     .await;
                 let input_unknown =
                     input_outcome == Some(codex_app_server_protocol::AgentInputOutcome::Unknown);
-                let binding = if input_unknown {
+                let binding = if input_unknown
+                    || input_outcome == Some(codex_app_server_protocol::AgentInputOutcome::Queued)
+                {
                     None
                 } else if starts_turn {
                     self.agent_navigation

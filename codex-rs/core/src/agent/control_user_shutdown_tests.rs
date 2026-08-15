@@ -9,6 +9,7 @@ use crate::agent::response_observation::ResponseObservationPolicy;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::turn_input::TurnInputMode;
+use pretty_assertions::assert_eq;
 use std::time::Duration;
 use test_case::test_case;
 
@@ -19,6 +20,8 @@ enum UserOperation {
     ResumeWithInput,
     Observe,
     ReplaceObservation,
+    Close,
+    ScopedInput,
 }
 
 #[test_case(UserOperation::Prompt; "prompt")]
@@ -26,6 +29,8 @@ enum UserOperation {
 #[test_case(UserOperation::ResumeWithInput; "resume_with_input")]
 #[test_case(UserOperation::Observe; "observe")]
 #[test_case(UserOperation::ReplaceObservation; "replace_observation")]
+#[test_case(UserOperation::Close; "close")]
+#[test_case(UserOperation::ScopedInput; "scoped_input")]
 #[tokio::test]
 async fn cancelled_user_operation_keeps_shutdown_pending_until_lifecycle_release(
     operation: UserOperation,
@@ -96,6 +101,23 @@ async fn cancelled_user_operation_keeps_shutdown_pending_until_lifecycle_release
                 )
                 .await
                 .map(drop),
+            UserOperation::Close => harness
+                .control
+                .close_agent_with_status(target)
+                .await
+                .map(drop),
+            UserOperation::ScopedInput => harness
+                .control
+                .send_scoped_agent_input_observing_response(
+                    observer,
+                    "source-turn",
+                    target,
+                    Vec::new(),
+                    Default::default(),
+                    policy,
+                )
+                .await
+                .map(drop),
         }
     });
     // Poll the actual admission boundary before shutting down. The owned worker cannot
@@ -110,4 +132,119 @@ async fn cancelled_user_operation_keeps_shutdown_pending_until_lifecycle_release
         .await
         .expect("cancelled caller leaves a bounded owned worker")
         .expect("worker releases tree membership");
+}
+
+#[tokio::test]
+async fn prepared_close_response_keeps_tree_shutdown_pending() {
+    let harness = AgentControlHarness::new().await;
+    let (_, root) = harness.start_thread().await;
+    let control = root
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.session.session_id());
+    let child = root
+        .spawn_agent(
+            /*role*/ None,
+            /*input*/ None,
+            crate::agent::UserAgentForkMode::None,
+            crate::agent::UserAgentResponseHandling::Presentation,
+        )
+        .await
+        .expect("spawn a controlled child");
+    let response = control
+        .prepare_close_agent_response(
+            std::sync::Arc::clone(&root.session),
+            codex_protocol::protocol::MultiAgentVersion::V1,
+            child.target_thread_id,
+        )
+        .await
+        .expect("prepare an owned close response");
+    let shutdown = control.runtime.request_shutdown();
+    let mut drained = Box::pin(shutdown.wait());
+    assert!(futures::poll!(drained.as_mut()).is_pending());
+    drop(response);
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), drained)
+        .await
+        .expect("close response ownership must release membership")
+        .expect("tree shutdown must drain");
+    harness
+        .manager
+        .get_thread(child.target_thread_id)
+        .await
+        .expect("live child")
+        .shutdown_and_wait()
+        .await
+        .expect("stop child");
+    root.shutdown_and_wait().await.expect("stop root");
+}
+
+#[tokio::test]
+async fn tree_shutdown_cancels_pending_queue_without_waiting_for_target_completion() {
+    use crate::agent::UserAgentForkMode;
+    use crate::agent::UserAgentResponseHandling;
+    use crate::agent::control::QueuedInputObservationParams;
+
+    let harness = AgentControlHarness::new().await;
+    let (_, root) = harness.start_thread().await;
+    let control = root
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.session.session_id());
+    let child = root
+        .spawn_agent(
+            /*role*/ None,
+            /*input*/ None,
+            UserAgentForkMode::None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await
+        .expect("spawn an idle controlled child");
+    let child = harness
+        .manager
+        .get_thread(child.target_thread_id)
+        .await
+        .expect("live child");
+    assert!(child.session.begin_agent_response_turn("busy-target"));
+    let accepted = control
+        .queue_input_observing_response(QueuedInputObservationParams {
+            agent_id: child.session.thread_id(),
+            input: vec![codex_protocol::user_input::UserInput::Text {
+                text: "pending work must not delay shutdown".to_string(),
+                text_elements: Vec::new(),
+            }],
+            start_options: Default::default(),
+            observer: root.session.presentation_id(),
+            response_observation: ResponseObservationPolicy::from_turn_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Passive,
+                /*target_messages*/ false,
+                /*queue_input*/ true,
+            ),
+            task_preview: None,
+            authored_selector: Some(child.session.thread_id().to_string()),
+        })
+        .await
+        .expect("accept a pending turn");
+    assert_eq!(
+        control
+            .list_queued_agent_turns()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+        vec![accepted.queue_id]
+    );
+    let shutdown = control.runtime.request_shutdown();
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), shutdown.wait())
+        .await
+        .expect("queue worker must wake on tree shutdown")
+        .expect("owned queue work must drain");
+    assert!(control.list_queued_agent_turns().is_empty());
+    assert_eq!(
+        child.session.active_agent_response_turn_id().as_deref(),
+        Some("busy-target")
+    );
+    child.shutdown_and_wait().await.expect("stop child");
+    root.shutdown_and_wait().await.expect("stop root");
 }

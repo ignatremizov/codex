@@ -889,6 +889,10 @@ fn session_event_to_analytics_notification(
                     root_turn_id: started.root_turn_id.clone(),
                     ..analytics_turn(&started.turn_id, TurnStatus::InProgress)
                 },
+                agent_queue: started
+                    .agent_queue
+                    .clone()
+                    .map(codex_app_server_protocol::AgentQueueTurnMetadata::from),
             })
         }
         EventMsg::TurnComplete(completed) => {

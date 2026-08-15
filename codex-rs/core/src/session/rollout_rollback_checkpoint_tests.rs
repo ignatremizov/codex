@@ -128,6 +128,7 @@ async fn count_only_rollback_restores_last_started_from_surviving_occurrences(
                 vec![
                     RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                         turn_attribution: None,
+                        agent_queue: None,
                         turn_id: id.to_string(),
                         root_turn_id: None,
                         trace_id: None,
@@ -257,6 +258,7 @@ async fn exact_rollback_keeps_checkpoint_metadata_and_masks_its_raw_suffix(
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "removed-turn".to_string(),
                 root_turn_id: None,
                 trace_id: None,

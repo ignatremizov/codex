@@ -35,6 +35,7 @@ fn started_state() -> RealtimeHistoryState {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         },
     ));
     state.observe(&EventMsg::RealtimeConversationStarted(
@@ -137,6 +138,7 @@ fn interrupted_turn_is_not_associated_with_a_new_voice_session(
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         },
     ));
     let aborted = EventMsg::TurnAborted(TurnAbortedEvent {

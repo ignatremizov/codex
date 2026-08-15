@@ -163,6 +163,7 @@ class AgentForkMode(RootModel[NoneAgentForkMode | AllAgentForkMode | LastNTurnsA
 
 class AgentInputOutcome(Enum):
     admitted = "admitted"
+    queued = "queued"
     unknown = "unknown"
 
 
@@ -236,12 +237,34 @@ class AgentResponseFinalDelivery(Enum):
     wake = "wake"
 
 
-class AgentResponseHandling(Enum):
-    commentary = "commentary"
-    wake = "wake"
-    presentation = "presentation"
-    commentary_wake = "commentaryWake"
-    commentary_presentation = "commentaryPresentation"
+class AgentResponseHandling(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    commentary: Annotated[
+        bool, Field(description="Deliver the first complete commentary item from the target turn.")
+    ]
+    final_response: Annotated[
+        AgentFinalResponseHandling,
+        Field(
+            alias="finalResponse",
+            description="Select how the target turn's final response reaches the source.",
+        ),
+    ]
+    queue_input: Annotated[
+        bool,
+        Field(
+            alias="queueInput",
+            description="Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+        ),
+    ]
+    target_messages: Annotated[
+        bool,
+        Field(
+            alias="targetMessages",
+            description="Let the target turn send attributed input back to the source.",
+        ),
+    ]
 
 
 class AllowDenyRequirement(Enum):
@@ -7318,6 +7341,34 @@ class AgentControlOutcome(
     root: Annotated[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome, Field(description='Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.')]
 
 
+class AgentQueueEntry(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    authored_selector: Annotated[str | None, Field(alias="authoredSelector")] = None
+    id: str
+    input: list[UserInput]
+    prompt_preview: Annotated[str, Field(alias="promptPreview")]
+    response_handling: Annotated[AgentResponseHandling, Field(alias="responseHandling")]
+    source_thread_id: Annotated[str, Field(alias="sourceThreadId")]
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
+
+
+class AgentQueueTurnMetadata(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    queue_id: Annotated[str, Field(alias="queueId")]
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(
+            alias="responseHandling",
+            description="Committed queue-entry policy, including queued source delivery; `null` when source-side persistence degraded after admission.",
+        ),
+    ] = None
+    source_thread_id: Annotated[str, Field(alias="sourceThreadId")]
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10672,6 +10723,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
         str | None,
         Field(description="Prompt text sent as part of the collab tool call, when available."),
     ] = None
+    queue_input: Annotated[
+        bool | None,
+        Field(
+            alias="queueInput",
+            description="Whether input waits in the target-owned queue instead of steering active work.",
+        ),
+    ] = None
     reasoning_effort: Annotated[
         ReasoningEffort | None,
         Field(
@@ -10702,6 +10760,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
     status: Annotated[
         CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
     ]
+    target_messages: Annotated[
+        bool | None,
+        Field(
+            alias="targetMessages",
+            description="Whether this call grants replies scoped to the target's admitted turn.",
+        ),
+    ] = None
     tool: Annotated[CollabAgentTool, Field(description="Name of the collab tool that was invoked.")]
     type: Annotated[
         Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
@@ -10713,7 +10778,6 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Whether the receiver's terminal response should wake the sender.",
         ),
     ] = None
-
 
 class UserAgentControlThreadItem(BaseModel):
     model_config = ConfigDict(
@@ -10727,6 +10791,7 @@ class UserAgentControlThreadItem(BaseModel):
     )
     fork_mode: Annotated[UserAgentForkMode | None, Field(alias="forkMode")] = None
     id: str
+    input_outcome: Annotated[AgentInputOutcome | None, Field(alias="inputOutcome")] = None
     new_owner_session_id: Annotated[str | None, Field(alias="newOwnerSessionId")] = None
     nickname: str | None = None
     observe_commentary: Annotated[bool | None, Field(alias="observeCommentary")] = None
@@ -12401,6 +12466,13 @@ class TurnStartedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    agent_queue: Annotated[
+        AgentQueueTurnMetadata | None,
+        Field(
+            alias="agentQueue",
+            description="Present when this exact turn was admitted from the shared agent queue.",
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn: Turn
 

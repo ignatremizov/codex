@@ -353,6 +353,17 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
         .await
         .expect("first canonical payload");
     let calls = store.calls().await.append_completion_items_and_flush;
+    assert_eq!(
+        session
+            .persist_completion_context(
+                response.clone(),
+                &accepted,
+                CompletionContextDelivery::QueueOnly,
+            )
+            .await
+            .expect("exact canonical identity is already owned"),
+        CompletionContextPublication::AlreadyPublished,
+    );
     let mut changed = response.clone();
     if let ResponseItem::AgentMessage { content, .. } = &mut changed {
         *content = vec![AgentMessageInputContent::InputText {
@@ -375,6 +386,103 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
             .cloned()
             .collect::<Vec<_>>(),
         vec![response],
+    );
+}
+
+#[test_case::test_case(false; "runtime-only receipt")]
+#[test_case::test_case(true; "canonical receipt")]
+#[tokio::test]
+async fn close_replay_distinguishes_pending_visible_and_settled_removed_context(persistent: bool) {
+    let (mut session, _, _) = make_session_and_context_with_rx().await;
+    let store = if persistent {
+        Some(attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique")).await)
+    } else {
+        None
+    };
+    let response = completion_context();
+    let id = response.id().expect("context identity").clone();
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::Unacknowledged,
+    );
+    let accepted = session
+        .submission_admission
+        .try_accept_completion_delivery()
+        .expect("accepted");
+    session
+        .persist_completion_context(
+            response.clone(),
+            &accepted,
+            CompletionContextDelivery::QueueOnly,
+        )
+        .await
+        .expect("canonical pending context");
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::Present,
+    );
+    let envelope = {
+        let mut state = session.state.lock().await;
+        let envelope = state
+            .completion_publication_receipts
+            .contexts
+            .get(&id)
+            .expect("positive exact-runtime receipt")
+            .clone();
+        assert_eq!(state.acknowledged_completion_contexts.len(), 1);
+        assert_eq!(state.acknowledged_completion_contexts[0].item, envelope);
+        assert!(state.acknowledged_completion_contexts[0].pending);
+        state.acknowledged_completion_contexts.clear();
+        state.history.replay_annotated_item(
+            &envelope,
+            codex_utils_output_truncation::TruncationPolicy::Tokens(1000),
+        );
+        envelope
+    };
+    if let Some(store) = store {
+        use codex_thread_store::ThreadStore;
+        let history = store
+            .load_history(codex_thread_store::LoadThreadHistoryParams {
+                thread_id: session.thread_id,
+                include_archived: false,
+            })
+            .await
+            .expect("canonical context source");
+        let sources = history
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                RolloutItem::ResponseItem(item) if item.id() == Some(&id) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sources, vec![envelope.clone()]);
+    }
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::Present,
+    );
+    session.state.lock().await.history.replace(Vec::new());
+    assert_eq!(
+        session.completion_context_state(&id).await.unwrap(),
+        crate::session::CompletionContextState::SettledRemoved,
+    );
+    assert_eq!(
+        session
+            .state
+            .lock()
+            .await
+            .completion_publication_receipts
+            .contexts
+            .get(&id),
+        Some(&envelope)
+    );
+    assert_eq!(
+        session
+            .completion_context_state(&new_sub_agent_completion_context_response_item_id())
+            .await
+            .unwrap(),
+        crate::session::CompletionContextState::Unacknowledged,
     );
 }
 

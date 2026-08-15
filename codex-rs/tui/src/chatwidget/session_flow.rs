@@ -406,7 +406,7 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
+    pub(crate) fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.bottom_pane.set_skills(skills);
     }
 }

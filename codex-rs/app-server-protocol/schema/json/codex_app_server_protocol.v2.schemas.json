@@ -999,6 +999,7 @@
       "description": "Whether a user input submission is known to have been admitted.",
       "enum": [
         "admitted",
+        "queued",
         "unknown"
       ],
       "type": "string"
@@ -1099,6 +1100,74 @@
     "AgentPath": {
       "type": "string"
     },
+    "AgentQueueEntry": {
+      "description": "Structured input waiting to start a distinct target turn.",
+      "properties": {
+        "authoredSelector": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "input": {
+          "items": {
+            "$ref": "#/definitions/UserInput"
+          },
+          "type": "array"
+        },
+        "promptPreview": {
+          "type": "string"
+        },
+        "responseHandling": {
+          "$ref": "#/definitions/AgentResponseHandling"
+        },
+        "sourceThreadId": {
+          "type": "string"
+        },
+        "targetThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "input",
+        "promptPreview",
+        "responseHandling",
+        "sourceThreadId",
+        "targetThreadId"
+      ],
+      "type": "object"
+    },
+    "AgentQueueTurnMetadata": {
+      "description": "Queue provenance and response handling bound to a newly started target turn.",
+      "properties": {
+        "queueId": {
+          "type": "string"
+        },
+        "responseHandling": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentResponseHandling"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Committed queue-entry policy, including queued source delivery; `null` when source-side persistence degraded after admission."
+        },
+        "sourceThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "queueId",
+        "sourceThreadId"
+      ],
+      "type": "object"
+    },
     "AgentResponseFinalDelivery": {
       "description": "Final-response handling retained as durable evidence for an observer.",
       "enum": [
@@ -1110,15 +1179,36 @@
       "type": "string"
     },
     "AgentResponseHandling": {
-      "description": "Response handling for one target turn.",
-      "enum": [
+      "description": "Response, reverse-message, and admission handling for one target turn.",
+      "properties": {
+        "commentary": {
+          "description": "Deliver the first complete commentary item from the target turn.",
+          "type": "boolean"
+        },
+        "finalResponse": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentFinalResponseHandling"
+            }
+          ],
+          "description": "Select how the target turn's final response reaches the source."
+        },
+        "queueInput": {
+          "description": "Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+          "type": "boolean"
+        },
+        "targetMessages": {
+          "description": "Let the target turn send attributed input back to the source.",
+          "type": "boolean"
+        }
+      },
+      "required": [
         "commentary",
-        "wake",
-        "presentation",
-        "commentaryWake",
-        "commentaryPresentation"
+        "finalResponse",
+        "queueInput",
+        "targetMessages"
       ],
-      "type": "string"
+      "type": "object"
     },
     "AllowDenyRequirement": {
       "enum": [
@@ -21273,6 +21363,14 @@
                 "null"
               ]
             },
+            "queueInput": {
+              "default": null,
+              "description": "Whether input waits in the target-owned queue instead of steering active work.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "reasoningEffort": {
               "anyOf": [
                 {
@@ -21310,6 +21408,14 @@
                 }
               ],
               "description": "Current status of the collab tool call."
+            },
+            "targetMessages": {
+              "default": null,
+              "description": "Whether this call grants replies scoped to the target's admitted turn.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "tool": {
               "allOf": [
@@ -21442,6 +21548,16 @@
             },
             "id": {
               "type": "string"
+            },
+            "inputOutcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentInputOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "newOwnerSessionId": {
               "type": [
@@ -25190,6 +25306,17 @@
     "TurnStartedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "agentQueue": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentQueueTurnMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when this exact turn was admitted from the shared agent queue."
+        },
         "threadId": {
           "type": "string"
         },

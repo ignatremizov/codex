@@ -37,6 +37,7 @@ pub(super) async fn record(session: &Session, text: String) -> std::io::Result<(
     let now = chrono::Utc::now();
     if recording_turn {
         let started = EventMsg::TurnStarted(TurnStartedEvent {
+            agent_queue: None,
             turn_attribution: None,
             turn_id: turn.sub_id.clone(),
             root_turn_id: Some(turn.sub_id.clone()),

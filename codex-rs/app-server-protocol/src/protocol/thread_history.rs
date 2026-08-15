@@ -1155,6 +1155,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
     ) {
         let item = ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1193,6 +1195,8 @@ impl ThreadHistoryBuilder {
             None => (Vec::new(), HashMap::new()),
         };
         self.upsert_legacy_collab_item(ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1213,6 +1217,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentInteractionBeginEvent,
     ) {
         let item = ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1240,6 +1246,8 @@ impl ThreadHistoryBuilder {
         let receiver_id = payload.receiver_thread_id.to_string();
         let received_status = CollabAgentState::from(payload.status.clone());
         self.upsert_legacy_collab_item(ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1275,6 +1283,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
     ) {
         let item = ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1317,6 +1327,8 @@ impl ThreadHistoryBuilder {
             .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
             .collect();
         self.upsert_legacy_collab_item(ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1337,6 +1349,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabCloseBeginEvent,
     ) {
         let item = ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1366,6 +1380,8 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         self.upsert_legacy_collab_item(ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1386,6 +1402,8 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabResumeBeginEvent,
     ) {
         let item = ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -1418,6 +1436,8 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         self.upsert_legacy_collab_item(ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: payload.call_id.clone(),
@@ -2528,6 +2548,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -2596,6 +2617,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -2671,6 +2693,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -2767,6 +2790,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -2889,6 +2913,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -2993,6 +3018,7 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-image".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -3404,6 +3430,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -3474,6 +3501,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -3613,6 +3641,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -3697,6 +3726,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -3783,6 +3813,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -3880,6 +3911,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -3980,6 +4012,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4089,6 +4122,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4112,6 +4146,7 @@ mod tests {
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4153,6 +4188,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4180,6 +4216,7 @@ mod tests {
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4264,6 +4301,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4291,6 +4329,7 @@ mod tests {
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4369,6 +4408,7 @@ mod tests {
         );
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
             turn_attribution: None,
+            agent_queue: None,
             turn_id: "turn-1".into(),
             root_turn_id: None,
             trace_id: None,
@@ -4440,6 +4480,7 @@ mod tests {
         assert_eq!(builder.active_turn_metadata_snapshot(), None);
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
             turn_attribution: None,
+            agent_queue: None,
             turn_id: "turn-1".into(),
             root_turn_id: Some("root-turn".into()),
             trace_id: None,
@@ -4502,6 +4543,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4572,6 +4614,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4642,6 +4685,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4669,6 +4713,7 @@ mod tests {
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4729,6 +4774,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4746,6 +4792,7 @@ mod tests {
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4838,6 +4885,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4865,6 +4913,7 @@ mod tests {
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4915,6 +4964,7 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-compact".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -4971,6 +5021,7 @@ mod tests {
     fn preserves_context_compaction_payload_in_thread_history() {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                agent_queue: None,
                 turn_id: "turn-compact".into(),
                 root_turn_id: None,
                 started_at: None,
@@ -5059,6 +5110,8 @@ mod tests {
         assert_eq!(
             turns[0].items[1],
             ThreadItem::CollabAgentToolCall {
+                target_messages: None,
+                queue_input: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 id: "resume-1".into(),
@@ -5122,6 +5175,8 @@ mod tests {
         assert_eq!(
             turns[0].items[1],
             ThreadItem::CollabAgentToolCall {
+                target_messages: None,
+                queue_input: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 id: "spawn-1".into(),
@@ -5197,6 +5252,8 @@ mod tests {
         assert_eq!(
             turns[0].items[1],
             ThreadItem::CollabAgentToolCall {
+                target_messages: None,
+                queue_input: None,
                 observe_commentary: None,
                 wake_on_completion: None,
                 id: "send-1".into(),
@@ -5261,6 +5318,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -5327,6 +5385,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -5389,6 +5448,7 @@ mod tests {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -5463,6 +5523,7 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -5526,6 +5587,8 @@ mod tests {
             .expect("terminal completion"),
         );
         let wait = codex_protocol::items::CollabAgentToolCallItem {
+            target_messages: None,
+            queue_input: None,
             observe_commentary: None,
             wake_on_completion: None,
             id: "wait-completion".into(),
@@ -5571,6 +5634,7 @@ mod tests {
             let mut builder = ThreadHistoryBuilder::new();
             builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -5644,6 +5708,7 @@ mod tests {
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
             turn_attribution: None,
+            agent_queue: None,
             turn_id: "turn-a".into(),
             root_turn_id: None,
             trace_id: None,
@@ -5705,6 +5770,7 @@ mod tests {
         for spawn in [EventMsg::ItemCompleted(spawn), legacy_spawn] {
             let items = vec![
                 RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                    agent_queue: None,
                     turn_attribution: None,
                     turn_id: "turn-a".into(),
                     root_turn_id: None,
@@ -5767,6 +5833,7 @@ mod tests {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -5932,6 +5999,7 @@ mod tests {
         let start_changes = builder.handle_rollout_item_with_changes(&RolloutItem::EventMsg(
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: Some("root-turn".into()),
                 trace_id: None,
@@ -6052,6 +6120,7 @@ mod tests {
         let changes = builder.handle_rollout_items_with_changes(&[
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: Some("root-turn".into()),
                 trace_id: None,
@@ -6095,6 +6164,7 @@ mod tests {
         let changes = builder.handle_rollout_items_with_changes(&[
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
+                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
@@ -6139,6 +6209,7 @@ mod tests {
             available_skills: vec!["test-tui".to_string()],
         };
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            agent_queue: None,
             turn_id: "turn-1".to_string(),
             root_turn_id: None,
             trace_id: None,
@@ -6217,6 +6288,7 @@ mod tests {
     fn compaction_legacy_with_different_inventory_is_not_suppressed() {
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            agent_queue: None,
             turn_id: "turn-1".to_string(),
             root_turn_id: None,
             trace_id: None,
@@ -6264,6 +6336,7 @@ mod tests {
     fn compaction_legacy_with_different_decode_error_is_not_suppressed() {
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            agent_queue: None,
             turn_id: "turn-1".to_string(),
             root_turn_id: None,
             trace_id: None,
