@@ -27,6 +27,8 @@ impl ToolCallAnalytics {
                 id: invocation.call_id.clone(),
                 tool,
                 status: CollabAgentToolCallStatus::Interrupted,
+                target_messages: None,
+                queue_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: invocation.session.thread_id,
                 receiver_thread_ids: Vec::new(),

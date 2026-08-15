@@ -16,9 +16,10 @@ async fn cloud_admission_keeps_tab_input_queued_until_the_admitted_turn_finishes
     use crate::app_command::CloudSubmissionIntent;
     use crate::app_server_session::user_message_submission::UserMessageAdmission;
 
-    for receipt in [
-        UserMessageAdmission::Started("next".into()),
-        UserMessageAdmission::Steered("next".into()),
+    for (receipt, echo_client_id) in [
+        (UserMessageAdmission::Started("next".into()), None),
+        (UserMessageAdmission::Steered("next".into()), Some(true)),
+        (UserMessageAdmission::Steered("next".into()), Some(false)),
     ] {
         let (mut app, _events, mut ops) = make_test_app_with_channels().await;
         let id = ThreadId::new();
@@ -65,6 +66,32 @@ async fn cloud_admission_keeps_tab_input_queued_until_the_admitted_turn_finishes
             turn_completed_notification(id, "next", TurnStatus::Completed),
             /*replay_kind*/ None,
         );
+        if let Some(echo_client_id) = echo_client_id {
+            assert_eq!(
+                chat.queued_user_message_texts(),
+                ["queued draft", "another draft"]
+            );
+            assert!(turns.next().is_none());
+            chat.handle_server_notification(
+                ServerNotification::ItemCompleted(
+                    codex_app_server_protocol::ItemCompletedNotification::new(
+                        id.to_string(),
+                        "next".into(),
+                        ThreadItemPayload::UserMessage {
+                            id: "committed-steer".into(),
+                            client_id: echo_client_id.then(|| client_user_message_id.clone()),
+                            content: vec![UserInput::Text {
+                                text: "enter input".into(),
+                                text_elements: Vec::new(),
+                            }],
+                        },
+                        /*started_at_ms*/ None,
+                        /*completed_at_ms*/ 0,
+                    ),
+                ),
+                /*replay_kind*/ None,
+            );
+        }
         assert!(matches!(
             turns.next(),
             Some(Op::UserTurn { cloud_submission: CloudSubmissionIntent::StartIfIdle, items, .. })

@@ -681,6 +681,7 @@ async fn switching_back_to_a_long_running_turn_preserves_steering() {
         vec![test_turn("previous", TurnStatus::Completed, Vec::new())],
     );
     let started = ServerNotification::TurnStarted(TurnStartedNotification {
+        agent_queue: None,
         thread_id: thread_id.to_string(),
         turn: test_turn("running", TurnStatus::InProgress, Vec::new()),
     });

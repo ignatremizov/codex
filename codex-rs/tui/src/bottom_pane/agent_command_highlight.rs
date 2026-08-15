@@ -168,7 +168,15 @@ fn is_response_option(token: &str) -> bool {
     let Some(flags) = token.strip_prefix("w:") else {
         return false;
     };
-    matches!(flags, "c" | "f" | "x" | "cf" | "cx")
+    let mut previous = None;
+    !flags.is_empty()
+        && flags.chars().all(|flag| {
+            let position = "cfmqx".find(flag);
+            let valid = position
+                .is_some_and(|position| previous.is_none_or(|previous| previous < position));
+            previous = position;
+            valid
+        })
 }
 
 fn is_fork_option(token: &str) -> bool {

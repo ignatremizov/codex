@@ -127,7 +127,7 @@ impl Session {
                 Vec::new(),
                 PersistContext::Standard,
             )
-            .await;
+            .await?;
         }
         Ok(())
     }

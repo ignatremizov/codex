@@ -313,21 +313,25 @@ async fn compacted_review_restores_originals_once_and_persists_the_request_prefi
         .await
         .unwrap();
     session
-        .record_user_prompt_and_emit_turn_item(
+        .record_prompt_and_emit_turn_item(
             &step.turn,
             &step.settings.model_info,
             &[codex_protocol::user_input::UserInput::Text {
                 text: instruction.clone(),
                 text_elements: vec![],
             }],
-            /*client_id*/ None,
-            crate::session::UserInputMetadata {
-                acceptance_order: Some(0),
-                ..Default::default()
-            },
             codex_thread_store::PersistContext::Standard,
+            crate::session::PromptInputKind::User {
+                client_id: None,
+                metadata: crate::session::UserInputMetadata {
+                    acceptance_order: Some(0),
+                    ..Default::default()
+                },
+            },
+            Vec::new(),
         )
-        .await;
+        .await
+        .expect("record original reviewer input");
     let collected = super::super::prompt::collect_guardian_prompt_items_with_parent_turn(
         &session,
         super::super::prompt::GuardianTranscriptHistory::Retained(

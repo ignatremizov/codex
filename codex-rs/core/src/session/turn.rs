@@ -1139,6 +1139,7 @@ async fn run_hooks_and_record_accepted_inputs(
     persist_context: PersistContext,
 ) -> CodexResult<(bool, Vec<TurnInput>)> {
     let mut blocked_input = false;
+    let mut persistence_failed = false;
     let mut accepted_user_input = false;
     let mut accepted = Vec::new();
     for input_item in recordable_inputs(sess, model_info, input) {
@@ -1148,8 +1149,11 @@ async fn run_hooks_and_record_accepted_inputs(
             blocked_input = true;
             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
         } else {
-            if matches!(input_item.as_ref(), TurnInput::UserInput { content, .. } if !content.is_empty())
-            {
+            if matches!(
+                input_item.as_ref(),
+                TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+                    if !content.is_empty()
+            ) {
                 accepted_user_input = true;
             }
             // Tool outputs retain their durability barrier, including in mixed input batches.
@@ -1160,8 +1164,8 @@ async fn run_hooks_and_record_accepted_inputs(
             } else {
                 persist_context
             };
-            accepted.push(input_item.as_ref().clone());
-            record_pending_input(
+            let accepted_item = input_item.as_ref().clone();
+            if let Err(error) = record_pending_input(
                 sess,
                 turn_context,
                 model_info,
@@ -1169,16 +1173,37 @@ async fn run_hooks_and_record_accepted_inputs(
                 hook_outcome.additional_contexts,
                 input_persist_context,
             )
-            .await;
+            .await
+            {
+                let warning =
+                    format!("admitted input persistence failed: {error}; do not resubmit");
+                sess.settle_queued_input_persistence(
+                    &turn_context.sub_id,
+                    Err(codex_protocol::error::CodexErr::Fatal(warning)),
+                );
+                persistence_failed = true;
+                break;
+            }
+            accepted.push(accepted_item);
         }
     }
-    // The batch has left the input queue. Persist every accepted item before the
-    // optional lookup can suspend this task long enough for an interrupt to abort it.
+    if blocked_input && !accepted_user_input {
+        sess.settle_queued_input_persistence(
+            &turn_context.sub_id,
+            Err(codex_protocol::error::CodexErr::InvalidRequest(
+                "admitted input was blocked by a hook; do not resubmit".to_string(),
+            )),
+        );
+    }
+    // Record accepted siblings before optional audio lookup can yield to interruption.
     if !input.is_empty() {
         let ids = std::mem::take(&mut sess.state.lock().await.pending_audio_duration_ids);
         super::file_audio::resolve(sess, ids).await;
     }
-    Ok((blocked_input && !accepted_user_input, accepted))
+    Ok((
+        persistence_failed || (blocked_input && !accepted_user_input),
+        accepted,
+    ))
 }
 
 /// Yields usable input in order, then reports unsupported audio after valid siblings can be recorded.
@@ -1206,7 +1231,8 @@ pub(crate) fn recordable_inputs<'a>(
             let mut item = Cow::Borrowed(item);
             if rejected_audio
                 && turn_input_has_uploaded_audio_file(&item)
-                && let TurnInput::UserInput { content, .. } = item.to_mut()
+                && let TurnInput::UserInput { content, .. }
+                | TurnInput::AgentInput { content, .. } = item.to_mut()
             {
                 content.retain(|part| !is_uploaded_audio_file(part));
                 if content.is_empty() {
@@ -1219,7 +1245,11 @@ pub(crate) fn recordable_inputs<'a>(
 }
 
 fn turn_input_has_uploaded_audio_file(input: &TurnInput) -> bool {
-    matches!(input, TurnInput::UserInput { content, .. } if content.iter().any(is_uploaded_audio_file))
+    matches!(
+        input,
+        TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. }
+            if content.iter().any(is_uploaded_audio_file)
+    )
 }
 
 fn unsupported_uploaded_audio_error() -> CodexErr {
@@ -1241,7 +1271,9 @@ pub(crate) fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
     input
         .iter()
         .filter_map(|item| match item {
-            TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+            TurnInput::UserInput { content, .. } | TurnInput::AgentInput { content, .. } => {
+                Some(content.as_slice())
+            }
             TurnInput::ResponseItem(_)
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::InterAgentCommunication(_) => None,
@@ -1622,7 +1654,8 @@ async fn track_turn_resolved_config_analytics(
             num_input_images: input
                 .iter()
                 .filter_map(|item| match item {
-                    TurnInput::UserInput { content, .. } => Some(content.as_slice()),
+                    TurnInput::UserInput { content, .. }
+                    | TurnInput::AgentInput { content, .. } => Some(content.as_slice()),
                     TurnInput::ResponseItem(_)
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::InterAgentCommunication(_) => None,

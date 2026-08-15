@@ -87,8 +87,8 @@ pub(crate) struct SessionState {
     /// Newly recorded files awaiting best-effort lookup after the input batch is durable.
     pub(crate) pending_audio_duration_ids: BTreeSet<String>,
     pub(crate) acknowledged_completion_contexts: Vec<super::AcknowledgedCompletionContext>,
-    pub(crate) completion_runtime_provenance:
-        super::completion_context::CompletionRuntimeProvenance,
+    pub(crate) completion_publication_receipts:
+        super::completion_context::CompletionPublicationReceipts,
     /// Cancels work bound to discarded history or a superseded Guardian evidence policy.
     pub(crate) history_reset: CancellationToken,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
@@ -155,7 +155,7 @@ impl SessionState {
             history,
             pending_audio_duration_ids: BTreeSet::new(),
             acknowledged_completion_contexts: Vec::new(),
-            completion_runtime_provenance: Default::default(),
+            completion_publication_receipts: Default::default(),
             history_reset: CancellationToken::new(),
             latest_rate_limits: None,
             latest_token_usage_record: None,

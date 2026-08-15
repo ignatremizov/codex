@@ -36,9 +36,11 @@ impl LocalAgentControl {
             return None;
         }
         let pending = relationship.pending_next_turn.as_ref()?;
-        Some(ResponseObservationPolicy::from_parts(
+        Some(ResponseObservationPolicy::from_turn_parts(
             !pending.commentary_admissions.is_empty(),
             pending.final_response,
+            pending.target_messages,
+            pending.queue_delivery,
         ))
     }
 

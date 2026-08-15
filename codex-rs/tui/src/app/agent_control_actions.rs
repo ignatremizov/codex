@@ -192,7 +192,7 @@ fn agent_control_actions_view_params(
         .into_iter()
         .map(|kind| {
             let disabled_reason = kind.disabled_reason(state).map(str::to_string);
-            let action = kind.effect(thread_id, &target);
+            let action = kind.effect(thread_id, target);
             SelectionItem {
                 name: kind.label().to_string(),
                 description: Some(kind.description().to_string()),

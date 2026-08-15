@@ -20,6 +20,7 @@ async fn active_wait_holds_early_commentary_until_its_last_owner_exits(exit: Wai
     let foreign_parent = SessionPresentationId::new(ThreadId::new(), Uuid::now_v7());
     let turn_id = "child-turn";
     control
+        .runtime
         .wait_agent_presentations
         .state()
         .response_observation_by_observer_child
@@ -41,15 +42,19 @@ async fn active_wait_holds_early_commentary_until_its_last_owner_exits(exit: Wai
             },
         );
     let first = control
+        .runtime
         .wait_agent_presentations
         .register(parent, Some(HashSet::from([child.thread_id])));
     let second = control
+        .runtime
         .wait_agent_presentations
         .register(parent, Some(HashSet::from([child.thread_id])));
     let _foreign_wait = control
+        .runtime
         .wait_agent_presentations
         .register(foreign_parent, Some(HashSet::from([child.thread_id])));
     let _sibling_wait = control
+        .runtime
         .wait_agent_presentations
         .register(parent, Some(HashSet::from([ThreadId::new()])));
     control
@@ -91,6 +96,7 @@ async fn active_wait_holds_early_commentary_until_its_last_owner_exits(exit: Wai
         "unrelated waits must not retain the commentary",
     );
     let late = control
+        .runtime
         .wait_agent_presentations
         .register(parent, Some(HashSet::from([child.thread_id])));
     assert_eq!(

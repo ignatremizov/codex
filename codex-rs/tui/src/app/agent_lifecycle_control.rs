@@ -7,6 +7,15 @@ use super::*;
 use crate::chatwidget::UserMessage;
 use crate::chatwidget::agent_command::AgentSelector;
 
+pub(crate) struct SpawnAgentCommandArgs {
+    pub source_thread_id: ThreadId,
+    pub role: Option<String>,
+    pub authored_selector: Option<String>,
+    pub prompt: Option<UserMessage>,
+    pub fork_mode: codex_app_server_protocol::AgentForkMode,
+    pub response_handling: Option<AgentResponseHandling>,
+}
+
 impl App {
     pub(super) async fn interrupt_agent_from_selector(
         &mut self,
@@ -134,6 +143,7 @@ impl App {
         app_server: &mut AppServerSession,
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        response_handling: Option<AgentResponseHandling>,
     ) {
         let target = match self
             .validated_agent_control_target(app_server, source_thread_id, &selector)
@@ -146,7 +156,12 @@ impl App {
             }
         };
         let result = app_server
-            .close_agent(source_thread_id, target, selector.authored().to_string())
+            .close_agent(
+                source_thread_id,
+                target,
+                selector.authored().to_string(),
+                response_handling,
+            )
             .await;
         let codex_app_server_protocol::AgentControlResponse {
             outcome,
@@ -228,34 +243,32 @@ impl App {
                     self.refresh_primary_agent_aliases(app_server).await;
                     self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
                         .await;
-                    let binding = match binding {
+                    match binding {
                         codex_app_server_protocol::AgentObservationBinding::ActiveTurn => {
-                            Some(AgentResponseObservationBinding::Bound)
+                            self.agent_navigation
+                                .replace_user_final_response_observation(
+                                    source_thread_id,
+                                    target_thread_id,
+                                    AgentResponseObservationBinding::Bound,
+                                    response_handling,
+                                );
                         }
                         codex_app_server_protocol::AgentObservationBinding::NextTurn => {
-                            Some(AgentResponseObservationBinding::NextTurn)
+                            self.agent_navigation
+                                .replace_user_final_response_observation(
+                                    source_thread_id,
+                                    target_thread_id,
+                                    AgentResponseObservationBinding::NextTurn,
+                                    response_handling,
+                                );
                         }
                         codex_app_server_protocol::AgentObservationBinding::UndeliveredCompletion => {
-                            None
-                        }
-                    };
-                    if let Some(binding) = binding {
-                        self.agent_navigation
-                            .replace_user_final_response_observation(
+                            self.agent_navigation.clear_response_observation_binding(
                                 source_thread_id,
                                 target_thread_id,
-                                binding,
-                                response_handling,
+                                AgentResponseObservationBinding::Bound,
                             );
-                    } else if self
-                        .agent_navigation
-                        .response_observation(source_thread_id, target_thread_id)
-                        .is_some_and(|observation| {
-                            observation.binding != AgentResponseObservationBinding::NextTurn
-                        })
-                    {
-                        self.agent_navigation
-                            .clear_response_observation(source_thread_id, target_thread_id);
+                        }
                     }
                 }
                 if let Some(audit_warning) = audit_warning {
@@ -367,38 +380,47 @@ impl App {
                 self.refresh_primary_agent_aliases(app_server).await;
                 self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
                     .await;
-                let binding = if resume_degraded {
-                    None
-                } else {
-                    match observation_binding {
-                        Some(codex_app_server_protocol::AgentObservationBinding::ActiveTurn) => {
-                            Some(AgentResponseObservationBinding::Bound)
-                        }
-                        Some(codex_app_server_protocol::AgentObservationBinding::NextTurn) => {
-                            Some(AgentResponseObservationBinding::NextTurn)
-                        }
-                        Some(
-                            codex_app_server_protocol::AgentObservationBinding::UndeliveredCompletion,
-                        )
-                        | None => None,
-                    }
-                };
-                if let Some(binding) = binding {
-                    self.agent_navigation.note_response_observation(
-                        source_thread_id,
-                        target_thread_id,
-                        binding,
-                        response_handling,
-                    );
-                } else {
+                if resume_degraded {
                     self.agent_navigation
                         .clear_response_observation(source_thread_id, target_thread_id);
                     self.agent_navigation
                         .clear_reserved_prompt_response(target_thread_id);
-                }
-                if binding == Some(AgentResponseObservationBinding::NextTurn) {
-                    self.agent_navigation
-                        .reserve_prompt_response(source_thread_id, target_thread_id);
+                } else {
+                    match observation_binding {
+                        Some(codex_app_server_protocol::AgentObservationBinding::ActiveTurn) => {
+                            self.agent_navigation.note_response_observation(
+                                source_thread_id,
+                                target_thread_id,
+                                AgentResponseObservationBinding::Bound,
+                                response_handling,
+                            );
+                        }
+                        Some(codex_app_server_protocol::AgentObservationBinding::NextTurn) => {
+                            self.agent_navigation.note_response_observation(
+                                source_thread_id,
+                                target_thread_id,
+                                AgentResponseObservationBinding::NextTurn,
+                                response_handling,
+                            );
+                            self.agent_navigation
+                                .reserve_prompt_response(source_thread_id, target_thread_id);
+                        }
+                        Some(
+                            codex_app_server_protocol::AgentObservationBinding::UndeliveredCompletion,
+                        ) => {
+                            self.agent_navigation.clear_response_observation_binding(
+                                source_thread_id,
+                                target_thread_id,
+                                AgentResponseObservationBinding::Bound,
+                            );
+                        }
+                        None => {
+                            self.agent_navigation
+                                .clear_response_observation(source_thread_id, target_thread_id);
+                            self.agent_navigation
+                                .clear_reserved_prompt_response(target_thread_id);
+                        }
+                    }
                 }
                 if let Some(warning) = post_commit_warning {
                     self.chat_widget.add_error_message(format!(

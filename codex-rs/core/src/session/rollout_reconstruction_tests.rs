@@ -1051,6 +1051,7 @@ fn completed_user_turn_rollout(
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -1083,7 +1084,8 @@ fn completed_user_turn_rollout(
 
 #[tokio::test]
 async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
-    let (session, turn_context) = make_session_and_context().await;
+    let (mut session, turn_context) = make_session_and_context().await;
+    super::tests::attach_in_memory_thread_store(&mut session).await;
     let turn_context = Arc::new(turn_context);
     let compacted_image_url = "data:image/png;base64,compacted";
     let suffix_image_url = "data:image/png;base64,suffix";
@@ -1194,6 +1196,7 @@ async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
         )
     );
 
+    let turn_context = Arc::new(turn_context);
     let applied = session
         .apply_rollout_reconstruction(&turn_context, &rollout_items)
         .await
@@ -1202,15 +1205,30 @@ async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
         session.clone_history().await.compacted_prefix_len(),
         Some(base_history.len())
     );
-    let applied_checkpoint = applied
-        .repair
-        .as_ref()
-        .and_then(|repair| repair.items.first())
-        .and_then(|item| match item {
+    // Required repairs are consumed by the acknowledged publication before live state changes.
+    // Inspect durable evidence rather than expecting the applied result to offer them for retry.
+    assert!(applied.repair.is_none());
+    let durable = session
+        .services
+        .thread_store
+        .load_canonical_artifact_segments(codex_thread_store::LoadThreadHistoryParams {
+            thread_id: session.thread_id(),
+            include_archived: false,
+        })
+        .await
+        .expect("read acknowledged repair");
+    let checkpoints = durable
+        .segments
+        .iter()
+        .flatten()
+        .filter_map(|item| match item {
             RolloutItem::Compacted(compacted) => Some(compacted),
             _ => None,
         })
-        .expect("applied repair checkpoint");
+        .collect::<Vec<_>>();
+    let [applied_checkpoint] = checkpoints.as_slice() else {
+        panic!("expected exactly one durable repair checkpoint");
+    };
     assert_eq!(applied_checkpoint.window_number, Some(3));
     assert!(applied_checkpoint.first_window_id.is_some());
     assert!(applied_checkpoint.window_id.is_some());
@@ -1333,6 +1351,8 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
+                root_turn_id: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -1407,6 +1427,8 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
+                root_turn_id: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -1501,6 +1523,8 @@ async fn reconstruction_does_not_roll_back_an_out_of_band_representation_repair(
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
+                root_turn_id: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -1848,6 +1872,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -1936,6 +1961,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -1980,6 +2006,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2164,6 +2191,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2200,6 +2228,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2274,6 +2303,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2310,6 +2340,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2345,6 +2376,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::ResponseItem(standalone_assistant.into()),
@@ -2425,6 +2457,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2461,6 +2494,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::TurnContext(assistant_turn_context),
@@ -2533,6 +2567,7 @@ async fn reconstruct_history_rollback_clears_history_and_metadata_when_exceeding
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2598,6 +2633,7 @@ async fn record_initial_history_resumed_rollback_skips_only_user_turns() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2633,6 +2669,7 @@ async fn record_initial_history_resumed_rollback_skips_only_user_turns() {
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
@@ -2690,6 +2727,7 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -2724,6 +2762,7 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -3608,6 +3647,7 @@ async fn reconstruct_history_legacy_compaction_without_replacement_history_clear
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -3681,6 +3721,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -3812,6 +3853,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -3846,6 +3888,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -3952,6 +3995,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -3986,6 +4030,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4092,6 +4137,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4126,6 +4172,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4197,6 +4244,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_preserves_turn_
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4281,6 +4329,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4315,6 +4364,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -4354,6 +4404,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
                 started_at: None,
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
+                agent_queue: None,
             },
         )),
     ];

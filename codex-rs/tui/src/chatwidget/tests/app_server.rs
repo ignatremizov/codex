@@ -235,6 +235,7 @@ fn start_safety_buffering_test_turn(
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );
@@ -807,6 +808,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 observe_commentary: Some(false),
                 wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -829,6 +832,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 status: AppServerCollabAgentToolCallStatus::Completed,
                 observe_commentary: Some(false),
                 wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1004,6 +1009,7 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );
@@ -1372,6 +1378,7 @@ async fn live_app_server_turn_started_sets_feedback_turn_id() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );
@@ -1862,6 +1869,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 observe_commentary: None,
                 wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1888,6 +1897,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 status: AppServerCollabAgentToolCallStatus::Completed,
                 observe_commentary: None,
                 wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1946,6 +1957,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 observe_commentary: Some(false),
                 wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -1969,6 +1982,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 status: AppServerCollabAgentToolCallStatus::Completed,
                 observe_commentary: Some(false),
                 wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -2018,6 +2033,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );
@@ -2240,6 +2256,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );
@@ -2347,6 +2364,7 @@ async fn live_app_server_server_overloaded_error_renders_error() {
                     completed_at: None,
                     duration_ms: None,
                 },
+                agent_queue: None,
             }),
             /*replay_kind*/ None,
         );
@@ -2399,6 +2417,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
                 completed_at: None,
                 duration_ms: None,
             },
+            agent_queue: None,
         }),
         /*replay_kind*/ None,
     );

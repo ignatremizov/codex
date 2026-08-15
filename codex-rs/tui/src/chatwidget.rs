@@ -1457,6 +1457,12 @@ impl ChatWidget {
             return;
         }
 
+        let confirms_pending_steer = client_id.is_some_and(|id| {
+            self.input_queue
+                .pending_steers
+                .iter()
+                .any(|pending| pending.client_id == id)
+        });
         // Servers may omit media from receipts, so prefer the submission identity.
         let already_rendered = client_id.is_some()
             && self.last_rendered_user_message_client_id.as_deref() == client_id;
@@ -1468,11 +1474,17 @@ impl ChatWidget {
             }),
             // Older app servers do not echo submission IDs.
             None => steers.front().and_then(|pending| {
-                (pending.compare_key == Self::pending_steer_compare_key_from_items(items))
-                    .then_some(0)
+                (pending
+                    .admitted_turn_id
+                    .as_deref()
+                    .is_none_or(|admitted_turn_id| admitted_turn_id == turn_id)
+                    && pending.compare_key == Self::pending_steer_compare_key_from_items(items))
+                .then_some(0)
             }),
         };
-        if let Some(pending) = matching.and_then(|index| steers.remove(index)) {
+        let pending = matching.and_then(|index| steers.remove(index));
+        let confirmed_without_id = client_id.is_none() && pending.is_some();
+        if let Some(pending) = pending {
             self.refresh_pending_input_preview();
             if !already_rendered {
                 if !pending.optimistically_rendered {
@@ -1497,13 +1509,16 @@ impl ChatWidget {
             self.on_identified_user_message_display(display, client_id, Some(identity));
         }
         if let Some(client_id) = client_id
-            && self
-                .input_queue
-                .queued_user_messages
-                .iter()
-                .any(|message| message.unconfirmed_user_message_id() == Some(client_id))
+            && (confirms_pending_steer
+                || self
+                    .input_queue
+                    .queued_user_messages
+                    .iter()
+                    .any(|message| message.unconfirmed_user_message_id() == Some(client_id)))
         {
             self.reconcile_recovered_messages(&[client_id.to_string()]);
+            self.maybe_send_next_queued_input();
+        } else if confirmed_without_id {
             self.maybe_send_next_queued_input();
         }
     }

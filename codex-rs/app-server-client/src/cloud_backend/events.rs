@@ -41,6 +41,7 @@ pub(super) fn transcript(
     Ok(Some(match update {
         cloud::TranscriptUpdate::TurnStarted(summary) => {
             Notification::TurnStarted(protocol::TurnStartedNotification {
+                agent_queue: None,
                 thread_id,
                 turn: turn(summary)?,
             })

@@ -2195,14 +2195,16 @@ async fn resumed_steers_reconcile_by_client_id_and_hold_unmatched_admissions() {
             preserve_in_flight_turn: false,
         },
     );
+    assert_eq!(chat.queued_user_message_texts(), ["next draft"]);
     assert_eq!(
-        chat.queued_user_message_texts(),
-        vec!["same text", "next draft"]
+        chat.input_queue.pending_steers.front().map(|steer| (
+            steer.client_id.as_str(),
+            steer.admitted_turn_id.as_deref(),
+            steer.user_message.text.as_str(),
+        )),
+        Some(("unmatched", Some("finished"), "same text"))
     );
-    assert_eq!(
-        chat.input_queue.queued_user_messages[0].delivery,
-        MessageDelivery::Unconfirmed(Some("unmatched".into()))
-    );
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
     assert!(!chat.maybe_send_next_queued_input());
     assert_no_submit_op(&mut op_rx);
 }
@@ -2324,19 +2326,20 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     assert!(!chat.bottom_pane.is_task_running());
     assert!(!chat.input_queue.user_turn_pending_start);
     assert!(!chat.input_queue.submit_pending_steers_after_interrupt);
-    assert!(chat.input_queue.pending_steers.is_empty());
+    assert_eq!(chat.input_queue.pending_steers.len(), 1);
+    assert_eq!(
+        chat.input_queue.pending_steers[0].history_record,
+        pending_history
+    );
     assert_eq!(chat.bottom_pane.composer_text(), "composer draft");
     assert_eq!(
         chat.safety_buffering_prompt,
         Some(UserMessage::from("buffered prompt"))
     );
-    assert_eq!(
-        chat.queued_user_message_texts(),
-        vec!["submitted to the interrupted turn", "already queued"]
-    );
+    assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
     assert_eq!(
         chat.input_queue.queued_user_message_history_records,
-        VecDeque::from([pending_history, queued_history])
+        VecDeque::from([queued_history])
     );
     assert!(!chat.maybe_send_next_queued_input());
     assert_no_submit_op(&mut op_rx);
@@ -2362,7 +2365,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
     );
     assert!(chat.input_queue.pending_steers.is_empty());
     assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
-    assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
+    assert!(chat.queued_user_message_texts().is_empty());
 
     chat.restore_thread_input_state(
         /*input_state*/ None,
@@ -2928,8 +2931,21 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
             } else {
                 assert_eq!(
                     restored.queued_user_message_texts(),
-                    vec!["first message", "follow-up"]
+                    if pending_start {
+                        vec!["first message", "follow-up"]
+                    } else {
+                        vec!["follow-up"]
+                    }
                 );
+                if !pending_start {
+                    assert_eq!(
+                        restored.input_queue.pending_steers.front().map(|pending| (
+                            pending.client_id.as_str(),
+                            pending.user_message.text.as_str(),
+                        )),
+                        Some((client_id.as_str(), "first message"))
+                    );
+                }
                 assert_no_submit_op(&mut ops);
                 let notice = drain_insert_history(&mut rx)
                     .into_iter()
