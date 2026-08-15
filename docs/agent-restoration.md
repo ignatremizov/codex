@@ -38,6 +38,8 @@ the submission gate and accepted task metadata, consumes no additional agent
 slot, and still fails if that registration changes during restoration. A real
 close releases the slot; a subsequent new spawn must be able to use it.
 
+Legacy spawn edges can be indexed after the owning root's alias namespace already exists. If restoration finds a persisted ancestry chain but no alias for its target, it explicitly backfills missing graph-backed aliases in one transaction. This keeps closed edges closed and existing refs, names, and ownership unchanged; it is not an activation or a new permission grant. Ordinary namespace initialization keeps its one-time migration scan instead of rescanning the tree for every spawn.
+
 Future-only V1 standalone adoption is a separate compatibility path for later real live turns. It does not provide cold cached terminal replay, rewrite source or nickname metadata, or retarget the native original parent for a child that is already live. V1 caller semantics remain distinct from V2 owner-controlled restoration.
 
 Restoration must preserve lossless wait statuses and independent durable completion. A wait result describes the live operation; accepted completion follows the canonical writer flush before live installation and event enqueue. See [background subagent completion](tui-background-subagent-completion.md) for the completion and rollback contract. Neither status loss nor an ambiguous publication permits cold-repair or detached-runtime resurrection.

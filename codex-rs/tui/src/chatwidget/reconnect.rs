@@ -121,7 +121,11 @@ impl ChatWidget {
                 format!("Couldn't confirm whether “{preview}” was sent. It hasn't been resent.");
             self.add_info_message(notice, /*hint*/ None);
         }
-        self.turn_lifecycle.restore_running(running, Instant::now());
+        if running {
+            self.turn_lifecycle.restore_running_since(Instant::now());
+        } else {
+            self.turn_lifecycle.finish();
+        }
         self.update_task_running_state();
     }
 
@@ -146,8 +150,7 @@ impl ChatWidget {
         if let Some(questions) = &mut self.bottom_pane.questions {
             questions.delivery_enabled = false;
         }
-        self.turn_lifecycle
-            .restore_running(/*running*/ false, Instant::now());
+        self.turn_lifecycle.finish();
         // Cached activity must not keep recovery commands blocked on an unavailable thread.
         self.review.is_review_mode = false;
         self.mcp_startup_status = None;

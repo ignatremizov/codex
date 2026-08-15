@@ -217,3 +217,44 @@ fn preserves_legacy_wire_shape_and_serializes_nullable_source() {
     .unwrap();
     assert_eq!(value["interAgentSource"], serde_json::Value::Null);
 }
+
+#[test]
+fn v1_commentary_aliases_keep_canonical_uuid_and_require_the_root_route() {
+    let agent_id = codex_protocol::ThreadId::new();
+    let text = format!(
+        "<subagent_commentary>\n{}\n</subagent_commentary>",
+        serde_json::json!({
+            "agent_id": agent_id,
+            "ref": "2",
+            "nickname": "Worker",
+            "turn_id": "turn-1",
+            "item_id": "item-1",
+            "message": "acknowledged",
+        }),
+    );
+    assert_eq!(
+        inter_agent_message_thread_item(&item(&text)),
+        Some(ThreadItem::AgentMessage {
+            id: "amsg_test".into(),
+            text: format!("Agent commentary from `{agent_id}`:\n\nacknowledged"),
+            inter_agent_source: Some(InterAgentMessageSource {
+                author: "/root".into(),
+                recipient: "/root/worker".into(),
+            }),
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+        }),
+    );
+    let mut nonroot = item(&text);
+    let ResponseItem::AgentMessage { author, .. } = &mut nonroot else {
+        panic!("typed communication");
+    };
+    *author = "/root/other".into();
+    assert!(matches!(
+        inter_agent_message_thread_item(&nonroot),
+        Some(ThreadItem::AgentMessage { text: rendered, .. })
+            if rendered == format!("Agent message from `/root/other`:\n\n{text}"),
+    ));
+}

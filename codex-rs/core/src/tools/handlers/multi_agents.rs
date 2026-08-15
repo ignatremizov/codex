@@ -34,28 +34,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 const MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME: &str = "Multi-agent tools";
-const MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION: &str = "Spawn and manage sub-agents.";
-
-pub(crate) fn parse_agent_id_target(target: &str) -> Result<ThreadId, FunctionCallError> {
-    ThreadId::from_string(target).map_err(|err| {
-        FunctionCallError::RespondToModel(format!("invalid agent id {target}: {err:?}"))
-    })
-}
-
-pub(crate) fn parse_agent_id_targets(
-    targets: Vec<String>,
-) -> Result<Vec<ThreadId>, FunctionCallError> {
-    if targets.is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "agent ids must be non-empty".to_string(),
-        ));
-    }
-
-    targets
-        .into_iter()
-        .map(|target| parse_agent_id_target(&target))
-        .collect()
-}
+const MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION: &str = "Communicate with and manage sub-agents.";
 
 fn multi_agent_tool_search_info(
     search_text: &str,

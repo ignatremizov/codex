@@ -3,8 +3,10 @@ use pretty_assertions::assert_eq;
 use super::SubAgentCompletionModelVisibility;
 use super::SubAgentCompletionStatus;
 use super::is_sub_agent_completion_context_response_item_id;
+use super::is_user_agent_task_context_response_item_id;
 use super::new_sub_agent_completion_context_response_item_id;
 use super::new_sub_agent_completion_response_item_id;
+use super::new_user_agent_task_context_response_item_id;
 use super::ordinary_agent_message_response_item_id;
 use super::sub_agent_completion_item;
 use super::sub_agent_completion_item_with_visibility;
@@ -78,6 +80,21 @@ fn completion_context_ids_are_distinct_and_validated() {
     ));
     assert!(!is_sub_agent_completion_context_response_item_id(
         "amsg_x_01900000-0000-7000-0000-000000000001"
+    ));
+}
+
+#[test]
+fn user_agent_task_context_ids_are_distinct_and_validated() {
+    let id = new_user_agent_task_context_response_item_id();
+
+    assert!(id.starts_with("msg_t_"));
+    assert!(id.len() <= 64, "{id}");
+    assert!(is_user_agent_task_context_response_item_id(&id));
+    assert!(!is_user_agent_task_context_response_item_id(
+        "msg_t_not-a-uuid"
+    ));
+    assert!(!is_user_agent_task_context_response_item_id(
+        "amsg_x_not-a-uuid"
     ));
 }
 
