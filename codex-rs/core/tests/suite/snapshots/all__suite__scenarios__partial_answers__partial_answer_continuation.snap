@@ -12,7 +12,7 @@ Scenario: A nonterminal answer continues sampling; its phase survives an ordinar
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 02:message/user:
     <ENVIRONMENT_CONTEXT>

@@ -657,6 +657,15 @@ async fn fresh_hosted_child_persists_inherited_session_id(
         ),
         (child.thread_id, root_session_id, None)
     );
+    let alias_error = manager
+        .ensure_agent_alias_namespace_for_thread(resumed.thread_id)
+        .await
+        .expect_err("hosted child must not acquire native alias authority");
+    assert!(
+        matches!(alias_error.details(), CodexErrorDetails::InvalidRequest(message)
+            if message == &format!("failed to recover the owning root for agent {}", resumed.thread_id)),
+        "{alias_error:?}"
+    );
     resumed.thread.shutdown_and_wait().await?;
     root.codex.shutdown_and_wait().await?;
     Ok(())

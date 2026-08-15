@@ -603,3 +603,128 @@ fn exact_projection_preserves_only_adjacent_committed_observations() {
         }
     }
 }
+
+#[test]
+fn exact_projection_checks_promoted_task_proofs_and_conflicting_checkpoints() {
+    use codex_protocol::items::UserAgentControlAction;
+    use codex_protocol::items::UserAgentControlItem;
+    use codex_protocol::protocol::AgentResponseFinalDelivery;
+    use codex_protocol::protocol::AgentResponseObservation;
+    use codex_protocol::protocol::AgentResponsePromotedTaskContext;
+    use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
+
+    for (separated, conflicting_checkpoint) in [(false, false), (true, false), (false, true)] {
+        let task = codex_history::ResponseItemEnvelope::new(
+            serde_json::from_value(serde_json::json!({
+                "type": "message", "role": "user",
+                "id": new_user_agent_task_context_response_item_id(),
+                "content": [{"type": "input_text", "text": "<user_agent_task>review</user_agent_task>"}],
+            })).expect("user task"),
+        );
+        let promoted = AgentResponsePromotedTaskContext::from_response_item(&task.item)
+            .expect("task DTO shape");
+        let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+            observer_thread_id: ThreadId::new(),
+            target_thread_id: ThreadId::new(),
+            target_turn_id: Some("target-turn".into()),
+            task_preview: None,
+            promoted_task_context: Some(promoted),
+            pending_commentary: false,
+            commentary_after_sequences: Vec::new(),
+            commentary_admissions: Vec::new(),
+            commentary_delivery: None,
+            target_messages: false,
+            queue_delivery: false,
+            message_wake_turn_id: None,
+            baseline_final_delivery: AgentResponseFinalDelivery::Passive,
+            final_delivery: AgentResponseFinalDelivery::Wake,
+            final_delivery_response_item_id: None,
+            committed_delivery_response_item_ids: Vec::new(),
+        });
+        let mut checkpoint_task = task.clone();
+        if conflicting_checkpoint {
+            let codex_protocol::models::ResponseItem::Message { content, .. } =
+                &mut checkpoint_task.item
+            else {
+                unreachable!();
+            };
+            *content = vec![codex_protocol::models::ContentItem::InputText {
+                text: "<user_agent_task>different</user_agent_task>".into(),
+            }];
+        }
+        let thread_id = ThreadId::new();
+        let mut items = vec![
+            turn_started("retained"),
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: false,
+            },
+            RolloutItem::ResponseItem(task),
+        ];
+        if separated {
+            items.push(user_message("not promotion evidence"));
+        }
+        let observation_index = items.len();
+        items.push(observation);
+        items.push(RolloutItem::Compacted(Box::new(
+            codex_history::CompactedItem {
+                replacement_history: Some(vec![checkpoint_task]),
+                ..Default::default()
+            },
+        )));
+        let control_index = items.len();
+        items.push(completed_item(
+            thread_id,
+            "retained",
+            TurnItem::UserAgentControl(UserAgentControlItem::succeeded(
+                UserAgentControlAction::Prompt,
+            )),
+        ));
+        let terminal_index = items.len();
+        items.push(turn_completed("retained"));
+        items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            ThreadRolledBackEvent {
+                num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: Some(1),
+            },
+        )));
+        let mut bytes = Vec::new();
+        let mut offsets = Vec::new();
+        for item in &items {
+            offsets.push(u64::try_from(bytes.len()).expect("record offset"));
+            serde_json::to_writer(
+                &mut bytes,
+                &RolloutLine {
+                    timestamp: "2026-11-15T00:00:00Z".into(),
+                    ordinal: None,
+                    item: item.clone(),
+                },
+            )
+            .expect("canonical record");
+            bytes.push(b'\n');
+        }
+        let projection = super::super::rollback::ExactRollbackProjection::read(
+            &mut std::io::Cursor::new(bytes),
+            /*start_offset*/ 0,
+            || false,
+        )
+        .expect("exact projection");
+        let trusted = !separated && !conflicting_checkpoint;
+        let expected = offsets
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, offset)| {
+                let keep = index == 0
+                    || index == observation_index
+                    || index == control_index
+                    || index == terminal_index
+                    || (trusted && (index == 1 || index == 2));
+                (!keep).then_some(offset)
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            (projection.contains_exact_marker, projection.removed_offsets),
+            (true, expected)
+        );
+    }
+}

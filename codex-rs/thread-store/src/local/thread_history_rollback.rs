@@ -7,6 +7,7 @@ use std::io::BufRead;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 use codex_rollout::RolloutItem;
 
 pub(super) struct ExactRollbackProjection {
@@ -55,7 +56,11 @@ impl ExactRollbackProjection {
                         | EventMsg::TurnAborted(_),
                     ) => item,
                     RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
-                        if completed.item.is_sub_agent_completion_presentation() =>
+                        if completed.item.is_sub_agent_completion_presentation()
+                            || matches!(
+                                &completed.item,
+                                codex_protocol::items::TurnItem::UserAgentControl(_)
+                            ) =>
                     {
                         RolloutItem::EventMsg(EventMsg::ItemCompleted(completed))
                     }
@@ -65,9 +70,25 @@ impl ExactRollbackProjection {
                         if envelope.id().is_some_and(|id| {
                             id.as_str().starts_with("amsg_")
                                 || is_sub_agent_completion_context_response_item_id(id.as_str())
+                                || is_user_agent_task_context_response_item_id(id.as_str())
                         }) =>
                     {
                         RolloutItem::ResponseItem(envelope)
+                    }
+                    RolloutItem::Compacted(checkpoint) => {
+                        RolloutItem::Compacted(Box::new(codex_history::CompactedItem {
+                            replacement_history: checkpoint.replacement_history.map(|history| {
+                                history
+                                    .into_iter()
+                                    .filter(|envelope| {
+                                        envelope.id().is_some_and(|id| {
+                                            is_user_agent_task_context_response_item_id(id.as_str())
+                                        })
+                                    })
+                                    .collect()
+                            }),
+                            ..Default::default()
+                        }))
                     }
                     // Catalog selection belongs to the thread rather than the removed
                     // instruction range. Its payload is irrelevant to the exact mask; actual

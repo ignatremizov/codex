@@ -11,6 +11,7 @@ pub(super) struct TurnLifecycleState {
     pub(super) sleep_inhibitor: SleepInhibitor,
     /// Tracks whether codex-core currently considers an agent turn to be in progress.
     pub(super) agent_turn_running: bool,
+    turn_started_at: Option<Instant>,
     pub(super) last_turn_id: Option<String>,
     /// A live or restored turn makes the parent available for side-chat creation.
     pub(super) has_turn_history: bool,
@@ -27,6 +28,7 @@ impl TurnLifecycleState {
         Self {
             sleep_inhibitor: SleepInhibitor::new(prevent_idle_sleep),
             agent_turn_running: false,
+            turn_started_at: None,
             last_turn_id: None,
             has_turn_history: false,
             admitted_turn_id: None,
@@ -38,12 +40,14 @@ impl TurnLifecycleState {
 
     pub(super) fn start(&mut self, now: Instant) {
         self.agent_turn_running = true;
+        self.turn_started_at = Some(now);
         self.goal_status_active_turn_started_at = Some(now);
         self.sleep_inhibitor.set_turn_running(/*turn_running*/ true);
     }
 
     pub(super) fn finish(&mut self) {
         self.agent_turn_running = false;
+        self.turn_started_at = None;
         self.goal_status_active_turn_started_at = None;
         self.sleep_inhibitor
             .set_turn_running(/*turn_running*/ false);
@@ -53,10 +57,20 @@ impl TurnLifecycleState {
         self.agent_turn_running || self.admitted_turn_id.is_some()
     }
 
-    pub(super) fn restore_running(&mut self, running: bool, now: Instant) {
-        self.agent_turn_running = running;
-        self.goal_status_active_turn_started_at = running.then_some(now);
-        self.sleep_inhibitor.set_turn_running(running);
+    pub(super) fn restore_running_since(&mut self, started_at: Instant) {
+        self.agent_turn_running = true;
+        self.turn_started_at = Some(started_at);
+        self.goal_status_active_turn_started_at = Some(started_at);
+        self.sleep_inhibitor.set_turn_running(/*turn_running*/ true);
+    }
+
+    pub(super) fn started_at(&self) -> Option<Instant> {
+        self.turn_started_at
+    }
+
+    pub(super) fn elapsed_seconds(&self, now: Instant) -> Option<u64> {
+        self.turn_started_at
+            .map(|started_at| now.saturating_duration_since(started_at).as_secs())
     }
 
     pub(super) fn reset_thread(&mut self) {
@@ -90,16 +104,35 @@ mod tests {
     #[test]
     fn start_and_finish_update_running_state() {
         let mut state = TurnLifecycleState::new(/*prevent_idle_sleep*/ false);
+        let started_at = Instant::now();
 
-        state.start(Instant::now());
+        state.start(started_at);
         assert!(state.agent_turn_running);
         assert!(state.goal_status_active_turn_started_at.is_some());
         assert!(state.sleep_inhibitor.is_turn_running());
+        assert_eq!(
+            state.elapsed_seconds(started_at + std::time::Duration::from_secs(65)),
+            Some(65)
+        );
 
         state.finish();
         assert!(!state.agent_turn_running);
         assert!(state.goal_status_active_turn_started_at.is_none());
         assert!(!state.sleep_inhibitor.is_turn_running());
+        assert_eq!(state.elapsed_seconds(Instant::now()), None);
+    }
+
+    #[test]
+    fn restore_running_since_preserves_turn_origin() {
+        let mut state = TurnLifecycleState::new(/*prevent_idle_sleep*/ false);
+        let started_at = Instant::now();
+
+        state.restore_running_since(started_at);
+
+        assert_eq!(
+            state.elapsed_seconds(started_at + std::time::Duration::from_secs(65)),
+            Some(65)
+        );
     }
 
     #[test]

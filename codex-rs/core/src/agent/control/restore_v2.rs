@@ -64,7 +64,8 @@ impl LocalAgentControl {
                 include_history: false,
             })
             .await?;
-        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+        let history = state
+            .load_agent_model_context(thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
@@ -80,6 +81,13 @@ impl LocalAgentControl {
             .get_resumed_session_sources()
             .map(|(session_source, _)| session_source)
             .unwrap_or(stored_thread.source);
+        let canonical_session_source = if self.current_agent_alias(thread_id).await?.is_some() {
+            self.require_current_agent_ownership(thread_id).await?;
+            self.canonical_controlled_resume_source(thread_id, canonical_session_source)
+                .await?
+        } else {
+            canonical_session_source
+        };
         let (_, residency_pin) = self
             .ensure_v2_agent_loaded_from_source_and_history(
                 config,
@@ -205,9 +213,13 @@ impl LocalAgentControl {
         match load_result {
             Ok((thread, residency_slot, created_at)) => {
                 let residency_pin = match self
-                    .publish_restored_agent(&thread, parent.as_ref(), Some(created_at), || {
-                        metadata_replacement.commit()
-                    })
+                    .publish_restored_agent(
+                        &thread,
+                        parent.as_ref(),
+                        true,
+                        Some(created_at),
+                        || metadata_replacement.commit(),
+                    )
                     .await
                 {
                     Ok(pin) => pin,
@@ -320,10 +332,10 @@ impl LocalAgentControl {
                 None => {
                     let stored_source = stored_thread.source.clone();
                     let stored_parent_thread_id = stored_thread.parent_thread_id;
-                    let history =
-                        load_agent_model_context(&state, thread_id, stored_thread.history_mode)
-                            .await?
-                            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+                    let history = state
+                        .load_agent_model_context(thread_id, stored_thread.history_mode)
+                        .await?
+                        .ok_or(CodexErr::ThreadNotFound(thread_id))?;
                     let initial_history = InitialHistory::Resumed(ResumedHistory {
                         history_revision: history.revision,
                         conversation_id: thread_id,
@@ -377,10 +389,18 @@ impl LocalAgentControl {
                 .or(registered_parent_thread_id)
                 .or_else(|| session_source.parent_thread_id())
         };
-        if initial_history
-            .get_resumed_parent_thread_id()
-            .is_some_and(|id| Some(id) != parent_thread_id)
-            || stored_parent_thread_id.is_some_and(|id| Some(id) != parent_thread_id)
+        let has_current_alias = self.current_agent_alias(thread_id).await?.is_some();
+        if has_current_alias {
+            self.require_current_agent_ownership(thread_id).await?;
+        }
+        // Alias-owned topology can change through explicit adoption without modifying the
+        // original rollout. The supplied source was resolved from that current graph; its
+        // captured live parent must still match, even when the historical parent differs.
+        if (!has_current_alias
+            && (initial_history
+                .get_resumed_parent_thread_id()
+                .is_some_and(|id| Some(id) != parent_thread_id)
+                || stored_parent_thread_id.is_some_and(|id| Some(id) != parent_thread_id)))
             || captured_parent.map(|parent| parent.session.thread_id()) != parent_thread_id
         {
             return Err(CodexErr::InvalidRequest(format!(
@@ -575,6 +595,15 @@ impl LocalAgentControl {
             .reserve_v2_residency_slot(&state, &config, &owner.membership, Some(thread_id))
             .await?;
         let notification_source = session_source.clone();
+        let ownership_override = if has_current_alias && session_source.is_non_root_agent() {
+            // Preserve the late ownership check after environment and residency waits.
+            self.require_current_agent_ownership(thread_id).await?;
+            Some(crate::session::AgentSessionOwnershipOverride {
+                session_id: self.session_id(),
+            })
+        } else {
+            None
+        };
         match state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
                 registration: crate::thread_manager::ThreadRegistrationMode::Deferred,
@@ -585,6 +614,7 @@ impl LocalAgentControl {
                         .model_client
                         .prompt_cache_key_policy()
                 }),
+                ownership_override,
                 config,
                 initial_history,
                 agent_control: self.clone(),

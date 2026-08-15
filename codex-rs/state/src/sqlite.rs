@@ -11,6 +11,7 @@
 )]
 
 use crate::DbTelemetry;
+use crate::migrations::repair_legacy_agent_alias_migration_version;
 use crate::migrations::repair_legacy_recency_migration_version;
 use crate::runtime::recovery::RuntimeDbInitError;
 use crate::telemetry;
@@ -413,6 +414,7 @@ impl SqliteConfig {
         let migrate_result = async {
             if matches!(spec.kind, DbKind::State) {
                 repair_legacy_recency_migration_version(&pool, migrator).await?;
+                repair_legacy_agent_alias_migration_version(&pool, migrator).await?;
             }
             // SQLx's SQLite migration lock is a no-op. Keep version checks and changes in
             // one transaction, retrying from a fresh snapshot after a concurrent migration.

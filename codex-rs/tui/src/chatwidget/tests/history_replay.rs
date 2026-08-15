@@ -472,7 +472,6 @@ async fn replayed_delegated_tool_output_is_attributed_without_seeding_composer_h
         "replayed_delegated_tool_output",
         lines_to_single_string(&cells[0])
     );
-
     let projected = crate::thread_transcript::thread_items_to_transcript_cells(
         /*thread_id*/ None,
         &chat.config.cwd,

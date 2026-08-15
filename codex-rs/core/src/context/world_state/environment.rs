@@ -107,6 +107,7 @@ impl EnvironmentsState {
             network: self.network.clone(),
             filesystem: self.filesystem.clone(),
             subagents: self.subagents.clone(),
+            clear_subagents: false,
         }
     }
 }
@@ -155,6 +156,7 @@ impl WorldStateSection for EnvironmentsState {
             || current.timezone != previous.timezone
             || current.network != previous.network
             || current.filesystem != previous.filesystem;
+        let subagents_changed = current.subagents != previous.subagents;
         let multiple_environments = self.environments.len() > 1;
         let previous_multiple_environments = previous.environments.len() > 1;
         let mut updates = self
@@ -181,27 +183,29 @@ impl WorldStateSection for EnvironmentsState {
             && updates
                 .values()
                 .all(|update| matches!(update, EnvironmentUpdate::Current(_)));
-        let fragment = (!updates.is_empty() || turn_context_values_changed).then(|| {
-            let environment = Box::new(RenderedEnvironments {
-                updates,
-                legacy_single,
-                include_primary: multiple_environments || previous_multiple_environments,
-                shell_version: self.shell_version.clone(),
-                shell_version_removed: self.shell_version.is_none()
-                    && previous.shell_version.is_some(),
-                current_date: self.current_date.clone(),
-                current_date_removed: self.current_date.is_none()
-                    && previous.current_date.is_some(),
-                timezone: self.timezone.clone(),
-                network: self.network.clone(),
-                filesystem: self.filesystem.clone(),
-                subagents: self.subagents.clone(),
+        let fragment = (!updates.is_empty() || turn_context_values_changed || subagents_changed)
+            .then(|| {
+                let environment = Box::new(RenderedEnvironments {
+                    updates,
+                    legacy_single,
+                    include_primary: multiple_environments || previous_multiple_environments,
+                    shell_version: self.shell_version.clone(),
+                    shell_version_removed: self.shell_version.is_none()
+                        && previous.shell_version.is_some(),
+                    current_date: self.current_date.clone(),
+                    current_date_removed: self.current_date.is_none()
+                        && previous.current_date.is_some(),
+                    timezone: self.timezone.clone(),
+                    network: self.network.clone(),
+                    filesystem: self.filesystem.clone(),
+                    subagents: self.subagents.clone(),
+                    clear_subagents: subagents_changed && self.subagents.is_none(),
+                });
+                WorldStateUpdate {
+                    placement: Placement::Mergeable,
+                    content: WorldStateUpdateContent::Environment(environment),
+                }
             });
-            WorldStateUpdate {
-                placement: Placement::Mergeable,
-                content: WorldStateUpdateContent::Environment(environment),
-            }
-        });
         (Some(current), fragment.into_iter().collect())
     }
 }
@@ -240,6 +244,7 @@ pub(crate) struct RenderedEnvironments {
     network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
     pub(crate) subagents: Option<String>,
+    pub(crate) clear_subagents: bool,
 }
 
 enum EnvironmentUpdate {
@@ -328,6 +333,8 @@ impl ContextualUserFragment for RenderedEnvironments {
                 rendered.push('\n');
             }
             rendered.push_str("  </subagents>\n");
+        } else if self.clear_subagents {
+            rendered.push_str("  <subagents />\n");
         }
         input_text(rendered)
     }

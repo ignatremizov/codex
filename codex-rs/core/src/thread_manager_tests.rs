@@ -1138,6 +1138,7 @@ async fn child_session_inherits_resumed_parent_auth(host_child: bool) {
         manager
             .state
             .spawn_child_thread(
+                ThreadRegistrationMode::Immediate,
                 options,
                 control,
                 Some(parent.thread_id),
@@ -1759,6 +1760,7 @@ async fn concurrent_resume_reports_that_it_adopted_the_running_runtime() {
         .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
             prompt_cache_key: None,
             registration: ThreadRegistrationMode::Immediate,
+            ownership_override: None,
             config,
             initial_history: InitialHistory::Resumed(ResumedHistory {
                 history_revision: None,
@@ -3871,6 +3873,7 @@ async fn new_uses_active_provider_for_model_refresh(with_cache: bool) {
         let child = manager
             .state
             .spawn_child_thread(
+                ThreadRegistrationMode::Immediate,
                 StartThreadOptions {
                     session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                         parent_thread_id: started.thread_id,

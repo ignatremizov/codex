@@ -93,7 +93,14 @@ impl LocalAgentControl {
             .session_source
             .get_agent_path()
             .unwrap_or_else(AgentPath::root);
-        let reference = author.to_string();
+        let agent = self
+            .model_visible_agent_identity_for_version(
+                observer
+                    .multi_agent_version()
+                    .unwrap_or(MultiAgentVersion::V1),
+                child.thread_id,
+            )
+            .await?;
         let mut communication = InterAgentCommunication::new(
             author,
             observer
@@ -101,7 +108,7 @@ impl LocalAgentControl {
                 .get_agent_path()
                 .unwrap_or_else(AgentPath::root),
             Vec::new(),
-            format_subagent_commentary_message(&reference, child.thread_id, turn_id, item_id, text),
+            format_subagent_commentary_message(agent, turn_id, item_id, text),
             /*trigger_turn*/ true,
         );
         communication.id = Some(delivery.response_item_id.clone());
@@ -215,7 +222,14 @@ impl LocalAgentControl {
                         .await?;
                 }
                 FinalResponseObservation::Passive | FinalResponseObservation::Wake => {
-                    let reference = self.observation_reference(child.thread_id);
+                    let agent = self
+                        .model_visible_agent_identity_for_version(
+                            observer
+                                .multi_agent_version()
+                                .unwrap_or(MultiAgentVersion::V1),
+                            child.thread_id,
+                        )
+                        .await?;
                     let mut communication = InterAgentCommunication::new(
                         self.get_agent_metadata(child.thread_id)
                             .and_then(|metadata| metadata.agent_path)
@@ -225,11 +239,7 @@ impl LocalAgentControl {
                             .get_agent_path()
                             .unwrap_or_else(AgentPath::root),
                         Vec::new(),
-                        format_subagent_notification_message(
-                            &reference,
-                            child.thread_id,
-                            &terminal.status,
-                        ),
+                        format_subagent_notification_message(agent, &terminal.status),
                         disposition == FinalResponseObservation::Wake,
                     );
                     communication.id = Some(context_id.clone());

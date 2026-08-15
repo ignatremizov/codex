@@ -3,6 +3,9 @@
 use super::*;
 
 pub(super) fn active_snapshot_turn(snapshot: &ThreadEventSnapshot) -> Option<String> {
+    if let Some((turn_id, _)) = &snapshot.active_turn_timing {
+        return Some(turn_id.clone());
+    }
     let mut active = snapshot
         .turns
         .iter()

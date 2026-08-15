@@ -148,6 +148,16 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
         thread.shutdown_and_wait().await?;
     }
 
+    let alias = test
+        .codex
+        .state_db()
+        .expect("state DB enabled")
+        .find_agent_alias_by_thread(
+            codex_protocol::SessionId::from(test.session_configured.thread_id),
+            child_id,
+        )
+        .await?
+        .expect("accepted spawn retains its canonical alias");
     assert_eq!(
         (spawn.model, spawn.reasoning_effort, spawn.receiver_agents),
         (
@@ -176,7 +186,7 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
         .expect("parent receives successful spawn output");
     assert_eq!(
         serde_json::from_str::<Value>(&output)?,
-        json!({ "agent_id": child_id.to_string(), "nickname": "Captured" }),
+        json!({ "agent_id": child_id.to_string(), "nickname": "Captured", "ref": alias.agent_ref.to_string() }),
     );
     Ok(())
 }

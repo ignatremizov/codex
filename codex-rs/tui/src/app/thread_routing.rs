@@ -146,7 +146,7 @@ impl App {
                 store.replay_may_have_output = false;
             }
             store.active = false;
-            store.input_state = input_state;
+            store.set_input_state(input_state);
             store.merge_recap_progress(recap_progress);
             if let Some(receiver) = receiver {
                 channel.receiver = Some(receiver);
@@ -220,7 +220,7 @@ impl App {
     }
 
     pub(super) fn thread_label(&self, thread_id: ThreadId) -> String {
-        let is_primary = self.primary_thread_id == Some(thread_id);
+        let is_primary = self.agent_root_thread_id() == Some(thread_id);
         let anonymous = |label: &str| {
             // Agents spawned together share the timestamp prefix of their UUIDv7 IDs.
             let id = thread_id.to_string();
@@ -294,10 +294,12 @@ impl App {
     /// intentionally hidden until there is more than one known thread so single-thread sessions do
     /// not spend footer space restating that the user is already on the main conversation.
     pub(super) fn sync_active_agent_label(&mut self) {
-        let label = self
-            .agent_navigation
-            .active_agent_label(self.current_displayed_thread_id(), self.primary_thread_id);
+        let label = self.agent_navigation.active_agent_label(
+            self.current_displayed_thread_id(),
+            self.agent_root_thread_id(),
+        );
         self.chat_widget.set_active_agent_label(label);
+        self.sync_agent_prompt_targets();
         self.sync_side_thread_ui();
     }
 
@@ -1262,7 +1264,7 @@ impl App {
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
-        self.cache_collab_wake_subscription_for_notification(&notification);
+        self.cache_collab_response_observation_for_notification(&notification);
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
@@ -1338,6 +1340,11 @@ impl App {
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
+            if self.queued_agent_prompts.contains_key(&thread_id) {
+                self.app_event_tx.send(AppEvent::DrainAgentPromptQueue {
+                    target_thread_id: thread_id,
+                });
+            }
         }
 
         // Settings snapshots do not belong in the transcript queue: apply them in receive order.
@@ -1702,6 +1709,7 @@ impl App {
             retained_assistant_captions,
         );
         self.restore_voice_owner_after_replay();
+        self.restore_agent_command_recovery();
         let pending = std::mem::take(&mut self.pending_primary_events);
         for pending_event in pending {
             match pending_event {
@@ -2017,12 +2025,21 @@ impl App {
             .then(|| snapshot.input_state.take())
             .flatten();
         self.sync_mcp_inventory_loading();
+        let restored_active_turn_timing = (replay_kind == ReplayKind::ThreadSnapshot)
+            .then_some(snapshot.active_turn_timing)
+            .flatten();
+        if let Some(input_state) = snapshot.input_state.as_mut() {
+            input_state.set_active_turn_timing(restored_active_turn_timing.clone());
+        }
         self.chat_widget.restore_thread_input_state(
             snapshot.input_state,
             ThreadInputStateRestoreMode {
                 preserve_in_flight_turn: replay_kind == ReplayKind::ThreadSnapshot,
             },
         );
+        if let Some((turn_id, started_at)) = restored_active_turn_timing.as_ref() {
+            self.chat_widget.restore_active_turn(turn_id, *started_at);
+        }
         if !snapshot.turns.is_empty() {
             self.chat_widget.replay_backend_thread_turns(
                 snapshot.turns,
@@ -2047,6 +2064,10 @@ impl App {
             }
         }
         reasoning_replay.restore(&mut self.chat_widget);
+        if let Some((turn_id, started_at)) = restored_active_turn_timing {
+            self.chat_widget
+                .restore_replayed_turn_origin(&turn_id, started_at);
+        }
         if replay_kind != ReplayKind::ThreadSnapshot {
             // Closed and replay-only threads cannot own process-local terminals. Keep persisted
             // command items in the transcript, but discard any `InProgress` item state rebuilt

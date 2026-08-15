@@ -21,6 +21,7 @@ use ratatui::widgets::Wrap;
 use super::selection_picker_layout::PickerLayoutSizes;
 use super::selection_picker_layout::picker_areas;
 
+use super::selection_popup_common::menu_surface_padding_height;
 use super::selection_popup_common::wrap_styled_line;
 use crate::app_event_sender::AppEventSender;
 use crate::clipboard_paste::normalize_pasted_search_query;
@@ -237,6 +238,8 @@ pub(crate) struct SelectionViewParams {
     pub search_mode: SearchMode,
     /// Use ordinal digits in the gutter; when false, use only each row's explicit shortcut.
     pub auto_number_shortcuts: bool,
+    /// Whether enabled rows render and accept transient numeric selection shortcuts.
+    pub show_row_numbers: bool,
     pub search_placeholder: Option<String>,
     pub col_width_mode: ColumnWidthMode,
     pub row_display: SelectionRowDisplay,
@@ -304,6 +307,7 @@ impl Default for SelectionViewParams {
             search_toggle_key: None,
             search_mode: SearchMode::default(),
             auto_number_shortcuts: true,
+            show_row_numbers: true,
             search_placeholder: None,
             col_width_mode: ColumnWidthMode::AutoVisible,
             row_display: SelectionRowDisplay::Wrapped,
@@ -362,6 +366,7 @@ pub(crate) struct ListSelectionView {
     search_mode: SearchMode,
     search_active: bool,
     auto_number_shortcuts: bool,
+    show_row_numbers: bool,
     search_query: String,
     search_placeholder: Option<String>,
     col_width_mode: ColumnWidthMode,
@@ -520,6 +525,7 @@ impl ListSelectionView {
             search_active,
             search_query,
             auto_number_shortcuts: params.auto_number_shortcuts,
+            show_row_numbers: params.show_row_numbers,
             search_placeholder: if params.is_searchable {
                 params.search_placeholder
             } else {
@@ -769,7 +775,7 @@ impl ListSelectionView {
                     let marker = if item.is_current { " (current)" } else { "" };
                     let name_with_marker = format!("{name}{marker}");
                     let is_disabled = item.is_disabled || item.disabled_reason.is_some();
-                    let wrap_prefix = if self.is_searchable {
+                    let wrap_prefix = if self.is_searchable || !self.show_row_numbers {
                         // The number keys don't work when search is enabled (since we let the
                         // numbers be used for the search query).
                         format!("{prefix} ")
@@ -1436,7 +1442,8 @@ impl BottomPaneView for ListSelectionView {
                     self.select_shortcut(idx);
                     return;
                 }
-                if self.auto_number_shortcuts
+                if self.show_row_numbers
+                    && self.auto_number_shortcuts
                     && let Some(idx) = c
                         .to_digit(/*radix*/ 10)
                         .map(|d| d as usize)
@@ -1590,9 +1597,15 @@ impl Renderable for ListSelectionView {
 
         // Side content: when the terminal is wide enough the panel sits beside
         // the list and shares vertical space; otherwise it stacks below.
-        if self.side_layout_width(inner_width).is_some() {
-            // Side-by-side — side content shares list rows vertically so it
-            // doesn't add to total height.
+        if let Some(side_width) = self.side_layout_width(inner_width) {
+            // Side-by-side content shares the same vertical region as the list, so the popup must
+            // be tall enough for whichever column is taller. Add the menu surface's top/bottom
+            // inset because the renderable is placed inside that surface.
+            height = height.max(
+                self.side_content
+                    .desired_height(side_width)
+                    .saturating_add(menu_surface_padding_height()),
+            );
         } else {
             let side_h = self.stacked_side_content().desired_height(inner_width);
             if side_h > 0 {
@@ -2789,6 +2802,35 @@ mod tests {
     }
 
     #[test]
+    fn tab_invokes_secondary_action_without_accepting_row() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut view = new_view(
+            SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Agent".to_string(),
+                    secondary_action: Some(SelectionSecondaryAction {
+                        key: crate::key_hint::plain(KeyCode::Tab),
+                        action: Box::new(|tx: &_| {
+                            tx.send(AppEvent::OpenApprovalsPopup);
+                        }),
+                        footer_hint: "Tab for secondary".into(),
+                    }),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            tx,
+        );
+
+        view.handle_key_event(KeyEvent::from(KeyCode::Tab));
+
+        assert!(!view.is_complete());
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::OpenApprovalsPopup)));
+    }
+
+    #[test]
     fn move_down_without_selection_change_does_not_fire_callback() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
@@ -3373,6 +3415,37 @@ mod tests {
         );
 
         assert_eq!(view.side_layout_width(/*content_width*/ 80), None);
+    }
+
+    #[test]
+    fn side_by_side_content_can_determine_popup_height() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let view = new_view(
+            SelectionViewParams {
+                title: Some("Debug".to_string()),
+                items: vec![SelectionItem {
+                    name: "Item 1".to_string(),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }],
+                side_content: Box::new(MarkerRenderable {
+                    marker: "W",
+                    height: 12,
+                }),
+                side_content_width: SideContentWidth::Half,
+                side_content_min_width: 10,
+                ..Default::default()
+            },
+            tx,
+        );
+
+        assert_eq!(view.desired_height(/*width*/ 120), 14);
+        let rendered = render_lines_with_width(&view, /*width*/ 120);
+        assert_eq!(
+            rendered.lines().filter(|line| line.contains('W')).count(),
+            12
+        );
     }
 
     #[test]

@@ -10,10 +10,20 @@ impl ChatWidget {
         replay_kind: Option<ReplayKind>,
     ) -> Option<history_cell::FinalMessageSeparator> {
         let live = replay_kind.is_none();
+        let elapsed = self
+            .bottom_pane
+            .status_elapsed()
+            .filter(|_| live)
+            .or_else(|| {
+                self.turn_lifecycle
+                    .elapsed_seconds(Instant::now())
+                    .filter(|_| live)
+                    .map(std::time::Duration::from_secs)
+            });
         history_cell::FinalMessageSeparator::from_turn_once(
             turn,
             &mut self.turn_lifecycle.rendered_completion_turn_ids,
-            self.bottom_pane.status_elapsed().filter(|_| live),
+            elapsed,
             live.then(Local::now),
         )
         .filter(|cell| self.local_settings.transcript_mode.is_owned() || cell.has_timing())

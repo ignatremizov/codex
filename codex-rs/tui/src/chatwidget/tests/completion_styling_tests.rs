@@ -286,3 +286,21 @@ fn completion_snapshot_normalization_preserves_clock_only_message_lines() {
         );
     }
 }
+
+#[tokio::test]
+async fn restored_turn_clock_is_live_only_and_keeps_exact_completion_deduplication() {
+    for replay_kind in [None, Some(ReplayKind::ResumeInitialMessages)] {
+        let (mut chat, _events, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        // A parked thread can retain its turn clock while its status widget is absent.
+        chat.turn_lifecycle.restore_running_since(Instant::now());
+        assert_eq!(chat.bottom_pane.status_elapsed(), None);
+        let turn = completed_turn(/*duration_ms*/ None, Some(COMPLETED_AT));
+        let cell = chat
+            .completion_cell(&turn, replay_kind)
+            .expect("saved completion timestamp");
+        let label = lines_to_single_string(&cell.raw_lines());
+        assert_eq!(label.contains("Worked for"), replay_kind.is_none());
+        assert!(label.contains(&saved_completion_label()));
+        assert!(chat.completion_cell(&turn, replay_kind).is_none());
+    }
+}

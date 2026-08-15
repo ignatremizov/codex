@@ -8,8 +8,10 @@ use pretty_assertions::assert_eq;
 #[test]
 fn notification_filter_requires_runtime_annotation() {
     let notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/worker",
-        codex_protocol::ThreadId::new(),
+        crate::context::AgentContextIdentity::V2 {
+            agent_path: "/root/worker".parse().expect("agent path"),
+            agent_id: codex_protocol::ThreadId::new(),
+        },
         AgentStatus::Completed(Some("finished".to_string())),
     ));
     let parent = ResponseItemEnvelope::new(notification);
@@ -52,8 +54,10 @@ fn notification_filter_requires_runtime_annotation() {
 #[test]
 fn notification_filter_preserves_other_fragments_and_annotations() {
     let notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/worker",
-        codex_protocol::ThreadId::new(),
+        crate::context::AgentContextIdentity::V2 {
+            agent_path: "/root/worker".parse().expect("agent path"),
+            agent_id: codex_protocol::ThreadId::new(),
+        },
         AgentStatus::Completed(Some("finished".to_string())),
     ));
     let mut envelope = ResponseItemEnvelope::new(notification);
