@@ -5,6 +5,9 @@
 
 use super::*;
 use crate::app_backtrack::SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE;
+use crate::bottom_pane::SelectionItem;
+use crate::bottom_pane::SelectionViewParams;
+use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 use crate::keymap::bindings_for_action;
 use crate::keymap::keymap_action_ids;
 

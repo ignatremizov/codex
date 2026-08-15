@@ -158,6 +158,20 @@ async fn handle_spawn_agent(
         Ok((spawned_agent, _)) => (Some(spawned_agent.thread_id), spawned_agent.status.clone()),
         Err(_) => (None, AgentStatus::NotFound),
     };
+    let new_agent_ref = match new_thread_id {
+        Some(thread_id) => match session.services.local_agent_runtime.control(session.session_id())
+            .model_visible_agent_identity_for_version(MultiAgentVersion::V1, thread_id)
+            .await
+        {
+            Ok(crate::context::AgentContextIdentity::V1 { agent_ref, .. }) => agent_ref,
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(%thread_id, %error, "spawn accepted without an available local alias");
+                None
+            }
+        },
+        None => None,
+    };
     let agent_snapshot = result.as_ref().ok().map(|(_, config)| config);
     let new_agent_nickname =
         agent_snapshot.and_then(|snapshot| snapshot.session_source.get_nickname());
@@ -215,6 +229,7 @@ async fn handle_spawn_agent(
     Ok(SpawnAgentResult {
         agent_id: new_thread_id.to_string(),
         nickname,
+        agent_ref: new_agent_ref.map(|agent_ref| agent_ref.to_string()),
     })
 }
 
@@ -242,6 +257,8 @@ struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentResult {
     agent_id: String,
     nickname: Option<String>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    agent_ref: Option<String>,
 }
 
 impl ToolOutput for SpawnAgentResult {

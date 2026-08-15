@@ -28,6 +28,19 @@ use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
+use codex_app_server_protocol::AgentAlias;
+use codex_app_server_protocol::AgentAliasListParams;
+use codex_app_server_protocol::AgentAliasListResponse;
+use codex_app_server_protocol::AgentAliasState;
+use codex_app_server_protocol::AgentControlAction;
+use codex_app_server_protocol::AgentControlOutcome;
+use codex_app_server_protocol::AgentControlParams;
+use codex_app_server_protocol::AgentControlResponse;
+use codex_app_server_protocol::AgentFinalResponseHandling;
+use codex_app_server_protocol::AgentInputOutcome;
+use codex_app_server_protocol::AgentObservationBinding;
+use codex_app_server_protocol::AgentObservationMode;
+use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::AppListUpdatedNotification;
 use codex_app_server_protocol::AppSummary;
 use codex_app_server_protocol::AppTemplateSummary;
@@ -350,6 +363,12 @@ use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
 use codex_core::TurnStartOptions;
+use codex_core::UserAgentFinalResponseHandling;
+use codex_core::UserAgentForkMode;
+use codex_core::UserAgentInputOutcome;
+use codex_core::UserAgentObservationBinding;
+use codex_core::UserAgentObservationMode;
+use codex_core::UserAgentResponseHandling;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::NetworkProxyAuditMetadata;
@@ -441,6 +460,10 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::UserAgentControlAction as CoreUserAgentControlAction;
+use codex_protocol::items::UserAgentControlItem;
+use codex_protocol::items::UserAgentControlStatus as CoreUserAgentControlStatus;
+use codex_protocol::items::UserAgentForkMode as CoreUserAgentForkMode;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentResponseFinalDelivery;
@@ -577,6 +600,14 @@ mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;
 mod windows_sandbox_processor;
+
+fn validate_v2_input_limit(items: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
+    let actual_chars: usize = items.iter().map(V2UserInput::text_char_count).sum();
+    if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+        return Err(TurnRequestProcessor::input_too_large_error(actual_chars));
+    }
+    Ok(())
+}
 
 pub(crate) use account_processor::AccountRequestProcessor;
 pub(crate) use apps_processor::AppsRequestProcessor;

@@ -1,7 +1,6 @@
 use crate::agent::AgentStatus;
 use crate::agent::api::AgentControl;
 use crate::config::ConstraintResult;
-use crate::context::ContextualUserFragment;
 use crate::context::GuardianReviewEvidence;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;

@@ -74,6 +74,7 @@ fn empty_thread_snapshot(app: &App, thread_id: ThreadId) -> ThreadEventSnapshot 
         turns: Vec::new(),
         events: Vec::new(),
         active_reasoning_item: None,
+        active_turn_timing: None,
         input_state: None,
     }
 }
@@ -110,7 +111,7 @@ async fn check_remote_voice_start(
             /*blocked_thread_list*/ None,
             /*failed_thread_name*/ None,
             crate::app_server_session::ThreadParamsMode::Remote,
-            RealtimeRequestBehavior::AcceptStart,
+            RealtimeRequestBehavior::AcceptStart.into(),
             codex_config::LoaderOverrides::default(),
         )
         .await?;
@@ -262,10 +263,11 @@ async fn switching_agent_threads_preserves_backend_voice_and_routes_pending_spee
         RealtimeRequestBehavior::AcceptSpeech,
     )
     .await?;
-    let source = ThreadId::new();
+    let source_started = Box::pin(app_server.start_thread(&app.config)).await?;
+    let source = source_started.session.thread_id;
     app.active_thread_id = Some(source);
     app.chat_widget
-        .handle_thread_session_quiet(test_thread_session(source, app.config.cwd.to_path_buf()));
+        .handle_thread_session_quiet(source_started.session.clone());
     crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, source);
     while ops.try_recv().is_ok() {}
     let turn_id = "pending-voice-turn";
@@ -316,8 +318,8 @@ async fn switching_agent_threads_preserves_backend_voice_and_routes_pending_spee
     );
     let mut source_channel = ThreadEventChannel::new_with_session(
         THREAD_EVENT_CHANNEL_CAPACITY,
-        test_thread_session(source, app.config.cwd.to_path_buf()),
-        Vec::new(),
+        source_started.session,
+        source_started.turns,
     );
     source_channel.store.lock().await.active = true;
     app.active_thread_rx = source_channel.receiver.take();
@@ -334,13 +336,15 @@ async fn switching_agent_threads_preserves_backend_voice_and_routes_pending_spee
         ),
     )
     .await?;
-    let target = ThreadId::new();
+    // Selection verifies backend liveness before switching or stopping the old voice session.
+    let target_started = Box::pin(app_server.start_thread(&app.config)).await?;
+    let target = target_started.session.thread_id;
     app.thread_event_channels.insert(
         target,
         ThreadEventChannel::new_with_session(
             THREAD_EVENT_CHANNEL_CAPACITY,
-            test_thread_session(target, app.config.cwd.to_path_buf()),
-            Vec::new(),
+            target_started.session,
+            target_started.turns,
         ),
     );
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -691,6 +695,7 @@ async fn replay_reconciles_only_matching_voice_captions_one_for_one() {
             turns: vec![voice, typed],
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -868,6 +873,7 @@ async fn buffered_voice_items_reconcile_captions_after_thread_switch() {
             turns: Vec::new(),
             events: events_to_replay,
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -971,6 +977,7 @@ async fn unrendered_buffered_items_do_not_consume_retained_captions() {
                 ),
             ],
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -1403,6 +1410,7 @@ async fn switching_threads_retains_undelivered_voice_answer_after_replay_evictio
             }],
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,
@@ -1994,7 +2002,7 @@ async fn remote_voice_catalog_success_and_failure() -> Result<()> {
                 /*blocked_thread_list*/ None,
                 /*failed_thread_name*/ None,
                 crate::app_server_session::ThreadParamsMode::Remote,
-                RealtimeRequestBehavior::Forward,
+                RealtimeRequestBehavior::Forward.into(),
                 codex_config::LoaderOverrides::default(),
             )
             .await?;

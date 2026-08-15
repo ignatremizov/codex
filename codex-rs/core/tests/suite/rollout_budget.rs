@@ -15,6 +15,7 @@ use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::request_body_bytes;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -56,23 +57,6 @@ fn wire_request_contains(request: &wiremock::Request, text: &str) -> bool {
     request_body_bytes(request)
         .and_then(|body| String::from_utf8(body).ok())
         .is_some_and(|body| body.contains(text))
-}
-
-fn request_body_bytes(request: &wiremock::Request) -> Option<Vec<u8>> {
-    let is_zstd = request
-        .headers
-        .get("content-encoding")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
-        });
-    if is_zstd {
-        zstd::stream::decode_all(std::io::Cursor::new(&request.body)).ok()
-    } else {
-        Some(request.body.clone())
-    }
 }
 
 fn request_body_json(request: &wiremock::Request) -> Option<Value> {

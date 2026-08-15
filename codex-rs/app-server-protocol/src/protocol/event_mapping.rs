@@ -458,6 +458,7 @@ pub fn item_event_to_server_notification(
                 | TurnItem::Reasoning(_)
                 | TurnItem::DynamicToolCall(_)
                 | TurnItem::SubAgentActivity(_)
+                | TurnItem::UserAgentControl(_)
                 | TurnItem::WebSearch(_)
                 | TurnItem::ImageView(_)
                 | TurnItem::Extension(_)

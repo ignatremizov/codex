@@ -1,9 +1,15 @@
 use super::*;
+use crate::agent::agent_resolver::resolve_resumable_v1_agent_target;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::control::AgentResumeOwnership;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
 use codex_tools::ToolSpec;
+use std::sync::Arc;
 
 pub(crate) struct Handler;
 
@@ -43,9 +49,7 @@ async fn handle_resume_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: ResumeAgentArgs = parse_arguments(&arguments)?;
-    let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
-        FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
-    })?;
+    let receiver_thread_id = resolve_resumable_v1_agent_target(&session, &args.id).await?;
     if receiver_thread_id == session.thread_id {
         return Err(FunctionCallError::RespondToModel(
             "an agent cannot resume itself; continue the current turn directly".to_string(),
@@ -58,23 +62,31 @@ async fn handle_resume_agent(
     let receiver_agent = local_agent_control
         .get_agent_metadata(receiver_thread_id)
         .unwrap_or_default();
+    let resume_plan = local_agent_control
+        .plan_agent_resume(receiver_thread_id)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let child_depth = next_thread_spawn_depth(&turn.session_source);
-    let max_depth = turn.config.agent_max_depth;
-    if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
+    if resume_plan.ownership.transfers_ownership()
+        && exceeds_thread_spawn_depth_limit(child_depth, turn.config.agent_max_depth)
+    {
         return Err(FunctionCallError::RespondToModel(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
+    let mut status = resume_plan.status;
+    let was_not_found = matches!(status, AgentStatus::NotFound);
+    let task_name = resume_plan
+        .ownership
+        .transfers_ownership()
+        .then(|| format!("model-adopt-{}", uuid::Uuid::now_v7()));
     let resumed_session_source = thread_spawn_source(
         session.thread_id(),
         &turn.session_source,
         child_depth,
         /*agent_role*/ None,
-        /*task_name*/ None,
+        task_name,
     )?;
-    let mut status = local_agent_control.get_status(receiver_thread_id)
-        .await;
-    let was_not_found = matches!(status, AgentStatus::NotFound);
     let mut live_adoption_error = None;
     if !was_not_found {
         match local_agent_control
@@ -120,16 +132,24 @@ async fn handle_resume_agent(
         .await;
 
     let (receiver_agent, mut error) = if was_not_found {
-        let result = async {
-            let config = build_agent_resume_config(&turn)
-                .map_err(FunctionCallError::RespondToModel)?;
-            local_agent_control.resume_agent(config, receiver_thread_id, resumed_session_source.clone())
-                .await.map_err(|err| collab_agent_error(receiver_thread_id, err))
-        }.await;
-        match result {
-            Ok((agent, _)) => {
-                status = agent.status;
-                (agent.metadata, None)
+        match Box::pin(try_resume_closed_agent(
+            &session,
+            &turn,
+            receiver_thread_id,
+            resumed_session_source.clone(),
+            resume_plan.ownership,
+            args.id.clone(),
+        ))
+        .await
+        {
+            Ok(()) => {
+                status = session.services.local_agent_runtime.control(session.session_id()).get_status(receiver_thread_id)
+                    .await;
+                (
+                    session.services.local_agent_runtime.control(session.session_id()).get_agent_metadata(receiver_thread_id)
+                        .unwrap_or(receiver_agent),
+                    None,
+                )
             }
             Err(error) => {
                 status = local_agent_control.get_status(receiver_thread_id).await;
@@ -222,4 +242,43 @@ impl ToolOutput for ResumeAgentResult {
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
         tool_output_code_mode_result(self, "resume_agent")
     }
+}
+
+async fn try_resume_closed_agent(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    receiver_thread_id: ThreadId,
+    session_source: SessionSource,
+    ownership: AgentResumeOwnership,
+    authored_selector: String,
+) -> Result<(), FunctionCallError> {
+    let config = build_agent_resume_config(turn.as_ref())
+        .map_err(FunctionCallError::RespondToModel)?;
+    let result = match ownership {
+        AgentResumeOwnership::CurrentRoot => {
+            session.services.local_agent_runtime.control(session.session_id()).resume_agent_from_rollout(config, receiver_thread_id, session_source)
+                .await
+        }
+        AgentResumeOwnership::Transfer {
+            previous_session_id,
+        } => {
+            session.services.local_agent_runtime.control(session.session_id()).resume_agent_from_rollout_adopting(
+                    config,
+                    receiver_thread_id,
+                    session_source,
+                    // The handler's post-resume adoption pass applies the requested policy once,
+                    // including for standalone rollouts whose persisted source has no parent.
+                    ResponseObservationPolicy::from_parts(
+                        /*commentary*/ false,
+                        FinalResponseObservation::None,
+                    ),
+                    previous_session_id,
+                    authored_selector,
+                )
+                .await
+        }
+    };
+    result
+        .map(|_| ())
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))
 }

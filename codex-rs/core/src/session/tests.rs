@@ -11479,11 +11479,14 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
     let initial_context = build_initial_context(&session, &turn_context).await;
 
     let developer_messages = developer_message_texts(&initial_context);
+    // This synthetic session has no registered agent metadata. Source role selects
+    // usage guidance, but cannot manufacture a canonical lifecycle identity.
+    let canonical_identity = format!("<context_window>\nAgent name: {}\n", session.thread_id);
     assert!(
         developer_messages
             .iter()
             .flatten()
-            .any(|text| text.contains("<context_window>\nAgent name: /root/worker\n")),
+            .any(|text| text.contains(&canonical_identity)),
         "expected subagent context window to include its canonical name, got {developer_messages:?}"
     );
     assert!(

@@ -11,6 +11,16 @@
       ],
       "type": "string"
     },
+    "AgentResponseFinalDelivery": {
+      "description": "Final-response handling retained as durable evidence for an observer.",
+      "enum": [
+        "none",
+        "presentation_only",
+        "passive",
+        "wake"
+      ],
+      "type": "string"
+    },
     "AsyncUserInputQuestion": {
       "additionalProperties": false,
       "properties": {
@@ -1682,6 +1692,130 @@
         {
           "properties": {
             "action": {
+              "$ref": "#/definitions/UserAgentControlAction"
+            },
+            "authoredSelector": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "finalResponse": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseFinalDelivery"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "forkMode": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/UserAgentForkMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "newOwnerSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "nickname": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "observeCommentary": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "previousOwnerSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "promptPreview": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "queueInput": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resumedTarget": {
+              "type": "boolean"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/UserAgentControlStatus"
+            },
+            "targetMessages": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "targetThreadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "userAgentControl"
+              ],
+              "title": "UserAgentControlThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "id",
+            "resumedTarget",
+            "status",
+            "type"
+          ],
+          "title": "UserAgentControlThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "action": {
               "anyOf": [
                 {
                   "$ref": "#/definitions/WebSearchAction"
@@ -2072,6 +2206,60 @@
         "inProgress"
       ],
       "type": "string"
+    },
+    "UserAgentControlAction": {
+      "enum": [
+        "spawn",
+        "prompt",
+        "queued_prompt",
+        "resume",
+        "interrupt",
+        "close",
+        "observe"
+      ],
+      "type": "string"
+    },
+    "UserAgentControlStatus": {
+      "enum": [
+        "succeeded",
+        "unknown",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "UserAgentForkMode": {
+      "oneOf": [
+        {
+          "enum": [
+            "none",
+            "all"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "last_n_turns": {
+              "properties": {
+                "turns": {
+                  "format": "uint32",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "turns"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "last_n_turns"
+          ],
+          "title": "LastNTurnsUserAgentForkMode",
+          "type": "object"
+        }
+      ]
     },
     "UserInput": {
       "oneOf": [

@@ -69,10 +69,20 @@ impl LocalAgentRuntime {
         Arc::ptr_eq(&self.registry, &other.registry)
     }
 
+    /// Explicit native user-control entry; no fallback around a host backend.
+    pub(crate) fn user_control(
+        &self,
+        session_id: SessionId,
+    ) -> codex_protocol::error::Result<LocalAgentControl> {
+        self.upgrade()?.ensure_native_agent_control()?;
+        Ok(self.control(session_id))
+    }
+
     /// Bind local startup to the same tree state with this session's identity.
     pub(crate) fn control(&self, session_id: SessionId) -> LocalAgentControl {
         LocalAgentControl {
             session_id,
+            session_id_is_bound: true,
             runtime: self.clone(),
         }
     }
@@ -96,6 +106,14 @@ impl From<LocalAgentControl> for AgentControlInit {
 }
 
 impl AgentControlInit {
+    /// A provided controller is already bound; fresh local startup is not.
+    pub(crate) fn bound_session_id(&self) -> Option<SessionId> {
+        match self {
+            Self::Local(control) => control.bound_session_id(),
+            Self::Provided { control, .. } => Some(control.identity()),
+        }
+    }
+
     pub(crate) fn runtime(&self) -> &LocalAgentRuntime {
         match self {
             Self::Local(control) => &control.runtime,

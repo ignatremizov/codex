@@ -20,6 +20,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 mod response_observation;
+pub(in crate::agent) use response_observation::ReplacedFinalResponseObservationBinding;
 
 pub(crate) use response_observation::ResponseObservationBinding;
 pub(crate) use response_observation::ResponseObservationBindingPublication;
