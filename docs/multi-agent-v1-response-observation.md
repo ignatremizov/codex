@@ -878,16 +878,23 @@ that previously referred to that identity.
 
 ## Relationship to multi-agent v2
 
-This is a v1 extension.
+This implementation changes only V1. V2 keeps its existing `send_message` and `followup_task`
+surface for now.
 
-V2 should reuse the same observation registry, target-owned queue, message-grant state, delivery
-deduplication, and target-turn binding. Its existing `send_message` and `followup_task` operations
-may adapt to the shared machinery internally; they must not create a second queue or bypass the
-one-wake `m` boundary when V1 and V2 agents share one graph.
+A later V2 integration should replace those two model-facing operations with the shared
+`send_input` name:
 
-A v3 would be justified only by intentionally replacing both public tool sets with a new
-orchestration contract. Adding an optional, backward-compatible response policy to V1 does not
-justify another configured multi-agent version.
+- omitted `q` should preserve native V2 active-turn delivery and idle-turn start behavior;
+- `q` should use the same target-owned FIFO as V1 and `/agent queue`, producing one distinct future
+  turn rather than a second mailbox queue;
+- encrypted, encrypted-with-audit, and plaintext `InterAgentCommunication` must remain native V2
+  `AgentMessage` input rather than being converted to user input;
+- native V2 agent-path attribution already gives a recipient a reply target, so the integration
+  must decide explicitly how `m` and the V1 `c`/`f`/`x` observation modes relate to V2's existing
+  graph communication and parent-completion contract instead of silently treating them as no-ops.
+
+That consolidation is follow-up work and is not required to ship the V1 `m`/`q` contract. It does
+not require a new configured multi-agent version.
 
 ## Persistence and recovery requirements
 
