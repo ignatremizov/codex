@@ -241,7 +241,9 @@ use codex_protocol::exec_output::StreamOutput;
 pub(crate) mod approval_test_support;
 pub(crate) mod async_compaction;
 mod checkpoint_publication;
+mod close_response;
 mod code_mode_warning;
+pub(crate) use close_response::CompletionContextState;
 pub(crate) mod command_approval;
 mod compacted_media_repair;
 mod config_refresh;
@@ -258,6 +260,7 @@ mod extension_interruption;
 pub(crate) mod extension_metrics;
 mod guardian_checkpoint;
 mod handlers;
+pub(crate) use handlers::inter_agent_communication;
 mod inject;
 mod prepared_history_items;
 mod reasoning_effort;
@@ -296,6 +299,7 @@ mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
 mod plugin_selection;
+mod prompt_input;
 mod realtime_history;
 mod reconstruction_publication;
 mod retained_context;
@@ -327,6 +331,7 @@ pub(crate) use self::environment::ThreadEnvironmentDefaults;
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
 pub(crate) use self::input_queue::InputQueueActivity;
+pub(crate) use self::input_queue::PromptInputKind;
 pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
 pub(crate) use self::input_queue::UserInputMetadata;
@@ -386,7 +391,6 @@ use crate::windows_sandbox::managed_proxy_routing_for_windows_sandbox;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
-use codex_history::CodexHarnessMetadata;
 use codex_history::CompactedItem;
 use codex_history::CompactionResumeMetadata;
 use codex_history::InitialHistory;
@@ -1213,6 +1217,7 @@ impl SessionIo {
             ObservedTurnInputSubmission::Admitted {
                 submission_id,
                 resolution,
+                ..
             } => Ok((submission_id, resolution)),
             ObservedTurnInputSubmission::NotSubmitted { reason } => Err(CodexErr::InvalidRequest(
                 format!("turn input was not submitted: {reason:?}"),
@@ -2536,6 +2541,9 @@ impl Session {
     }
 
     pub(crate) async fn emit_turn_started(&self, turn_context: &TurnContext, task_kind: TaskKind) {
+        let agent_queue = self
+            .await_agent_queue_turn_metadata(&turn_context.sub_id)
+            .await;
         let event = TurnStartedEvent {
             turn_attribution: (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
             turn_id: turn_context.sub_id.clone(),
@@ -2544,6 +2552,7 @@ impl Session {
             started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
             model_context_window: turn_context.model_context_window(),
             collaboration_mode_kind: turn_context.mode(),
+            agent_queue,
         };
         self.send_event(turn_context, EventMsg::TurnStarted(event))
             .await;
@@ -2711,7 +2720,9 @@ impl Session {
         }
         match msg {
             EventMsg::ItemStarted(event) => {
-                if let TurnItem::AgentMessage(item) = &event.item {
+                if let TurnItem::AgentMessage(item) = &event.item
+                    && !item.is_attributed_agent_input_presentation()
+                {
                     self.conversation
                         .register_handoff_stream_item(
                             item.id.clone(),
@@ -2734,7 +2745,8 @@ impl Session {
             }
             EventMsg::ItemCompleted(event) => {
                 if let TurnItem::AgentMessage(item) = &event.item
-                    && self.conversation.finish_handoff_stream_item(&item.id).await
+                    && (item.is_attributed_agent_input_presentation()
+                        || self.conversation.finish_handoff_stream_item(&item.id).await)
                 {
                     return;
                 }
@@ -5134,75 +5146,6 @@ impl Session {
             self.emit_turn_item_started(turn_context, &item).await;
             self.emit_turn_item_completed(turn_context, item).await;
         }
-    }
-
-    pub(crate) async fn record_user_prompt_and_emit_turn_item(
-        &self,
-        turn_context: &TurnContext,
-        model_info: &ModelInfo,
-        input: &[UserInput],
-        client_id: Option<String>,
-        metadata: UserInputMetadata,
-        persist_context: PersistContext,
-    ) {
-        // Persist the user message to history, but emit the turn item from `UserInput` so
-        // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
-        // those spans, and `record_response_item_and_emit_turn_item` would drop them.
-        let mut user_image_content_indices = HashMap::new();
-        let mut response_item = self.response_item_from_user_input_with_image_positions(
-            input.to_vec(),
-            &mut user_image_content_indices,
-        );
-        if metadata.origin == codex_history::UserInputOrigin::Heartbeat
-            && let ResponseItem::Message {
-                content,
-                internal_chat_message_metadata_passthrough: Some(metadata),
-                ..
-            } = &mut response_item
-            && matches!(content.as_slice(), [ContentItem::InputText { .. }])
-        {
-            metadata.content_item_kinds = Some(vec![ContentItemKind(
-                codex_history::HEARTBEAT_CONTENT_KIND.to_owned(),
-            )]);
-        }
-        let (prepared_items, image_preparations) = self
-            .prepare_annotated_conversation_items_for_history(
-                turn_context,
-                model_info,
-                vec![ResponseItemEnvelope {
-                    item: response_item,
-                    metadata: metadata.acceptance_order.map(|order| CodexHarnessMetadata {
-                        user_input_order: Some(order),
-                        ..Default::default()
-                    }),
-                }],
-            )
-            .await;
-        let mut user_message_item = UserMessageItem::new(input);
-        apply_prepared_image_file_ids(
-            &mut user_message_item,
-            &prepared_items,
-            &user_image_content_indices,
-        );
-        if let Err(error) = self
-            .record_prepared_conversation_items(
-                turn_context,
-                model_info,
-                prepared_items,
-                image_preparations,
-                /*acknowledgement*/ None,
-                transcript_publication::ConversationBoundary::Existing,
-            )
-            .await
-        {
-            error!("failed to publish user input: {error}");
-            return;
-        }
-        user_message_item.client_id = client_id;
-        let turn_item = TurnItem::UserMessage(user_message_item);
-        self.emit_turn_item_started(turn_context, &turn_item).await;
-        self.emit_turn_item_completed(turn_context, turn_item).await;
-        self.ensure_rollout_materialized(persist_context).await;
     }
 
     pub(crate) async fn notify_stream_error(

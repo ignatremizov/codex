@@ -252,8 +252,8 @@ fn observation_mode_popup_snapshot() {
     let popup = AgentTargetPopup::new(targets, "", AgentTargetCompletionScope::ObservationMode);
 
     insta::assert_snapshot!(render_popup(&popup), @r"
-      passive  Deliver the final response without waking
-      wake  Deliver the final response and wake
+      passive       Deliver the final response without waking
+      wake          Deliver the final response and wake
       presentation  Keep the final response out of model context
     ");
 }
@@ -263,6 +263,6 @@ fn configured_role_popup_snapshot() {
     let popup = AgentTargetPopup::new(targets(), "rev", AgentTargetCompletionScope::Any);
 
     insta::assert_snapshot!(render_popup(&popup), @r"
-      reviewer  New reviewer agent
-    ");
+  reviewer  New reviewer agent
+");
 }

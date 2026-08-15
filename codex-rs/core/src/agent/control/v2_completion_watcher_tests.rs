@@ -95,7 +95,10 @@ impl CompletionFixture {
         route: CompletionRoute,
     ) {
         let turn = self.tester.session.new_default_turn().await;
-        self.tester.session.emit_turn_started(turn.as_ref()).await;
+        self.tester
+            .session
+            .emit_turn_started(turn.as_ref(), crate::state::TaskKind::Regular)
+            .await;
         let turn_id = turn.sub_id.clone();
         let guardian_interruption = matches!(&event, EventMsg::TurnAborted(event)
             if event.error.as_ref().is_some_and(|error|
@@ -326,7 +329,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
     fixture
         .tester
         .session
-        .emit_turn_started(turn.as_ref())
+        .emit_turn_started(turn.as_ref(), crate::state::TaskKind::Regular)
         .await;
     let message = "tester result after direct parent removal";
     fixture

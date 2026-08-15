@@ -6,6 +6,7 @@ use super::app_server_event_targets::server_notification_thread_target;
 use super::*;
 use crate::app_event::AgentPickerRefresh;
 use crate::app_server_session::load_agent_aliases;
+use crate::app_server_session::load_agent_queued_turns;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadListParams;
@@ -62,6 +63,7 @@ impl App {
                 tracing::warn!(%err, "failed to refresh durable agent aliases");
             }
         }
+        self.refresh_primary_agent_queue(app_server).await;
     }
 
     pub(super) fn refresh_agent_picker_threads(
@@ -79,6 +81,9 @@ impl App {
                 let aliases = load_agent_aliases(&request_handle, root)
                     .await
                     .map_err(|err| err.to_string())?;
+                let queued = load_agent_queued_turns(&request_handle, root)
+                    .await
+                    .map_err(|err| err.to_string())?;
                 let agent_root_thread_id = aliases
                     .iter()
                     .find(|alias| {
@@ -90,6 +95,7 @@ impl App {
                     .unwrap_or(root);
                 let mut refresh = AgentPickerRefresh {
                     aliases,
+                    queued,
                     ..Default::default()
                 };
                 for archived in [false, true] {
@@ -219,6 +225,7 @@ impl App {
         };
         let selected_thread_id = self.selected_agent_picker_thread_id();
         self.apply_primary_agent_aliases(refresh.aliases);
+        self.apply_primary_agent_queue(refresh.queued);
         for thread in refresh.threads {
             let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
                 continue;

@@ -44,10 +44,21 @@ impl ThreadManagerState {
         else {
             return Ok(ThreadEvictionOutcome::Busy);
         };
+        let Some(source_admission_guard) = self
+            .agent_turn_queue
+            .try_acquire_source_admission(thread.session.thread_id())
+        else {
+            return Ok(ThreadEvictionOutcome::Busy);
+        };
         let Ok(residency_guard) = Arc::clone(&thread.residency_gate).try_write_owned() else {
             return Ok(ThreadEvictionOutcome::Busy);
         };
         let thread_id = thread.session.thread_id;
+        // Queue insertion and admission share the lifecycle gate held here. Pending
+        // source or target work pins this runtime until admission or cancellation.
+        if self.agent_turn_queue.has_pending_involving(thread_id) {
+            return Ok(ThreadEvictionOutcome::Busy);
+        }
         if !self
             .get_thread(thread_id)
             .await
@@ -65,6 +76,7 @@ impl ThreadManagerState {
         // Once shutdown is submitted, cancellation cannot release delivery or capacity early.
         tokio::spawn(async move {
             let _lifecycle_guard = lifecycle_guard;
+            let _source_admission_guard = source_admission_guard;
             let _residency_guard = residency_guard;
             thread.ensure_rollout_materialized().await;
             let status = thread.agent_status().await;
@@ -280,6 +292,13 @@ impl V2Residency {
                     }
                 }
             };
+            if manager
+                .agent_turn_queue
+                .has_pending_involving(candidate_thread_id)
+            {
+                self.touch(candidate_thread_id);
+                continue;
+            }
             // Capacity eviction keeps its existing policy of retaining unstarted workers.
             if matches!(
                 candidate_thread.agent_status().await,
