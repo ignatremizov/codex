@@ -48,6 +48,7 @@ fn spawned_fork_mode_comes_from_successful_canonical_control_item() {
         "turn-1",
         vec![ThreadItem::UserAgentControl {
             id: "control-1".to_string(),
+            input_outcome: None,
             action: UserAgentControlAction::Spawn,
             authored_selector: Some("reviewer".to_string()),
             target_thread_id: Some(target_thread_id.to_string()),
@@ -61,6 +62,8 @@ fn spawned_fork_mode_comes_from_successful_canonical_control_item() {
             fork_mode: Some(UserAgentForkMode::LastNTurns { turns: 3 }),
             observe_commentary: Some(false),
             final_response: None,
+            target_messages: Some(false),
+            queue_input: Some(false),
             status: UserAgentControlStatus::Succeeded,
             error: None,
         }],

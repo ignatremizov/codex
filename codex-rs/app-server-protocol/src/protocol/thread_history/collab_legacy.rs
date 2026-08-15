@@ -16,10 +16,18 @@ impl ThreadHistoryBuilder {
                 sender_thread_id: previous_sender,
                 observe_commentary: previous_commentary,
                 wake_on_completion: previous_wake,
+                target_messages: previous_target_messages,
+                queue_input: previous_queue_input,
                 ..
             }),
             ThreadItem::CollabAgentToolCall {
-                tool, sender_thread_id, observe_commentary, wake_on_completion, ..
+                tool,
+                sender_thread_id,
+                observe_commentary,
+                wake_on_completion,
+                target_messages,
+                queue_input,
+                ..
             },
         ) = (existing, &mut item)
             && *tool == *previous_tool
@@ -30,6 +38,12 @@ impl ThreadHistoryBuilder {
             }
             if wake_on_completion.is_none() {
                 *wake_on_completion = *previous_wake;
+            }
+            if target_messages.is_none() {
+                *target_messages = *previous_target_messages;
+            }
+            if queue_input.is_none() {
+                *queue_input = *previous_queue_input;
             }
         }
         // This path is used only by legacy reducers. A later canonical lifecycle item

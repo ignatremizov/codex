@@ -292,6 +292,7 @@ pub(super) fn sample_turn_started_notification(
             completed_at: None,
             duration_ms: None,
         },
+        agent_queue: None,
     })
 }
 

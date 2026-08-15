@@ -60,13 +60,13 @@ impl CodexThread {
             },
         ).await.map_err(CodexErr::InvalidRequest)?;
         let config = prepared.config;
-        let spawn_id = uuid::Uuid::now_v7();
+        let spawn_id = uuid::Uuid::now_v7().as_simple().to_string();
         let task_name = (matches!(
             self.session.multi_agent_version(),
             Some(MultiAgentVersion::V2)
         ) || turn.config.multi_agent_version_from_features()
             == MultiAgentVersion::V2)
-            .then(|| format!("user-{spawn_id}"));
+            .then(|| format!("user_{spawn_id}"));
         let session_source = child_session_source(self, turn.as_ref(), prepared.role_name.as_deref(), task_name)?;
         let fork_parent_spawn_call_id = fork_mode
             .as_ref()

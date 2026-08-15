@@ -83,14 +83,21 @@ impl ChatWidget {
         if reconnect_pending || self.input_queue.has_unconfirmed_messages() {
             self.reconcile_recovered_messages(confirmed_message_ids);
         }
-        if reconnect_pending
-            && let Some(message) = self
-                .input_queue
-                .queued_user_messages
-                .iter()
-                .find(|message| matches!(message.delivery, MessageDelivery::Unconfirmed(_)))
-        {
-            let preview = user_message_preview_text(message, /*history_record*/ None);
+        let uncertain_preview = self
+            .input_queue
+            .pending_steers
+            .front()
+            .map(|pending| {
+                user_message_preview_text(&pending.user_message, Some(&pending.history_record))
+            })
+            .or_else(|| {
+                self.input_queue
+                    .queued_user_messages
+                    .iter()
+                    .find(|message| matches!(message.delivery, MessageDelivery::Unconfirmed(_)))
+                    .map(|message| user_message_preview_text(message, /*history_record*/ None))
+            });
+        if reconnect_pending && let Some(preview) = uncertain_preview {
             let preview = if preview.trim().is_empty() {
                 "message with attachments".into()
             } else {
@@ -109,6 +116,11 @@ impl ChatWidget {
     }
 
     pub(super) fn reconcile_recovered_messages(&mut self, confirmed_message_ids: &[String]) {
+        // A stopped projection does not turn an accepted steer into unsent work. Remove only
+        // positive matching receipts, retaining the complete pending input for manual recovery.
+        self.input_queue
+            .pending_steers
+            .retain(|pending| !confirmed_message_ids.contains(&pending.client_id));
         let mut index = 0;
         self.input_queue.queued_user_messages.retain(|message| {
             let confirmed = matches!(&message.delivery,

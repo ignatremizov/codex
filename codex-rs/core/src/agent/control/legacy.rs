@@ -56,20 +56,69 @@ impl LocalAgentControl {
     }
 
     /// Persist explicit closure and retire the live subtree, returning the pre-close snapshot.
+    #[cfg(test)]
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<AgentInfo> {
         let control = self.clone();
-        tokio::spawn(async move { control.close_agent_serialized(agent_id).await })
-            .await
-            .map_err(|error| CodexErr::Fatal(format!("agent close worker failed: {error}")))?
+        tokio::spawn(async move {
+            control
+                .close_agent_serialized(agent_id)
+                .await
+                .map(|(snapshot, _)| snapshot)
+        })
+        .await
+        .map_err(|error| CodexErr::Fatal(format!("agent close worker failed: {error}")))?
     }
 
-    async fn close_agent_serialized(&self, agent_id: ThreadId) -> CodexResult<AgentInfo> {
+    pub(crate) async fn close_agent_with_status(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<ClosedAgent> {
+        let control = self.clone();
+        tokio::spawn(async move {
+            control
+                .close_agent_serialized(agent_id)
+                .await
+                .map(|(_, closed)| closed)
+        })
+        .await
+        .map_err(|error| CodexErr::Fatal(format!("agent close worker failed: {error}")))?
+    }
+
+    async fn close_agent_serialized(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<(AgentInfo, ClosedAgent)> {
         let state = self.runtime.upgrade()?;
         let lock = state.v2_spawn_resume_lock(agent_id);
         let _guard = lock.lock_owned().await;
+        let closed = match state.get_thread(agent_id).await {
+            Ok(thread) => {
+                let (snapshot, _) = thread.session.subscribe_agent_responses();
+                let previous_status = snapshot.status.clone();
+                let previous_turn_id = if snapshot.active_turn_id.is_none() {
+                    snapshot
+                        .last_terminal
+                        .filter(|(_, status)| status == &previous_status)
+                        .map(|(turn_id, _)| turn_id)
+                } else {
+                    None
+                };
+                ClosedAgent {
+                    previous_status,
+                    previous_presentation: Some(thread.session.presentation_id()),
+                    previous_turn_id,
+                }
+            }
+            Err(_) => ClosedAgent {
+                previous_status: AgentStatus::NotFound,
+                previous_presentation: None,
+                previous_turn_id: None,
+            },
+        };
         let fence = state.restoration_fence(agent_id);
         let metadata = self.get_agent_metadata(agent_id);
-        let known_agent = fence.is_some() || metadata.is_some()
+        let known_agent = fence.is_some()
+            || metadata.is_some()
             || self.current_agent_alias(agent_id).await?.is_some();
         let snapshot = match state.get_thread(agent_id).await {
             Ok(thread) => AgentInfo::Loaded {
@@ -122,6 +171,10 @@ impl LocalAgentControl {
                 }
             }
         }
+        let _source_admissions = state
+            .agent_turn_queue
+            .acquire_source_admissions(locked.iter().copied())
+            .await;
         if let Some(fence) = &fence {
             state.close_fenced_restoration_edge(fence).await?;
         } else {
@@ -142,6 +195,9 @@ impl LocalAgentControl {
                 self.revoke_response_observations_for_child(thread.session.presentation_id());
             }
         }
+        state
+            .agent_turn_queue
+            .cancel_for_threads(locked.iter().copied());
         let result = self.shutdown_live_agent_unlocked(agent_id).await;
         for child_id in descendants {
             match Box::pin(self.shutdown_live_agent_unlocked(child_id)).await {
@@ -157,15 +213,23 @@ impl LocalAgentControl {
             }
         }
         let result = match result {
-            Err(error) if known_agent && matches!(error.details(),
-                CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
-            ) => Ok(snapshot),
+            Err(error)
+                if known_agent
+                    && matches!(
+                        error.details(),
+                        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+                    ) =>
+            {
+                Ok(snapshot)
+            }
             result => result.map(|_| snapshot),
         };
-        if result.is_ok() && let Some(fence) = &fence {
+        if result.is_ok()
+            && let Some(fence) = &fence
+        {
             state.clear_restoration_fence(fence);
         }
-        result
+        result.map(|submission| (submission, closed))
     }
 
     /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.

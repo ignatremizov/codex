@@ -213,7 +213,7 @@ async fn question_turn_end_recovers_after_interruption_restores_queued_input() {
                     .composer
                     .unwrap()
                     .text,
-                "pending steer\nqueued prompt\nmain draft\nanswer"
+                "queued prompt\nmain draft\nanswer"
             );
             // A query miss and unsuccessful Enter must retain both the search and the answers.
             chat.handle_key_event(KeyEvent::from(KeyCode::Char('z')));
@@ -235,11 +235,21 @@ async fn question_turn_end_recovers_after_interruption_restores_queued_input() {
         if matches!(main_input, MainInput::HistoryAccept) {
             assert_recovered_draft(&mut chat, "earlier prompt");
         } else {
-            assert_recovered_draft(
-                &mut chat,
-                &format!("pending steer\nqueued prompt\n{main_draft}\nanswer"),
-            );
+            assert_recovered_draft(&mut chat, &format!("queued prompt\n{main_draft}\nanswer"));
         }
+        // The submitted steer stays optimistic until its canonical receipt arrives. It must
+        // neither disappear nor become another sendable copy in the recovered question draft.
+        assert_eq!(
+            chat.input_queue.preview(),
+            crate::chatwidget::input_queue::PendingInputPreview {
+                pending_steers: vec!["pending steer".to_string()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            chat.input_queue.pending_steers[0].client_id,
+            "test-submission",
+        );
         assert!(!chat.has_queued_follow_up_messages());
         assert!(ops.try_recv().is_err());
     }

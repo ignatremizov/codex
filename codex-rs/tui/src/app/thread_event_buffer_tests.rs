@@ -26,6 +26,7 @@ fn turn_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotifi
             completed_at: None,
             duration_ms: None,
         },
+        agent_queue: None,
     })
 }
 

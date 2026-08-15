@@ -23,7 +23,7 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through user-controlled agent dispatch. Later queued replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
+This checkpoint inventories the integrated owners through scoped replies and target-owned queued turns. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
@@ -43,7 +43,8 @@ This checkpoint inventories the integrated owners through user-controlled agent 
 | Auditable multi-agent transcripts | Observability | Show useful multi-line task prompts and completed wait responses with independent configurable caps, preserve readable V2 task messages in parent and child histories, surface attributable inter-agent communication through live and resumed transcripts without exposing encrypted content, and resolve collab labels from thread-wide canonical nickname/role metadata across paginated pages and complete exports. | `codex-rs/tui/src/multi_agents.rs`<br>`codex-rs/tui/src/thread_transcript.rs`<br>`codex-rs/tui/src/app/history_pagination.rs`<br>`codex-rs/tui/src/app/thread_routing.rs`<br>`codex-rs/tui/src/chatwidget/tool_lifecycle.rs`<br>`codex-rs/app-server-protocol/src/protocol/v2/item.rs`<br>`codex-rs/app-server/src/request_processors/response_item_transcript.rs`<br>`codex-rs/thread-store/src/local/thread_history_materialization.rs` | Canonical collab item conversion, TUI tool-history rendering and receiver cache, app-server thread history and notifications, durable rollout reconstruction, fork-owned history projections | `feat(tui): configure source-preserving agent prompt and response previews`, `feat(multi-agent): preserve readable task prompts in parent activity`, `feat(multi-agent): publish durable inter-agent transcripts with typed provenance` |
 | Durable background subagent completions | Observability | Show terminal v1 and v2 child results immediately when no active wait owns presentation, retain their full model-visible context and canonical transcript rows through cancellation, rollback, shutdown, compaction, pagination, and cold resume, and allow a later explicit wait to render independently. | `codex-rs/core/src/session/sub_agent_completion.rs`<br>`codex-rs/core/src/agent/control/presentation.rs`<br>`codex-rs/protocol/src/sub_agent_completion.rs`<br>`codex-rs/thread-store/src/completion_artifacts.rs`<br>`codex-rs/tui/src/multi_agents/background_completion.rs` | Agent status publication, parent Session lifecycle, rollout persistence and reconstruction, app-server history projection, TUI collab rendering | `feat(multi-agent): persist and surface exact-instance background completions` |
 | Event-driven subagent response observation | Capability | Let V1 lifecycle calls request the first complete commentary, subscribe to an exact target turn's final reply, or explicitly avoid a new final subscription through compact `w` flags, while coordinating wait presentation and independent exact-instance observers. Delivered audit survives rollback, compaction, recovery, and migration; cold history never recreates pending subscriptions. | `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`<br>`codex-rs/core/src/agent/control/response_observer.rs`<br>`codex-rs/core/src/agent/control/response_delivery.rs`<br>`codex-rs/core/src/session/response_observation.rs`<br>`codex-rs/thread-store/src/local/rollout_migration/canonicalizer.rs`<br>`docs/multi-agent-v1-response-observation.md` | Agent lifecycle tool schemas, exact-turn admission, durable rollout context, completion publication, rollout migration, TUI commentary/final presentation | `feat(multi-agent): bind response observation to exact admitted turns` |
-| Native user agent control plane | Capability | Let users inspect, spawn, prompt, hold prompts in the TUI until idle, interrupt, resume or explicitly adopt by UUID, close, and change one-turn response observation for V1 and V2 agents directly through `/agent`, using durable root-scoped refs and nicknames while preserving canonical UUID ownership, structured user input, exact-turn delivery, source-side audit history, transcript inspection, and explicit fork modes. Unknown input outcomes require manual reconciliation, never automatic retry; backend queue policies and close-response replay remain later work. | `codex-rs/core/src/agent/user_control/`<br>`codex-rs/state/src/runtime/agent_aliases/`<br>`codex-rs/app-server/src/request_processors/thread_processor/agent_control.rs`<br>`codex-rs/tui/src/chatwidget/agent_command.rs`<br>`codex-rs/tui/src/app/agent_control_pane.rs`<br>`docs/tui-agent-control.md` | Agent graph persistence and transfer, app-server v2 control APIs, response observation, fork-history projection, TUI composer and thread routing | `feat(multi-agent): add user-controlled agent dispatch and durable aliases` |
+| Native user agent control plane | Capability | Let users inspect, spawn, prompt, queue, interrupt, resume or explicitly adopt by UUID, close, and change one-turn response observation for V1 and V2 agents through `/agent`, using durable root-scoped refs and nicknames while preserving canonical UUID ownership, structured user input, exact-turn delivery, source-side audit history, transcript inspection, and explicit fork modes. Unknown input outcomes require manual reconciliation, never automatic retry. | `codex-rs/core/src/agent/user_control/`<br>`codex-rs/state/src/runtime/agent_aliases/`<br>`codex-rs/app-server/src/request_processors/thread_processor/agent_control.rs`<br>`codex-rs/tui/src/chatwidget/agent_command.rs`<br>`codex-rs/tui/src/app/agent_control_pane.rs`<br>`docs/tui-agent-control.md` | Agent graph persistence and transfer, app-server v2 control APIs, response observation, fork-history projection, TUI composer and thread routing | `feat(multi-agent): add user-controlled agent dispatch and durable aliases`, `feat(multi-agent): add scoped replies and target-owned queued turns` |
+| Scoped replies and target-owned queued turns | Capability | Bind optional V1 reply permission to exact live endpoints and admitted target work; share a process-lifetime FIFO between model and user queued input; keep queue acceptance distinct from turn admission, prompt persistence, and response delivery. Explicit close replay reuses acknowledged completion provenance rather than inventing a new receipt. | `codex-rs/core/src/agent/control/scoped_messages.rs`<br>`codex-rs/core/src/agent/turn_queue.rs`<br>`codex-rs/core/src/session/observed_input.rs`<br>`codex-rs/core/src/session/close_response.rs`<br>`codex-rs/tui/src/app/agent_prompt_queue.rs` | Shared controller/native runtime separation, input origins, canonical source publication, startup and interruption, completion receipt scope, residency, host-aware queue APIs, reconnect recovery | `feat(multi-agent): add scoped replies and target-owned queued turns` |
 | Visible completed compaction | Observability | Expose installed compaction output in TUI, exec, app-server, and JSONL history while preserving current compaction ownership and replacement-history semantics. | `codex-rs/core/src/compact.rs`<br>`codex-rs/core/src/tasks/compact.rs`<br>`codex-rs/exec/src/exec_events.rs` | Core session/turn lifecycle, protocol items, app-server thread history, TUI rendering | `feat(compact): expose completed compaction output across history and clients` |
 | User-controlled context automation | Compatibility | Keep token budgeting, private context management, and automatic TUI recaps disabled until the user explicitly enables them; prevent model-catalog metadata from activating hidden work; retain manual `/recap`; and keep the visible `update_plan` tool available unless explicitly disabled. | `codex-rs/core/src/session/token_budget.rs`<br>`codex-rs/core/src/config/mod.rs`<br>`codex-rs/tui/src/app/recap.rs` | Model-catalog defaults, feature/config resolution, world-state instruction filtering, TUI recap scheduling | `fix(context): preserve user-controlled automation defaults` |
 | Inspectable remote compaction handoff | Observability | Decode the provider-opaque post-compaction handoff through a locked-down helper, show a live decode phase, and persist server-reported summary token counts without changing replacement history; the user-controlled remote-compaction feature gate remains authoritative even for provider-capable models. | `codex-rs/core/src/compact_handoff_summary.rs`<br>`codex-rs/core/src/compact_remote_v2.rs`<br>`codex-rs/core/src/compact_remote_history.rs`<br>`codex-rs/core/src/tasks/compact.rs` | Agent delegation, compaction protocol/events, rollout reconstruction, app-server notifications, TUI status | `feat(compact): decode installed remote handoffs for display`, `feat(compact): expose live decoding progress and durable diagnostics`, `feat(history): persist remote compaction output token counts` |
@@ -284,10 +285,43 @@ retrying or compensating already accepted target work. Source audit is not model
 
 The TUI retains structured inputs, native audio markers, source-relative draft recovery,
 read-only transcript inspection, external-writer guards, current reconnect reconciliation,
-dictation/voice ownership, and launch-time screen policy. Its held prompts are process-local,
-not the later backend queue or scoped-reply framework. Later APIs and their prerequisite repairs
-remain assigned to their actual feature owners. Formatting, remote compilation, tests, generated
-contracts, and complete snapshot qualification remain outstanding.
+dictation/voice ownership, and launch-time screen policy. The scoped-reply owner below replaces
+TUI-local held prompts with a process-lifetime backend queue; that framework is not attributed
+to the original dispatch owner. Formatting, remote compilation, tests, generated contracts,
+and complete snapshot qualification remain outstanding.
+
+### Scoped replies, queued input, and close-response receipts
+
+Ownership anchor: `feat(multi-agent): add scoped replies and target-owned queued turns`.
+Reply grants remain exact-instance and turn-scoped capabilities, not permission to interrupt,
+adopt, or control another agent. `agent/control/input.rs` preserves genuine user, delegated,
+and attributed input separately. `agent/control/user_dispatch.rs` keeps explicit non-admission,
+positive admission with a degraded observation receipt, and unknown enqueue outcomes distinct.
+The shared controller retains its operation and capacity interface; private queues, reply state,
+wait commentary, and completion grants stay with the native runtime. Unsupported host queue
+operations return an error rather than exposing an unrelated native queue.
+
+`agent/turn_queue.rs` and `agent/control/turn_queue.rs` own one target FIFO, reversible pending
+cancellation, and the irreversible admission claim. Source lifecycle locks, residency leases,
+close, and transfer fence queue workers. Accepted work is not resubmitted after uncertain
+acknowledgment. Startup retains the exact queue metadata until prompt publication, including
+interruption while startup is pending. Canonical prompt recording preserves captured heartbeat
+origin, client identity, input order, complete source envelopes, and distinct visible presentation.
+
+`state/completion_context.rs` owns one full-envelope positive receipt inventory used by native
+and observed completion publication, including later close replay. Durable store evidence and
+explicit runtime-only receipts remain different scopes; model-history removal does not erase
+a settled receipt or create permission to replay it. Wait commentary uses the shared canonical
+publisher, source metadata, and current turn lifecycle rather than a second insertion path.
+Lossy legacy protocol mirrors cannot grant scoped replies or activate historical queue state.
+
+The TUI projects the backend queue without executing a second local dispatcher, retains pending
+steers for positive receipt reconciliation, and never automatically resends uncertain input.
+Queue editing refuses attachments that cannot be safely reconstructed in the composer before
+deleting the original entry, including native audio and executor-owned or file-backed images.
+Cold history retains audit and transcript content but recreates neither a queue nor live grants.
+Source-authored regression cases still require remote execution; schemas, complete snapshots,
+and batched owning-commit formatting remain pending.
 
 ## Integration boundaries and deferred work
 
@@ -296,7 +330,7 @@ contracts, and complete snapshot qualification remain outstanding.
 - Preserve the current Paginated defaults for new durable TUI/exec sessions and explicit/stored Legacy compatibility. Historical default-switch subjects in the replay stack do not override the integrated runtime contract.
 - Stable and experimental app-server schemas/bundles, configuration descriptions, persisted-history/embedded Python SDK artifacts, and Bazel dependency locks require coordinated final-source remote regeneration. Historical generated artifacts are not evidence that the current source contracts have been validated.
 - Canonical publication ambiguity quarantines the exact session. Readable history is not acknowledgment, accepted receipts cannot be retargeted, and process-local ownership fences do not promise crash-atomic transfers or fsync durability.
-- The terminal-wake and workspace-root AGENTS documents remain proposals. Scoped reply routes, backend queue-input policy, and close-response replay belong to later owners, not this checkpoint.
+- The terminal-wake and workspace-root AGENTS documents remain proposals. Scoped reply routes, backend queue-input policy, and close-response replay are maintained by their separate integrated owner; they do not implement terminal-process wake scheduling.
 - The current rebase records per-owner source reviews and explicit deferred repairs. Batched formatting fixes must be folded into their owning downstream commits after replay; no local compilation, tests, or generation are authorized. Previously built 0.156.1 binaries are not qualification of this source.
 - Release-version changes remain at the final release owner; this inventory does not announce the historical 0.147.0 release as the integrated tip.
 

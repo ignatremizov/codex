@@ -4,7 +4,11 @@ use crate::ThreadManager;
 use crate::agent::child_config::apply_spawn_agent_service_tier;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::child_config::build_agent_spawn_config;
+use crate::agent::response_observation::FinalResponseObservation;
+use crate::agent::response_observation::ResponseObservationPolicy;
+use crate::agent::types::SpawnAgentOptions;
 use crate::config::AgentRoleConfig;
+use crate::config::Config;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::MultiAgentMessageDelivery;
 use crate::config::PermissionProfileSnapshot;
@@ -17,7 +21,6 @@ use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
-use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::tests::update_selected_settings_for_test;
 use crate::session::tests::update_turn_settings_for_test;
 use crate::session::turn_context::TurnContext;
@@ -167,6 +170,36 @@ fn thread_manager() -> ThreadManager {
     )
 }
 
+async fn spawn_idle_v1_child(parent: &Arc<crate::CodexThread>, config: Config) -> ThreadId {
+    let parent_thread_id = parent.session.thread_id();
+    parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id())
+        .spawn_idle_agent_with_metadata(
+            config,
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("Test Child".to_string()),
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                response_observation: ResponseObservationPolicy::from_parts(
+                    /*commentary*/ false,
+                    FinalResponseObservation::None,
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("idle V1 child should spawn")
+        .target_thread_id
+}
+
 async fn wait_for_agent_status(thread: &crate::CodexThread, expected: &AgentStatus) {
     timeout(Duration::from_secs(5), async {
         loop {
@@ -198,7 +231,6 @@ async fn subagent_notification_texts(session: &crate::session::session::Session)
         .clone_history()
         .await
         .raw_items()
-        .iter()
         .filter_map(|item| match item {
             ResponseItem::Message { role, content, .. } if role == "user" => {
                 content.iter().find_map(|content| match content {
@@ -225,6 +257,7 @@ async fn subagent_notification_texts(session: &crate::session::session::Session)
                 })
             }
             ResponseItem::AdditionalTools { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
             | ResponseItem::Message { .. }
             | ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }
@@ -259,6 +292,7 @@ async fn publish_agent_turn_started(
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
         ),
     )
@@ -2775,7 +2809,7 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
             .expect("approval policy should be set");
         set_turn_config(turn, config);
         let TurnEnvironmentState::Ready(environment) = turn
-            .environments
+            .initial_environments
             .environments
             .first_mut()
             .expect("parent environment should exist")
@@ -3042,7 +3076,7 @@ async fn send_input_rejects_invalid_id() {
         Arc::new(session),
         Arc::new(turn),
         "send_input",
-        function_payload(json!({"target": "not-a-uuid", "message": "hi"})),
+        function_payload(json!({"target": "id:not-a-uuid", "message": "hi"})),
     );
     let Err(err) = SendInputHandler.handle(invocation).await else {
         panic!("invalid id should be rejected");
@@ -3050,7 +3084,7 @@ async fn send_input_rejects_invalid_id() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
+    assert!(msg.starts_with("invalid agent UUID \"not-a-uuid\":"));
 }
 
 #[tokio::test]
@@ -3086,11 +3120,7 @@ async fn send_input_interrupts_before_prompt() {
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start parent thread");
-    let thread = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
     let invocation = invocation(
         Arc::clone(&parent.thread.session),
         parent.thread.session.new_default_turn().await,
@@ -3105,6 +3135,10 @@ async fn send_input_interrupts_before_prompt() {
         .handle(invocation)
         .await
         .expect("send_input should succeed");
+    let thread = manager
+        .get_thread(agent_id)
+        .await
+        .expect("child thread should remain live");
 
     let ops = manager.captured_ops();
     let ops_for_agent: Vec<&Op> = ops
@@ -3131,10 +3165,63 @@ async fn send_input_interrupts_before_prompt() {
     .await;
 
     let _ = thread
-        .thread
         .submit(Op::Shutdown {})
         .await
         .expect("shutdown should submit");
+}
+
+#[tokio::test]
+async fn send_input_reply_route_does_not_authorize_interrupting_parent() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let child = manager
+        .get_thread(agent_id)
+        .await
+        .expect("child thread should exist");
+    let invocation = invocation(
+        Arc::clone(&child.session),
+        child.session.new_default_turn().await,
+        "send_input",
+        function_payload(json!({
+            "target": parent.thread_id.to_string(),
+            "message": "stop",
+            "interrupt": true
+        })),
+    );
+
+    let Err(err) = SendInputHandler.handle(invocation).await else {
+        panic!("a reply route must not grant parent lifecycle authority");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "an agent reply route authorizes input, not interruption of its parent or peer"
+                .to_string()
+        )
+    );
+    assert!(
+        !manager
+            .captured_ops()
+            .iter()
+            .any(|(thread_id, op)| *thread_id == parent.thread_id && matches!(op, Op::Interrupt)),
+        "the parent must remain untouched when reverse interruption is rejected"
+    );
+
+    let _ = child
+        .submit(Op::Shutdown {})
+        .await
+        .expect("child shutdown should submit");
+    let _ = parent
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
 }
 
 #[tokio::test]
@@ -3146,11 +3233,7 @@ async fn send_input_accepts_structured_items() {
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start parent thread");
-    let thread = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
     let invocation = invocation(
         Arc::clone(&parent.thread.session),
         parent.thread.session.new_default_turn().await,
@@ -3167,6 +3250,10 @@ async fn send_input_accepts_structured_items() {
         .handle(invocation)
         .await
         .expect("send_input should succeed");
+    let thread = manager
+        .get_thread(agent_id)
+        .await
+        .expect("child thread should remain live");
 
     wait_for_recorded_user_input(
         thread.as_ref(),
@@ -3184,7 +3271,6 @@ async fn send_input_accepts_structured_items() {
     .await;
 
     let _ = thread
-        .thread
         .submit(Op::Shutdown {})
         .await
         .expect("shutdown should submit");
@@ -3197,7 +3283,7 @@ async fn resume_agent_rejects_invalid_id() {
         Arc::new(session),
         Arc::new(turn),
         "resume_agent",
-        function_payload(json!({"id": "not-a-uuid"})),
+        function_payload(json!({"id": "id:not-a-uuid"})),
     );
     let Err(err) = ResumeAgentHandler.handle(invocation).await else {
         panic!("invalid id should be rejected");
@@ -3205,7 +3291,7 @@ async fn resume_agent_rejects_invalid_id() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id not-a-uuid:"));
+    assert!(msg.starts_with("invalid agent UUID \"not-a-uuid\":"));
 }
 
 #[tokio::test]
@@ -3539,7 +3625,18 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         .get_thread(agent_id)
         .await
         .expect("resumed arbitrary thread should be live");
-    assert_eq!(resumed_thread.session_source.clone(), SessionSource::Exec);
+    let resumed_nickname = resumed_thread
+        .config_snapshot()
+        .await
+        .session_source
+        .get_nickname();
+    assert!(matches!(
+        resumed_thread.session_source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            ..
+        }) if parent_thread_id == session.thread_id
+    ));
     let parent_session = Arc::clone(&session);
 
     let send_invocation = invocation(
@@ -3610,7 +3707,11 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
-            AgentContextIdentity::Canonical { agent_id },
+            AgentContextIdentity::V1 {
+                agent_id,
+                agent_ref: None,
+                nickname: resumed_nickname,
+            },
             &AgentStatus::Completed(Some("standalone done".to_string())),
         )]
     );
@@ -3958,7 +4059,10 @@ async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() 
 async fn resume_agent_rejects_when_depth_limit_exceeded() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
-    set_agent_control(&mut session, manager.agent_control());
+    let control = manager
+        .agent_control()
+        .with_session_id(session.session_id(), usize::MAX);
+    set_agent_control(&mut session, control);
 
     let max_depth = turn.config.agent_max_depth;
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -4014,7 +4118,7 @@ async fn wait_agent_rejects_invalid_target() {
         Arc::new(session),
         Arc::new(turn),
         "wait_agent",
-        function_payload(json!({"targets": ["invalid"]})),
+        function_payload(json!({"targets": ["id:invalid"]})),
     );
     let Err(err) = WaitAgentHandler::default().handle(invocation).await else {
         panic!("invalid id should be rejected");
@@ -4022,7 +4126,7 @@ async fn wait_agent_rejects_invalid_target() {
     let FunctionCallError::RespondToModel(msg) = err else {
         panic!("expected respond-to-model error");
     };
-    assert!(msg.starts_with("invalid agent id invalid:"));
+    assert!(msg.starts_with("invalid agent UUID \"invalid\":"));
 }
 
 #[tokio::test]
@@ -4039,7 +4143,7 @@ async fn wait_agent_rejects_empty_targets() {
     };
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("agent ids must be non-empty".to_string())
+        FunctionCallError::RespondToModel("agent targets must be non-empty".to_string())
     );
 }
 
@@ -4651,18 +4755,18 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
 
 #[tokio::test]
 async fn wait_agent_times_out_when_status_is_not_final() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    set_agent_control(&mut session, manager.agent_control());
     let config = turn.config.as_ref().clone();
-    let thread = manager
+    let parent = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
+        .expect("start owning parent");
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let thread = manager.get_thread(agent_id).await.expect("owned child");
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "wait_agent",
         function_payload(json!({
             "targets": [agent_id.to_string()],
@@ -4685,27 +4789,28 @@ async fn wait_agent_times_out_when_status_is_not_final() {
     );
     assert_eq!(success, None);
 
-    let _ = thread
+    thread.shutdown_and_wait().await.expect("stop owned child");
+    parent
         .thread
-        .submit(Op::Shutdown {})
+        .shutdown_and_wait()
         .await
-        .expect("shutdown should submit");
+        .expect("stop parent");
 }
 
 #[tokio::test]
 async fn wait_agent_clamps_short_timeouts_to_minimum() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    set_agent_control(&mut session, manager.agent_control());
     let config = turn.config.as_ref().clone();
-    let thread = manager
+    let parent = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
+        .expect("start owning parent");
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let thread = manager.get_thread(agent_id).await.expect("owned child");
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "wait_agent",
         function_payload(json!({
             "targets": [agent_id.to_string()],
@@ -4723,28 +4828,28 @@ async fn wait_agent_clamps_short_timeouts_to_minimum() {
         "wait_agent should not return before the minimum timeout clamp"
     );
 
-    let _ = thread
+    thread.shutdown_and_wait().await.expect("stop owned child");
+    parent
         .thread
-        .submit(Op::Shutdown {})
+        .shutdown_and_wait()
         .await
-        .expect("shutdown should submit");
+        .expect("stop parent");
 }
 
 #[tokio::test]
 async fn wait_agent_returns_final_status_without_timeout() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    set_agent_control(&mut session, manager.agent_control());
     let config = turn.config.as_ref().clone();
-    let thread = manager
+    let parent = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
-    let mut status_rx = thread.thread.subscribe_status();
+        .expect("start owning parent");
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let thread = manager.get_thread(agent_id).await.expect("owned child");
+    let mut status_rx = thread.subscribe_status();
 
     let _ = thread
-        .thread
         .submit(Op::Shutdown {})
         .await
         .expect("shutdown should submit");
@@ -4753,8 +4858,8 @@ async fn wait_agent_returns_final_status_without_timeout() {
         .expect("shutdown status should arrive");
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&parent.thread.session),
+        parent.thread.session.new_default_turn().await,
         "wait_agent",
         function_payload(json!({
             "targets": [agent_id.to_string()],
@@ -4776,21 +4881,30 @@ async fn wait_agent_returns_final_status_without_timeout() {
         }
     );
     assert_eq!(success, None);
+    thread.shutdown_and_wait().await.expect("join owned child");
+    parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop parent");
 }
 
 #[tokio::test]
 async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
-    let (mut session, turn, events) = make_session_and_context_with_rx().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    set_agent_control(
-        Arc::get_mut(&mut session).expect("unique session"),
-        manager.agent_control(),
-    );
-    let child = manager
-        .start_thread(StartThreadOptions::new(turn.config.as_ref().clone()))
+    let config = turn.config.as_ref().clone();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
-        .expect("start child thread");
-    let child_thread_id = child.thread_id;
+        .expect("start owning parent");
+    let child_thread_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let child = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("owned child");
+    let session = Arc::clone(&parent.thread.session);
+    let turn = session.new_default_turn().await;
     let wait_task = tokio::spawn({
         let session = Arc::clone(&session);
         let turn = Arc::clone(&turn);
@@ -4810,7 +4924,7 @@ async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
     });
     timeout(Duration::from_secs(1), async {
         loop {
-            let event = events.recv().await.expect("wait start event");
+            let event = parent.thread.next_event().await.expect("wait start event");
             if matches!(
                 event.msg,
                 EventMsg::ItemStarted(ref event)
@@ -4827,10 +4941,9 @@ async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
     .await
     .expect("wait handler should subscribe before emitting its start item");
 
-    let child_turn = child.thread.session.new_history_only_turn().await;
-    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    let child_turn = child.session.new_history_only_turn().await;
+    publish_agent_turn_started(child.as_ref(), child_turn.as_ref()).await;
     child
-        .thread
         .session
         .send_event(
             child_turn.as_ref(),
@@ -4845,8 +4958,8 @@ async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
             }),
         )
         .await;
-    let next_child_turn = child.thread.session.new_history_only_turn().await;
-    publish_agent_turn_started(child.thread.as_ref(), next_child_turn.as_ref()).await;
+    let next_child_turn = child.session.new_history_only_turn().await;
+    publish_agent_turn_started(child.as_ref(), next_child_turn.as_ref()).await;
     let output = timeout(Duration::from_secs(1), wait_task)
         .await
         .expect("wait should observe the lossless terminal transition")
@@ -4866,6 +4979,12 @@ async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
         }
     );
     assert_eq!(success, None);
+    child.shutdown_and_wait().await.expect("stop owned child");
+    parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("stop parent");
 }
 
 #[tokio::test]
@@ -5668,6 +5787,10 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
     let result: close_agent::CloseAgentResult =
         serde_json::from_str(&content).expect("close_agent result should be json");
     assert_eq!(result.previous_status, status_before);
+    assert_eq!(
+        result.response_delivery,
+        crate::agent::control::CloseAgentResponseDisposition::NotApplicable
+    );
     assert_eq!(success, Some(true));
 
     let ops = manager.captured_ops();

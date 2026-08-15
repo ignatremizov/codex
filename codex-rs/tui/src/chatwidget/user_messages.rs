@@ -157,7 +157,7 @@ pub(crate) struct ThreadInputState {
     pub(crate) recovered_queue: bool,
     /// Reconcile delivery after transport recovery, not after a fork or ordinary thread switch.
     pub(crate) reconnect_pending: bool,
-    pub(super) user_turn_pending_start: bool,
+    pub(crate) user_turn_pending_start: bool,
     pub(super) pending_user_message_client_id: Option<String>,
     pub(super) submit_pending_steers_after_interrupt: bool,
     pub(super) current_collaboration_mode: CollaborationMode,
@@ -868,8 +868,10 @@ impl ChatWidget {
 
 impl ThreadInputState {
     pub(crate) fn has_unconfirmed_messages(&self) -> bool {
-        self.queued_user_messages
-            .iter()
-            .any(|message| matches!(message.delivery, MessageDelivery::Unconfirmed(_)))
+        !self.pending_steers.is_empty()
+            || self
+                .queued_user_messages
+                .iter()
+                .any(|message| matches!(message.delivery, MessageDelivery::Unconfirmed(_)))
     }
 }

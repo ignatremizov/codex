@@ -3595,6 +3595,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     let sender_thread_id = codex_protocol::ThreadId::default();
     let receiver_thread_id = codex_protocol::ThreadId::default();
     let collab_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        target_messages: None,
+        queue_input: None,
         observe_commentary: None,
         wake_on_completion: None,
         id: "collab-1".to_string(),
@@ -3616,6 +3618,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     assert_eq!(
         ThreadItem::from(collab_item),
         ThreadItem::CollabAgentToolCall {
+            target_messages: None,
+            queue_input: None,
             id: "collab-1".to_string(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::Completed,

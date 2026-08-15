@@ -8956,9 +8956,9 @@ async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
-            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
+            allow_history_forks: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -9972,9 +9972,9 @@ async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Res
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
-            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
+            allow_history_forks: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -10019,9 +10019,9 @@ async fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
-            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
+            allow_history_forks: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -10060,9 +10060,9 @@ async fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
-            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
+            allow_history_forks: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {
@@ -10101,9 +10101,9 @@ async fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io:
             max_depth: None,
             default_subagent_model: None,
             default_subagent_reasoning_effort: None,
-            allow_history_forks: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
+            allow_history_forks: None,
             roles: BTreeMap::from([(
                 "researcher".to_string(),
                 AgentRoleToml {

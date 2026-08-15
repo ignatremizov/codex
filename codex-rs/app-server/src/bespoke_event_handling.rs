@@ -13,6 +13,8 @@ use crate::thread_status::ThreadWatchActiveGuard;
 use crate::thread_status::ThreadWatchManager;
 use codex_app_server_protocol::AccountRateLimitsUpdatedNotification;
 use codex_app_server_protocol::AdditionalPermissionProfile as V2AdditionalPermissionProfile;
+use codex_app_server_protocol::AgentQueueTurnMetadata;
+use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::AuthRecoveryNotification;
 use codex_app_server_protocol::CodexErrorInfo as V2CodexErrorInfo;
 use codex_app_server_protocol::CommandAction as V2ParsedCommand;
@@ -166,6 +168,21 @@ pub(crate) async fn apply_bespoke_event_handling(
             thread_watch_manager
                 .note_turn_started(&conversation_id.to_string())
                 .await;
+            let agent_queue = payload.agent_queue.map(|metadata| {
+                let response_handling = metadata.response_handling.map(|handling| {
+                    AgentResponseHandling::new(
+                        handling.commentary,
+                        handling.final_delivery.into(),
+                        handling.target_messages,
+                        /*queue_input*/ true,
+                    )
+                });
+                AgentQueueTurnMetadata {
+                    queue_id: metadata.queue_id,
+                    source_thread_id: metadata.source_thread_id.to_string(),
+                    response_handling,
+                }
+            });
             let turn = {
                 let state = thread_state.lock().await;
                 let mut turn = state.active_turn_snapshot().unwrap_or_else(|| Turn {
@@ -185,6 +202,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             let notification = TurnStartedNotification {
                 thread_id: conversation_id.to_string(),
                 turn,
+                agent_queue,
             };
             outgoing
                 .send_server_notification(ServerNotification::TurnStarted(notification))
@@ -830,7 +848,6 @@ pub(crate) async fn apply_bespoke_event_handling(
             tokio::spawn(async move {
                 on_command_execution_request_approval_response(
                     event_turn_id,
-                    conversation_id,
                     approval_id,
                     call_id,
                     approval_deadline,
@@ -1473,6 +1490,7 @@ async fn start_command_execution_item(
             cwd,
             process_id: None,
             source,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::InProgress,
             command_actions,
             aggregated_output: None,
@@ -1958,7 +1976,6 @@ async fn on_file_change_request_approval_response(
 #[allow(clippy::too_many_arguments)]
 async fn on_command_execution_request_approval_response(
     event_turn_id: String,
-    conversation_id: ThreadId,
     approval_id: Option<String>,
     item_id: String,
     approval_deadline: Option<tokio::time::Instant>,
@@ -2184,7 +2201,6 @@ mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
     use anyhow::bail;
-    use chrono::Utc;
     use codex_app_server_protocol::AutoReviewDecisionSource;
     use codex_app_server_protocol::GuardianApprovalReviewStatus;
     use codex_app_server_protocol::ItemCompletedNotification;
@@ -3287,6 +3303,7 @@ mod tests {
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 }),
             );
             state.track_current_turn_event(
@@ -3323,6 +3340,7 @@ mod tests {
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 }),
             },
             conversation_id,
@@ -3595,6 +3613,7 @@ mod tests {
                     started_at: Some(42),
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
+                    agent_queue: None,
                 }),
             );
             state.track_current_turn_event(

@@ -238,6 +238,43 @@ impl LocalAgentControl {
         self.publish_response_observation_binding();
     }
 
+    /// Retain exact model-delivery identity after live policy retires. The caller must
+    /// still verify its canonical acknowledgement and presence in effective history.
+    pub(crate) fn model_response_observation_terminal(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        turn_id: &str,
+    ) -> Option<AgentTerminalPresentation> {
+        let state = self.runtime.wait_agent_presentations.state();
+        let key = (parent, child, turn_id.to_owned());
+        let inner = state.response_terminals.get(&key)?;
+        if state.root_audit_turns.contains(&key) || inner.observation_presentation.get().is_some() {
+            // A model-hidden presentation never reserved a model-context receipt.
+            return None;
+        }
+        if let Some(observation) = state
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .and_then(|relationship| relationship.turns.get(turn_id))
+        {
+            match observation.final_response {
+                FinalResponseObservation::PresentationOnly => return None,
+                FinalResponseObservation::None
+                    if observation.final_delivery_response_item_id.is_none() =>
+                {
+                    return None;
+                }
+                FinalResponseObservation::None
+                | FinalResponseObservation::Passive
+                | FinalResponseObservation::Wake => {}
+            }
+        }
+        Some(AgentTerminalPresentation {
+            inner: Arc::clone(inner),
+        })
+    }
+
     pub(crate) fn has_future_response_observation(
         &self,
         parent: SessionPresentationId,
@@ -299,6 +336,8 @@ impl LocalAgentControl {
                 .pending_next_turn
                 .get_or_insert_with(Default::default);
             current.final_response = current.final_response.max(pending.final_response);
+            current.target_messages |= pending.target_messages;
+            current.queue_delivery |= pending.queue_delivery;
             current
                 .commentary_admissions
                 .extend(pending.commentary_admissions);
@@ -350,6 +389,8 @@ impl PresentationState {
         relationship.pending_admissions.clear();
         for (turn_id, observation) in &mut relationship.turns {
             observation.commentary_admissions.clear();
+            observation.message_wake_reservation_id = None;
+            observation.target_messages = false;
             let accepted = self
                 .response_terminals
                 .contains_key(&(pair.0, pair.1, turn_id.clone()))

@@ -36,10 +36,14 @@ impl Drop for DeliveryOutcome {
 enum Payload {
     Context {
         communication: InterAgentCommunication,
-        presentation: Option<CompletionPresentation>,
+        presentation: Option<Box<CompletionPresentation>>,
         recording_turn_id: Option<String>,
     },
-    Presentation(CompletionPresentation),
+    Presentation(Box<CompletionPresentation>),
+    WaitCommentary {
+        communication: InterAgentCommunication,
+        turn_context: Arc<crate::session::turn_context::TurnContext>,
+    },
 }
 
 fn copy_presentation(presentation: &CompletionPresentation) -> CompletionPresentation {
@@ -50,6 +54,24 @@ fn copy_presentation(presentation: &CompletionPresentation) -> CompletionPresent
 }
 
 impl Session {
+    pub(crate) async fn record_wait_commentary(
+        self: &Arc<Self>,
+        turn_context: Arc<crate::session::turn_context::TurnContext>,
+        communication: InterAgentCommunication,
+        commit: ResponseObservationDeliveryCommit,
+        accepted: AcceptedCompletionDelivery,
+    ) -> CodexResult<()> {
+        self.persist_observation_payload(
+            commit,
+            Arc::new(accepted),
+            Payload::WaitCommentary {
+                communication,
+                turn_context,
+            },
+        )
+        .await
+    }
+
     pub(crate) async fn persist_agent_response_observations(
         self: &Arc<Self>,
         observations: &[AgentResponseObservation],
@@ -276,7 +298,7 @@ impl Session {
                     delivery.accepted,
                     Payload::Context {
                         communication,
-                        presentation: delivery.presentation,
+                        presentation: delivery.presentation.map(Box::new),
                         recording_turn_id,
                     },
                 )
@@ -325,7 +347,7 @@ impl Session {
             Arc::new(accepted),
             Payload::Context {
                 communication,
-                presentation: Some(copy_presentation(presentation)),
+                presentation: Some(Box::new(copy_presentation(presentation))),
                 recording_turn_id: None,
             },
         )
@@ -341,7 +363,7 @@ impl Session {
         self.persist_observation_payload(
             commit,
             Arc::new(accepted),
-            Payload::Presentation(copy_presentation(presentation)),
+            Payload::Presentation(Box::new(copy_presentation(presentation))),
         )
         .await
     }

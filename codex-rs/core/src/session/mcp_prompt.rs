@@ -221,6 +221,7 @@ impl Session {
         if let Some(text) = pending.iter().rev().find_map(|input| match input {
             TurnInput::ResponseItem(envelope) => use_text(&envelope.item, server_name),
             TurnInput::UserInput { .. }
+            | TurnInput::AgentInput { .. }
             | TurnInput::FunctionCallOutput(_)
             | TurnInput::InterAgentCommunication(_) => None,
         }) {
@@ -430,6 +431,7 @@ impl Session {
             .filter_map(|input| match input {
                 TurnInput::ResponseItem(item) => Some(item),
                 TurnInput::UserInput { .. }
+                | TurnInput::AgentInput { .. }
                 | TurnInput::FunctionCallOutput(_)
                 | TurnInput::InterAgentCommunication(_) => None,
             })

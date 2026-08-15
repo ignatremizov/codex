@@ -40,7 +40,9 @@ pub(crate) fn agent_response_events_from_rollout(
             let TurnItem::AgentMessage(item) = &event.item else {
                 return None;
             };
-            if item.has_sub_agent_completion_identity() {
+            if item.has_sub_agent_completion_identity()
+                || item.is_attributed_agent_input_presentation()
+            {
                 return None;
             }
             matches!(item.phase.as_ref(), Some(MessagePhase::Commentary))
@@ -65,10 +67,12 @@ pub(crate) fn agent_response_events_from_rollout(
                         phase: Some(MessagePhase::Commentary),
                         ..
                     } if role == "assistant"
-                        && turn_id.as_ref().is_some_and(|turn_id| {
-                            !completed_commentary_items
-                                .contains(&(turn_id.clone(), item_id.to_string()))
-                        }) =>
+                        && !codex_protocol::protocol::is_attributed_agent_message_response_item_id(
+                            item_id.as_str(),
+                        ) && turn_id.as_ref().is_some_and(|turn_id| {
+                        !completed_commentary_items
+                            .contains(&(turn_id.clone(), item_id.to_string()))
+                    }) =>
                     {
                         turn_id.map(|turn_id| AgentResponseEvent::Commentary {
                             turn_id,

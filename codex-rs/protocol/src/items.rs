@@ -119,6 +119,8 @@ pub struct UserAgentControlItem {
     pub target_messages: Option<bool>,
     #[serde(default)]
     pub queue_input: Option<bool>,
+    /// Actual input outcome; absent in legacy audit rows.
+    pub input_outcome: Option<UserAgentInputOutcome>,
     pub status: UserAgentControlStatus,
     pub error: Option<String>,
 }
@@ -142,6 +144,7 @@ impl UserAgentControlItem {
             final_response: None,
             target_messages: None,
             queue_input: None,
+            input_outcome: None,
             status: UserAgentControlStatus::Succeeded,
             error: None,
         }
@@ -168,6 +171,15 @@ pub enum UserAgentControlStatus {
     Succeeded,
     Failed,
     /// Input may have been accepted; canonical state must be reconciled before retrying.
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserAgentInputOutcome {
+    Queued,
+    Admitted,
     Unknown,
 }
 
@@ -452,6 +464,14 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub wake_on_completion: Option<bool>,
+    /// Whether this V1 lifecycle call granted the target an exact-turn reply route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_messages: Option<bool>,
+    /// Whether this V1 send was queued as a distinct future target turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub queue_input: Option<bool>,
     pub sender_thread_id: ThreadId,
     #[serde(default)]
     pub receiver_thread_ids: Vec<ThreadId>,

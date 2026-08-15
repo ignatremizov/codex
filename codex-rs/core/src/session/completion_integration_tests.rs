@@ -46,6 +46,8 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery(
         Arc::new(extensions.build());
     let child_id = ThreadId::new();
     let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        target_messages: None,
+        queue_input: None,
         observe_commentary: None,
         wake_on_completion: None,
         id: "wait-receipt".to_string(),

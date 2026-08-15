@@ -48,6 +48,7 @@ fn user_control_on_an_active_turn_does_not_finish_the_source_answer() {
     let item = TurnItem::UserAgentControl(control);
     let mut builder = ThreadHistoryBuilder::new();
     builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+        agent_queue: None,
         turn_id: "active-source".into(),
         root_turn_id: None,
         trace_id: None,

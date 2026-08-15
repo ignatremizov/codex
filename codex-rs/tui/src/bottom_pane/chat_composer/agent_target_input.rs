@@ -81,6 +81,8 @@ impl ChatComposer {
         self.popups.active = ActivePopup::None;
         if advances_to_action_target || advances_to_observation_mode {
             self.sync_popups();
+        } else {
+            self.popups.dismissed_agent_target = Some((completion.scope, target.selector));
         }
         (InputResult::None, true)
     }

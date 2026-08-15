@@ -235,6 +235,13 @@ impl LocalAgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<SpawnedAgent> {
+        if options.response_observation.target_messages()
+            && config.multi_agent_version_from_features() == MultiAgentVersion::V2
+        {
+            return Err(CodexErr::UnsupportedOperation(
+                "this target does not support scoped reply routes; omit m".into(),
+            ));
+        }
         let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
         let parent = match session_source
@@ -507,12 +514,12 @@ impl LocalAgentControl {
                     Some(input) => self.dispatch_user_input_locked(
                         &new_thread.thread,
                         super::user_dispatch::ObservedUserInputRequest {
-                            input, start_options, observer: observer.session.presentation_id(),
+                            input: super::AgentControlInput::User(input), start_options, observer: observer.session.presentation_id(),
                             observation: super::user_dispatch::UserObservation::Install(options.response_observation),
                             dispatch: super::user_dispatch::UserDispatch::Prompt(codex_protocol::turn_input::TurnInputMode::StartOrSteer),
                             task_preview,
                         },
-                    ).await.map(|submission| {
+                    ).await?.into_user_result().await.map(|submission| {
                         input_outcome = Some(submission.input_outcome);
                         post_admission_warning = submission.post_admission_warning;
                     }),
@@ -528,10 +535,21 @@ impl LocalAgentControl {
             }
             SpawnInitialInput::UserInput(input) => {
                 if let Some(observer) = &parent {
-                    self.submit_observed_input(
-                        new_thread.thread_id, input, start_options,
-                        observer.session.presentation_id(), options.response_observation,
-                    ).await.map(|submission| {
+                    let _child_guard = state.acquire_live_agent_lifecycle(new_thread.thread_id).await?;
+                    self.require_current_agent_ownership(new_thread.thread_id).await?;
+                    if !Arc::ptr_eq(&new_thread.thread, &state.get_thread(new_thread.thread_id).await?) {
+                        return Err(CodexErr::ThreadNotFound(new_thread.thread_id));
+                    }
+                    self.dispatch_user_input_locked(
+                        &new_thread.thread,
+                        super::user_dispatch::ObservedUserInputRequest {
+                            input: super::AgentControlInput::User(input), start_options,
+                            observer: observer.session.presentation_id(),
+                            observation: super::user_dispatch::UserObservation::Install(options.response_observation),
+                            dispatch: super::user_dispatch::UserDispatch::Prompt(codex_protocol::turn_input::TurnInputMode::StartOrSteer),
+                            task_preview: None,
+                        },
+                    ).await?.into_user_result().await.map(|submission| {
                         input_outcome = Some(submission.input_outcome);
                         post_admission_warning = submission.post_admission_warning;
                     })
