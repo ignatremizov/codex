@@ -1,4 +1,4 @@
-//! Idempotent model-context replay across completion delivery and compaction checkpoints.
+//! Idempotent replay of canonical agent context across delivery and compaction checkpoints.
 
 use codex_history::ResponseItemEnvelope;
 use codex_history::RolloutItem;
@@ -45,6 +45,11 @@ pub(super) fn trusted_contexts(
         }
     }
     trusted.retain(|id, _| !conflicting.contains(id));
+    trusted.extend(
+        codex_history::committed_user_agent_task_contexts(items)
+            .into_iter()
+            .map(|(id, evidence)| (id, evidence.item)),
+    );
     trusted
 }
 
@@ -58,6 +63,22 @@ pub(super) fn context_ids(
         .filter_map(|item| item.id())
         .cloned()
         .collect()
+}
+
+pub(super) fn normalize_unproven_tasks(
+    items: &mut [ResponseItemEnvelope],
+    trusted: &HashMap<ResponseItemId, ResponseItemEnvelope>,
+) {
+    for item in items {
+        if let Some(id) = item.id()
+            && codex_protocol::protocol::is_user_agent_task_context_response_item_id(id.as_str())
+            && trusted.get(id) != Some(item)
+        {
+            // Reserved IDs are not authority. Keep the ordinary input, but remove its privileged
+            // context identity before ContextManager applies rollback or compaction rules.
+            item.item.set_id(Some(ResponseItemId::new("msg")));
+        }
+    }
 }
 
 pub(super) fn deduplicate(

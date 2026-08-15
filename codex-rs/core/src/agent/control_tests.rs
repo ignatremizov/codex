@@ -264,6 +264,110 @@ fn spawn_agent_call(call_id: &str) -> ResponseItem {
     }
 }
 
+#[test_case::test_case(false; "stopped runtime cleanup")]
+#[test_case::test_case(true; "durable unload retains ownership")]
+#[tokio::test]
+async fn stopped_agent_interrupt_requires_owner_and_preserves_unload_fence(sealed: bool) {
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::Collab).expect("V1 control");
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("not V2");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (_, root) = harness.start_thread().await;
+    let (_, foreign) = harness.start_thread().await;
+    let child_id = root
+        .spawn_agent(crate::UserAgentSpawnOptions::default())
+        .await
+        .expect("create idle child")
+        .target_thread_id;
+    let child = harness.manager.get_thread(child_id).await.expect("child");
+    let control = root
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.session.session_id());
+    let foreign_control = foreign
+        .session
+        .services
+        .local_agent_runtime
+        .control(foreign.session.session_id());
+    let alias = control
+        .current_agent_alias(child_id)
+        .await
+        .expect("alias lookup");
+    assert!(alias.is_some());
+    child
+        .shutdown_durably_and_wait()
+        .await
+        .expect("stop actor without removing it");
+    let foreign_error = foreign_control
+        .interrupt_agent(child_id)
+        .await
+        .expect_err("foreign root cannot clean up the stopped runtime");
+    assert!(matches!(
+        foreign_error.details(),
+        CodexErrorDetails::UnsupportedOperation(_)
+    ));
+    assert!(Arc::ptr_eq(
+        &child,
+        &harness
+            .manager
+            .get_thread(child_id)
+            .await
+            .expect("foreign request retains exact runtime")
+    ));
+    if sealed {
+        child.session.submission_admission.seal_for_unload();
+    }
+    let error = control
+        .interrupt_agent(child_id)
+        .await
+        .expect_err("stopped actor cannot accept an interrupt");
+    if sealed {
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::InvalidRequest(_)
+        ));
+        assert!(Arc::ptr_eq(
+            &child,
+            &harness
+                .manager
+                .get_thread(child_id)
+                .await
+                .expect("unload still owns the exact runtime")
+        ));
+        assert_eq!(
+            control
+                .get_agent_metadata(child_id)
+                .expect("unload retains registry identity")
+                .agent_id,
+            Some(child_id)
+        );
+    } else {
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::InternalAgentDied
+        ));
+        assert!(harness.manager.get_thread(child_id).await.is_err());
+        assert!(control.get_agent_metadata(child_id).is_none());
+    }
+    assert_eq!(
+        control
+            .current_agent_alias(child_id)
+            .await
+            .expect("durable alias remains"),
+        alias
+    );
+    assert!(child.io.durable_shutdown_succeeded());
+    root.shutdown_durably_and_wait().await.expect("stop owner");
+    foreign
+        .shutdown_durably_and_wait()
+        .await
+        .expect("stop foreign root");
+}
+
 struct AgentControlHarness {
     _home: TempDir,
     config: Config,
@@ -331,18 +435,16 @@ impl AgentControlHarness {
             .expect("thread manager should be live");
         let parent_thread_id = session_source.parent_thread_id();
         let new_thread = state
-            .spawn_new_thread_with_source(
-                config,
+            .spawn_child_thread(
+                crate::thread_manager::ThreadRegistration::Immediate,
+                StartThreadOptions {
+                    session_source: Some(session_source),
+                    thread_source: Some(ThreadSource::Subagent),
+                    ..StartThreadOptions::new(config)
+                },
                 self.control.clone(),
-                session_source,
-                /*history_mode*/ None,
                 parent_thread_id,
-                /*forked_from_thread_id*/ None,
-                /*thread_source*/ Some(ThreadSource::Subagent),
-                /*metrics_service_name*/ None,
-                /*inherited_environments*/ None,
                 /*inherited_exec_policy*/ None,
-                /*environments*/ None,
             )
             .await
             .expect("start thread with source");
@@ -4033,13 +4135,17 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
     let turn_context = parent_thread.session.new_default_turn().await;
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
     let compacted_notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/older-worker",
-        ThreadId::new(),
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: AgentPath::try_from("/root/older-worker").expect("older worker path"),
+        },
         AgentStatus::Completed(Some("compacted runtime notification".to_string())),
     ));
     let suffix_notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/recent-worker",
-        ThreadId::new(),
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: AgentPath::try_from("/root/recent-worker").expect("recent worker path"),
+        },
         AgentStatus::Completed(Some("suffix runtime notification".to_string())),
     ));
     let quoted_notification =
@@ -5673,7 +5779,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
     assert_eq!(
         history_contains_text(
             history.raw_items(),
-            &format!("\"agent_path\":\"{child_thread_id}\"")
+            &format!("\"agent_id\":\"{child_thread_id}\"")
         ),
         true
     );
@@ -7378,3 +7484,9 @@ mod parent_binding_tests;
 
 #[path = "control_response_observation_tests.rs"]
 mod response_observation_tests;
+
+#[path = "control_user_observation_tests.rs"]
+mod user_observation_tests;
+
+#[path = "control_user_shutdown_tests.rs"]
+mod user_shutdown_tests;

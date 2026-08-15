@@ -114,6 +114,11 @@ pub(super) fn cells(
                 cells.push(Arc::new(cell));
             }
         }
+        item @ ThreadItem::UserAgentControl { .. } => {
+            if let Some(cell) = history_cell::new_user_agent_control(item) {
+                cells.push(Arc::new(cell));
+            }
+        }
         ThreadItem::EnteredReviewMode { review, .. } => {
             cells.push(Arc::new(history_cell::new_review_status_line(format!(
                 ">> Code review started: {review} <<"

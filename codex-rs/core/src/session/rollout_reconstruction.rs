@@ -770,6 +770,10 @@ impl ContextManager {
             && let Some(base_replacement_history) = &base_compacted_item.replacement_history
         {
             let mut base_replacement_history = base_replacement_history.clone();
+            completion_replay::normalize_unproven_tasks(
+                &mut base_replacement_history,
+                &trusted_completions,
+            );
             let prefix_len = if let Some(prefix_len) =
                 base_compacted_item.replacement_history_media_sanitized_prefix_len
             {
@@ -844,7 +848,12 @@ impl ContextManager {
                         deduplicated_completion_context = true;
                         continue;
                     }
-                    history.replay_annotated_item(response_item, truncation_policy);
+                    let mut response_item = response_item.clone();
+                    completion_replay::normalize_unproven_tasks(
+                        std::slice::from_mut(&mut response_item),
+                        &trusted_completions,
+                    );
+                    history.replay_annotated_item(&response_item, truncation_policy);
                 }
                 RolloutItem::InterAgentCommunication(communication) => {
                     let response_item = communication.to_model_input_item();
@@ -868,6 +877,10 @@ impl ContextManager {
                             .unwrap_or(replacement_history.len())
                             .min(replacement_history.len());
                         let mut replacement_history = replacement_history.clone();
+                        completion_replay::normalize_unproven_tasks(
+                            &mut replacement_history,
+                            &trusted_completions,
+                        );
                         let (prefix_len, deduplicated) = completion_replay::deduplicate(
                             &mut replacement_history,
                             prefix_len,

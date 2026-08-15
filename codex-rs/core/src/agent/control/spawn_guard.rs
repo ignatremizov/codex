@@ -1,105 +1,202 @@
-//! Owns a provisional child until the spawn result can be returned without yielding.
+//! Owns provisional startup and ordered graph cleanup for one exact child runtime.
+//!
+//! An interrupted input attempt is not a rejection. Preserve that runtime for reconciliation
+//! instead of deleting history or closing a child which may already be doing accepted work.
 
 use super::AgentTreeMembership;
+use super::LocalAgentControl;
+use super::aliases::PersistedAgentSpawn;
+use crate::codex_thread::CodexThread;
 use crate::thread_manager::ThreadManagerState;
-use crate::thread_manager::thread_store_error_kind;
-use codex_agent_graph_store::AgentGraphStoreError;
-use codex_agent_graph_store::ThreadSpawnEdgeStatus;
-use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErrKind;
-use codex_thread_store::ThreadStoreError;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use std::sync::Arc;
+use tokio::sync::OwnedMutexGuard;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
 pub(super) struct PendingSpawn {
+    control: LocalAgentControl,
     state: Arc<ThreadManagerState>,
-    pending: Option<(ThreadId, AgentTreeMembership)>,
-    edge_write: Option<JoinHandle<()>>,
+    child: Option<Arc<CodexThread>>,
+    membership: Option<AgentTreeMembership>,
+    parent_guard: Option<OwnedMutexGuard<()>>,
+    edge_write: Option<JoinHandle<CodexResult<PersistedAgentSpawn>>>,
+    graph_published: bool,
+    graph_uncertain: bool,
+    input_pending: bool,
 }
 
 impl PendingSpawn {
     pub(super) fn new(
+        control: LocalAgentControl,
         state: Arc<ThreadManagerState>,
-        child: ThreadId,
+        child: Arc<CodexThread>,
+        parent_guard: Option<OwnedMutexGuard<()>>,
         membership: AgentTreeMembership,
     ) -> Self {
         Self {
+            control,
             state,
-            pending: Some((child, membership)),
+            child: Some(child),
+            membership: Some(membership),
+            parent_guard,
             edge_write: None,
+            graph_published: false,
+            graph_uncertain: false,
+            input_pending: false,
         }
     }
 
-    pub(super) fn set_edge_write(&mut self, edge_write: JoinHandle<()>) {
+    pub(super) fn set_edge_write(
+        &mut self,
+        edge_write: JoinHandle<CodexResult<PersistedAgentSpawn>>,
+    ) {
+        self.graph_uncertain = true;
         self.edge_write = Some(edge_write);
     }
 
-    pub(super) async fn wait_for_edge(&mut self) {
-        if let Some(edge_write) = self.edge_write.as_mut() {
-            assert!(
-                edge_write.await.is_ok(),
-                "spawn edge write task should complete"
-            );
-        }
+    pub(super) async fn wait_for_edge(&mut self) -> CodexResult<PersistedAgentSpawn> {
+        let Some(edge_write) = self.edge_write.as_mut() else {
+            return Err(CodexErr::Fatal(
+                "spawn has no graph publication worker".into(),
+            ));
+        };
+        let result = edge_write.await;
+        // A completed JoinHandle must never be polled again by rollback or Drop.
         self.edge_write = None;
+        let persisted = result.map_err(|error| {
+            CodexErr::Fatal(format!("spawn graph publication worker failed: {error}"))
+        })??;
+        self.graph_published = true;
+        self.graph_uncertain = false;
+        Ok(persisted)
     }
 
-    pub(super) fn disarm(mut self) -> AgentTreeMembership {
-        let Some((_child, membership)) = self.pending.take() else {
+    pub(super) fn begin_input_attempt(&mut self) {
+        self.input_pending = true;
+    }
+
+    pub(super) fn input_rejected(&mut self) {
+        self.input_pending = false;
+    }
+
+    pub(super) fn disarm(mut self) {
+        self.child = None;
+    }
+
+    /// The caller has either not attempted input or received a definite rejection.
+    pub(super) async fn rollback(mut self, error: CodexErr) -> CodexErr {
+        let Some(child) = self.child.take() else {
+            return error;
+        };
+        self.cleanup(child, error).await
+    }
+
+    async fn cleanup(&mut self, child: Arc<CodexThread>, error: CodexErr) -> CodexErr {
+        if self.input_pending {
+            child.session.quarantine_history(format!(
+                "spawn input outcome is unknown: {error}; reconcile before retrying"
+            ));
+            return error;
+        }
+        let Some(membership) = self.membership.take() else {
             unreachable!("pending spawn must own agent-tree membership");
         };
-        membership
+        let teardown =
+            membership.into_teardown_guard("child_spawn_cleanup", Some(child.session.thread_id()));
+        // Join the original Open write before attempting Closed. A failed acknowledgement
+        // leaves graph state uncertain; do not compensate or discard its source history.
+        if let Some(edge_write) = self.edge_write.take() {
+            self.graph_published = matches!(edge_write.await, Ok(Ok(_)));
+            self.graph_uncertain = !self.graph_published;
+        }
+        let id = child.session.thread_id();
+        let _child_guard = self.state.agent_lifecycle_lock(id).lock_owned().await;
+        if self
+            .state
+            .get_thread(id)
+            .await
+            .is_ok_and(|current| !Arc::ptr_eq(&current, &child))
+        {
+            child
+                .session
+                .quarantine_history("provisional child was replaced during cleanup".into());
+            teardown.record_shutdown_failure("validate_child", "runtime_replaced");
+            teardown.complete();
+            return CodexErr::Fatal(format!(
+                "{error}; provisional child was replaced; history retained"
+            ));
+        }
+        let mut error = self
+            .control
+            .cleanup_unpublished_restoration(&child, error)
+            .await;
+        self.state
+            .remove_thread_if_matches_with(&id, &child, || {
+                self.control.runtime.registry.release_spawned_thread(id);
+            })
+            .await;
+        if !self.graph_uncertain {
+            if self.graph_published
+                && child.session_source.parent_thread_id().is_some()
+                && !child.config_snapshot().await.ephemeral
+                && let Err(close) = self.control.persist_agent_closed(id).await
+            {
+                teardown.record_shutdown_failure("close_spawn_edge", "agent_graph_store_error");
+                teardown.complete();
+                return CodexErr::Fatal(format!(
+                    "{error}; spawn graph cleanup failed: {close}; history retained"
+                ));
+            }
+            // A published edge or alias is durable audit state even after Closed. Preserve
+            // its matching history rather than leaving a resumable alias without a source.
+            if !self.graph_published
+                && let Some(live_thread) = child.session.live_thread()
+                && let Err(discard) = live_thread.discard().await
+            {
+                teardown.record_shutdown_failure(
+                    "discard_child_persistence",
+                    crate::thread_manager::thread_store_error_kind(&discard),
+                );
+                error = CodexErr::Fatal(format!(
+                    "{error}; rejected spawn history cleanup failed: {discard}"
+                ));
+            }
+        }
+        teardown.complete();
+        error
     }
 }
 
 impl Drop for PendingSpawn {
     fn drop(&mut self) {
-        let Some((child, membership)) = self.pending.take() else {
+        let Some(child) = self.child.take() else {
             return;
         };
-        let state = Arc::clone(&self.state);
-        let teardown = membership.into_teardown_guard("child_spawn_cleanup", Some(child));
-        let edge_write = self.edge_write.take();
+        if self.input_pending {
+            child.session.quarantine_history(
+                "spawn worker ended during input admission; input outcome unknown; do not resubmit"
+                    .into(),
+            );
+            return;
+        }
+        let mut cleanup = Self {
+            control: self.control.clone(),
+            state: Arc::clone(&self.state),
+            child: None,
+            membership: self.membership.take(),
+            parent_guard: self.parent_guard.take(),
+            edge_write: self.edge_write.take(),
+            graph_published: self.graph_published,
+            graph_uncertain: self.graph_uncertain,
+            input_pending: false,
+        };
         drop(tokio::spawn(async move {
-            if let Some(thread) = state.remove_thread(&child).await {
-                if let Err(error) = thread.shutdown_and_wait().await {
-                    teardown
-                        .record_shutdown_failure("stop_child", CodexErrKind::from(&error).into());
-                    warn!("failed to stop cancelled child spawn: {error}");
-                }
-                if let Some(live_thread) = thread.session.live_thread() {
-                    match live_thread.discard().await {
-                        Ok(()) | Err(ThreadStoreError::ThreadNotFound { .. }) => {}
-                        Err(error) => {
-                            teardown.record_shutdown_failure(
-                                "discard_child_persistence",
-                                thread_store_error_kind(&error),
-                            );
-                            warn!("failed to discard cancelled child spawn: {error}");
-                        }
-                    }
-                }
-            }
-            // A pending Open write must finish before cleanup writes Closed.
-            if let Some(edge_write) = edge_write {
-                let _ = edge_write.await;
-            }
-            if let Some(store) = state.agent_graph_store()
-                && let Err(error) = store
-                    .set_thread_spawn_edge_status(child, ThreadSpawnEdgeStatus::Closed)
-                    .await
-            {
-                let error_kind = match &error {
-                    AgentGraphStoreError::InvalidRequest { .. } => {
-                        "agent_graph_store_invalid_request"
-                    }
-                    AgentGraphStoreError::Internal { .. } => "agent_graph_store_internal",
-                };
-                teardown.record_shutdown_failure("close_spawn_edge", error_kind);
-                warn!("failed to close cancelled child spawn edge: {error}");
-            }
-            teardown.complete();
+            let error = cleanup
+                .cleanup(child, CodexErr::Fatal("spawn setup was abandoned".into()))
+                .await;
+            warn!("{error}");
         }));
     }
 }

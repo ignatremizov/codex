@@ -11,6 +11,7 @@ pub(crate) enum AgentCommunicationKind {
     Spawn,
     Message,
     Followup,
+    #[cfg(test)]
     Result,
 }
 
@@ -20,6 +21,7 @@ impl AgentCommunicationKind {
             Self::Spawn => "spawn",
             Self::Message => "message",
             Self::Followup => "followup",
+            #[cfg(test)]
             Self::Result => "result",
         }
     }

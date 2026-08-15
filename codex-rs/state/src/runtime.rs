@@ -39,6 +39,7 @@ use std::sync::atomic::AtomicI64;
 use std::time::Instant;
 use tracing::warn;
 
+mod agent_aliases;
 mod backfill;
 mod external_agent_config_imports;
 mod goals;

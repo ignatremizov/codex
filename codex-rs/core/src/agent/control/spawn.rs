@@ -47,7 +47,19 @@ const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
 #[allow(clippy::large_enum_variant)]
 pub(super) enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
+    UserControlled {
+        input: Option<Vec<UserInput>>,
+        task_preview: Option<String>,
+    },
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
+}
+
+pub(super) struct SpawnedAgent {
+    pub(super) agent: LiveAgent,
+    pub(super) config: ThreadConfigSnapshot,
+    pub(super) alias: Option<codex_agent_graph_store::AgentAlias>,
+    pub(super) post_admission_warning: Option<String>,
+    pub(super) input_outcome: Option<crate::agent::UserAgentInputOutcome>,
 }
 
 fn default_agent_nickname_list() -> Vec<&'static str> {
@@ -152,36 +164,6 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
     !content.is_empty() && set_annotated_content(item, content).is_some()
 }
 
-pub(super) async fn load_agent_model_context(
-    state: &ThreadManagerState,
-    thread_id: ThreadId,
-    history_mode: ThreadHistoryMode,
-) -> CodexResult<Option<codex_thread_store::StoredModelContext>> {
-    match history_mode {
-        ThreadHistoryMode::Legacy => Ok(state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: true,
-            })
-            .await?
-            .history
-            .map(|history| codex_thread_store::StoredModelContext {
-                thread_id,
-                revision: history.revision,
-                items: history.items,
-            })),
-        ThreadHistoryMode::Paginated => Ok(Some(
-            state
-                .load_latest_model_context(LoadThreadHistoryParams {
-                    thread_id,
-                    include_archived: true,
-                })
-                .await?,
-        )),
-    }
-}
-
 impl LocalAgentControl {
     /// Spawn a new agent thread and submit the initial prompt.
     #[cfg(test)]
@@ -219,27 +201,65 @@ impl LocalAgentControl {
                 membership,
             ))
             .await
+            .and_then(|spawned| match spawned.post_admission_warning {
+                Some(warning) => Err(CodexErr::Fatal(format!(
+                    "agent {} may already have accepted input: {warning}; do not respawn or resend",
+                    spawned.agent.thread_id,
+                ))),
+                None => Ok((spawned.agent, spawned.config)),
+            })
         })
         .await
         .map_err(|error| CodexErr::Fatal(format!("agent spawn worker failed: {error}")))?
     }
 
-    async fn spawn_agent_owned(
+    pub(super) async fn spawn_agent_owned(
         &self,
         config: Config,
         initial_input: SpawnInitialInput,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
         membership: AgentTreeMembership,
-    ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
+    ) -> CodexResult<SpawnedAgent> {
         let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
-        // Resolve the parent before inheriting settings or copying attachments.
-        // Recovering it later from history only repairs the child's metadata.
         let parent_thread_id = session_source
             .as_ref()
             .and_then(SessionSource::parent_thread_id)
             .or(options.parent_thread_id);
+        let parent = match parent_thread_id {
+            Some(parent_id) => Some(state.get_thread(parent_id).await?),
+            None => None,
+        };
+        let _parent_guard = match &parent {
+            Some(parent) => Some(
+                state
+                    .v2_spawn_resume_lock(parent.session.thread_id())
+                    .try_lock_owned()
+                    .map_err(|_| {
+                        CodexErr::InvalidRequest(
+                            "spawn owner is busy; retry after its current lifecycle operation"
+                                .into(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        if let Some(parent) = &parent {
+            let current = state.get_thread(parent.session.thread_id()).await?;
+            if !Arc::ptr_eq(parent, &current)
+                || !parent.is_running()
+                || !self
+                    .runtime
+                    .shares_tree_with(&parent.session.services.local_agent_runtime)
+            {
+                return Err(CodexErr::InvalidRequest(
+                    "spawn parent changed or belongs to another control".into(),
+                ));
+            }
+            parent.session.submission_admission.check_ready()?;
+        }
+        self.sync_durable_agent_nickname_reservations().await?;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -284,12 +304,6 @@ impl LocalAgentControl {
             .runtime
             .registry
             .reserve_spawn_slot(reservation_max_threads)?;
-        // A same-UUID resumed parent is not the parent that requested this spawn.
-        // Capture once and use that exact instance for both native completion and `w`.
-        let completion_parent = match parent_thread_id {
-            Some(parent_id) => Some(state.get_thread(parent_id).await?),
-            None => None,
-        };
         let inherited_environments = match &options.environments {
             Some(environments) => Some(environments.clone()),
             None => {
@@ -390,6 +404,7 @@ impl LocalAgentControl {
         let child_create_started_at = Instant::now();
         let new_thread = state
             .spawn_child_thread(
+                crate::thread_manager::ThreadRegistration::Deferred,
                 start_options,
                 self.clone(),
                 parent_thread_id,
@@ -399,28 +414,40 @@ impl LocalAgentControl {
             .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
         let child_create = child_create_started_at.elapsed();
         agent_metadata.agent_id = Some(new_thread.thread_id);
-        let mut pending_spawn =
-            PendingSpawn::new(Arc::clone(&state), new_thread.thread_id, membership);
-
+        let mut pending_spawn = PendingSpawn::new(
+            self.clone(),
+            Arc::clone(&state),
+            Arc::clone(&new_thread.thread),
+            _parent_guard,
+            membership,
+        );
+        let setup = async {
+        let durability_wait_started_at = Instant::now();
+        if options.fork_mode.is_some()
+            || notification_source.as_ref().is_some_and(SessionSource::is_non_root_agent)
+        {
+            new_thread.thread.session.ensure_rollout_materialized(PersistContext::Standard).await;
+            new_thread.thread.session.flush_rollout().await?;
+        }
+        let control = self.clone();
+        let child = Arc::clone(&new_thread.thread);
+        let source = notification_source.clone();
+        pending_spawn.set_edge_write(tokio::spawn(async move {
+            control.persist_thread_spawn_for_source(
+                &child, child.session.thread_id(), source.as_ref(),
+                super::aliases::ThreadSpawnPersistence::New,
+            ).await
+        }));
+        let persisted = pending_spawn.wait_for_edge().await?;
         if let Some(SessionSource::SubAgent(
-            subagent_source @ SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            },
+            subagent_source @ SubAgentSource::ThreadSpawn { .. },
         )) = notification_source.as_ref()
         {
-            let client_metadata = match state.get_thread(*parent_thread_id).await {
-                Ok(parent_thread) => parent_thread.session.app_server_client_metadata().await,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        parent_thread_id = %parent_thread_id,
-                        "skipping subagent thread analytics: failed to load parent thread metadata"
-                    );
-                    crate::session::session::AppServerClientMetadata {
-                        client_name: None,
-                        client_version: None,
-                    }
-                }
+            let client_metadata = match &parent {
+                Some(parent) => parent.session.app_server_client_metadata().await,
+                None => crate::session::session::AppServerClientMetadata {
+                    client_name: None, client_version: None,
+                },
             };
             let thread_config = new_thread.thread.config_snapshot().await;
             let parent_thread_id = thread_config.parent_thread_id;
@@ -443,12 +470,9 @@ impl LocalAgentControl {
             .unwrap_or_else(|| new_thread.thread_id.to_string());
         // Attach before exposing the child or submitting its first input so an early failure
         // cannot publish a watcher-owned terminal without a consumer.
-        if let (Some(parent), Some(source)) = (&completion_parent, &notification_source) {
+        if let (Some(parent), Some(source)) = (&parent, &notification_source) {
             self.bind_completion_watcher_with_parent(
-                &new_thread.thread,
-                parent,
-                source.clone(),
-                child_reference,
+                &new_thread.thread, parent, source.clone(), child_reference,
                 agent_metadata.agent_path.clone(),
                 new_thread
                     .thread
@@ -456,38 +480,18 @@ impl LocalAgentControl {
                     .unwrap_or(MultiAgentVersion::V1),
             )?;
         }
-
-        let control = self.clone();
-        let child = Arc::clone(&new_thread.thread);
-        let child_thread_id = new_thread.thread_id;
-        let source = notification_source.clone();
-        pending_spawn.set_edge_write(tokio::spawn(async move {
-            control
-                .persist_thread_spawn_edge_for_source(
-                    child.as_ref(),
-                    child_thread_id,
-                    source.as_ref(),
-                )
-                .await;
-        }));
-        let durability_wait_started_at = Instant::now();
-        // Ordinary spawned children also need discoverable rollout metadata before
-        // publication. Retain the provisional guard and its independently joined edge write.
-        if options.fork_mode.is_some()
-            || matches!(
-                notification_source.as_ref(),
-                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
-            )
-        {
-            tokio::join!(
-                new_thread
-                    .thread
-                    .session
-                    .ensure_rollout_materialized(PersistContext::Standard),
-                pending_spawn.wait_for_edge(),
-            );
+        if notification_source.is_some() {
+            state.publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
+                if !reservation.commit_if_absent(agent_metadata.clone()) {
+                    return Err(CodexErr::InvalidRequest("spawn registration changed during setup".into()));
+                }
+                Ok(())
+            }).await?;
         } else {
-            pending_spawn.wait_for_edge().await;
+            reservation.commit(agent_metadata.clone());
+        }
+        if let Some(residency_slot) = residency_slot {
+            residency_slot.commit(new_thread.thread_id);
         }
         let durability_wait = durability_wait_started_at.elapsed();
 
@@ -518,50 +522,92 @@ impl LocalAgentControl {
             ..Default::default()
         };
         let input_admission_started_at = Instant::now();
-        let submission = match initial_input {
+        let mut post_admission_warning = None;
+        let mut input_outcome = None;
+        // The outer spawn worker owns admission. Avoid a nested worker whose lost JoinHandle
+        // could be mistaken for a definite rejection after input has already been enqueued.
+        pending_spawn.begin_input_attempt();
+        let submission: CodexResult<()> = async { match initial_input {
+            SpawnInitialInput::UserControlled { input, task_preview } => {
+                let observer = parent.as_ref().ok_or_else(|| {
+                    CodexErr::InvalidRequest("user spawn requires its exact source runtime".into())
+                })?;
+                let _child_guard = state.acquire_live_agent_lifecycle(new_thread.thread_id).await?;
+                self.require_current_agent_ownership(new_thread.thread_id).await?;
+                if !Arc::ptr_eq(&new_thread.thread, &state.get_thread(new_thread.thread_id).await?) {
+                    return Err(CodexErr::ThreadNotFound(new_thread.thread_id));
+                }
+                match input {
+                    Some(input) => self.dispatch_user_input_locked(
+                        &new_thread.thread,
+                        super::user_dispatch::ObservedUserInputRequest {
+                            input, start_options, observer: observer.session.presentation_id(),
+                            observation: super::user_dispatch::UserObservation::Install(options.response_observation),
+                            dispatch: super::user_dispatch::UserDispatch::Prompt(codex_protocol::turn_input::TurnInputMode::StartOrSteer),
+                            task_preview,
+                        },
+                    ).await.map(|submission| {
+                        input_outcome = Some(submission.input_outcome);
+                        post_admission_warning = submission.post_admission_warning;
+                    }),
+                    None => {
+                        let _transaction = self.acquire_response_observation_transaction(observer.session.presentation_id()).await;
+                        self.install_response_observer(
+                            observer, &new_thread.thread, options.response_observation,
+                            ResponseObservationBinding::NextTurn,
+                            super::response_observer::ResponseObserverStart::FutureOnly,
+                        ).await
+                    }
+                }
+            }
             SpawnInitialInput::UserInput(input) => {
-                if let Some(observer) = &completion_parent {
-                    self.send_input_observing_response(
-                        new_thread.thread_id,
-                        input,
-                        start_options,
-                        observer.session.presentation_id(),
-                        options.response_observation,
-                    )
-                    .await
+                if let Some(observer) = &parent {
+                    self.submit_observed_input(
+                        new_thread.thread_id, input, start_options,
+                        observer.session.presentation_id(), options.response_observation,
+                    ).await.map(|submission| {
+                        input_outcome = Some(submission.input_outcome);
+                        post_admission_warning = submission.post_admission_warning;
+                    })
                 } else {
-                    self.send_input(new_thread.thread_id, input, start_options)
-                        .await
+                    let residency = self.runtime.pin_v2_residency(&state, &new_thread.thread).await?;
+                    match new_thread.thread.io.submit_observed_turn_input(
+                        &new_thread.thread.session,
+                        TurnInputRequest::user_input(input).on_start(start_options),
+                        codex_protocol::turn_input::TurnInputMode::StartOrSteer,
+                        residency,
+                    ).await {
+                        Ok(crate::session::ObservedTurnInputSubmission::Admitted { .. }) => Ok(()),
+                        Ok(crate::session::ObservedTurnInputSubmission::AdmittedWithoutObservation { warning, .. })
+                        | Ok(crate::session::ObservedTurnInputSubmission::Indeterminate { warning, .. }) => {
+                            post_admission_warning = Some(warning);
+                            Ok(())
+                        }
+                        Ok(crate::session::ObservedTurnInputSubmission::NotSubmitted { reason }) => {
+                            Err(CodexErr::InvalidRequest(format!("spawn input was not submitted: {reason:?}")))
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    CapturedRecipient::Loaded(Arc::clone(&new_thread.thread)),
-                    communication,
-                    context,
-                    start_options,
-                )
-                .await
+                    new_thread.thread_id, &state, CapturedRecipient::Loaded(Arc::clone(&new_thread.thread)),
+                    communication, context, start_options,
+                ).await.map(|_| ())
             }
-        };
-        // PendingSpawn already owns teardown, discard, and the ordered spawn-edge close
-        // until input acceptance. Do not start a second competing close transaction.
-        submission.map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
+        } }.await;
+        if let Err(error) = submission {
+            pending_spawn.input_rejected();
+            return Err(error);
+        }
         let input_admission = input_admission_started_at.elapsed();
-        // Keep provisional ownership through the final awaits. Commit and return to the
-        // backend caller in one poll; later tool-result publication is outside this boundary.
+
         let status = self.get_status(new_thread.thread_id).await;
         let config = match spawn_config {
             Some(config) => config,
             None => new_thread.thread.config_snapshot().await,
         };
-        reservation.commit(agent_metadata.clone());
-        if let Some(residency_slot) = residency_slot {
-            residency_slot.commit(new_thread.thread_id);
-        }
-        let _membership = pending_spawn.disarm();
 
         // Notify a new thread has been created. This notification will be processed by clients
         // to subscribe or drain this newly created thread.
@@ -591,7 +637,17 @@ impl LocalAgentControl {
                 total: spawn_started_at.elapsed(),
             },
         );
-        Ok((agent, config))
+        Ok(SpawnedAgent {
+            agent, config, alias: persisted.alias, post_admission_warning, input_outcome,
+        })
+        }.await;
+        match setup {
+            Ok(spawned) => {
+                pending_spawn.disarm();
+                Ok(spawned)
+            }
+            Err(error) => Err(pending_spawn.rollback(error).await),
+        }
     }
 
     /// Prepare copied history while leaving startup settings and timing with the caller.
@@ -660,15 +716,15 @@ impl LocalAgentControl {
 
         let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
             .then_some(ThreadHistoryMode::Paginated);
-        let forked_rollout_items =
-            load_agent_model_context(state, parent_thread_id, parent_history_mode)
-                .await?
-                .ok_or_else(|| {
-                    CodexErr::Fatal(format!(
-                        "parent thread history unavailable for fork: {parent_thread_id}"
-                    ))
-                })?
-                .items;
+        let forked_rollout_items = state
+            .load_agent_model_context(parent_thread_id, parent_history_mode)
+            .await?
+            .ok_or_else(|| {
+                CodexErr::Fatal(format!(
+                    "parent thread history unavailable for fork: {parent_thread_id}"
+                ))
+            })?
+            .items;
         let mut forked_rollout_items = rollout_without_exact_rollback_ranges(&forked_rollout_items);
 
         if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
