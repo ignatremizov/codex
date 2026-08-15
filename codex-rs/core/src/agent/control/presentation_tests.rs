@@ -1261,6 +1261,214 @@ fn response_observation_merges_monotonically_for_one_target_turn() {
 }
 
 #[test]
+fn explicit_user_observation_replaces_final_policy_without_removing_commentary() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let _registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ true,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("turn-1".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("watcher registration");
+
+    assert_eq!(
+        control.replace_final_response_observation(
+            parent,
+            child,
+            Some("turn-1"),
+            /*last_terminal_turn_id*/ None,
+            FinalResponseObservation::PresentationOnly,
+        ),
+        FinalResponseObservationReplacement::Replaced {
+            previous: FinalResponseObservation::Wake,
+            binding: ReplacedFinalResponseObservationBinding::ActiveTurn,
+            task_preview: None,
+        }
+    );
+
+    let snapshot = control
+        .response_observation_snapshots(parent, child)
+        .into_iter()
+        .find(|snapshot| snapshot.target_turn_id.as_deref() == Some("turn-1"))
+        .expect("turn observation");
+    assert!(snapshot.pending_commentary);
+    assert_eq!(
+        snapshot.final_delivery,
+        codex_protocol::protocol::AgentResponseFinalDelivery::PresentationOnly
+    );
+}
+
+#[test]
+fn prepared_user_observation_does_not_change_live_policy_before_commit() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let _registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ true,
+                FinalResponseObservation::PresentationOnly,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("turn-1".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("watcher registration");
+    let before = control.response_observation_snapshots(parent, child);
+    let prepared = control
+        .prepare_final_response_observation_replacement(
+            parent,
+            child,
+            Some("turn-1"),
+            /*last_terminal_turn_id*/ None,
+            FinalResponseObservation::Wake,
+        )
+        .expect("prepare replacement");
+
+    assert_eq!(
+        control.response_observation_snapshots(parent, child),
+        before
+    );
+    let prepared_snapshots =
+        control.prepared_response_observation_replacement_snapshots(parent, child, &prepared);
+    assert_eq!(
+        prepared_snapshots
+            .iter()
+            .find(|snapshot| snapshot.target_turn_id.as_deref() == Some("turn-1"))
+            .expect("prepared turn")
+            .final_delivery,
+        codex_protocol::protocol::AgentResponseFinalDelivery::Wake
+    );
+    assert!(
+        control.commit_final_response_observation_replacement(parent, child, &prepared),
+        "unchanged live state should accept the durable replacement"
+    );
+    assert_eq!(
+        control.response_observation_snapshots(parent, child),
+        prepared_snapshots
+    );
+}
+
+#[test]
+fn explicit_user_observation_promotes_hidden_task_preview_from_the_replaced_turn() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let _registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::PresentationOnly,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            /*target_turn_id*/ None,
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("watcher registration");
+    let task_preview = "review ".to_string() + &"the older change ".repeat(20);
+    control.set_response_observation_task_preview(
+        parent,
+        child,
+        /*target_turn_id*/ None,
+        task_preview,
+    );
+    control.bind_response_observation_turn_at_sequence(
+        parent,
+        child,
+        "older-turn",
+        ResponseObservationBinding::NextTurn,
+        /*commentary_boundary*/ None,
+        /*task_preview*/ None,
+        ResponseObservationBindingPublication::Immediate,
+    );
+
+    assert_eq!(
+        control.replace_final_response_observation(
+            parent,
+            child,
+            Some("newer-turn"),
+            Some("older-turn"),
+            FinalResponseObservation::Passive,
+        ),
+        FinalResponseObservationReplacement::Replaced {
+            previous: FinalResponseObservation::PresentationOnly,
+            binding: ReplacedFinalResponseObservationBinding::UndeliveredCompletion,
+            task_preview: Some(
+                "review ".to_string() + &"the older change ".repeat(13) + "the older c…",
+            ),
+        }
+    );
+}
+
+#[test]
+fn explicit_user_observation_cannot_replace_claimed_final_delivery() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let _registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("turn-1".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("watcher registration");
+    let response_item_id = codex_protocol::ResponseItemId::new("msg");
+    assert_eq!(
+        control.prepare_final_response_observation_delivery(
+            parent,
+            child,
+            "turn-1",
+            &response_item_id,
+        ),
+        (
+            FinalResponseObservation::Wake,
+            Some(response_item_id.clone())
+        )
+    );
+
+    assert_eq!(
+        control.replace_final_response_observation(
+            parent,
+            child,
+            Some("turn-1"),
+            /*last_terminal_turn_id*/ None,
+            FinalResponseObservation::PresentationOnly,
+        ),
+        FinalResponseObservationReplacement::DeliveryClaimed
+    );
+}
+
+#[test]
 fn fire_and_forget_audit_snapshot_preserves_an_existing_final_wake() {
     let control = AgentControl::default();
     let parent = session_presentation_id(ThreadId::new());
@@ -1374,6 +1582,75 @@ fn only_bound_final_wakes_defer_automatic_idle_work() {
     assert!(!control.has_bound_final_response_wake(parent));
 }
 
+#[test]
+fn stale_setup_cleanup_cannot_revoke_a_replacement_response_watcher() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let mut original_registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            /*target_turn_id*/ None,
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("original watcher registration");
+    let original_registration_id = control
+        .response_watcher_registration_id(parent, child)
+        .expect("original watcher identity");
+    assert!(matches!(
+        control.revoke_response_observation_if_registration_is_current(
+            parent,
+            child,
+            original_registration_id,
+        ),
+        ConditionalResponseObservationRevocation::Revoked { .. }
+    ));
+    let _replacement_registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            /*target_turn_id*/ None,
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("replacement watcher registration");
+    assert_ne!(
+        control.response_watcher_registration_id(parent, child),
+        Some(original_registration_id)
+    );
+
+    assert!(matches!(
+        control.revoke_response_observation_if_registration_is_current(
+            parent,
+            child,
+            original_registration_id,
+        ),
+        ConditionalResponseObservationRevocation::Replaced
+    ));
+    assert!(original_registration.retire_if_observation_idle());
+    assert!(control.has_completion_watcher(parent, child));
+    assert!(
+        !control
+            .response_observation_snapshots(parent, child)
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn idle_turn_reservation_rechecks_a_wake_bound_after_idle_detection() {
     let (session, _turn_context) = crate::session::tests::make_session_and_context().await;
@@ -1431,6 +1708,8 @@ async fn idle_turn_reservation_rechecks_a_wake_bound_after_idle_detection() {
                 observer_thread_id: parent.thread_id,
                 target_thread_id: child.thread_id,
                 target_turn_id: Some("late-bound-turn".to_string()),
+                task_preview: None,
+                promoted_task_context: None,
                 pending_commentary: false,
                 commentary_after_sequences: Vec::new(),
                 commentary_admissions: Vec::new(),
@@ -1501,6 +1780,8 @@ fn fire_and_forget_audit_snapshot_records_canonical_target_without_a_watcher() {
             observer_thread_id: parent.thread_id,
             target_thread_id: child.thread_id,
             target_turn_id: Some("turn-1".to_string()),
+            task_preview: None,
+            promoted_task_context: None,
             pending_commentary: false,
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),

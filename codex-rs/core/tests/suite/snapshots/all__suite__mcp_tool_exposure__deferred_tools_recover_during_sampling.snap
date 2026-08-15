@@ -9,7 +9,7 @@ Scenario: Deferred namespaces appear after Apps recovers between sampling reques
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
          Deferred tool namespaces:
-         - multi_agent_v1: Tools for spawning and managing sub-agents.
+         - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.
          </tools>
 01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 02:message/user:use an app after it recovers
@@ -19,7 +19,7 @@ Scenario: Deferred namespaces appear after Apps recovers between sampling reques
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
          Deferred tool namespaces:
-         - multi_agent_v1: Tools for spawning and managing sub-agents.
+         - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.
          </tools>
 01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 02:message/user:use an app after it recovers

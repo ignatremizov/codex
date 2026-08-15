@@ -280,6 +280,8 @@ impl AgentControl {
             observer_thread_id: parent.thread_id,
             target_thread_id: child.thread_id,
             target_turn_id: Some(turn_id.to_string()),
+            task_preview: None,
+            promoted_task_context: None,
             pending_commentary: false,
             commentary_after_sequences: Vec::new(),
             commentary_admissions: Vec::new(),
@@ -307,6 +309,7 @@ impl AgentControl {
             turn_id,
             binding,
             /*commentary_boundary*/ None,
+            /*task_preview*/ None,
             ResponseObservationBindingPublication::Immediate,
         );
     }
@@ -318,6 +321,7 @@ impl AgentControl {
         turn_id: &str,
         binding: ResponseObservationBinding,
         commentary_boundary: Option<(u64, Option<String>)>,
+        task_preview: Option<String>,
         publication: ResponseObservationBindingPublication,
     ) {
         let mut state = self.wait_agent_presentations.state();
@@ -340,6 +344,10 @@ impl AgentControl {
                 admission.canonical_boundary = true;
             }
         }
+        let task_preview = compact_task_preview(task_preview);
+        if task_preview.is_some() {
+            pending.task_preview = task_preview;
+        }
         relationship
             .turns
             .entry(turn_id.to_string())
@@ -349,6 +357,9 @@ impl AgentControl {
                     .extend(pending.commentary_admissions.iter().cloned());
                 if current.commentary_delivery.is_none() {
                     current.commentary_delivery = pending.commentary_delivery.clone();
+                }
+                if pending.task_preview.is_some() {
+                    current.task_preview = pending.task_preview.clone();
                 }
                 current.final_response = current.final_response.max(pending.final_response);
                 if current.final_delivery_response_item_id.is_none() {
@@ -382,6 +393,32 @@ impl AgentControl {
         drop(state);
         if publication == ResponseObservationBindingPublication::Immediate {
             self.publish_response_observation_binding();
+        }
+    }
+
+    pub(crate) fn set_response_observation_task_preview(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        target_turn_id: Option<&str>,
+        task_preview: String,
+    ) {
+        let Some(task_preview) = compact_task_preview(Some(task_preview)) else {
+            return;
+        };
+        let mut state = self.wait_agent_presentations.state();
+        let Some(relationship) = state
+            .response_observation_by_observer_child
+            .get_mut(&(parent, child))
+        else {
+            return;
+        };
+        let observation = match target_turn_id {
+            Some(target_turn_id) => relationship.turns.get_mut(target_turn_id),
+            None => relationship.pending_next_turn.as_mut(),
+        };
+        if let Some(observation) = observation {
+            observation.task_preview = Some(task_preview);
         }
     }
 
@@ -447,6 +484,7 @@ impl AgentControl {
                 turn_id,
                 ResponseObservationBinding::NextTurn,
                 Some((sequence.saturating_add(1), None)),
+                /*task_preview*/ None,
                 ResponseObservationBindingPublication::Immediate,
             );
             return true;

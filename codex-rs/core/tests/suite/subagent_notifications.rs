@@ -2,6 +2,8 @@ use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::TurnInputRequest;
+use codex_core::UserAgentForkMode;
+use codex_core::UserAgentResponseHandling;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::CurrentTimeReminderConfig;
 use codex_core::config::Config;
@@ -19,6 +21,7 @@ use codex_history::RolloutItem;
 use codex_history::RolloutLine;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::items::AgentMessageContent;
@@ -442,6 +445,20 @@ fn subagent_notification_count_json(body: &Value) -> usize {
 
 fn subagent_notification_agent_message(req: &ResponsesRequest) -> Option<Value> {
     subagent_notification_agent_message_json(&req.body_json())
+}
+
+fn agent_message_text_containing(req: &ResponsesRequest, marker: &str) -> Option<String> {
+    for item in req.inputs_of_type("agent_message") {
+        for content in item["content"].as_array().into_iter().flatten() {
+            let Some(text) = content["text"].as_str() else {
+                continue;
+            };
+            if text.contains(marker) {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn subagent_notification_agent_message_json(body: &Value) -> Option<Value> {
@@ -3205,6 +3222,11 @@ async fn spawn_final_wake_starts_an_idle_parent_turn(
         wait_for_request_containing_text(&wake_request, "<subagent_notification>").await?;
     assert!(request.body_contains_text("<subagent_notification>"));
     assert!(request.body_contains_text("wake result"));
+    let notification = agent_message_text_containing(&request, "<subagent_notification>")
+        .expect("wake request should contain the completion fragment");
+    assert!(notification.contains(r#""ref":"2""#));
+    assert!(notification.contains(r#""nickname":"#));
+    assert!(!notification.contains("\"agent_path\""));
     assert_input_item_ids_are_provider_compatible(&request);
     let completion_context = subagent_notification_agent_message(&request)
         .expect("wake request should contain completion context as an agent message");
@@ -3733,6 +3755,11 @@ async fn spawn_cx_wakes_once_and_keeps_final_out_of_model_context(
     let request =
         wait_for_request_containing_text(&commentary_request, "<subagent_commentary>").await?;
     assert!(request.body_contains_text("useful acknowledgement"));
+    let commentary = agent_message_text_containing(&request, "<subagent_commentary>")
+        .expect("commentary wake should contain the commentary fragment");
+    assert!(commentary.contains(r#""ref":"2""#));
+    assert!(commentary.contains(r#""nickname":"#));
+    assert!(!commentary.contains("\"agent_path\""));
     assert!(!request.body_contains_text("progress noise"));
     assert!(!request.body_contains_text("final result is not subscribed"));
     let (completion_id, status, agent_reference, payload) =
@@ -4270,6 +4297,143 @@ async fn send_input_x_presents_the_target_turn_without_injecting_it(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_max_depth_child_can_send_input_to_main_by_reserved_nickname() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const ROOT_PROMPT: &str = "spawn the max-depth notifier";
+    const MAX_DEPTH_CHILD_PROMPT: &str = "notify the current root directly";
+    const NOTIFICATION: &str = "max-depth child reached Main";
+    const CHILD_SEND_CALL_ID: &str = "max-depth-child-send-main";
+
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should enable V1 agents");
+            config.agent_max_depth = 1;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let root_thread_id = test.session_configured.thread_id.to_string();
+
+    let spawn_args = serde_json::to_string(&json!({
+        "message": MAX_DEPTH_CHILD_PROMPT,
+        "w": "x",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, ROOT_PROMPT),
+        sse(vec![
+            ev_response_created("resp-max-depth-root-spawn"),
+            ev_function_call_with_namespace(
+                "max-depth-root-spawn",
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-max-depth-root-spawn"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "max-depth-root-spawn"),
+        sse(vec![
+            ev_response_created("resp-max-depth-root-idle"),
+            ev_assistant_message("msg-max-depth-root-idle", "root is idle"),
+            ev_completed("resp-max-depth-root-idle"),
+        ]),
+    )
+    .await;
+
+    let send_args = serde_json::to_string(&json!({
+        "target": "mAiN",
+        "message": NOTIFICATION,
+        "w": "x",
+    }))?;
+    let child_request = mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, MAX_DEPTH_CHILD_PROMPT)
+                && !body_contains(request, "max-depth-root-spawn")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-max-depth-child-send"),
+            ev_function_call_with_namespace(
+                CHILD_SEND_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-max-depth-child-send"),
+        ])),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, CHILD_SEND_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-max-depth-child-done"),
+            ev_assistant_message("msg-max-depth-child-done", "child notification sent"),
+            ev_completed("resp-max-depth-child-done"),
+        ]),
+    )
+    .await;
+    let expected_root_thread_id = root_thread_id.clone();
+    let root_notification = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            if !body_contains(request, NOTIFICATION) {
+                return false;
+            }
+            request_body_bytes(request)
+                .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+                .and_then(|body| {
+                    body["client_metadata"]["thread_id"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+                .as_deref()
+                == Some(expected_root_thread_id.as_str())
+        },
+        sse(vec![
+            ev_response_created("resp-max-depth-main-notified"),
+            ev_assistant_message(
+                "msg-max-depth-main-notified",
+                "Main received the notification",
+            ),
+            ev_completed("resp-max-depth-main-notified"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn(ROOT_PROMPT).await?;
+    let child_requests = wait_for_requests(&child_request).await?;
+    let child_body = child_requests
+        .first()
+        .expect("max-depth child request should be captured")
+        .body_json();
+    assert!(
+        namespace_child_tool(&child_body, MULTI_AGENT_V1_NAMESPACE, "send_input").is_some(),
+        "max-depth child should retain send_input: {child_body:#}"
+    );
+    for lifecycle_tool in ["spawn_agent", "resume_agent", "wait_agent", "close_agent"] {
+        assert!(
+            namespace_child_tool(&child_body, MULTI_AGENT_V1_NAMESPACE, lifecycle_tool).is_none(),
+            "max-depth child unexpectedly received {lifecycle_tool}: {child_body:#}"
+        );
+    }
+    let notification = wait_for_request_containing_text(&root_notification, NOTIFICATION).await?;
+    assert_eq!(
+        notification.body_json()["client_metadata"]["thread_id"],
+        json!(root_thread_id)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_lifecycle_tools_reject_self_target_without_shutting_down_thread() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -4282,8 +4446,17 @@ async fn v1_lifecycle_tools_reject_self_target_without_shutting_down_thread() ->
     });
     let test = builder.build_with_auto_env(&server).await?;
     let thread_id = test.session_configured.thread_id;
+    let send_call_id = "send-self";
+    let wait_call_id = "wait-self";
     let resume_call_id = "resume-self";
     let close_call_id = "close-self";
+    let send_args = serde_json::to_string(&json!({
+        "target": "1",
+        "message": "do not self-steer",
+    }))?;
+    let wait_args = serde_json::to_string(&json!({
+        "targets": ["1"],
+    }))?;
     let resume_args = serde_json::to_string(&json!({
         "id": thread_id,
     }))?;
@@ -4294,6 +4467,36 @@ async fn v1_lifecycle_tools_reject_self_target_without_shutting_down_thread() ->
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, "reject self lifecycle tools"),
+        sse(vec![
+            ev_response_created("resp-send-self"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-self"),
+        ]),
+    )
+    .await;
+    let after_send = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-wait-self"),
+            ev_function_call_with_namespace(
+                wait_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "wait_agent",
+                &wait_args,
+            ),
+            ev_completed("resp-wait-self"),
+        ]),
+    )
+    .await;
+    let after_wait = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, wait_call_id),
         sse(vec![
             ev_response_created("resp-resume-self"),
             ev_function_call_with_namespace(
@@ -4343,6 +4546,10 @@ async fn v1_lifecycle_tools_reject_self_target_without_shutting_down_thread() ->
     .await;
 
     test.submit_turn("reject self lifecycle tools").await?;
+    let request = wait_for_request_containing_text(&after_send, send_call_id).await?;
+    assert!(request.body_contains_text("an agent cannot send input to itself"));
+    let request = wait_for_request_containing_text(&after_wait, wait_call_id).await?;
+    assert!(request.body_contains_text("an agent cannot wait on itself"));
     let request = wait_for_request_containing_text(&after_resume, resume_call_id).await?;
     assert!(request.body_contains_text("an agent cannot resume itself"));
     let request = wait_for_request_containing_text(&after_close, close_call_id).await?;
@@ -4357,6 +4564,332 @@ async fn v1_lifecycle_tools_reject_self_target_without_shutting_down_thread() ->
     assert_eq!(
         wait_for_terminal_status(test.codex.as_ref()).await?,
         AgentStatus::Completed(Some("thread remains usable".to_string()))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let spawn_call_id = "spawn-short-target";
+    let spawn_args = serde_json::to_string(&json!({
+        "message": "initial short-target task",
+        "w": "x",
+    }))?;
+    let spawn_turn = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "spawn short-target child"),
+        sse(vec![
+            ev_response_created("resp-spawn-short-target"),
+            ev_function_call_with_namespace(
+                spawn_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-spawn-short-target"),
+        ]),
+    )
+    .await;
+    let initial_child = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "initial short-target task")
+                && !body_contains(request, spawn_call_id)
+        },
+        sse(vec![
+            ev_response_created("resp-initial-short-target-child"),
+            ev_assistant_message("msg-initial-short-target-child", "initial child result"),
+            ev_completed("resp-initial-short-target-child"),
+        ]),
+    )
+    .await;
+    let after_spawn = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, spawn_call_id),
+        sse(vec![
+            ev_response_created("resp-after-spawn-short-target"),
+            ev_assistant_message("msg-after-spawn-short-target", "spawn complete"),
+            ev_completed("resp-after-spawn-short-target"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::TokenBudget)
+            .expect("test config should allow feature update");
+        config.model_context_window = Some(128_000);
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    test.submit_turn("spawn short-target child").await?;
+    let spawn_request = spawn_turn.single_request();
+    assert!(
+        spawn_request
+            .message_input_texts("developer")
+            .into_iter()
+            .any(|text| text.starts_with("<context_window>\nAgent name: Main\n"))
+    );
+    let spawned_id = ThreadId::from_string(&wait_for_spawned_thread_id(&test).await?)?;
+    let after_spawn = wait_for_requests(&after_spawn)
+        .await?
+        .into_iter()
+        .next()
+        .expect("spawn continuation request");
+    let spawn_output: Value = serde_json::from_str(
+        after_spawn
+            .function_call_output_text(spawn_call_id)
+            .as_deref()
+            .expect("spawn output"),
+    )?;
+    assert_eq!(spawn_output["ref"], "2");
+    let initial_child_request = wait_for_requests(&initial_child)
+        .await?
+        .into_iter()
+        .next()
+        .expect("initial child request");
+    let child_thread = test.thread_manager.get_thread(spawned_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+
+    let root_thread_id = test.session_configured.thread_id;
+    let aliases = test
+        .codex
+        .state_db()
+        .expect("state db should be enabled")
+        .list_agent_aliases(SessionId::from(root_thread_id))
+        .await?;
+    let nickname = aliases
+        .iter()
+        .find(|alias| alias.thread_id == spawned_id)
+        .and_then(|alias| alias.nickname.clone())
+        .expect("spawned child should retain its nickname");
+    assert!(
+        initial_child_request
+            .message_input_texts("developer")
+            .into_iter()
+            .any(|text| text.starts_with(&format!("<context_window>\nAgent name: {nickname}\n")))
+    );
+    assert_eq!(
+        aliases
+            .iter()
+            .map(|alias| (
+                alias.thread_id,
+                alias.agent_ref,
+                alias.nickname.clone(),
+                alias.state,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                root_thread_id,
+                1,
+                None,
+                codex_state::AgentAliasState::Active,
+            ),
+            (
+                spawned_id,
+                2,
+                Some(nickname.clone()),
+                codex_state::AgentAliasState::Active,
+            ),
+        ]
+    );
+
+    let send_call_id = "send-by-agent-ref";
+    let send_args = serde_json::to_string(&json!({
+        "target": "2",
+        "message": "compact-ref follow-up",
+        "w": "x",
+    }))?;
+    let send_turn = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "send by compact ref"),
+        sse(vec![
+            ev_response_created("resp-send-by-agent-ref"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-by-agent-ref"),
+        ]),
+    )
+    .await;
+    let ref_child = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "compact-ref follow-up") && !body_contains(request, send_call_id)
+        },
+        sse(vec![
+            ev_response_created("resp-ref-child"),
+            ev_assistant_message("msg-ref-child", "compact ref result"),
+            ev_completed("resp-ref-child"),
+        ]),
+    )
+    .await;
+    let after_send = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, send_call_id),
+        sse(vec![
+            ev_response_created("resp-after-send-by-agent-ref"),
+            ev_assistant_message("msg-after-send-by-agent-ref", "send complete"),
+            ev_completed("resp-after-send-by-agent-ref"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("send by compact ref").await?;
+    let environment_context = send_turn
+        .single_request()
+        .message_input_texts("user")
+        .into_iter()
+        .find(|text| text.contains("<subagents>"))
+        .expect("parent environment context should list the active child");
+    assert!(environment_context.contains(&format!("- 2: {nickname}")));
+    assert!(!environment_context.contains(&spawned_id.to_string()));
+    let _ = wait_for_requests(&after_send).await?;
+    let _ = wait_for_requests(&ref_child).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+
+    let wait_call_id = "wait-by-agent-nickname";
+    let wait_args = serde_json::to_string(&json!({
+        "targets": [nickname],
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "wait by nickname"),
+        sse(vec![
+            ev_response_created("resp-wait-by-agent-nickname"),
+            ev_function_call_with_namespace(
+                wait_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "wait_agent",
+                &wait_args,
+            ),
+            ev_completed("resp-wait-by-agent-nickname"),
+        ]),
+    )
+    .await;
+    let after_wait = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, wait_call_id),
+        sse(vec![
+            ev_response_created("resp-after-wait-by-agent-nickname"),
+            ev_assistant_message("msg-after-wait-by-agent-nickname", "wait complete"),
+            ev_completed("resp-after-wait-by-agent-nickname"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait by nickname").await?;
+    let wait_request = wait_for_requests(&after_wait)
+        .await?
+        .into_iter()
+        .next()
+        .expect("wait continuation request");
+    assert!(
+        wait_request
+            .function_call_output_text(wait_call_id)
+            .is_some_and(|output| output.contains("compact ref result"))
+    );
+
+    let close_call_id = "close-by-agent-nickname";
+    let close_args = serde_json::to_string(&json!({
+        "target": nickname,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "close by nickname"),
+        sse(vec![
+            ev_response_created("resp-close-by-agent-nickname"),
+            ev_function_call_with_namespace(
+                close_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "close_agent",
+                &close_args,
+            ),
+            ev_completed("resp-close-by-agent-nickname"),
+        ]),
+    )
+    .await;
+    let after_close = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, close_call_id),
+        sse(vec![
+            ev_response_created("resp-after-close-by-agent-nickname"),
+            ev_assistant_message("msg-after-close-by-agent-nickname", "close complete"),
+            ev_completed("resp-after-close-by-agent-nickname"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("close by nickname").await?;
+    let _ = wait_for_requests(&after_close).await?;
+    assert_eq!(
+        test.codex
+            .state_db()
+            .expect("state db should be enabled")
+            .find_agent_alias_by_thread(SessionId::from(root_thread_id), spawned_id)
+            .await?
+            .expect("closed alias should remain reserved")
+            .state,
+        codex_state::AgentAliasState::Closed
+    );
+
+    let resume_call_id = "resume-by-agent-ref";
+    let resume_args = serde_json::to_string(&json!({
+        "id": "2",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "resume by compact ref"),
+        sse(vec![
+            ev_response_created("resp-resume-by-agent-ref"),
+            ev_function_call_with_namespace(
+                resume_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-resume-by-agent-ref"),
+        ]),
+    )
+    .await;
+    let after_resume = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, resume_call_id),
+        sse(vec![
+            ev_response_created("resp-after-resume-by-agent-ref"),
+            ev_assistant_message("msg-after-resume-by-agent-ref", "resume complete"),
+            ev_completed("resp-after-resume-by-agent-ref"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("resume by compact ref").await?;
+    let _ = wait_for_requests(&after_resume).await?;
+    assert_eq!(
+        test.codex
+            .state_db()
+            .expect("state db should be enabled")
+            .find_agent_alias_by_thread(SessionId::from(root_thread_id), spawned_id)
+            .await?
+            .expect("resumed alias should remain reserved"),
+        codex_state::AgentAliasRecord {
+            session_id: SessionId::from(root_thread_id),
+            thread_id: spawned_id,
+            agent_ref: 2,
+            nickname: Some(nickname),
+            state: codex_state::AgentAliasState::Active,
+        }
     );
     Ok(())
 }
@@ -5553,6 +6086,18 @@ async fn fork_requires_explicit_agent_reconfiguration(
     let spawned_id = ThreadId::from_string(&spawned_id)?;
     let child_thread = initial.thread_manager.get_thread(spawned_id).await?;
     let source_parent_id = initial.session_configured.thread_id;
+    let state_db = initial
+        .codex
+        .state_db()
+        .expect("state db should be enabled");
+    let source_aliases = state_db
+        .list_agent_aliases(SessionId::from(source_parent_id))
+        .await?;
+    let child_nickname = source_aliases
+        .iter()
+        .find(|alias| alias.thread_id == spawned_id)
+        .and_then(|alias| alias.nickname.clone())
+        .expect("source child should have a durable nickname");
     let parent_history = store
         .load_rollback_history(LoadThreadHistoryParams {
             thread_id: source_parent_id,
@@ -5590,6 +6135,23 @@ async fn fork_requires_explicit_agent_reconfiguration(
         )
         .await?;
     assert_ne!(forked.thread_id, source_parent_id);
+    let fork_session_id = SessionId::from(forked.thread_id);
+    assert_eq!(
+        state_db.list_agent_aliases(fork_session_id).await?,
+        vec![codex_state::AgentAliasRecord {
+            session_id: fork_session_id,
+            thread_id: forked.thread_id,
+            agent_ref: 1,
+            nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
+            state: codex_state::AgentAliasState::Active,
+        }]
+    );
+    assert_eq!(
+        state_db
+            .list_agent_nickname_reservations(fork_session_id)
+            .await?,
+        vec![child_nickname]
+    );
     initial
         .thread_manager
         .remove_thread(&source_parent_id)
@@ -5611,6 +6173,9 @@ async fn fork_requires_explicit_agent_reconfiguration(
         })
         .count();
     assert_eq!(requests_before_explicit_resume, 0);
+
+    child_thread.shutdown_and_wait().await?;
+    initial.thread_manager.remove_thread(&spawned_id).await;
 
     let resume_call_id = "explicit-fork-boundary-resume";
     let resume_args = serde_json::to_string(&json!({
@@ -6498,6 +7063,284 @@ async fn grandchild_full_fork_preserves_context_baseline(
     assert!(!descendant_requests[1].body_contains_text(ROOT_CALL));
     assert!(!descendant_requests[1].body_contains_text(CHILD_CALL));
     assert!(!descendant_requests[1].body_contains_text(CHILD_TASK));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_spawn_preserves_admitted_child_after_response_observation_persistence_failure()
+-> Result<()> {
+    const USER_CHILD_PROMPT: &str = "preserve this admitted user-authored child turn";
+
+    let server = start_mock_server().await;
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let child_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, USER_CHILD_PROMPT),
+        sse(vec![
+            ev_response_created("resp-preserved-user-spawn-child"),
+            ev_assistant_message("msg-preserved-user-spawn-child", "child work completed"),
+            ev_completed("resp-preserved-user-spawn-child"),
+        ])
+        .set_delay(Duration::from_secs(/*secs*/ 2)),
+    )
+    .await;
+
+    let configured_store_id = store_id.clone();
+    let test = test_codex()
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                id: configured_store_id,
+            };
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    store
+        .fail_agent_response_observation_flushes_after(
+            /*successful_flushes*/ 1, /*failed_flushes*/ 1,
+        )
+        .await;
+
+    let spawned = test
+        .codex
+        .spawn_agent(
+            /*role*/ None,
+            Some(vec![UserInput::Text {
+                text: USER_CHILD_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }]),
+            UserAgentForkMode::None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+
+    assert!(
+        spawned
+            .post_admission_warning
+            .as_deref()
+            .is_some_and(|warning| {
+                warning.contains("failed to persist spawned response observation state")
+                    && warning.contains("child input was already admitted")
+            })
+    );
+    assert_eq!(
+        test.thread_manager.list_thread_ids().await,
+        vec![test.session_configured.thread_id, spawned.target_thread_id]
+    );
+    let _ = wait_for_requests(&child_request).await?;
+
+    InMemoryThreadStore::remove_id(&store_id);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_agent_inputs_roll_back_delivery_when_task_context_persistence_fails() -> Result<()> {
+    const SPAWN_PROMPT: &str = "spawn work whose task context cannot be persisted";
+    const RESERVED_PROMPT: &str = "first reserved work whose task context cannot be persisted";
+    const DIRECT_PROMPT: &str = "direct work whose task context cannot be persisted";
+
+    let server = start_mock_server().await;
+    let spawn_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, SPAWN_PROMPT),
+        sse(vec![
+            ev_response_created("resp-user-spawn-task-context-failure"),
+            ev_assistant_message(
+                "msg-user-spawn-task-context-failure",
+                "spawned task completed",
+            ),
+            ev_completed("resp-user-spawn-task-context-failure"),
+        ])
+        .set_delay(Duration::from_secs(/*secs*/ 1)),
+    )
+    .await;
+    let reserved_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, RESERVED_PROMPT),
+        sse(vec![
+            ev_response_created("resp-user-reserved-task-context-failure"),
+            ev_assistant_message(
+                "msg-user-reserved-task-context-failure",
+                "reserved task completed",
+            ),
+            ev_completed("resp-user-reserved-task-context-failure"),
+        ])
+        .set_delay(Duration::from_secs(/*secs*/ 1)),
+    )
+    .await;
+    let direct_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, DIRECT_PROMPT),
+        sse(vec![
+            ev_response_created("resp-user-direct-task-context-failure"),
+            ev_assistant_message(
+                "msg-user-direct-task-context-failure",
+                "direct task completed",
+            ),
+            ev_completed("resp-user-direct-task-context-failure"),
+        ])
+        .set_delay(Duration::from_secs(/*secs*/ 1)),
+    )
+    .await;
+
+    let store_id = uuid::Uuid::now_v7().to_string();
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let configured_store_id = store_id.clone();
+    let test = test_codex()
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config.experimental_thread_store = ThreadStoreConfig::InMemory {
+                id: configured_store_id,
+            };
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
+        .await;
+    let spawned_with_input = test
+        .codex
+        .spawn_agent(
+            /*role*/ None,
+            Some(vec![UserInput::Text {
+                text: SPAWN_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }]),
+            UserAgentForkMode::None,
+            UserAgentResponseHandling::Wake,
+        )
+        .await?;
+    assert!(
+        spawned_with_input
+            .post_admission_warning
+            .as_deref()
+            .is_some_and(|warning| {
+                warning.contains("failed to persist spawned user agent task context")
+                    && warning.contains("child input was already admitted")
+                    && warning.contains("requested response handling was rolled back")
+            })
+    );
+    let _ = wait_for_requests(&spawn_request).await?;
+    let spawned_thread = test
+        .thread_manager
+        .get_thread(spawned_with_input.target_thread_id)
+        .await?;
+    let _ = wait_for_terminal_status(spawned_thread.as_ref()).await?;
+    assert_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        spawned_with_input.target_thread_id,
+    )
+    .await?;
+
+    let idle = test
+        .codex
+        .spawn_agent(
+            /*role*/ None,
+            /*input*/ None,
+            UserAgentForkMode::None,
+            UserAgentResponseHandling::Wake,
+        )
+        .await?;
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
+        .await;
+    let reserved = test
+        .codex
+        .prompt_live_agent_using_reserved_response(
+            &idle.target_thread_id.to_string(),
+            vec![UserInput::Text {
+                text: RESERVED_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+        )
+        .await?;
+    assert!(
+        reserved
+            .post_admission_warning
+            .as_deref()
+            .is_some_and(|warning| {
+                warning.contains("failed to persist reserved user agent task context")
+                    && warning.contains("target input was already admitted")
+                    && warning.contains("requested response handling was rolled back")
+            })
+    );
+    let _ = wait_for_requests(&reserved_request).await?;
+    let idle_thread = test
+        .thread_manager
+        .get_thread(idle.target_thread_id)
+        .await?;
+    let _ = wait_for_terminal_status(idle_thread.as_ref()).await?;
+    assert_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        idle.target_thread_id,
+    )
+    .await?;
+
+    store
+        .fail_next_operation(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
+        .await;
+    let direct = test
+        .codex
+        .prompt_live_agent(
+            &idle.target_thread_id.to_string(),
+            vec![UserInput::Text {
+                text: DIRECT_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Wake,
+        )
+        .await?;
+    assert!(
+        direct
+            .post_admission_warning
+            .as_deref()
+            .is_some_and(|warning| {
+                warning.contains("failed to persist user agent task context")
+                    && warning.contains("target input was already admitted")
+                    && warning.contains("requested response handling was rolled back")
+            })
+    );
+    let _ = wait_for_requests(&direct_request).await?;
+    let expected_direct_status = AgentStatus::Completed(Some("direct task completed".to_string()));
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 15);
+    loop {
+        let status = idle_thread.agent_status().await;
+        if status == expected_direct_status {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for direct child completion; last status was {status:?}"
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_no_pending_response_observation(
+        &store,
+        test.session_configured.thread_id,
+        idle.target_thread_id,
+    )
+    .await?;
+
+    InMemoryThreadStore::remove_id(&store_id);
     Ok(())
 }
 

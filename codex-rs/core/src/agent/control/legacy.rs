@@ -40,7 +40,7 @@ impl AgentControl {
         let state = self.upgrade()?;
         let child = thread.session.presentation_id();
         let _ = state
-            .remove_thread_if_current(thread, || {
+            .remove_thread_if_current_or_cleanup_if_absent(thread, || {
                 self.forget_v2_residency(child.thread_id);
                 if matches!(metadata_disposition, LiveAgentMetadataDisposition::Release) {
                     self.release_spawned_thread(SpawnedThreadRelease::Session(child));
@@ -56,13 +56,27 @@ impl AgentControl {
         thread: &Arc<CodexThread>,
         metadata_disposition: LiveAgentMetadataDisposition,
     ) -> CodexResult<String> {
-        let state = self.upgrade()?;
-        let agent_id = thread.session.thread_id();
         thread
             .session
             .ensure_rollout_materialized(PersistContext::Standard)
             .await;
         thread.session.flush_rollout().await?;
+        self.shutdown_prepared_live_agent_instance(thread, metadata_disposition)
+            .await
+    }
+
+    /// Shut down a concrete runtime after its current rollout writes passed a durability barrier.
+    ///
+    /// The session shutdown handler performs its own final persistence shutdown after active work
+    /// stops. This entry point exists so an explicit subtree close can flush every live member
+    /// before committing any alias or response-observation lifecycle changes.
+    async fn shutdown_prepared_live_agent_instance(
+        &self,
+        thread: &Arc<CodexThread>,
+        metadata_disposition: LiveAgentMetadataDisposition,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        let agent_id = thread.session.thread_id();
         let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
             Ok(String::new())
         } else {
@@ -78,7 +92,7 @@ impl AgentControl {
         thread.wait_until_terminated().await;
         let child = thread.session.presentation_id();
         let _ = state
-            .remove_thread_if_current(thread, || {
+            .remove_thread_if_current_or_cleanup_if_absent(thread, || {
                 self.forget_v2_residency(agent_id);
                 if matches!(metadata_disposition, LiveAgentMetadataDisposition::Release) {
                     self.release_spawned_thread(SpawnedThreadRelease::Session(child));
@@ -114,42 +128,27 @@ impl AgentControl {
         let state = self.upgrade()?;
         let lifecycle_lock = state.agent_lifecycle_lock(agent_id);
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+        self.require_current_agent_ownership(agent_id).await?;
         let known_agent = self.state.agent_metadata_for_thread(agent_id).is_some();
-        match state.get_thread(agent_id).await {
-            Ok(thread) => {
-                if !thread.config_snapshot().await.ephemeral
-                    && let Some(agent_graph_store) = state.agent_graph_store()
-                    && let Err(err) = agent_graph_store
-                        .set_thread_spawn_edge_status(
-                            agent_id,
-                            codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
-                        )
-                        .await
-                {
-                    warn!("failed to persist thread-spawn edge status for {agent_id}: {err}");
-                }
-            }
+        let target_thread = match state.get_thread(agent_id).await {
+            Ok(thread) => Some(thread),
             Err(err)
-                if known_agent && matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) =>
+                if known_agent
+                    && matches!(
+                        err.details(),
+                        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+                    ) =>
             {
-                if let Some(agent_graph_store) = state.agent_graph_store()
-                    && let Err(err) = agent_graph_store
-                        .set_thread_spawn_edge_status(
-                            agent_id,
-                            codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
-                        )
-                        .await
-                {
-                    return Err(CodexErr::Fatal(format!(
-                        "failed to persist stale thread-spawn edge status for {agent_id}: {err}"
-                    )));
-                }
+                None
             }
-            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
-            Err(err) => {
-                warn!("failed to inspect agent before close {agent_id}: {err}");
-            }
-        }
+            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => None,
+            Err(err) => return Err(err),
+        };
+        let persist_target_closed = match target_thread.as_ref() {
+            Some(thread) => !thread.config_snapshot().await.ephemeral,
+            None => known_agent,
+        };
+
         // Membership changes take the direct parent's lifecycle lock before publishing or
         // reopening a child. Stabilize the live subtree by taking every discovered descendant
         // lock in parent-before-child order, then re-snapshot until no new member can appear.
@@ -173,6 +172,30 @@ impl AgentControl {
             }
         }
 
+        let mut descendant_threads = Vec::new();
+        for descendant_id in &descendant_ids {
+            match state.get_thread(*descendant_id).await {
+                Ok(thread) => descendant_threads.push(thread),
+                Err(err)
+                    if matches!(
+                        err.details(),
+                        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+                    ) => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        // Do not make a durable alias Closed, or revoke response delivery, until every currently
+        // live subtree member has crossed a rollout durability barrier. A flush failure therefore
+        // leaves the complete subtree active and retryable instead of publishing a partial close.
+        for thread in target_thread.iter().chain(descendant_threads.iter()) {
+            thread.session.ensure_rollout_materialized().await;
+            thread.session.flush_rollout().await?;
+        }
+        if persist_target_closed {
+            self.persist_agent_closed(agent_id).await?;
+        }
+
         // Explicit close is authoritative over passive and wake response observation for the
         // entire subtree. Revoke before shutdown so Shutdown cannot wake an old observer or
         // schedule V1 watcher recovery for a later runtime with the same rollout thread ID.
@@ -184,8 +207,12 @@ impl AgentControl {
             affected_wake_observers
                 .extend(self.revoke_response_observations_for_child(closed_thread_id));
         }
-        let result =
-            Box::pin(self.shutdown_agent_tree_with_descendants(agent_id, descendant_ids)).await;
+        let result = Box::pin(self.shutdown_prepared_agent_tree_with_descendants(
+            agent_id,
+            target_thread,
+            descendant_threads,
+        ))
+        .await;
         drop(_descendant_lifecycle_guards);
         drop(_lifecycle_guard);
 
@@ -211,14 +238,30 @@ impl AgentControl {
         }
     }
 
-    async fn shutdown_agent_tree_with_descendants(
+    async fn shutdown_prepared_agent_tree_with_descendants(
         &self,
         agent_id: ThreadId,
-        descendant_ids: Vec<ThreadId>,
+        target_thread: Option<Arc<CodexThread>>,
+        descendant_threads: Vec<Arc<CodexThread>>,
     ) -> CodexResult<String> {
-        let result = self.shutdown_live_agent(agent_id).await;
-        for descendant_id in descendant_ids {
-            match self.shutdown_live_agent(descendant_id).await {
+        let result = match target_thread {
+            Some(thread) => {
+                self.shutdown_prepared_live_agent_instance(
+                    &thread,
+                    LiveAgentMetadataDisposition::Release,
+                )
+                .await
+            }
+            None => Err(CodexErr::ThreadNotFound(agent_id)),
+        };
+        for thread in descendant_threads {
+            match self
+                .shutdown_prepared_live_agent_instance(
+                    &thread,
+                    LiveAgentMetadataDisposition::Release,
+                )
+                .await
+            {
                 Ok(_) => {}
                 Err(err)
                     if matches!(

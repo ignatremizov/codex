@@ -241,7 +241,7 @@ stream_max_retries = 0
     );
     {
         let store = app.thread_event_channels[&thread_id].store.lock().await;
-        assert_eq!(store.active_turn_id.as_deref(), Some(turn_id.as_str()));
+        assert_eq!(store.active_turn_id(), Some(turn_id.as_str()));
         assert_eq!(
             store.pending_interrupt_turn_id.as_deref(),
             Some(turn_id.as_str())

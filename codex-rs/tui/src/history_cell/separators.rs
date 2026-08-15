@@ -2,24 +2,44 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FinalMessageSeparatorTiming {
+    ElapsedCheckpoint(u64),
+    TurnCompleted(u64),
+}
+
+impl FinalMessageSeparatorTiming {
+    fn label(self) -> String {
+        match self {
+            Self::ElapsedCheckpoint(elapsed_seconds) => format!(
+                "{} elapsed",
+                crate::status_indicator_widget::fmt_elapsed_compact(elapsed_seconds)
+            ),
+            Self::TurnCompleted(elapsed_seconds) => format!(
+                "Worked for {}",
+                crate::status_indicator_widget::fmt_elapsed_compact(elapsed_seconds)
+            ),
+        }
+    }
+}
+
 #[derive(Debug)]
-/// A visual divider between turns, optionally showing how long the assistant "worked for".
+/// A visual divider between assistant phases or turns, optionally carrying elapsed timing.
 ///
-/// This separator is only emitted for turns that performed concrete work (e.g., running commands,
-/// applying patches, making MCP tool calls), so purely conversational turns do not show an empty
-/// divider.
+/// Callers emit this only where the transcript already needs an assistant-phase or completed-turn
+/// boundary, so ordinary conversational output does not gain extra divider rows.
 pub struct FinalMessageSeparator {
-    elapsed_seconds: Option<u64>,
+    timing: Option<FinalMessageSeparatorTiming>,
     runtime_metrics: Option<RuntimeMetricsSummary>,
 }
 impl FinalMessageSeparator {
-    /// Creates a separator; completed turns should pass protocol turn duration when available.
+    /// Creates a separator; completed turns should prefer protocol duration when available.
     pub(crate) fn new(
-        elapsed_seconds: Option<u64>,
+        timing: Option<FinalMessageSeparatorTiming>,
         runtime_metrics: Option<RuntimeMetricsSummary>,
     ) -> Self {
         Self {
-            elapsed_seconds,
+            timing,
             runtime_metrics,
         }
     }
@@ -27,12 +47,8 @@ impl FinalMessageSeparator {
 impl HistoryCell for FinalMessageSeparator {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut label_parts = Vec::new();
-        if let Some(elapsed_seconds) = self
-            .elapsed_seconds
-            .filter(|seconds| *seconds > 60)
-            .map(crate::status_indicator_widget::fmt_elapsed_compact)
-        {
-            label_parts.push(format!("Worked for {elapsed_seconds}"));
+        if let Some(timing) = self.timing {
+            label_parts.push(timing.label());
         }
         if let Some(metrics_label) = self.runtime_metrics.and_then(runtime_metrics_label) {
             label_parts.push(metrics_label);
@@ -55,12 +71,8 @@ impl HistoryCell for FinalMessageSeparator {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         let mut label_parts = Vec::new();
-        if let Some(elapsed_seconds) = self
-            .elapsed_seconds
-            .filter(|seconds| *seconds > 60)
-            .map(crate::status_indicator_widget::fmt_elapsed_compact)
-        {
-            label_parts.push(format!("Worked for {elapsed_seconds}"));
+        if let Some(timing) = self.timing {
+            label_parts.push(timing.label());
         }
         if let Some(metrics_label) = self.runtime_metrics.and_then(runtime_metrics_label) {
             label_parts.push(metrics_label);

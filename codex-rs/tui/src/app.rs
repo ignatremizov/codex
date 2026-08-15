@@ -24,6 +24,8 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
 use crate::app_server_session::TurnPermissionsOverride;
 use crate::app_server_session::app_server_rate_limit_snapshots;
+use crate::bottom_pane::AGENT_TARGET_ACTION_CHOICES;
+use crate::bottom_pane::AgentPromptTarget;
 use crate::bottom_pane::AppLinkViewParams;
 use crate::bottom_pane::ApplyPatchApprovalRequest;
 use crate::bottom_pane::ApprovalRequest;
@@ -32,9 +34,7 @@ use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpElicitationApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::bottom_pane::PermissionsApprovalRequest;
-use crate::bottom_pane::SelectionItem;
-use crate::bottom_pane::SelectionViewParams;
-use crate::bottom_pane::popup_consts::standard_popup_hint_line;
+use crate::bottom_pane::is_agent_target_action;
 use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::chatwidget::ReplayKind;
@@ -202,14 +202,24 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
 use toml::Value as TomlValue;
 use uuid::Uuid;
+mod agent_control_actions;
+mod agent_control_pane;
+mod agent_control_summary;
+mod agent_lifecycle_control;
 mod agent_message_consolidation;
 mod agent_navigation;
+mod agent_observation_display;
 mod agent_picker;
+mod agent_preview;
+mod agent_prompt;
+mod agent_prompt_queue;
+mod agent_response_observation;
 mod agent_status_feed;
 mod agents_overview;
 mod agents_overview_threads;
 mod agents_overview_view;
 pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
+mod agent_transcript_inspection;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
@@ -254,6 +264,7 @@ mod working_directory;
 
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
+use self::agent_prompt_queue::QueuedAgentPrompt;
 use self::app_server_requests::PendingAppServerRequests;
 use self::loaded_threads::find_loaded_subagent_threads_for_primary;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
@@ -629,6 +640,7 @@ pub(crate) struct App {
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
     agents_overview: agents_overview::AgentsOverviewState,
+    queued_agent_prompts: HashMap<ThreadId, VecDeque<QueuedAgentPrompt>>,
     side_threads: HashMap<ThreadId, SideThreadState>,
     abandoned_side_threads: HashSet<ThreadId>,
     active_thread_id: Option<ThreadId>,

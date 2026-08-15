@@ -1217,6 +1217,33 @@ fn drop_last_n_user_turns_preserves_prefix() {
 }
 
 #[test]
+fn drop_last_n_user_turns_preserves_trusted_user_agent_task_context() {
+    let task = ResponseItem::Message {
+        id: Some(codex_protocol::protocol::new_user_agent_task_context_response_item_id()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "<user_agent_task>delegated task</user_agent_task>".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut history = create_history_with_items(vec![
+        user_msg("u1"),
+        assistant_msg("a1"),
+        task.clone(),
+        user_msg("u2"),
+        assistant_msg("a2"),
+    ]);
+
+    history.drop_last_n_user_turns(/*num_turns*/ 1);
+
+    assert_eq!(
+        history.raw_items(),
+        vec![user_msg("u1"), assistant_msg("a1"), task]
+    );
+}
+
+#[test]
 fn drop_last_n_user_turns_ignores_session_prefix_user_messages() {
     let items = vec![
         user_input_text_msg("<environment_context>ctx</environment_context>"),

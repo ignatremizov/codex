@@ -1,6 +1,8 @@
 //! Popup lifecycle state for the chat composer.
 //! Tracks the single active popup plus dismissal/query state used to synchronize it.
 
+use crate::bottom_pane::agent_target_popup::AgentTargetCompletionScope;
+use crate::bottom_pane::agent_target_popup::AgentTargetPopup;
 use crate::bottom_pane::command_popup::CommandPopup;
 use crate::bottom_pane::file_search_popup::FileSearchPopup;
 use crate::bottom_pane::mentions_v2::MentionV2Popup;
@@ -89,6 +91,7 @@ fn complete_token_occurrences_before(textarea: &TextArea, token: &str, before: u
 #[derive(Default)]
 pub(super) struct PopupState {
     pub(super) active: ActivePopup,
+    pub(super) dismissed_agent_target: Option<(AgentTargetCompletionScope, String)>,
     pub(super) dismissed_command_token: Option<String>,
     pub(super) dismissed_file_token: Option<DismissedToken>,
     pub(super) current_file_query: Option<String>,
@@ -106,6 +109,7 @@ impl PopupState {
 pub(super) enum ActivePopup {
     #[default]
     None,
+    AgentTarget(AgentTargetPopup),
     Command(CommandPopup),
     File(FileSearchPopup),
     Skill(SkillPopup),

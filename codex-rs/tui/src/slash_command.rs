@@ -42,6 +42,7 @@ pub enum SlashCommand {
     Recap,
     Plan,
     Goal,
+    Agent,
     Agents,
     Side,
     Btw,
@@ -134,6 +135,7 @@ impl SlashCommand {
             SlashCommand::Settings => "configure realtime microphone/speaker",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
+            SlashCommand::Agent => "inspect, prompt, and control agents",
             SlashCommand::Agents => "view and switch between all active agent sessions",
             SlashCommand::MultiAgents => "switch between this session's subagents",
             SlashCommand::Side | SlashCommand::Btw => {
@@ -189,6 +191,7 @@ impl SlashCommand {
                 | SlashCommand::Pets
                 | SlashCommand::Side
                 | SlashCommand::Btw
+                | SlashCommand::Agent
                 | SlashCommand::Resume
                 | SlashCommand::SandboxReadRoot
         )
@@ -328,6 +331,7 @@ mod tests {
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
+        assert!(SlashCommand::Agent.supports_inline_args());
         assert!(SlashCommand::App.available_during_task());
     }
 

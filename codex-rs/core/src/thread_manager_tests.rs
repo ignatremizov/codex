@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::config::test_config;
 use crate::init_state_db;
@@ -20,6 +21,7 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::MCP_APP_UI_EXTENSION_ID;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
@@ -186,6 +188,790 @@ async fn thread_id_generator_applies_to_roots_children_and_forks() {
     assert_eq!(report.completed.len(), 3);
 }
 
+#[tokio::test]
+async fn deferred_thread_ids_remain_reserved_until_publication() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let root_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0007);
+    let child_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0008);
+    let next_id = std::sync::atomic::AtomicUsize::new(0);
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let manager = ThreadManager::new(
+        &config,
+        auth_manager.clone(),
+        build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        Arc::new(InMemoryThreadStore::default()),
+        /*agent_graph_store*/ None,
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    )
+    .with_thread_id_generator(move || {
+        if next_id.fetch_add(1, Ordering::Relaxed) == 0 {
+            root_thread_id
+        } else {
+            child_thread_id
+        }
+    });
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root");
+    let control = root.thread.session.services.agent_control.clone();
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root_thread_id,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: Some("worker".to_string()),
+        agent_role: Some("worker".to_string()),
+    });
+    let pending = manager
+        .state
+        .spawn_new_thread_with_source(
+            config.clone(),
+            control.clone(),
+            source.clone(),
+            /*history_mode*/ None,
+            /*parent_thread_id*/ Some(root_thread_id),
+            /*forked_from_thread_id*/ None,
+            /*thread_source*/ Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+            ThreadRuntimePublication::Deferred,
+        )
+        .await
+        .expect("reserve first deferred runtime");
+    assert!(manager.get_thread(child_thread_id).await.is_err());
+    assert_eq!(manager.list_thread_ids().await, vec![root_thread_id]);
+    assert!(
+        Arc::ptr_eq(
+            &manager
+                .state
+                .get_thread_including_pending(child_thread_id)
+                .await
+                .expect("internal pending runtime"),
+            &pending.thread,
+        ),
+        "internal lookup should resolve the exact reserved runtime"
+    );
+
+    let duplicate_error = match manager
+        .state
+        .spawn_new_thread_with_source(
+            config,
+            control,
+            source,
+            /*history_mode*/ None,
+            /*parent_thread_id*/ Some(root_thread_id),
+            /*forked_from_thread_id*/ None,
+            /*thread_source*/ Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+            ThreadRuntimePublication::Deferred,
+        )
+        .await
+    {
+        Ok(_) => panic!("duplicate deferred runtime must not start"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        duplicate_error.details(),
+        CodexErrorDetails::InvalidRequest(message)
+            if message == &format!("thread {child_thread_id} is already running")
+    ));
+    assert!(
+        Arc::ptr_eq(
+            &manager
+                .state
+                .get_thread_including_pending(child_thread_id)
+                .await
+                .expect("first reservation must survive duplicate rejection"),
+            &pending.thread,
+        ),
+        "duplicate rejection must preserve the first pending runtime"
+    );
+
+    manager
+        .state
+        .publish_thread(&pending.thread)
+        .await
+        .expect("publish reserved runtime");
+    let mut published_thread_ids = manager.list_thread_ids().await;
+    published_thread_ids.sort_by_key(ToString::to_string);
+    let mut expected_thread_ids = vec![root_thread_id, child_thread_id];
+    expected_thread_ids.sort_by_key(ToString::to_string);
+    assert_eq!(published_thread_ids, expected_thread_ids);
+    assert!(
+        Arc::ptr_eq(
+            &manager
+                .get_thread(child_thread_id)
+                .await
+                .expect("published child"),
+            &pending.thread,
+        ),
+        "publication should promote the exact reservation"
+    );
+    let report = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    assert_eq!(report.completed.len(), 2);
+}
+
+#[tokio::test]
+async fn history_fork_is_not_discoverable_before_alias_reservations_commit() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let root_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0011);
+    let fork_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0012);
+    let generated_ids = [root_thread_id, fork_thread_id];
+    let next_id = std::sync::atomic::AtomicUsize::new(0);
+    let alias_store = Arc::new(GatedForkAliasStore::new());
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let manager = Arc::new(
+        ThreadManager::new(
+            &config,
+            auth_manager.clone(),
+            build_models_manager(&config, auth_manager),
+            crate::CodexAppsToolsCache::default(),
+            SessionSource::Exec,
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            empty_extension_registry(),
+            Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+            /*analytics_events_client*/ None,
+            thread_store_from_config(&config, /*state_db*/ None),
+            Some(alias_store.clone()),
+            TEST_INSTALLATION_ID.to_string(),
+            /*attestation_provider*/ None,
+            /*external_time_provider*/ None,
+        )
+        .with_thread_id_generator(move || generated_ids[next_id.fetch_add(1, Ordering::Relaxed)]),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    root.thread.ensure_rollout_materialized().await;
+    root.thread
+        .flush_rollout()
+        .await
+        .expect("flush fork source");
+    let stored = root
+        .thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("read fork source");
+    let history = stored_thread_to_initial_history(stored, root.thread.rollout_path())
+        .expect("build fork history");
+
+    let fork_manager = Arc::clone(&manager);
+    let fork_task = tokio::spawn(async move {
+        fork_manager
+            .fork_thread_from_history(
+                ForkSnapshot::Interrupted,
+                config,
+                history,
+                /*thread_source*/ None,
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+                /*reserved_thread_id*/ None,
+            )
+            .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        alias_store.reservation_started.notified(),
+    )
+    .await
+    .expect("fork alias reservation should start");
+
+    assert!(
+        manager.get_thread(fork_thread_id).await.is_err(),
+        "fork must remain unavailable while inherited selectors are unreserved"
+    );
+    assert_eq!(manager.list_thread_ids().await, vec![root_thread_id]);
+    assert_eq!(
+        *alias_store
+            .reservation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        Some(ReserveForkAgentAliasesRequest {
+            source_session_id: root.thread.session.session_id(),
+            fork_session_id: SessionId::from(fork_thread_id),
+        })
+    );
+
+    alias_store.release_reservation.notify_one();
+    let fork = fork_task
+        .await
+        .expect("fork task should not panic")
+        .expect("fork should publish after alias reservation");
+    assert_eq!(fork.thread_id, fork_thread_id);
+    assert!(manager.get_thread(fork_thread_id).await.is_ok());
+
+    fork.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown fork");
+    root.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown root");
+}
+
+#[tokio::test]
+async fn cancelled_history_fork_discards_pending_runtime_and_alias_reservations() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let root_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0018);
+    let fork_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0019);
+    let generated_ids = [root_thread_id, fork_thread_id];
+    let next_id = std::sync::atomic::AtomicUsize::new(0);
+    let alias_store = Arc::new(GatedForkAliasStore::new());
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let manager = Arc::new(
+        ThreadManager::new(
+            &config,
+            auth_manager.clone(),
+            build_models_manager(&config, auth_manager),
+            crate::CodexAppsToolsCache::default(),
+            SessionSource::Exec,
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            empty_extension_registry(),
+            Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+            /*analytics_events_client*/ None,
+            thread_store_from_config(&config, /*state_db*/ None),
+            Some(alias_store.clone()),
+            TEST_INSTALLATION_ID.to_string(),
+            /*attestation_provider*/ None,
+            /*external_time_provider*/ None,
+        )
+        .with_thread_id_generator(move || generated_ids[next_id.fetch_add(1, Ordering::Relaxed)]),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root");
+    root.thread.ensure_rollout_materialized().await;
+    root.thread
+        .flush_rollout()
+        .await
+        .expect("flush fork source");
+    let stored = root
+        .thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("read fork source");
+    let history = stored_thread_to_initial_history(stored, root.thread.rollout_path())
+        .expect("build fork history");
+    let fork_manager = Arc::clone(&manager);
+    let fork = tokio::spawn(async move {
+        fork_manager
+            .fork_thread_from_history(
+                ForkSnapshot::Interrupted,
+                config,
+                history,
+                /*thread_source*/ None,
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+                /*reserved_thread_id*/ None,
+            )
+            .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        alias_store.reservation_started.notified(),
+    )
+    .await
+    .expect("fork reservation should block");
+
+    fork.abort();
+    assert!(
+        fork.await
+            .expect_err("aborted fork should not return a thread")
+            .is_cancelled()
+    );
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        alias_store.reservations_discarded.notified(),
+    )
+    .await
+    .expect("cancelled fork should discard alias reservations");
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if manager
+                .state
+                .get_thread_including_pending(fork_thread_id)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled fork runtime should disappear");
+    assert_eq!(manager.list_thread_ids().await, vec![root_thread_id]);
+    root.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown root");
+}
+
+#[tokio::test]
+async fn agent_children_are_not_discoverable_before_alias_allocation_commits() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let state_db = init_state_db(&config).await;
+    let inner_store =
+        local_agent_graph_store_from_state_db(state_db.as_ref()).expect("local alias store");
+    let gated_store = Arc::new(GatedTransferAgentGraphStore::with_allocation_gate(
+        inner_store,
+    ));
+    let root_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0021);
+    let ordinary_child_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0022);
+    let forked_child_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0023);
+    let generated_ids = [
+        root_thread_id,
+        ordinary_child_thread_id,
+        forked_child_thread_id,
+    ];
+    let next_id = std::sync::atomic::AtomicUsize::new(0);
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let manager = Arc::new(
+        ThreadManager::new(
+            &config,
+            auth_manager.clone(),
+            build_models_manager(&config, auth_manager),
+            crate::CodexAppsToolsCache::default(),
+            SessionSource::Exec,
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            empty_extension_registry(),
+            Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+            /*analytics_events_client*/ None,
+            thread_store_from_config(&config, state_db),
+            Some(gated_store.clone()),
+            TEST_INSTALLATION_ID.to_string(),
+            /*attestation_provider*/ None,
+            /*external_time_provider*/ None,
+        )
+        .with_thread_id_generator(move || generated_ids[next_id.fetch_add(1, Ordering::Relaxed)]),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    root.thread.ensure_rollout_materialized().await;
+    root.thread
+        .flush_rollout()
+        .await
+        .expect("flush agent fork source");
+    let control = root.thread.session.services.agent_control.clone();
+
+    let ordinary_control = control.clone();
+    let ordinary_config = config.clone();
+    let ordinary_spawn = tokio::spawn(async move {
+        ordinary_control
+            .spawn_agent_with_metadata(
+                ordinary_config,
+                vec![UserInput::Text {
+                    text: "ordinary child task".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(root_thread_id),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        gated_store.allocation_started.notified(),
+    )
+    .await
+    .expect("ordinary child alias allocation should start");
+    assert!(manager.get_thread(ordinary_child_thread_id).await.is_err());
+    assert_eq!(manager.list_thread_ids().await, vec![root_thread_id]);
+    gated_store.release_allocation.notify_one();
+    let ordinary_child = ordinary_spawn
+        .await
+        .expect("ordinary spawn task should not panic")
+        .expect("ordinary child should publish after alias allocation");
+    assert_eq!(ordinary_child.thread_id, ordinary_child_thread_id);
+
+    let fork_control = control.clone();
+    let fork_spawn = tokio::spawn(async move {
+        fork_control
+            .spawn_agent_with_metadata(
+                config,
+                vec![UserInput::Text {
+                    text: "forked child task".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: Some("reviewer".to_string()),
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(root_thread_id),
+                    fork_parent_spawn_call_id: Some("spawn-forked-child".to_string()),
+                    fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        gated_store.allocation_started.notified(),
+    )
+    .await
+    .expect("forked child alias allocation should start");
+    assert!(manager.get_thread(forked_child_thread_id).await.is_err());
+    let mut expected_visible = vec![root_thread_id, ordinary_child_thread_id];
+    expected_visible.sort_by_key(std::string::ToString::to_string);
+    let mut visible = manager.list_thread_ids().await;
+    visible.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(visible, expected_visible);
+    gated_store.release_allocation.notify_one();
+    let forked_child = fork_spawn
+        .await
+        .expect("forked spawn task should not panic")
+        .expect("forked child should publish after alias allocation");
+    assert_eq!(forked_child.thread_id, forked_child_thread_id);
+    assert!(manager.get_thread(forked_child_thread_id).await.is_ok());
+
+    control
+        .close_agent(ordinary_child_thread_id)
+        .await
+        .expect("close ordinary child");
+    control
+        .close_agent(forked_child_thread_id)
+        .await
+        .expect("close forked child");
+    root.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown root");
+}
+
+#[tokio::test]
+async fn cancelled_agent_spawn_discards_its_pending_runtime_and_registration() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let state_db = init_state_db(&config).await;
+    let inner_store =
+        local_agent_graph_store_from_state_db(state_db.as_ref()).expect("local alias store");
+    let gated_store = Arc::new(GatedTransferAgentGraphStore::with_allocation_gate(
+        inner_store,
+    ));
+    let root_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0028);
+    let child_thread_id =
+        ThreadId::from_u128(/*value*/ 0x018f_0000_0000_7000_8000_0000_0000_0029);
+    let generated_ids = [root_thread_id, child_thread_id];
+    let next_id = std::sync::atomic::AtomicUsize::new(0);
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let manager = Arc::new(
+        ThreadManager::new(
+            &config,
+            auth_manager.clone(),
+            build_models_manager(&config, auth_manager),
+            crate::CodexAppsToolsCache::default(),
+            SessionSource::Exec,
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            empty_extension_registry(),
+            Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+            /*analytics_events_client*/ None,
+            thread_store_from_config(&config, state_db),
+            Some(gated_store.clone()),
+            TEST_INSTALLATION_ID.to_string(),
+            /*attestation_provider*/ None,
+            /*external_time_provider*/ None,
+        )
+        .with_thread_id_generator(move || generated_ids[next_id.fetch_add(1, Ordering::Relaxed)]),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root");
+    let control = root.thread.session.services.agent_control.clone();
+    let spawn_control = control.clone();
+    let spawn = tokio::spawn(async move {
+        spawn_control
+            .spawn_agent_with_metadata(
+                config,
+                vec![UserInput::Text {
+                    text: "cancel this child setup".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(root_thread_id),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        gated_store.allocation_started.notified(),
+    )
+    .await
+    .expect("alias allocation should block");
+
+    spawn.abort();
+    assert!(
+        spawn
+            .await
+            .expect_err("aborted spawn should not return a child")
+            .is_cancelled()
+    );
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if manager
+                .state
+                .get_thread_including_pending(child_thread_id)
+                .await
+                .is_err()
+                && control.get_agent_metadata(child_thread_id).is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled setup should roll back");
+    assert!(
+        gated_store
+            .find_current_agent_alias_by_thread(child_thread_id)
+            .await
+            .expect("current ownership lookup")
+            .is_none()
+    );
+    assert_eq!(manager.list_thread_ids().await, vec![root_thread_id]);
+    root.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown root");
+}
+
+#[tokio::test]
+async fn adopted_resume_is_not_discoverable_before_alias_transfer_commits() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let state_db = init_state_db(&config).await;
+    let source_manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        state_db.clone(),
+    );
+    let source_root = source_manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start source root");
+    let source_control = source_root.thread.session.services.agent_control.clone();
+    let child_thread_id = source_control
+        .spawn_agent(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "child task".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: source_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("spawn source child");
+    let child_thread = source_manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("source child should be live");
+    child_thread.ensure_rollout_materialized().await;
+    child_thread
+        .flush_rollout()
+        .await
+        .expect("flush child rollout");
+    let previous_owner = source_control
+        .current_agent_owner_session(child_thread_id)
+        .await
+        .expect("load source owner");
+    source_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("close source child");
+
+    let inner_store =
+        local_agent_graph_store_from_state_db(state_db.as_ref()).expect("local alias store");
+    let gated_store = Arc::new(GatedTransferAgentGraphStore::new(inner_store));
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let destination_manager = Arc::new(ThreadManager::new(
+        &config,
+        auth_manager.clone(),
+        build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, state_db),
+        Some(gated_store.clone()),
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    ));
+    let destination_root = destination_manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start destination root");
+    let destination_control = destination_root
+        .thread
+        .session
+        .services
+        .agent_control
+        .clone();
+    let destination_root_thread_id = destination_root.thread_id;
+    let adoption_control = destination_control.clone();
+    let adoption_task = tokio::spawn(async move {
+        adoption_control
+            .resume_agent_from_rollout_adopting(
+                config,
+                child_thread_id,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: destination_root_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                }),
+                crate::agent::response_observation::ResponseObservationPolicy::default(),
+                previous_owner,
+                child_thread_id.to_string(),
+            )
+            .await
+    });
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        gated_store.transfer_started.notified(),
+    )
+    .await
+    .expect("alias transfer should start");
+
+    assert!(
+        destination_manager
+            .get_thread(child_thread_id)
+            .await
+            .is_err(),
+        "resumed runtime must remain unavailable while durable ownership is unsettled"
+    );
+    assert_eq!(
+        destination_manager.list_thread_ids().await,
+        vec![destination_root_thread_id]
+    );
+
+    gated_store.release_transfer.notify_one();
+    adoption_task
+        .await
+        .expect("adoption task should not panic")
+        .expect("adoption should publish after alias transfer");
+    assert!(
+        destination_manager
+            .get_thread(child_thread_id)
+            .await
+            .is_ok(),
+        "resumed runtime should publish after durable ownership commits"
+    );
+
+    destination_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("close adopted child");
+    destination_root
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown destination root");
+    source_root
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown source root");
+}
+
 /// Resuming a thread preserves its stored ID instead of invoking the new manager's factory.
 #[tokio::test]
 async fn thread_id_generator_does_not_replace_resumed_thread_id() {
@@ -253,6 +1039,190 @@ async fn thread_id_generator_does_not_replace_resumed_thread_id() {
 }
 
 #[tokio::test]
+async fn legacy_v1_child_self_session_id_recovers_owner_from_spawn_ancestry() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let original_manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = original_manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start legacy root");
+    let root_control = root.thread.session.services.agent_control.clone();
+    let child_thread_id = root_control
+        .spawn_agent(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "legacy child task".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("spawn legacy child");
+    let child = original_manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("legacy child should be live");
+    child.ensure_rollout_materialized().await;
+    child.flush_rollout().await.expect("flush legacy child");
+    let stored_child = child
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("read legacy child");
+    let mut legacy_history = stored_thread_to_initial_history(stored_child, child.rollout_path())
+        .expect("build legacy child history");
+    let InitialHistory::Resumed(resumed_history) = &mut legacy_history else {
+        panic!("stored child should produce resumed history");
+    };
+    let mut rewrote_child_session_id = false;
+    for item in Arc::make_mut(&mut resumed_history.history) {
+        if let RolloutItem::SessionMeta(meta_line) = item
+            && meta_line.meta.id == child_thread_id
+        {
+            meta_line.meta.session_id = SessionId::from(child_thread_id);
+            rewrote_child_session_id = true;
+        }
+    }
+    assert!(rewrote_child_session_id);
+    let legacy_history_after_transfer = legacy_history.clone();
+
+    let report = original_manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+
+    let state_db = init_state_db(&config).await;
+    let resumed_manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        state_db.clone(),
+    );
+    let resumed = resumed_manager
+        .resume_thread_with_history(
+            config.clone(),
+            legacy_history,
+            resumed_manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await
+        .expect("resume legacy child through recovered owner");
+    let resumed_control = resumed.thread.session.services.agent_control.clone();
+    assert_eq!(
+        resumed_control.session_id(),
+        SessionId::from(root.thread_id)
+    );
+    let alias_store =
+        local_agent_graph_store_from_state_db(state_db.as_ref()).expect("local alias store");
+    assert_eq!(
+        alias_store
+            .find_current_agent_alias_by_thread(child_thread_id)
+            .await
+            .expect("load recovered child owner")
+            .map(|alias| alias.session_id),
+        Some(SessionId::from(root.thread_id))
+    );
+    assert_eq!(
+        alias_store
+            .find_agent_alias_by_thread(SessionId::from(child_thread_id), child_thread_id)
+            .await
+            .expect("query synthesized child namespace"),
+        None
+    );
+
+    resumed_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("close recovered legacy child");
+    let destination_root = resumed_manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start transfer destination");
+    let destination_control = destination_root
+        .thread
+        .session
+        .services
+        .agent_control
+        .clone();
+    destination_control
+        .resume_agent_from_rollout_adopting(
+            config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: destination_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+            crate::agent::response_observation::ResponseObservationPolicy::default(),
+            Some(SessionId::from(root.thread_id)),
+            child_thread_id.to_string(),
+        )
+        .await
+        .expect("transfer recovered legacy child");
+    destination_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("close transferred legacy child");
+    destination_control
+        .shutdown_live_agent(destination_root.thread_id)
+        .await
+        .expect("unload transfer destination root");
+
+    let resumed_after_transfer = resumed_manager
+        .resume_thread_with_history(
+            config,
+            legacy_history_after_transfer,
+            resumed_manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await
+        .expect("resume transferred legacy child through its current owner");
+    assert_eq!(
+        resumed_after_transfer
+            .thread
+            .session
+            .services
+            .agent_control
+            .session_id(),
+        SessionId::from(destination_root.thread_id)
+    );
+    assert_eq!(
+        alias_store
+            .find_agent_alias_by_thread(SessionId::from(child_thread_id), child_thread_id)
+            .await
+            .expect("query synthesized child namespace after transfer"),
+        None
+    );
+    resumed_after_transfer
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown transferred legacy child");
+}
+
+#[tokio::test]
 async fn child_session_inherits_client_mcp_extensions() {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
@@ -303,6 +1273,309 @@ struct FakeAgentGraphStore {
     descendant_thread_ids: Vec<ThreadId>,
 }
 
+struct GatedForkAliasStore {
+    reservation_started: tokio::sync::Notify,
+    release_reservation: tokio::sync::Notify,
+    reservations_discarded: tokio::sync::Notify,
+    reservation: std::sync::Mutex<Option<ReserveForkAgentAliasesRequest>>,
+}
+
+struct GatedTransferAgentGraphStore {
+    inner: Arc<dyn codex_agent_graph_store::AgentGraphStore>,
+    gate_allocation: bool,
+    allocation_started: tokio::sync::Notify,
+    release_allocation: tokio::sync::Notify,
+    transfer_started: tokio::sync::Notify,
+    release_transfer: tokio::sync::Notify,
+}
+
+impl GatedTransferAgentGraphStore {
+    fn new(inner: Arc<dyn codex_agent_graph_store::AgentGraphStore>) -> Self {
+        Self {
+            inner,
+            gate_allocation: false,
+            allocation_started: tokio::sync::Notify::new(),
+            release_allocation: tokio::sync::Notify::new(),
+            transfer_started: tokio::sync::Notify::new(),
+            release_transfer: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn with_allocation_gate(inner: Arc<dyn codex_agent_graph_store::AgentGraphStore>) -> Self {
+        Self {
+            inner,
+            gate_allocation: true,
+            allocation_started: tokio::sync::Notify::new(),
+            release_allocation: tokio::sync::Notify::new(),
+            transfer_started: tokio::sync::Notify::new(),
+            release_transfer: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl codex_agent_graph_store::AgentGraphStore for GatedTransferAgentGraphStore {
+    fn supports_agent_aliases(&self) -> bool {
+        self.inner.supports_agent_aliases()
+    }
+
+    fn ensure_agent_alias_namespace(
+        &self,
+        session_id: SessionId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, codex_agent_graph_store::AgentAlias>
+    {
+        self.inner.ensure_agent_alias_namespace(session_id)
+    }
+
+    fn reserve_agent_aliases_for_fork(
+        &self,
+        request: ReserveForkAgentAliasesRequest,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
+        self.inner.reserve_agent_aliases_for_fork(request)
+    }
+
+    fn discard_fork_agent_alias_reservations(
+        &self,
+        fork_session_id: SessionId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, bool> {
+        self.inner
+            .discard_fork_agent_alias_reservations(fork_session_id)
+    }
+
+    fn allocate_agent_alias(
+        &self,
+        request: codex_agent_graph_store::AllocateAgentAliasRequest,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, codex_agent_graph_store::AgentAlias>
+    {
+        if !self.gate_allocation {
+            return self.inner.allocate_agent_alias(request);
+        }
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            self.allocation_started.notify_one();
+            self.release_allocation.notified().await;
+            inner.allocate_agent_alias(request).await
+        })
+    }
+
+    fn activate_agent_alias(
+        &self,
+        request: codex_agent_graph_store::AllocateAgentAliasRequest,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, codex_agent_graph_store::AgentAlias>
+    {
+        self.inner.activate_agent_alias(request)
+    }
+
+    fn transfer_agent_alias(
+        &self,
+        request: codex_agent_graph_store::TransferAgentAliasRequest,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<
+        '_,
+        codex_agent_graph_store::AgentAliasTransfer,
+    > {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            self.transfer_started.notify_one();
+            self.release_transfer.notified().await;
+            inner.transfer_agent_alias(request).await
+        })
+    }
+
+    fn set_agent_lifecycle_state(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+        status: codex_agent_graph_store::ThreadSpawnEdgeStatus,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, bool> {
+        self.inner
+            .set_agent_lifecycle_state(session_id, thread_id, status)
+    }
+
+    fn find_agent_alias_by_thread(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<
+        '_,
+        Option<codex_agent_graph_store::AgentAlias>,
+    > {
+        self.inner.find_agent_alias_by_thread(session_id, thread_id)
+    }
+
+    fn find_current_agent_alias_by_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<
+        '_,
+        Option<codex_agent_graph_store::AgentAlias>,
+    > {
+        self.inner.find_current_agent_alias_by_thread(thread_id)
+    }
+
+    fn find_agent_alias_by_ref(
+        &self,
+        session_id: SessionId,
+        agent_ref: u64,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<
+        '_,
+        Option<codex_agent_graph_store::AgentAlias>,
+    > {
+        self.inner.find_agent_alias_by_ref(session_id, agent_ref)
+    }
+
+    fn find_agent_alias_by_nickname(
+        &self,
+        session_id: SessionId,
+        nickname: &str,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<
+        '_,
+        Option<codex_agent_graph_store::AgentAlias>,
+    > {
+        self.inner
+            .find_agent_alias_by_nickname(session_id, nickname)
+    }
+
+    fn list_agent_aliases(
+        &self,
+        session_id: SessionId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Vec<codex_agent_graph_store::AgentAlias>>
+    {
+        self.inner.list_agent_aliases(session_id)
+    }
+
+    fn list_agent_nickname_reservations(
+        &self,
+        session_id: SessionId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Vec<String>> {
+        self.inner.list_agent_nickname_reservations(session_id)
+    }
+
+    fn upsert_thread_spawn_edge(
+        &self,
+        parent_thread_id: ThreadId,
+        child_thread_id: ThreadId,
+        status: codex_agent_graph_store::ThreadSpawnEdgeStatus,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
+        self.inner
+            .upsert_thread_spawn_edge(parent_thread_id, child_thread_id, status)
+    }
+
+    fn set_thread_spawn_edge_status(
+        &self,
+        child_thread_id: ThreadId,
+        status: codex_agent_graph_store::ThreadSpawnEdgeStatus,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
+        self.inner
+            .set_thread_spawn_edge_status(child_thread_id, status)
+    }
+
+    fn find_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Option<ThreadId>> {
+        self.inner.find_thread_spawn_parent(child_thread_id)
+    }
+
+    fn list_thread_spawn_children(
+        &self,
+        parent_thread_id: ThreadId,
+        status_filter: Option<codex_agent_graph_store::ThreadSpawnEdgeStatus>,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        self.inner
+            .list_thread_spawn_children(parent_thread_id, status_filter)
+    }
+
+    fn list_thread_spawn_descendants(
+        &self,
+        root_thread_id: ThreadId,
+        status_filter: Option<codex_agent_graph_store::ThreadSpawnEdgeStatus>,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        self.inner
+            .list_thread_spawn_descendants(root_thread_id, status_filter)
+    }
+}
+
+impl GatedForkAliasStore {
+    fn new() -> Self {
+        Self {
+            reservation_started: tokio::sync::Notify::new(),
+            release_reservation: tokio::sync::Notify::new(),
+            reservations_discarded: tokio::sync::Notify::new(),
+            reservation: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl codex_agent_graph_store::AgentGraphStore for GatedForkAliasStore {
+    fn supports_agent_aliases(&self) -> bool {
+        true
+    }
+
+    fn reserve_agent_aliases_for_fork(
+        &self,
+        request: ReserveForkAgentAliasesRequest,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async move {
+            *self
+                .reservation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request);
+            self.reservation_started.notify_one();
+            self.release_reservation.notified().await;
+            Ok(())
+        })
+    }
+
+    fn discard_fork_agent_alias_reservations(
+        &self,
+        _fork_session_id: SessionId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.reservations_discarded.notify_one();
+            Ok(true)
+        })
+    }
+
+    fn upsert_thread_spawn_edge(
+        &self,
+        _parent_thread_id: ThreadId,
+        _child_thread_id: ThreadId,
+        _status: codex_agent_graph_store::ThreadSpawnEdgeStatus,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn set_thread_spawn_edge_status(
+        &self,
+        _child_thread_id: ThreadId,
+        _status: codex_agent_graph_store::ThreadSpawnEdgeStatus,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn find_thread_spawn_parent(
+        &self,
+        _child_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Option<ThreadId>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn list_thread_spawn_children(
+        &self,
+        _parent_thread_id: ThreadId,
+        _status_filter: Option<codex_agent_graph_store::ThreadSpawnEdgeStatus>,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn list_thread_spawn_descendants(
+        &self,
+        _root_thread_id: ThreadId,
+        _status_filter: Option<codex_agent_graph_store::ThreadSpawnEdgeStatus>,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
 impl codex_agent_graph_store::AgentGraphStore for FakeAgentGraphStore {
     fn upsert_thread_spawn_edge(
         &self,
@@ -319,6 +1592,13 @@ impl codex_agent_graph_store::AgentGraphStore for FakeAgentGraphStore {
         _status: codex_agent_graph_store::ThreadSpawnEdgeStatus,
     ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
         Box::pin(async { panic!("unexpected graph status update") })
+    }
+
+    fn find_thread_spawn_parent(
+        &self,
+        _child_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Option<ThreadId>> {
+        Box::pin(async { panic!("unexpected parent lookup") })
     }
 
     fn list_thread_spawn_children(
@@ -747,6 +2027,17 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
             .await
             .is_none()
     );
+    let cleanup_called_for_unpublished = Arc::clone(&cleanup_called);
+    assert!(
+        manager
+            .state
+            .remove_thread_if_current_or_cleanup_if_absent(&old.thread, move || {
+                cleanup_called_for_unpublished.store(true, Ordering::Release);
+            })
+            .await
+            .is_none()
+    );
+    assert!(!cleanup_called.load(Ordering::Acquire));
     let absent_cleanup_called = Arc::new(AtomicBool::new(false));
     let absent_cleanup_called_for_check = Arc::clone(&absent_cleanup_called);
     assert!(
@@ -763,8 +2054,48 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
         .await
         .expect("replacement manager entry");
     assert!(Arc::ptr_eq(&current, &replacement.thread));
-    let _ = manager
-        .shutdown_all_threads_bounded(Duration::from_secs(10))
+    replacement
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown replacement");
+    manager
+        .remove_thread(&replacement.thread_id)
+        .await
+        .expect("remove published replacement");
+    manager
+        .state
+        .pending_threads
+        .write()
+        .await
+        .insert(replacement.thread_id, Arc::downgrade(&replacement.thread));
+    let stale_pending_cleanup_called = Arc::new(AtomicBool::new(false));
+    let stale_pending_cleanup_called_for_check = Arc::clone(&stale_pending_cleanup_called);
+
+    assert!(
+        manager
+            .state
+            .remove_thread_if_current_or_cleanup_if_absent(&old.thread, move || {
+                stale_pending_cleanup_called_for_check.store(true, Ordering::Release);
+            })
+            .await
+            .is_none()
+    );
+    assert!(!stale_pending_cleanup_called.load(Ordering::Acquire));
+    assert!(
+        Arc::ptr_eq(
+            &manager
+                .state
+                .get_thread_including_pending(replacement.thread_id)
+                .await
+                .expect("pending replacement remains reserved"),
+            &replacement.thread,
+        ),
+        "stale cleanup must not release a different pending replacement"
+    );
+    manager
+        .state
+        .remove_thread_if_current(&replacement.thread, || {})
         .await;
 }
 
@@ -808,6 +2139,7 @@ async fn concurrent_resume_reports_that_it_adopted_the_running_runtime() {
             inherited_environments: None,
             inherited_exec_policy: None,
             client_mcp_extensions_override: None,
+            runtime_publication: ThreadRuntimePublication::Immediate,
         })
         .await
         .expect("concurrent resume should adopt running thread");
@@ -968,6 +2300,124 @@ async fn mcp_invalidation_refreshes_threads_that_are_still_starting() {
     tokio::time::timeout(Duration::from_secs(5), observer.refreshed.notified())
         .await
         .expect("invalidation during startup should refresh the newly published thread");
+    let shutdown = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert!(shutdown.timed_out.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_invalidation_refreshes_setup_pending_agent_runtime() {
+    struct PendingChildMcpProjection {
+        projections: std::sync::atomic::AtomicUsize,
+        changed: tokio::sync::Notify,
+    }
+
+    impl codex_extension_api::McpServerContributor<Config> for PendingChildMcpProjection {
+        fn id(&self) -> &'static str {
+            "pending_child_mcp_runtime_refresh_test"
+        }
+
+        fn contribute<'a>(
+            &'a self,
+            context: codex_extension_api::McpServerContributionContext<'a, Config>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Vec<codex_extension_api::McpServerContribution>>
+        {
+            Box::pin(async move {
+                if context
+                    .session_source()
+                    .is_some_and(SessionSource::is_non_root_agent)
+                {
+                    self.projections.fetch_add(1, Ordering::AcqRel);
+                    self.changed.notify_waiters();
+                }
+                Vec::new()
+            })
+        }
+    }
+
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let observer = Arc::new(PendingChildMcpProjection {
+        projections: std::sync::atomic::AtomicUsize::new(0),
+        changed: tokio::sync::Notify::new(),
+    });
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    extensions.mcp_server_contributor(observer.clone());
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let manager = ThreadManager::new(
+        &config,
+        Arc::clone(&auth_manager),
+        build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Arc::new(extensions.build()),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        Arc::new(InMemoryThreadStore::default()),
+        /*agent_graph_store*/ None,
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root");
+    let pending = manager
+        .state
+        .spawn_new_thread_with_source(
+            config,
+            root.thread.session.services.agent_control.clone(),
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("worker".to_string()),
+                agent_role: Some("worker".to_string()),
+            }),
+            /*history_mode*/ None,
+            /*parent_thread_id*/ Some(root.thread_id),
+            /*forked_from_thread_id*/ None,
+            /*thread_source*/ Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+            ThreadRuntimePublication::Deferred,
+        )
+        .await
+        .expect("create setup-pending child");
+    let initial_projections = observer.projections.load(Ordering::Acquire);
+    assert!(initial_projections > 0);
+    assert!(manager.get_thread(pending.thread_id).await.is_err());
+
+    manager.invalidate_mcp_runtimes().await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let changed = observer.changed.notified();
+            if observer.projections.load(Ordering::Acquire) > initial_projections {
+                break;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .expect("pending child should process MCP invalidation");
+    assert!(
+        manager.get_thread(pending.thread_id).await.is_err(),
+        "MCP refresh must not make a setup-pending child discoverable"
+    );
+
+    manager
+        .state
+        .publish_thread(&pending.thread)
+        .await
+        .expect("publish refreshed child");
     let shutdown = manager
         .shutdown_all_threads_bounded(Duration::from_secs(5))
         .await;

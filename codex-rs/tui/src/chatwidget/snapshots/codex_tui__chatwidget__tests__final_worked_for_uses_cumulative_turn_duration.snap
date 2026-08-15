@@ -1,11 +1,11 @@
 ---
 source: tui/src/chatwidget/tests/exec_flow.rs
-expression: combined
+expression: normalized
 ---
 • Ran echo preparing
   └ preparing
 
-────────────────────────────────────────────────────────────────────────────────
+─ <elapsed checkpoint>
 
 • Final response.
 

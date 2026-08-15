@@ -20,6 +20,8 @@ use uuid::Uuid;
 
 mod response_observation;
 
+pub(in crate::agent::control) use self::response_observation::FinalResponseObservationReplacement;
+pub(in crate::agent) use self::response_observation::ReplacedFinalResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBindingPublication;
 pub(crate) use self::response_observation::ResponseObservationDeliveryCommit;
@@ -56,7 +58,7 @@ struct PresentationState {
         (SessionPresentationId, SessionPresentationId),
         Vec<Weak<TerminalPresentationInner>>,
     >,
-    completion_watcher_sessions: HashSet<(SessionPresentationId, SessionPresentationId)>,
+    completion_watcher_sessions: HashMap<(SessionPresentationId, SessionPresentationId), Uuid>,
     completion_observers_by_child: HashMap<SessionPresentationId, HashSet<SessionPresentationId>>,
     response_observation_by_observer_child:
         HashMap<(SessionPresentationId, SessionPresentationId), ResponseObserverRelationship>,
@@ -88,6 +90,12 @@ pub(crate) enum TerminalPresentationDelivery {
     Watcher,
 }
 
+pub(crate) enum ConditionalResponseObservationRevocation {
+    Missing,
+    Replaced,
+    Revoked { removed_bound_wake: bool },
+}
+
 enum WaitAgentPresentationScope {
     Targeted(Vec<ThreadId>),
     AnyChild,
@@ -104,6 +112,7 @@ pub(crate) struct CompletionWatcherRegistration {
     presentations: Arc<WaitAgentPresentations>,
     child: SessionPresentationId,
     parent: SessionPresentationId,
+    registration_id: Uuid,
     child_lifecycle_generation: u64,
     preserve_state_for_replacement_on_drop: bool,
     active: bool,
@@ -211,11 +220,11 @@ impl AgentControl {
         }
     }
 
-    /// Permanently detach runtime response observers for an explicitly closed child.
+    /// Permanently detach runtime response observers at an authoritative lifecycle boundary.
     ///
-    /// V1 watcher recovery deliberately survives transient runtime shutdowns. Explicit close is
-    /// different: it revokes that recovery state so an old subscription cannot attach itself to a
-    /// later runtime with the same rollout thread ID.
+    /// V1 watcher recovery deliberately survives transient runtime shutdowns. Explicit close and
+    /// ownership transfer are different: they revoke that recovery state so an old subscription
+    /// cannot attach itself to a later runtime with the same rollout thread ID.
     ///
     /// Returns observers whose bound final wake was removed so their idle lifecycle can be
     /// re-evaluated.
@@ -237,6 +246,16 @@ impl AgentControl {
             .revoke_response_observation_for_presentation(parent, child)
     }
 
+    pub(crate) fn revoke_response_observation_if_registration_is_current(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        registration_id: Uuid,
+    ) -> ConditionalResponseObservationRevocation {
+        self.wait_agent_presentations
+            .revoke_response_observation_if_registration_is_current(parent, child, registration_id)
+    }
+
     /// Re-emits idle lifecycle only for the still-current live observer presentation.
     pub(crate) async fn recheck_thread_idle_lifecycle(&self, observer: SessionPresentationId) {
         if !self.response_observer_can_retry(observer).await {
@@ -245,7 +264,7 @@ impl AgentControl {
         let Some(state) = self.manager.upgrade() else {
             return;
         };
-        if let Ok(thread) = state.get_thread(observer.thread_id).await
+        if let Ok(thread) = state.get_thread_including_pending(observer.thread_id).await
             && thread.session.presentation_id() == observer
         {
             // This callback is level-triggered and may also be probed by normal turn completion.
@@ -294,7 +313,19 @@ impl AgentControl {
         self.wait_agent_presentations
             .state()
             .completion_watcher_sessions
-            .contains(&(parent, child))
+            .contains_key(&(parent, child))
+    }
+
+    pub(crate) fn response_watcher_registration_id(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+    ) -> Option<Uuid> {
+        self.wait_agent_presentations
+            .state()
+            .completion_watcher_sessions
+            .get(&(parent, child))
+            .copied()
     }
 
     pub(crate) fn register_targeted_wait_agent_presentation(
@@ -841,6 +872,9 @@ impl CompletionWatcherRegistration {
         }
         self.active = false;
         let observer_child = (self.parent, self.child);
+        if state.completion_watcher_sessions.get(&observer_child) != Some(&self.registration_id) {
+            return;
+        }
         state.completion_watcher_sessions.remove(&observer_child);
         if let Some(parents) = state.completion_observers_by_child.get_mut(&self.child) {
             parents.remove(&self.parent);
@@ -881,6 +915,10 @@ impl CompletionWatcherRegistration {
         let presentations = Arc::clone(&self.presentations);
         let mut state = presentations.state();
         let observer_child = (self.parent, self.child);
+        if state.completion_watcher_sessions.get(&observer_child) != Some(&self.registration_id) {
+            self.active = false;
+            return true;
+        }
         if state
             .response_observation_by_observer_child
             .get(&observer_child)
@@ -899,6 +937,18 @@ impl CompletionWatcherRegistration {
     pub(crate) fn child_lifecycle_generation(&self) -> u64 {
         self.child_lifecycle_generation
     }
+
+    pub(crate) fn registration_id(&self) -> Uuid {
+        self.registration_id
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        self.presentations
+            .state()
+            .completion_watcher_sessions
+            .get(&(self.parent, self.child))
+            == Some(&self.registration_id)
+    }
 }
 
 fn response_observer_relationship_has_work(relationship: &ResponseObserverRelationship) -> bool {
@@ -906,6 +956,56 @@ fn response_observer_relationship_has_work(relationship: &ResponseObserverRelati
         || relationship.pending_next_turn.is_some()
         || !relationship.pending_admissions.is_empty()
         || !relationship.turns.is_empty()
+}
+
+fn remove_response_observation_for_presentation(
+    state: &mut PresentationState,
+    parent: SessionPresentationId,
+    child: SessionPresentationId,
+) -> bool {
+    let observer_child = (parent, child);
+    let removed_bound_wake = state
+        .response_observation_by_observer_child
+        .get(&observer_child)
+        .is_some_and(|relationship| {
+            relationship
+                .turns
+                .values()
+                .any(|observation| observation.final_response == FinalResponseObservation::Wake)
+        });
+    state.completion_watcher_sessions.remove(&observer_child);
+    if let Some(parents) = state.completion_observers_by_child.get_mut(&child) {
+        parents.remove(&parent);
+        if parents.is_empty() {
+            state.completion_observers_by_child.remove(&child);
+        }
+    }
+    state
+        .completion_delivery_admission_by_child
+        .remove(&observer_child);
+    state
+        .response_observation_by_observer_child
+        .remove(&observer_child);
+    state.watcher_terminals.remove(&observer_child);
+    state.in_flight_watcher_terminals.remove(&observer_child);
+    state
+        .terminal_turns_by_observer_child
+        .remove(&observer_child);
+    let pending_context_ids = state
+        .pending_completion_contexts
+        .iter()
+        .filter_map(|(response_item_id, pending)| {
+            (pending.parent == parent && pending.terminal.child == child)
+                .then_some(response_item_id.clone())
+        })
+        .collect::<Vec<_>>();
+    for response_item_id in pending_context_ids {
+        state.pending_completion_contexts.remove(&response_item_id);
+        state
+            .trusted_completion_context_response_item_ids
+            .remove(&response_item_id);
+    }
+    removed_bound_wake
 }
 
 impl WaitAgentPresentationCommit {
@@ -1136,7 +1236,7 @@ impl WaitAgentPresentations {
             .collect::<HashSet<_>>();
         state
             .completion_watcher_sessions
-            .retain(|(_, child)| child.thread_id != child_thread_id);
+            .retain(|(_, child), _| child.thread_id != child_thread_id);
         state
             .completion_observers_by_child
             .retain(|child, _| child.thread_id != child_thread_id);
@@ -1180,51 +1280,32 @@ impl WaitAgentPresentations {
         child: SessionPresentationId,
     ) -> bool {
         let mut state = self.state();
-        let observer_child = (parent, child);
-        let removed_bound_wake = state
-            .response_observation_by_observer_child
-            .get(&observer_child)
-            .is_some_and(|relationship| {
-                relationship
-                    .turns
-                    .values()
-                    .any(|observation| observation.final_response == FinalResponseObservation::Wake)
-            });
-        state.completion_watcher_sessions.remove(&observer_child);
-        if let Some(parents) = state.completion_observers_by_child.get_mut(&child) {
-            parents.remove(&parent);
-            if parents.is_empty() {
-                state.completion_observers_by_child.remove(&child);
-            }
-        }
-        state
-            .completion_delivery_admission_by_child
-            .remove(&observer_child);
-        state
-            .response_observation_by_observer_child
-            .remove(&observer_child);
-        state.watcher_terminals.remove(&observer_child);
-        state.in_flight_watcher_terminals.remove(&observer_child);
-        state
-            .terminal_turns_by_observer_child
-            .remove(&observer_child);
-        let pending_context_ids = state
-            .pending_completion_contexts
-            .iter()
-            .filter_map(|(response_item_id, pending)| {
-                (pending.parent == parent && pending.terminal.child == child)
-                    .then_some(response_item_id.clone())
-            })
-            .collect::<Vec<_>>();
-        for response_item_id in pending_context_ids {
-            state.pending_completion_contexts.remove(&response_item_id);
-            state
-                .trusted_completion_context_response_item_ids
-                .remove(&response_item_id);
-        }
+        let removed_bound_wake =
+            remove_response_observation_for_presentation(&mut state, parent, child);
         drop(state);
         self.response_observation_changed.notify_waiters();
         removed_bound_wake
+    }
+
+    fn revoke_response_observation_if_registration_is_current(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        registration_id: Uuid,
+    ) -> ConditionalResponseObservationRevocation {
+        let mut state = self.state();
+        match state.completion_watcher_sessions.get(&(parent, child)) {
+            None => return ConditionalResponseObservationRevocation::Missing,
+            Some(current_registration_id) if *current_registration_id != registration_id => {
+                return ConditionalResponseObservationRevocation::Replaced;
+            }
+            Some(_) => {}
+        }
+        let removed_bound_wake =
+            remove_response_observation_for_presentation(&mut state, parent, child);
+        drop(state);
+        self.response_observation_changed.notify_waiters();
+        ConditionalResponseObservationRevocation::Revoked { removed_bound_wake }
     }
 
     fn freeze_wait(

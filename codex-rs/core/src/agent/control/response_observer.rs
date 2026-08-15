@@ -1,9 +1,47 @@
+use super::presentation::FinalResponseObservationReplacement;
+use super::presentation::ReplacedFinalResponseObservationBinding;
 use super::*;
 use crate::session::AgentResponseSubscription;
 use crate::session::agent_response_events_from_rollout;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::AgentResponsePromotedTaskContext;
 use codex_protocol::rollout::rollout_without_exact_rollback_ranges;
 use std::collections::HashSet;
+
+pub(crate) struct ReplacedFinalResponseObservation {
+    pub(crate) target_thread_id: ThreadId,
+    pub(crate) previous: FinalResponseObservation,
+    pub(crate) binding: ReplacedFinalResponseObservationBinding,
+}
+
+struct ResponseObservationReplacementCommitGuard {
+    parent_thread: Arc<CodexThread>,
+    committed: bool,
+}
+
+impl ResponseObservationReplacementCommitGuard {
+    fn new(parent_thread: Arc<CodexThread>) -> Self {
+        Self {
+            parent_thread,
+            committed: false,
+        }
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ResponseObservationReplacementCommitGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.parent_thread
+                .session
+                .submission_admission
+                .rollback_requires_reload();
+        }
+    }
+}
 
 pub(super) struct CompletionWatcherLifecycleGuard {
     control: AgentControl,
@@ -30,7 +68,8 @@ impl CompletionWatcherLifecycleGuard {
     pub(super) fn take_registration(
         &mut self,
     ) -> Option<super::presentation::CompletionWatcherRegistration> {
-        self.registration.take()
+        let registration = self.registration.take()?;
+        registration.is_current().then_some(registration)
     }
 
     pub(super) fn retire_if_observation_idle(&mut self) -> bool {
@@ -65,14 +104,14 @@ async fn validate_response_observation_endpoints(
     child: SessionPresentationId,
     child_lifecycle_generation: u64,
 ) -> CodexResult<()> {
-    let parent_thread = state.get_thread(parent.thread_id).await?;
+    let parent_thread = state.get_thread_including_pending(parent.thread_id).await?;
     if parent_thread.session.presentation_id() != parent {
         return Err(CodexErr::ThreadNotFound(parent.thread_id));
     }
     if !state.agent_lifecycle_generation_is_current(child.thread_id, child_lifecycle_generation) {
         return Err(CodexErr::ThreadNotFound(child.thread_id));
     }
-    let child_thread = state.get_thread(child.thread_id).await?;
+    let child_thread = state.get_thread_including_pending(child.thread_id).await?;
     if child_thread.session.presentation_id() != child {
         return Err(CodexErr::ThreadNotFound(child.thread_id));
     }
@@ -80,6 +119,219 @@ async fn validate_response_observation_endpoints(
 }
 
 impl AgentControl {
+    /// Revoke response observation owned before an exclusive subtree transfer.
+    ///
+    /// The caller invokes this immediately after the durable alias transaction commits, while it
+    /// still holds every transferred lifecycle lock and before it installs the destination
+    /// watcher or publishes the replacement runtime.
+    pub(super) async fn invalidate_transferred_subtree_response_observers(
+        &self,
+        previous_session_id: Option<SessionId>,
+        target_thread_id: ThreadId,
+        descendant_thread_ids: &[ThreadId],
+    ) {
+        if previous_session_id == Some(self.session_id()) {
+            return;
+        }
+        let Ok(state) = self.upgrade() else {
+            return;
+        };
+        // Advance every generation before the first await. Cancellation immediately after the
+        // durable transfer commit can then unload destination setup, but cannot leave any
+        // former-owner recovery generation valid for a later resume.
+        for thread_id in
+            std::iter::once(target_thread_id).chain(descendant_thread_ids.iter().copied())
+        {
+            state.advance_agent_lifecycle_generation(thread_id);
+        }
+
+        let Some(previous_session_id) = previous_session_id else {
+            return;
+        };
+        let Ok(previous_root) = state
+            .get_thread_including_pending(ThreadId::from(previous_session_id))
+            .await
+        else {
+            // Generation invalidation remains manager-wide, so unloaded former controls and
+            // independently owned observers still reject the transferred runtime on recovery.
+            return;
+        };
+        let previous_control = previous_root.session.services.agent_control.clone();
+        if previous_control.session_id() != previous_session_id {
+            return;
+        }
+        let mut affected_wake_observers = HashSet::new();
+        for thread_id in
+            std::iter::once(target_thread_id).chain(descendant_thread_ids.iter().copied())
+        {
+            affected_wake_observers
+                .extend(previous_control.revoke_response_observations_for_child(thread_id));
+        }
+        for observer in affected_wake_observers {
+            // Transfer still holds every subtree lifecycle lock. Re-evaluate the former
+            // observer after this synchronous revocation without making transfer setup depend on
+            // any goal turn that the newly idle parent may start.
+            let previous_control = previous_control.clone();
+            tokio::spawn(async move {
+                previous_control
+                    .recheck_thread_idle_lifecycle(observer)
+                    .await;
+            });
+        }
+    }
+
+    pub(crate) async fn replace_durable_final_response_observation(
+        &self,
+        target_thread_id: ThreadId,
+        parent: SessionPresentationId,
+        replacement: FinalResponseObservation,
+    ) -> CodexResult<ReplacedFinalResponseObservation> {
+        let state = self.upgrade()?;
+        let lifecycle_lock = state.agent_lifecycle_lock(target_thread_id);
+        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+        self.require_current_agent_ownership(target_thread_id)
+            .await?;
+        let _submission_permit = self
+            .acquire_mailbox_submission_permit(target_thread_id)
+            .await?;
+        let _transaction_permit = self.acquire_response_observation_transaction(parent).await;
+        let child_thread = state.get_thread(target_thread_id).await?;
+        let child = child_thread.session.presentation_id();
+        let child_lifecycle_generation = state.agent_lifecycle_generation(target_thread_id);
+        validate_response_observation_endpoints(&state, parent, child, child_lifecycle_generation)
+            .await?;
+        let (response_snapshot, response_rx) = child_thread.session.subscribe_agent_responses();
+        drop(response_rx);
+        let prepared = match self.prepare_final_response_observation_replacement(
+            parent,
+            child,
+            response_snapshot.active_turn_id.as_deref(),
+            response_snapshot
+                .last_terminal
+                .as_ref()
+                .map(|(turn_id, _status)| turn_id.as_str()),
+            replacement,
+        ) {
+            Ok(prepared) => prepared,
+            Err(FinalResponseObservationReplacement::Replaced { .. }) => {
+                return Err(CodexErr::Fatal(
+                    "prepared response observation unexpectedly reported a committed replacement"
+                        .to_string(),
+                ));
+            }
+            Err(FinalResponseObservationReplacement::NoObservation) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "agent {target_thread_id} has no active or pending response observation"
+                )));
+            }
+            Err(FinalResponseObservationReplacement::DeliveryClaimed) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "agent {target_thread_id} response delivery is already committed"
+                )));
+            }
+        };
+        let parent_thread = state.get_thread_including_pending(parent.thread_id).await?;
+        if parent_thread.session.presentation_id() != parent {
+            return Err(CodexErr::InvalidRequest(
+                "agent response observer is no longer current".to_string(),
+            ));
+        }
+        let task_item = if prepared.previous == FinalResponseObservation::PresentationOnly
+            && matches!(
+                replacement,
+                FinalResponseObservation::Passive | FinalResponseObservation::Wake
+            ) {
+            match prepared.task_preview.clone() {
+                Some(task_preview) => {
+                    match self
+                        .prepare_user_agent_task_context_item(
+                            parent,
+                            target_thread_id,
+                            task_preview,
+                        )
+                        .await?
+                    {
+                        Some((task_parent_thread, task_item))
+                            if Arc::ptr_eq(&task_parent_thread, &parent_thread) =>
+                        {
+                            Some(task_item)
+                        }
+                        Some(_) => {
+                            return Err(CodexErr::InvalidRequest(
+                                "agent response observer was replaced while preparing task context"
+                                    .to_string(),
+                            ));
+                        }
+                        None => None,
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let mut observations =
+            self.prepared_response_observation_replacement_snapshots(parent, child, &prepared);
+        if observations.is_empty() {
+            return Err(CodexErr::Fatal(
+                "durable response observation replacement produced no persistence snapshot"
+                    .to_string(),
+            ));
+        }
+        if let Some(task_item) = task_item {
+            let Some(replaced_observation) = observations
+                .iter_mut()
+                .find(|observation| observation.target_turn_id == prepared.target_turn_id)
+            else {
+                return Err(CodexErr::Fatal(
+                    "durable response observation replacement omitted its changed turn snapshot"
+                        .to_string(),
+                ));
+            };
+            replaced_observation.promoted_task_context = Some(
+                AgentResponsePromotedTaskContext::from_response_item(&task_item).ok_or_else(
+                    || {
+                        CodexErr::Fatal(
+                            "prepared user-agent task context had an invalid durable shape"
+                                .to_string(),
+                        )
+                    },
+                )?,
+            );
+        }
+        let commit_guard =
+            ResponseObservationReplacementCommitGuard::new(Arc::clone(&parent_thread));
+        if !parent_thread
+            .session
+            .persist_agent_response_observation_replacement(observations.as_slice())
+            .await
+        {
+            return Err(CodexErr::Fatal(
+                "failed to persist replaced response observation state".to_string(),
+            ));
+        }
+        if !self.commit_final_response_observation_replacement(parent, child, &prepared) {
+            return Err(CodexErr::Fatal(
+                "response observation changed while its replacement was being persisted; refresh the thread before continuing"
+                    .to_string(),
+            ));
+        }
+        commit_guard.commit();
+        drop(_transaction_permit);
+        drop(_submission_permit);
+        drop(_lifecycle_guard);
+        if prepared.previous == FinalResponseObservation::Wake
+            && replacement != FinalResponseObservation::Wake
+        {
+            self.recheck_thread_idle_lifecycle(parent).await;
+        }
+        Ok(ReplacedFinalResponseObservation {
+            target_thread_id,
+            previous: prepared.previous,
+            binding: prepared.binding,
+        })
+    }
+
     fn revoke_previous_response_observation(
         &self,
         parent: SessionPresentationId,
@@ -88,8 +340,8 @@ impl AgentControl {
         if let Some(previous_child) = previous_child
             && self.revoke_response_observation_for_presentation(parent, previous_child)
         {
-            // The explicit close may belong to another AgentControl. Re-check this observer's
-            // local idle lifecycle after its generation listener revokes the old wake.
+            // The lifecycle boundary may belong to another AgentControl. Re-check this
+            // observer's local idle lifecycle after its generation listener revokes the old wake.
             let control = self.clone();
             tokio::spawn(async move {
                 control.recheck_thread_idle_lifecycle(parent).await;
@@ -108,9 +360,9 @@ impl AgentControl {
         {
             return true;
         }
-        // Explicit close invalidates the old generation across every AgentControl. Revoke only
-        // the presentation owned by this recovery task so a fresh post-close resume using the
-        // same rollout thread UUID remains intact.
+        // Explicit close and ownership transfer invalidate the old generation across every
+        // AgentControl. Revoke only the presentation owned by this recovery task so a fresh
+        // post-boundary resume using the same rollout thread UUID remains intact.
         self.revoke_previous_response_observation(parent, previous_child);
         false
     }
@@ -119,7 +371,7 @@ impl AgentControl {
         let Ok(state) = self.upgrade() else {
             return false;
         };
-        let Ok(parent_thread) = state.get_thread(parent.thread_id).await else {
+        let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await else {
             return false;
         };
         parent_thread.session.presentation_id() == parent
@@ -141,7 +393,7 @@ impl AgentControl {
         let Ok(state) = self.upgrade() else {
             return false;
         };
-        let Ok(parent_thread) = state.get_thread(parent.thread_id).await else {
+        let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await else {
             return false;
         };
         parent_thread.session.presentation_id() == parent
@@ -154,10 +406,10 @@ impl AgentControl {
 
     /// Ensures an explicitly adopted live v1 thread reports its final lifecycle status.
     ///
-    /// A thread can already be live because another client resumed its rollout directly through
-    /// the app-server. V1 tools address live threads through the global thread manager, so direct
-    /// control already works in that case, but the caller's session-scoped presentation state
-    /// still needs a completion watcher. Registering is idempotent for the child presentation.
+    /// A thread can already be live because another client resumed it through the same durable
+    /// owner. Registering is idempotent for the child presentation and revalidates ownership under
+    /// the target lifecycle boundary so a concurrent transfer cannot become cross-root
+    /// observation.
     pub(crate) async fn ensure_v1_completion_watcher(
         &self,
         child_thread_id: ThreadId,
@@ -165,21 +417,65 @@ impl AgentControl {
         response_observation: ResponseObservationPolicy,
         observed_status: AgentStatus,
     ) -> CodexResult<AgentStatus> {
+        self.ensure_durable_completion_watcher_inner(
+            child_thread_id,
+            session_source,
+            response_observation,
+            InitialTerminalObservation::ReconcileIfAdvancedFrom(observed_status),
+            /*task_preview*/ None,
+        )
+        .await
+    }
+
+    /// Ensures an explicitly adopted live thread reports through durable response observation.
+    ///
+    /// User control deliberately uses this transport for both V1 and V2 targets so its response
+    /// policy is exact-turn and native V2 completion publication cannot duplicate it. Unlike a
+    /// model-authored bare-`x` resume of an already idle target, prompt-less user resume reserves
+    /// every response mode for the next user-authored target turn.
+    pub(crate) async fn ensure_durable_completion_watcher(
+        &self,
+        child_thread_id: ThreadId,
+        session_source: SessionSource,
+        response_observation: ResponseObservationPolicy,
+        observed_status: AgentStatus,
+        task_preview: Option<String>,
+    ) -> CodexResult<AgentStatus> {
+        self.ensure_durable_completion_watcher_inner(
+            child_thread_id,
+            session_source,
+            response_observation,
+            InitialTerminalObservation::ReconcileOrObserveNextFrom(observed_status),
+            task_preview,
+        )
+        .await
+    }
+
+    async fn ensure_durable_completion_watcher_inner(
+        &self,
+        child_thread_id: ThreadId,
+        session_source: SessionSource,
+        response_observation: ResponseObservationPolicy,
+        initial_terminal_observation: InitialTerminalObservation,
+        task_preview: Option<String>,
+    ) -> CodexResult<AgentStatus> {
         let state = self.upgrade()?;
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         }) = &session_source
         else {
-            return Ok(observed_status);
+            return Ok(self.get_status(child_thread_id).await);
         };
         if *parent_thread_id == child_thread_id {
-            return Ok(observed_status);
+            return Ok(self.get_status(child_thread_id).await);
         }
         // Live adoption adds an observation edge; it does not mutate parent/child membership.
         // Snapshot the target under its own lifecycle boundary, then release it before holding
         // the observer boundary. Mutually observing agents can therefore never hold one another's
         // lifecycle guards. Observer setup validates this exact target generation before commit.
         let child_lifecycle_guard = state.acquire_live_agent_lifecycle(child_thread_id).await?;
+        self.require_current_agent_ownership(child_thread_id)
+            .await?;
         let child_thread = state.get_thread(child_thread_id).await?;
         let child_lifecycle_generation = state.agent_lifecycle_generation(child_thread_id);
         drop(child_lifecycle_guard);
@@ -201,7 +497,8 @@ impl AgentControl {
             response_observation,
             /*retain_passive_completion_relationship*/ false,
             ResponseObservationBinding::NextTurn,
-            InitialTerminalObservation::ReconcileIfAdvancedFrom(observed_status),
+            initial_terminal_observation,
+            task_preview,
         )
         .await
     }
@@ -217,12 +514,13 @@ impl AgentControl {
         retain_passive_completion_relationship: bool,
         binding: ResponseObservationBinding,
         initial_terminal_observation: InitialTerminalObservation,
+        task_preview: Option<String>,
     ) -> CodexResult<AgentStatus> {
         let child_thread_id = child_thread.session.thread_id();
         let child = child_thread.session.presentation_id();
         validate_response_observation_endpoints(state, parent, child, child_lifecycle_generation)
             .await?;
-        let parent_thread = state.get_thread(parent.thread_id).await?;
+        let parent_thread = state.get_thread_including_pending(parent.thread_id).await?;
         if child_thread_id == parent.thread_id {
             return Ok(child_thread.agent_status().await);
         }
@@ -269,6 +567,7 @@ impl AgentControl {
             .and_then(|metadata| metadata.agent_path)
             .map_or_else(|| child_thread_id.to_string(), |path| path.to_string());
         let observes_future_turns = initial_terminal_observation.observes_future_turns();
+        let retains_idle_next_turn = initial_terminal_observation.retains_idle_next_turn();
         let terminal_control = self.clone();
         let (response_snapshot, response_rx) = child_thread
             .session
@@ -313,7 +612,7 @@ impl AgentControl {
         if response_observation.final_response() == FinalResponseObservation::PresentationOnly
             && !response_observation.commentary()
             && target_turn_id.is_none()
-            && !observes_future_turns
+            && !retains_idle_next_turn
         {
             validate_response_observation_endpoints(
                 state,
@@ -355,6 +654,28 @@ impl AgentControl {
             child_lifecycle_generation,
         )
         .await
+        {
+            drop(watcher_registration);
+            self.restore_response_observation_relationship_snapshot(
+                parent,
+                child,
+                previous_relationship,
+            );
+            return Err(err);
+        }
+        if let Some(task_preview) = task_preview.as_ref() {
+            self.set_response_observation_task_preview(
+                parent,
+                child,
+                target_turn_id.as_deref(),
+                task_preview.clone(),
+            );
+        }
+        if response_observation.has_model_visible_delivery()
+            && let Some(task_preview) = task_preview
+            && let Err(err) = self
+                .persist_user_agent_task_context(parent, child_thread_id, task_preview)
+                .await
         {
             drop(watcher_registration);
             self.restore_response_observation_relationship_snapshot(
@@ -426,7 +747,6 @@ impl AgentControl {
                     .next_watcher_terminal(
                         parent,
                         child,
-                        child_reference.as_str(),
                         &mut response_rx,
                         MultiAgentVersion::V1,
                         child_lifecycle_generation,
@@ -613,7 +933,7 @@ impl AgentControl {
         let Ok(state) = self.upgrade() else {
             return;
         };
-        let Ok(observer_thread) = state.get_thread(parent.thread_id).await else {
+        let Ok(observer_thread) = state.get_thread_including_pending(parent.thread_id).await else {
             self.revoke_previous_response_observation(parent, previous_child);
             return;
         };
@@ -800,7 +1120,8 @@ impl AgentControl {
                 }
             }
         };
-        let Ok(current_observer) = state.get_thread(parent.thread_id).await else {
+        let Ok(current_observer) = state.get_thread_including_pending(parent.thread_id).await
+        else {
             self.revoke_previous_response_observation(parent, previous_child);
             return;
         };
@@ -892,7 +1213,6 @@ impl AgentControl {
                         .deliver_v1_commentary_observation(
                             parent,
                             child,
-                            &child_reference,
                             turn_id,
                             &delivery,
                             lifecycle_guard,
@@ -943,7 +1263,6 @@ impl AgentControl {
                             .deliver_recovered_v1_commentary(
                                 parent,
                                 child,
-                                &child_reference,
                                 &turn_id,
                                 &item_id,
                                 &text,

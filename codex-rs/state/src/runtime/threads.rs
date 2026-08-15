@@ -127,23 +127,10 @@ WHERE id = ? AND preview = ''
         child_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-INSERT INTO thread_spawn_edges (
-    parent_thread_id,
-    child_thread_id,
-    status
-) VALUES (?, ?, ?)
-ON CONFLICT(child_thread_id) DO UPDATE SET
-    parent_thread_id = excluded.parent_thread_id,
-    status = excluded.status
-            "#,
-        )
-        .bind(parent_thread_id.to_string())
-        .bind(child_thread_id.to_string())
-        .bind(status.as_ref())
-        .execute(self.pool.as_ref())
-        .await?;
+        let mut tx = self.pool.begin().await?;
+        upsert_thread_spawn_edge_in_transaction(&mut tx, parent_thread_id, child_thread_id, status)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -153,12 +140,26 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         child_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
-        sqlx::query("UPDATE thread_spawn_edges SET status = ? WHERE child_thread_id = ?")
-            .bind(status.as_ref())
-            .bind(child_thread_id.to_string())
-            .execute(self.pool.as_ref())
-            .await?;
+        let mut tx = self.pool.begin().await?;
+        set_thread_spawn_edge_status_in_transaction(&mut tx, child_thread_id, status).await?;
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// Find the direct persisted parent of `child_thread_id`.
+    pub async fn find_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> anyhow::Result<Option<ThreadId>> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT parent_thread_id FROM thread_spawn_edges WHERE child_thread_id = ?",
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await?
+        .map(ThreadId::try_from)
+        .transpose()
+        .map_err(Into::into)
     }
 
     /// List direct spawned children of `parent_thread_id` whose edge matches `status`.
@@ -1327,6 +1328,45 @@ pub(super) fn extract_memory_mode(items: &[RolloutItem]) -> Option<String> {
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::EventMsg(_) => None,
     })
+}
+
+pub(super) async fn upsert_thread_spawn_edge_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    parent_thread_id: ThreadId,
+    child_thread_id: ThreadId,
+    status: crate::DirectionalThreadSpawnEdgeStatus,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+INSERT INTO thread_spawn_edges (
+    parent_thread_id,
+    child_thread_id,
+    status
+) VALUES (?, ?, ?)
+ON CONFLICT(child_thread_id) DO UPDATE SET
+    parent_thread_id = excluded.parent_thread_id,
+    status = excluded.status
+        "#,
+    )
+    .bind(parent_thread_id.to_string())
+    .bind(child_thread_id.to_string())
+    .bind(status.as_ref())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn set_thread_spawn_edge_status_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    child_thread_id: ThreadId,
+    status: crate::DirectionalThreadSpawnEdgeStatus,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE thread_spawn_edges SET status = ? WHERE child_thread_id = ?")
+        .bind(status.as_ref())
+        .bind(child_thread_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 fn thread_spawn_parent_thread_id_from_source_str(source: &str) -> Option<ThreadId> {

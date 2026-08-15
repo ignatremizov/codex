@@ -1,20 +1,26 @@
 //! Defines which persisted history entries count as rollbackable user turns.
 //!
-//! Legacy `ThreadRolledBack { num_turns }` does not mean “drop the last N JSONL records.” A turn
+//! Non-paginated `ThreadRolledBack { num_turns }` does not mean “drop the last N JSONL records.” A turn
 //! can include contextual user/developer messages, paired `ResponseItem` + `UserMessage` records,
 //! inter-agent communication, or compaction replacement history.
 //!
-//! This module mirrors the legacy cold-resume rollback boundary rules for persisted rollout shapes.
-//! It stays local to migration because core's live predicate also knows about dynamically
+//! This module mirrors the non-paginated cold-resume rollback boundary rules for persisted rollout
+//! shapes. It stays local to migration because core's live predicate also knows about dynamically
 //! registered contextual fragments that thread-store should not depend on.
 
+use std::collections::HashSet;
+
+use codex_protocol::ResponseItemId;
 use codex_protocol::items::parse_hook_prompt_fragment;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
+use codex_protocol::ResponseItemId;
 use std::borrow::Borrow;
+use std::collections::HashSet;
 
-/// Match the rollback boundaries used by legacy history reconstruction without
+/// Match the rollback boundaries used by non-paginated history reconstruction without
 /// treating every persisted lifecycle as a user turn. This intentionally stays
 /// local to the frozen migration adapter: the full core predicate also knows
 /// about dynamically registered contextual fragments that thread-store cannot
@@ -38,12 +44,16 @@ pub(super) fn is_pre_turn_context_update(response: &ResponseItem) -> bool {
         || (role == "developer" && is_known_contextual_developer_message_content(content))
 }
 
-/// Apply the same response-history cut used by legacy cold resume to a persisted
+/// Apply the same response-history cut used by non-paginated cold resume to a persisted
 /// compaction checkpoint. The migration adapter uses a frozen contextual-fragment
 /// matcher because thread-store cannot depend on core's runtime fragment registry.
-pub(super) fn drop_last_n_user_turns<T>(history: &mut Vec<T>, num_turns: u32)
+pub(super) fn drop_last_n_user_turns<T>(
+    history: &mut Vec<T>,
+    num_turns: u32,
+    committed_response_item_ids: &HashSet<ResponseItemId>,
+)
 where
-    T: Borrow<ResponseItem>,
+    T: Borrow<ResponseItem> + Clone,
 {
     if num_turns == 0 {
         return;
@@ -67,7 +77,19 @@ where
     {
         cut_index -= 1;
     }
+    let retained_out_of_band_items = history[cut_index..]
+        .iter()
+        .filter(|item| {
+            let response: &ResponseItem = (*item).borrow();
+            response.id().is_some_and(|id| {
+                is_user_agent_task_context_response_item_id(id.as_str())
+                    || committed_response_item_ids.contains(id)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     history.truncate(cut_index);
+    history.extend(retained_out_of_band_items);
 }
 
 fn is_known_contextual_user_message_content(content: &[ContentItem]) -> bool {
@@ -112,8 +134,9 @@ fn is_known_contextual_developer_message_content(content: &[ContentItem]) -> boo
     })
 }
 
-// Keep this frozen alongside the legacy migration adapter. Core's live predicate also knows
-// about dynamically registered fragments, but legacy rollouts only need these persisted shapes.
+// Keep this frozen alongside the non-paginated migration adapter. Core's live predicate also
+// knows about dynamically registered fragments, but non-paginated rollouts only need these
+// persisted shapes.
 fn is_known_contextual_user_text(text: &str) -> bool {
     let text = text.trim();
     parse_hook_prompt_fragment(text).is_some()
@@ -123,6 +146,7 @@ fn is_known_contextual_user_text(text: &str) -> bool {
             ("<skill>", "</skill>"),
             ("<user_shell_command>", "</user_shell_command>"),
             ("<turn_aborted>", "</turn_aborted>"),
+            ("<subagent_commentary>", "</subagent_commentary>"),
             ("<subagent_notification>", "</subagent_notification>"),
             ("<recommended_plugins>", "</recommended_plugins>"),
             ("<goal_context>", "</goal_context>"),

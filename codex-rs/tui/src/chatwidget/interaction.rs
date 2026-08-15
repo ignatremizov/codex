@@ -181,7 +181,6 @@ impl ChatWidget {
                 && self.bottom_pane.no_modal_or_popup_active() =>
             {
                 self.cycle_collaboration_mode();
-                self.refresh_plan_mode_nudge();
             }
             _ => {
                 let had_modal_or_popup = !self.bottom_pane.no_modal_or_popup_active();
@@ -268,6 +267,10 @@ impl ChatWidget {
     ) -> bool {
         self.bottom_pane
             .replace_selection_view_if_present(view_id, params)
+    }
+
+    pub(crate) fn dismiss_selection_view(&mut self, view_id: &'static str) -> bool {
+        self.bottom_pane.dismiss_view_by_id(view_id)
     }
 
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {

@@ -16,6 +16,7 @@ use crate::app_server_session::UnsupportedLegacyPermissionProfile;
 use crate::app_server_session::turn_permissions_overrides;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration::flow::ExternalAgentConfigMigrationFlowOutcome;
+use crate::keymap::RuntimeKeymapFeatures;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::session_resume::cwds_differ;
 use codex_app_server_protocol::ThreadGoalStatus;
@@ -798,6 +799,20 @@ impl App {
             }
             AppEvent::CodexOp(op) => {
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
+                let reserved_agent_prompt =
+                    match (&op, self.active_thread_id, self.chat_widget.thread_id()) {
+                        (
+                            AppCommand::UserTurn { items, .. },
+                            Some(target_thread_id),
+                            Some(widget_thread_id),
+                        ) if target_thread_id == widget_thread_id => self
+                            .agent_navigation
+                            .reserved_prompt_source(target_thread_id)
+                            .map(|source_thread_id| {
+                                (source_thread_id, target_thread_id, items.clone())
+                            }),
+                        _ => None,
+                    };
                 if is_user_turn {
                     let screen_size = tui.terminal.last_known_screen_size;
                     self.handle_draw_pre_render(tui, screen_size)?;
@@ -809,6 +824,36 @@ impl App {
                     self.render_chat_widget_frame(tui, screen_size)?;
                 }
                 self.chat_widget.prepare_local_op_submission(&op);
+                if let Some((source_thread_id, target_thread_id, input)) = reserved_agent_prompt {
+                    match self
+                        .submit_reserved_agent_prompt(
+                            app_server,
+                            source_thread_id,
+                            target_thread_id,
+                            input,
+                        )
+                        .await
+                    {
+                        Ok(turn_id) => {
+                            self.chat_widget.record_safety_buffering_turn(turn_id, &op);
+                        }
+                        Err(err) => {
+                            let message = format!("Failed to start agent turn: {err:#}");
+                            if !self
+                                .chat_widget
+                                .handle_turn_start_rejection(message.clone())
+                            {
+                                self.chat_widget.add_error_message(message);
+                            }
+                            tracing::error!(
+                                target_thread_id = %target_thread_id,
+                                error = ?err,
+                                "failed to start reserved agent turn"
+                            );
+                        }
+                    }
+                    return Ok(AppRunControl::Continue);
+                }
                 if let Err(err) = self.submit_active_thread_op(app_server, op).await {
                     if self.recover_transport_error(&err)
                     {
@@ -2775,6 +2820,174 @@ impl App {
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;
+            }
+            AppEvent::OpenAgentTarget(selector) => {
+                match self.resolve_agent_selector(app_server, &selector).await {
+                    Ok(thread_id) => {
+                        self.open_agent_picker_for_thread(app_server, thread_id)
+                            .await;
+                    }
+                    Err(message) => self.chat_widget.add_error_message(message),
+                }
+            }
+            AppEvent::OpenAgentActions(thread_id) => {
+                self.open_agent_actions(thread_id);
+            }
+            AppEvent::InspectAgentTranscript(thread_id) => {
+                self.inspect_agent_transcript(tui, app_server, thread_id)
+                    .await;
+            }
+            AppEvent::PrepareAgentCommand(command) => {
+                self.chat_widget
+                    .dismiss_selection_view(super::agent_control_actions::AGENT_ACTIONS_VIEW_ID);
+                self.chat_widget
+                    .dismiss_selection_view(super::agent_picker::AGENT_PICKER_VIEW_ID);
+                self.chat_widget.restore_user_message_to_composer(
+                    crate::chatwidget::UserMessage::from(command),
+                );
+            }
+            AppEvent::SubmitAgentPrompt {
+                source_thread_id,
+                selector,
+                user_message,
+                response_handling,
+            } => {
+                self.submit_agent_prompt_to_selector(
+                    app_server,
+                    source_thread_id,
+                    selector,
+                    user_message,
+                    response_handling,
+                )
+                .await;
+            }
+            AppEvent::QueueAgentPrompt {
+                source_thread_id,
+                selector,
+                user_message,
+                response_handling,
+            } => {
+                self.queue_agent_prompt_to_selector(
+                    app_server,
+                    source_thread_id,
+                    selector,
+                    user_message,
+                    response_handling,
+                )
+                .await;
+            }
+            AppEvent::OpenAgentPromptQueue(selector) => {
+                match self.resolve_agent_selector(app_server, &selector).await {
+                    Ok(thread_id) => {
+                        self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                            .await;
+                        if self.agent_navigation.get(&thread_id).is_some() {
+                            self.open_agent_prompt_queue(thread_id);
+                        } else {
+                            self.chat_widget
+                                .add_error_message(format!("Agent {thread_id} was not found."));
+                        }
+                    }
+                    Err(message) => self.chat_widget.add_error_message(message),
+                }
+            }
+            AppEvent::EditQueuedAgentPrompt {
+                target_thread_id,
+                prompt_id,
+            } => {
+                self.edit_queued_agent_prompt(target_thread_id, prompt_id);
+            }
+            AppEvent::OpenQueuedAgentPromptActions {
+                target_thread_id,
+                prompt_id,
+            } => {
+                self.open_queued_agent_prompt_actions(target_thread_id, prompt_id);
+            }
+            AppEvent::RemoveQueuedAgentPrompt {
+                target_thread_id,
+                prompt_id,
+            } => {
+                self.remove_queued_agent_prompt(target_thread_id, prompt_id);
+            }
+            AppEvent::DrainAgentPromptQueue { target_thread_id } => {
+                self.drain_agent_prompt_queue(app_server, target_thread_id)
+                    .await;
+            }
+            AppEvent::SpawnAgent {
+                source_thread_id,
+                role,
+                authored_selector,
+                prompt,
+                fork_mode,
+                response_handling,
+            } => {
+                let switch_to_child = prompt.is_none();
+                if let Some(thread_id) = self
+                    .spawn_agent_from_command(
+                        app_server,
+                        source_thread_id,
+                        role,
+                        authored_selector,
+                        prompt,
+                        fork_mode,
+                        response_handling,
+                    )
+                    .await
+                    && switch_to_child
+                {
+                    self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
+                        .await?;
+                }
+            }
+            AppEvent::ResumeAgent {
+                source_thread_id,
+                selector,
+                response_handling,
+                prompt,
+            } => {
+                self.resume_agent_from_selector(
+                    app_server,
+                    source_thread_id,
+                    selector,
+                    response_handling,
+                    prompt,
+                )
+                .await;
+            }
+            AppEvent::InterruptAgent {
+                source_thread_id,
+                selector,
+                follow_up,
+                response_handling,
+            } => {
+                self.interrupt_agent_from_selector(
+                    app_server,
+                    source_thread_id,
+                    selector,
+                    follow_up,
+                    response_handling,
+                )
+                .await;
+            }
+            AppEvent::CloseAgent {
+                source_thread_id,
+                selector,
+            } => {
+                self.close_agent_from_selector(app_server, source_thread_id, selector)
+                    .await;
+            }
+            AppEvent::ObserveAgent {
+                source_thread_id,
+                selector,
+                response_handling,
+            } => {
+                self.observe_agent_from_selector(
+                    app_server,
+                    source_thread_id,
+                    selector,
+                    response_handling,
+                )
+                .await;
             }
             AppEvent::StartSide {
                 parent_thread_id,

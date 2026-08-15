@@ -21,6 +21,10 @@ pub use sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use thread_id::ThreadId;
 pub use tool_name::DEFAULT_FUNCTION_NAMESPACE;
 pub use tool_name::ToolName;
+
+/// Reserved root-scoped nickname for the primary agent thread.
+pub const MAIN_AGENT_NICKNAME: &str = "Main";
+
 pub mod approvals;
 pub mod capabilities;
 pub mod config_types;

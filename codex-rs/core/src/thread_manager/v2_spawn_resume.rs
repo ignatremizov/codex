@@ -1,5 +1,7 @@
 use super::*;
 use crate::agent::control::LiveAgentMetadataDisposition;
+use crate::agent::control::agent_alias_lifecycle_status;
+use codex_agent_graph_store::AgentAliasState;
 use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
@@ -14,6 +16,59 @@ struct PersistedV2SpawnResume {
     agent_graph_store: Arc<dyn AgentGraphStore>,
 }
 
+async fn restore_failed_v2_spawn_lifecycle(
+    agent_graph_store: &Arc<dyn AgentGraphStore>,
+    session_id: SessionId,
+    child_thread_id: ThreadId,
+    edge_status: ThreadSpawnEdgeStatus,
+) -> Result<(), String> {
+    if !agent_graph_store.supports_agent_aliases() {
+        return agent_graph_store
+            .set_thread_spawn_edge_status(child_thread_id, edge_status)
+            .await
+            .map_err(|err| {
+                format!(
+                    "failed to restore the persisted thread-spawn edge to {edge_status:?}: {err}"
+                )
+            });
+    }
+
+    let alias = agent_graph_store
+        .find_agent_alias_by_thread(session_id, child_thread_id)
+        .await
+        .map_err(|err| {
+            format!("failed to inspect the persisted agent lifecycle before rollback: {err}")
+        })?;
+    match alias {
+        Some(alias) if alias.state == AgentAliasState::Transferred => Ok(()),
+        Some(_) => {
+            let restored = agent_graph_store
+                .set_agent_lifecycle_state(session_id, child_thread_id, edge_status)
+                .await
+                .map_err(|err| {
+                    format!(
+                        "failed to restore the persisted agent lifecycle to {edge_status:?}: {err}"
+                    )
+                })?;
+            if restored {
+                Ok(())
+            } else {
+                Err(format!(
+                    "persisted agent lifecycle disappeared during rollback for {child_thread_id}"
+                ))
+            }
+        }
+        None => agent_graph_store
+            .set_thread_spawn_edge_status(child_thread_id, edge_status)
+            .await
+            .map_err(|err| {
+                format!(
+                    "failed to restore the persisted thread-spawn edge to {edge_status:?}: {err}"
+                )
+            }),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cleanup_failed_v2_spawn_resume(
     state: &Arc<ThreadManagerState>,
@@ -22,33 +77,36 @@ async fn cleanup_failed_v2_spawn_resume(
     runtime_origin: ThreadRuntimeOrigin,
     previous_metadata: Option<&crate::agent::AgentMetadata>,
     attempt_metadata: Option<&crate::agent::AgentMetadata>,
-    edge_restore: Option<(&Arc<dyn AgentGraphStore>, ThreadSpawnEdgeStatus)>,
+    lifecycle_restore: Option<(
+        &Arc<dyn AgentGraphStore>,
+        SessionId,
+        ThreadId,
+        ThreadSpawnEdgeStatus,
+    )>,
     resume_error: CodexErr,
 ) -> CodexErr {
     let child_thread_id = child_thread.session.thread_id();
-    let metadata_disposition = match edge_restore {
-        Some((_, ThreadSpawnEdgeStatus::Open)) => LiveAgentMetadataDisposition::Preserve,
-        Some((_, ThreadSpawnEdgeStatus::Closed)) | None => LiveAgentMetadataDisposition::Release,
+    let metadata_disposition = match lifecycle_restore {
+        Some((_, _, _, ThreadSpawnEdgeStatus::Open)) => LiveAgentMetadataDisposition::Preserve,
+        Some((_, _, _, ThreadSpawnEdgeStatus::Closed)) | None => {
+            LiveAgentMetadataDisposition::Release
+        }
     };
     let terminal_presentation_disarm = (runtime_origin == ThreadRuntimeOrigin::Created)
         .then(|| child_thread.session.disarm_terminal_presentation());
-    let edge_restore_result = match edge_restore {
-        Some((agent_graph_store, edge_status)) => {
-            let child_is_current = {
-                let threads = state.threads.read().await;
-                threads
-                    .get(&child_thread_id)
-                    .is_some_and(|current| Arc::ptr_eq(current, child_thread))
-            };
-            if child_is_current {
-                agent_graph_store
-                    .set_thread_spawn_edge_status(child_thread_id, edge_status)
-                    .await
-                    .map_err(|err| {
-                        format!(
-                            "failed to restore the persisted thread-spawn edge to {edge_status:?}: {err}"
-                        )
-                    })
+    let lifecycle_restore_result = match lifecycle_restore {
+        Some((agent_graph_store, session_id, persisted_child_thread_id, edge_status)) => {
+            let child_is_current_or_unpublished = state
+                .thread_instance_is_current_or_pending(child_thread)
+                .await;
+            if child_is_current_or_unpublished {
+                restore_failed_v2_spawn_lifecycle(
+                    agent_graph_store,
+                    session_id,
+                    persisted_child_thread_id,
+                    edge_status,
+                )
+                .await
             } else {
                 Ok(())
             }
@@ -100,8 +158,8 @@ async fn cleanup_failed_v2_spawn_resume(
     }
 
     let mut cleanup_errors = Vec::new();
-    if let Err(edge_restore_error) = edge_restore_result {
-        cleanup_errors.push(edge_restore_error);
+    if let Err(lifecycle_restore_error) = lifecycle_restore_result {
+        cleanup_errors.push(lifecycle_restore_error);
     }
     if let Some(Err(shutdown_error)) = shutdown_result {
         cleanup_errors.push(format!(
@@ -126,6 +184,36 @@ async fn cleanup_failed_v2_spawn_resume(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn cleanup_failed_v2_spawn_resume_result(
+    state: &Arc<ThreadManagerState>,
+    owner: &AgentControl,
+    restored: &mut ThreadSpawnResult,
+    previous_metadata: Option<&crate::agent::AgentMetadata>,
+    attempt_metadata: Option<&crate::agent::AgentMetadata>,
+    lifecycle_restore: Option<(
+        &Arc<dyn AgentGraphStore>,
+        SessionId,
+        ThreadId,
+        ThreadSpawnEdgeStatus,
+    )>,
+    resume_error: CodexErr,
+) -> CodexErr {
+    let error = cleanup_failed_v2_spawn_resume(
+        state,
+        owner,
+        &restored.thread,
+        restored.runtime_origin,
+        previous_metadata,
+        attempt_metadata,
+        lifecycle_restore,
+        resume_error,
+    )
+    .await;
+    restored.disarm_setup_cleanup();
+    error
+}
+
 impl ThreadManager {
     /// Resume a persisted V2 spawned child through its live owning control plane.
     ///
@@ -140,27 +228,37 @@ impl ThreadManager {
         initial_history: &InitialHistory,
         client_mcp_extensions: &ClientMcpExtensions,
     ) -> CodexResult<Option<NewThread>> {
-        let Some(initial_resume) = self
-            .state
-            .persisted_v2_spawn_resume(initial_history)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let parent_resume_lock = self
-            .state
-            .agent_lifecycle_lock(initial_resume.parent_thread_id);
-        let _parent_resume_guard = parent_resume_lock.lock_owned().await;
-        let resume_lock = self
-            .state
-            .agent_lifecycle_lock(initial_resume.child_thread_id);
-        let _resume_guard = resume_lock.lock_owned().await;
-        let Some(resume) = self
-            .state
-            .persisted_v2_spawn_resume(initial_history)
-            .await?
-        else {
-            return Ok(None);
+        let (resume, _parent_resume_guard, _resume_guard) = loop {
+            let Some(initial_resume) = self
+                .state
+                .persisted_v2_spawn_resume(initial_history)
+                .await?
+            else {
+                return Ok(None);
+            };
+            let parent_resume_lock = self
+                .state
+                .agent_lifecycle_lock(initial_resume.parent_thread_id);
+            let parent_resume_guard = parent_resume_lock.lock_owned().await;
+            let resume_lock = self
+                .state
+                .agent_lifecycle_lock(initial_resume.child_thread_id);
+            let resume_guard = resume_lock.lock_owned().await;
+            let Some(resume) = self
+                .state
+                .persisted_v2_spawn_resume(initial_history)
+                .await?
+            else {
+                return Ok(None);
+            };
+            if resume.parent_thread_id != initial_resume.parent_thread_id {
+                // Adoption can commit while this cold resume waits for the target lock. The
+                // re-resolved parent is authoritative, but setup must hold that parent's lifecycle
+                // boundary before publishing beneath it. Drop both stale guards and retry in
+                // parent-before-child order.
+                continue;
+            }
+            break (resume, parent_resume_guard, resume_guard);
         };
 
         let parent_thread = self
@@ -196,12 +294,12 @@ impl ThreadManager {
         }
 
         let previous_child_metadata = owner.get_agent_metadata(resume.child_thread_id);
-        let restored = match resume.edge_status {
+        let mut restored = match resume.edge_status {
             ThreadSpawnEdgeStatus::Open => {
                 // Open descendants are normally restored with their root metadata. Re-run the
                 // idempotent metadata pass so an explicitly unloaded child can still be resumed.
                 owner
-                    .restore_v2_agent_metadata(config, resume.parent_thread_id)
+                    .restore_v2_agent_metadata(config, ThreadId::from(resume.session_id))
                     .await;
                 owner
                     .ensure_v2_agent_loaded_from_history(
@@ -226,18 +324,22 @@ impl ThreadManager {
             }
         };
         let runtime_origin = restored.runtime_origin;
-        let restored_thread = restored.thread;
+        let restored_thread = Arc::clone(&restored.thread);
         let restored_child_metadata = owner.get_agent_metadata(resume.child_thread_id);
         let restored_thread_id = restored_thread.session.thread_id();
         if restored_thread_id != resume.child_thread_id {
-            return Err(cleanup_failed_v2_spawn_resume(
+            return Err(cleanup_failed_v2_spawn_resume_result(
                 &self.state,
                 &owner,
-                &restored_thread,
-                runtime_origin,
+                &mut restored,
                 previous_child_metadata.as_ref(),
                 restored_child_metadata.as_ref(),
-                /*edge_restore*/ None,
+                Some((
+                    &resume.agent_graph_store,
+                    resume.session_id,
+                    resume.child_thread_id,
+                    resume.edge_status,
+                )),
                 CodexErr::Fatal(format!(
                     "restored spawned V2 child {} as unexpected thread {restored_thread_id}",
                     resume.child_thread_id
@@ -253,14 +355,18 @@ impl ThreadManager {
             .is_ok_and(|current| Arc::ptr_eq(&current, &parent_thread));
         if !owner_is_still_current {
             return Err(
-                cleanup_failed_v2_spawn_resume(
+                cleanup_failed_v2_spawn_resume_result(
                     &self.state,
                     &owner,
-                    &restored_thread,
-                    runtime_origin,
+                    &mut restored,
                     previous_child_metadata.as_ref(),
                     restored_child_metadata.as_ref(),
-                    Some((&resume.agent_graph_store, resume.edge_status)),
+                    Some((
+                        &resume.agent_graph_store,
+                        resume.session_id,
+                        resume.child_thread_id,
+                        resume.edge_status,
+                    )),
                     CodexErr::InvalidRequest(format!(
                         "cannot resume spawned V2 child {} because its direct parent {} stopped while restoration was in progress; resume the parent and retry",
                         resume.child_thread_id, resume.parent_thread_id
@@ -277,14 +383,18 @@ impl ThreadManager {
         {
             Ok(open_children) => open_children,
             Err(err) => {
-                return Err(cleanup_failed_v2_spawn_resume(
+                return Err(cleanup_failed_v2_spawn_resume_result(
                     &self.state,
                     &owner,
-                    &restored_thread,
-                    runtime_origin,
+                    &mut restored,
                     previous_child_metadata.as_ref(),
                     restored_child_metadata.as_ref(),
-                    Some((&resume.agent_graph_store, resume.edge_status)),
+                    Some((
+                        &resume.agent_graph_store,
+                        resume.session_id,
+                        resume.child_thread_id,
+                        resume.edge_status,
+                    )),
                     CodexErr::Fatal(format!(
                         "failed to verify reopened thread-spawn edge for {}: {err}",
                         resume.child_thread_id
@@ -294,14 +404,18 @@ impl ThreadManager {
             }
         };
         if !open_children.contains(&resume.child_thread_id) {
-            return Err(cleanup_failed_v2_spawn_resume(
+            return Err(cleanup_failed_v2_spawn_resume_result(
                 &self.state,
                 &owner,
-                &restored_thread,
-                runtime_origin,
+                &mut restored,
                 previous_child_metadata.as_ref(),
                 restored_child_metadata.as_ref(),
-                Some((&resume.agent_graph_store, resume.edge_status)),
+                Some((
+                    &resume.agent_graph_store,
+                    resume.session_id,
+                    resume.child_thread_id,
+                    resume.edge_status,
+                )),
                 CodexErr::Fatal(format!(
                     "restored spawned V2 child {} without reopening its persisted edge",
                     resume.child_thread_id
@@ -310,29 +424,40 @@ impl ThreadManager {
             .await);
         }
 
-        let child_is_still_current = self
+        let runtime_publication = if runtime_origin == ThreadRuntimeOrigin::Created {
+            self.state.publish_thread(&restored_thread).await
+        } else if self
             .state
             .get_thread(resume.child_thread_id)
             .await
-            .is_ok_and(|current| Arc::ptr_eq(&current, &restored_thread));
-        if !child_is_still_current {
-            return Err(
-                cleanup_failed_v2_spawn_resume(
-                    &self.state,
-                    &owner,
-                    &restored_thread,
-                    runtime_origin,
-                    previous_child_metadata.as_ref(),
-                    restored_child_metadata.as_ref(),
-                    Some((&resume.agent_graph_store, resume.edge_status)),
-                    CodexErr::InvalidRequest(format!(
-                        "cannot resume spawned V2 child {} because its runtime was replaced while restoration was in progress; retry against the current runtime",
-                        resume.child_thread_id
-                    )),
-                )
-                .await,
-            );
+            .is_ok_and(|current| Arc::ptr_eq(&current, &restored_thread))
+        {
+            Ok(())
+        } else {
+            Err(CodexErr::InvalidRequest(format!(
+                "cannot resume spawned V2 child {} because its runtime was replaced while \
+                 restoration was in progress; retry against the current runtime",
+                resume.child_thread_id
+            )))
+        };
+        if let Err(err) = runtime_publication {
+            return Err(cleanup_failed_v2_spawn_resume_result(
+                &self.state,
+                &owner,
+                &mut restored,
+                previous_child_metadata.as_ref(),
+                restored_child_metadata.as_ref(),
+                Some((
+                    &resume.agent_graph_store,
+                    resume.session_id,
+                    resume.child_thread_id,
+                    resume.edge_status,
+                )),
+                err,
+            )
+            .await);
         }
+        restored.disarm_setup_cleanup();
         if runtime_origin == ThreadRuntimeOrigin::Created {
             self.state.notify_thread_created(resume.child_thread_id);
         }
@@ -383,7 +508,10 @@ async fn resolve_persisted_v2_spawn_resume(
         return Ok(None);
     };
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id, ..
+        parent_thread_id: historical_parent_thread_id,
+        agent_path,
+        agent_role,
+        ..
     }) = &session_meta.source
     else {
         return Ok(None);
@@ -394,42 +522,98 @@ async fn resolve_persisted_v2_spawn_resume(
             resumed.conversation_id
         ))
     })?;
-
-    let closed_children = agent_graph_store
-        .list_thread_spawn_children(*parent_thread_id, Some(ThreadSpawnEdgeStatus::Closed))
+    let current_alias = agent_graph_store
+        .find_current_agent_alias_by_thread(resumed.conversation_id)
         .await
         .map_err(|err| {
             CodexErr::Fatal(format!(
-                "failed to inspect closed thread-spawn edge for {}: {err}",
+                "failed to resolve the current durable owner for spawned V2 child {}: {err}",
+                resumed.conversation_id
+            ))
+        })?
+        .ok_or_else(|| {
+            CodexErr::InvalidRequest(format!(
+                "cannot resume spawned V2 child {} because it has no current durable owner; restore the graph state and retry",
                 resumed.conversation_id
             ))
         })?;
-    let edge_status = if closed_children.contains(&resumed.conversation_id) {
-        ThreadSpawnEdgeStatus::Closed
-    } else {
-        let open_children = agent_graph_store
-            .list_thread_spawn_children(*parent_thread_id, Some(ThreadSpawnEdgeStatus::Open))
-            .await
-            .map_err(|err| {
-                CodexErr::Fatal(format!(
-                    "failed to inspect open thread-spawn edge for {}: {err}",
-                    resumed.conversation_id
-                ))
-            })?;
-        if !open_children.contains(&resumed.conversation_id) {
+    let edge_status = agent_alias_lifecycle_status(current_alias.state).ok_or_else(|| {
+        CodexErr::InvalidRequest(format!(
+            "cannot resume spawned V2 child {} through a transferred historical alias; resolve its current owner and retry",
+            resumed.conversation_id
+        ))
+    })?;
+    let parent_thread_id = agent_graph_store
+        .find_thread_spawn_parent(resumed.conversation_id)
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to resolve the current parent for spawned V2 child {}: {err}",
+                resumed.conversation_id
+            ))
+        })?
+        .ok_or_else(|| {
+            CodexErr::InvalidRequest(format!(
+                "cannot resume spawned V2 child {} because its current parent edge is missing; restore the graph state and retry",
+                resumed.conversation_id
+            ))
+        })?;
+    let root_thread_id = ThreadId::from(current_alias.session_id);
+    let mut ancestor_thread_id = parent_thread_id;
+    let mut depth = 1usize;
+    let mut visited = HashSet::from([resumed.conversation_id]);
+    while ancestor_thread_id != root_thread_id {
+        if !visited.insert(ancestor_thread_id) {
             return Err(CodexErr::InvalidRequest(format!(
-                "cannot resume spawned V2 child {} because its persisted thread-spawn edge from parent {parent_thread_id} is missing; restore the graph state and retry",
+                "spawned V2 child {} belongs to a cyclic persisted spawn graph",
                 resumed.conversation_id
             )));
         }
-        ThreadSpawnEdgeStatus::Open
-    };
+        ancestor_thread_id = agent_graph_store
+            .find_thread_spawn_parent(ancestor_thread_id)
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!(
+                    "failed to resolve current ancestry for spawned V2 child {}: {err}",
+                    resumed.conversation_id
+                ))
+            })?
+            .ok_or_else(|| {
+                CodexErr::InvalidRequest(format!(
+                    "cannot resume spawned V2 child {} because its current ancestry does not reach owner {}",
+                    resumed.conversation_id, current_alias.session_id
+                ))
+            })?;
+        depth = depth.checked_add(1).ok_or_else(|| {
+            CodexErr::Fatal(format!(
+                "persisted ancestry for spawned V2 child {} exceeds supported depth",
+                resumed.conversation_id
+            ))
+        })?;
+    }
+    let depth = i32::try_from(depth).map_err(|_| {
+        CodexErr::Fatal(format!(
+            "persisted ancestry for spawned V2 child {} exceeds supported depth",
+            resumed.conversation_id
+        ))
+    })?;
+    let preserves_historical_path = current_alias.session_id == session_meta.session_id
+        && parent_thread_id == *historical_parent_thread_id;
+    let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth,
+        agent_path: preserves_historical_path
+            .then(|| agent_path.clone())
+            .flatten(),
+        agent_nickname: current_alias.nickname,
+        agent_role: agent_role.clone(),
+    });
 
     Ok(Some(PersistedV2SpawnResume {
         child_thread_id: resumed.conversation_id,
-        parent_thread_id: *parent_thread_id,
-        session_id: session_meta.session_id,
-        session_source: session_meta.source.clone(),
+        parent_thread_id,
+        session_id: current_alias.session_id,
+        session_source,
         edge_status,
         agent_graph_store,
     }))

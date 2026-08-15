@@ -32,6 +32,33 @@ pub(super) struct LoadedSubagentBackfill {
 
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
+        self.open_agent_picker_with_preferred_thread(app_server, /*preferred_thread_id*/ None)
+            .await;
+    }
+
+    pub(super) async fn open_agent_picker_for_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        if self.agent_navigation.get(&thread_id).is_none() {
+            self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                .await;
+        }
+        if self.agent_navigation.get(&thread_id).is_none() {
+            self.chat_widget
+                .add_error_message(format!("Agent {thread_id} was not found."));
+            return;
+        }
+        self.open_agent_picker_with_preferred_thread(app_server, Some(thread_id))
+            .await;
+    }
+
+    async fn open_agent_picker_with_preferred_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        preferred_thread_id: Option<ThreadId>,
+    ) {
         let backfill = if self.primary_thread_id.is_none() {
             self.backfill_loaded_subagent_threads(app_server).await
         } else {
@@ -40,9 +67,10 @@ impl App {
         // V2 subagents are identified by canonical paths observed from activity events or loaded
         // thread metadata. A buffered active turn is positive liveness evidence; a completed
         // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
+        let agent_root_thread_id = self.agent_root_thread_id().or(self.primary_thread_id);
         let path_backed_thread_ids: Vec<_> = self
             .agent_navigation
-            .ordered_path_backed_subagent_threads(self.primary_thread_id)
+            .ordered_path_backed_subagent_threads(agent_root_thread_id)
             .into_iter()
             .map(|(thread_id, _)| thread_id)
             .collect();
@@ -73,7 +101,7 @@ impl App {
         }
         let path_backed_threads = self
             .agent_navigation
-            .ordered_path_backed_subagent_threads(self.primary_thread_id);
+            .ordered_path_backed_subagent_threads(agent_root_thread_id);
         if !path_backed_threads.is_empty() {
             let running_threads: Vec<_> = path_backed_threads
                 .into_iter()
@@ -135,7 +163,7 @@ impl App {
 
         let has_non_primary_agent_thread = self
             .agent_navigation
-            .has_non_primary_thread(self.primary_thread_id);
+            .has_non_primary_thread(agent_root_thread_id);
         if !self.config.features.enabled(Feature::Collab) && !has_non_primary_agent_thread {
             if let Some(primary_thread_id) = self.primary_thread_id {
                 self.refresh_agent_picker_threads(app_server, primary_thread_id);
@@ -150,9 +178,17 @@ impl App {
             return;
         }
 
-        let selected = self
-            .chat_widget
-            .selected_index_for_present_view(AGENT_PICKER_VIEW_ID);
+        let selected = preferred_thread_id
+            .and_then(|preferred_thread_id| {
+                self.agent_navigation
+                    .ordered_threads()
+                    .iter()
+                    .position(|(thread_id, _)| *thread_id == preferred_thread_id)
+            })
+            .or_else(|| {
+                self.chat_widget
+                    .selected_index_for_present_view(AGENT_PICKER_VIEW_ID)
+            });
         let params = self.agent_picker_selection_view_params(selected);
         if !self
             .chat_widget
@@ -163,70 +199,6 @@ impl App {
         }
         if let Some(primary_thread_id) = self.primary_thread_id {
             self.refresh_agent_picker_threads(app_server, primary_thread_id);
-        }
-    }
-
-    pub(super) fn agent_picker_selection_view_params(
-        &self,
-        selected: Option<usize>,
-    ) -> SelectionViewParams {
-        let mut initial_selected_idx = selected;
-        let items: Vec<SelectionItem> = self
-            .agent_navigation
-            .ordered_threads()
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (thread_id, entry))| {
-                if initial_selected_idx.is_none() && self.active_thread_id == Some(thread_id) {
-                    initial_selected_idx = Some(idx);
-                }
-                let id = thread_id;
-                let is_primary = self.primary_thread_id == Some(thread_id);
-                let name = entry
-                    .agent_path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|agent_path| !is_primary && !agent_path.is_empty())
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| {
-                        format_agent_picker_item_name(
-                            entry.agent_nickname.as_deref(),
-                            entry.agent_role.as_deref(),
-                            is_primary,
-                        )
-                    });
-                let name = if self.active_thread_id.is_some_and(|observer| {
-                    self.agent_navigation
-                        .has_wake_subscription(observer, thread_id)
-                }) {
-                    format!("{name} (wake)")
-                } else {
-                    name
-                };
-                let uuid = thread_id.to_string();
-                SelectionItem {
-                    name: name.clone(),
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                    description: Some(uuid.clone()),
-                    is_current: self.active_thread_id == Some(thread_id),
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(AppEvent::SelectAgentThread(id));
-                    })],
-                    dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
-                    ..Default::default()
-                }
-            })
-            .collect();
-
-        SelectionViewParams {
-            view_id: Some(AGENT_PICKER_VIEW_ID),
-            title: Some("Subagents".to_string()),
-            subtitle: Some(AgentNavigationState::picker_subtitle()),
-            footer_hint: Some(standard_popup_hint_line()),
-            items,
-            initial_selected_idx,
-            ..Default::default()
         }
     }
 
@@ -264,13 +236,29 @@ impl App {
         agent_role: Option<String>,
         is_closed: bool,
     ) {
+        self.upsert_agent_picker_thread_without_sync(
+            thread_id,
+            agent_nickname,
+            agent_role,
+            is_closed,
+        );
+        self.sync_active_agent_label();
+    }
+
+    pub(super) fn upsert_agent_picker_thread_without_sync(
+        &mut self,
+        thread_id: ThreadId,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+        is_closed: bool,
+    ) {
         if is_closed && let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             channel.mark_replay_only();
         }
         self.agent_navigation
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
-            if self.primary_thread_id == Some(thread_id) {
+            if self.agent_root_thread_id() == Some(thread_id) {
                 self.chat_widget
                     .set_primary_collab_agent_metadata(thread_id);
             } else {
@@ -281,7 +269,6 @@ impl App {
                 );
             }
         }
-        self.sync_active_agent_label();
     }
 
     /// Marks a cached picker thread closed and recomputes the contextual footer label.
@@ -292,6 +279,7 @@ impl App {
         if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             channel.mark_replay_only();
         }
+        self.clear_agent_prompt_queues_for_thread(thread_id);
         self.agent_navigation.mark_closed(thread_id);
         self.sync_active_agent_label();
     }
@@ -318,13 +306,17 @@ impl App {
                 );
                 let agent_path = source_agent_path(&thread.source);
                 let parent_thread_id = thread_parent_thread_id(&thread);
-                self.upsert_agent_picker_thread(
+                let agent_nickname = self.agent_navigation.authoritative_nickname(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
                         existing_entry
                             .as_ref()
                             .and_then(|entry| entry.agent_nickname.clone())
                     }),
+                );
+                self.upsert_agent_picker_thread(
+                    thread_id,
+                    agent_nickname,
                     thread.agent_role.or_else(|| {
                         existing_entry
                             .as_ref()
@@ -344,7 +336,7 @@ impl App {
                 true
             }
             Err(err) => {
-                if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
+                if existing_entry.is_none() && !has_replay_channel {
                     self.agent_navigation.remove(thread_id);
                     return false;
                 }
@@ -501,11 +493,12 @@ impl App {
             AppServerTarget::LocalDaemon { .. }
         ));
         chat_widget.inherit_backend_banner_state(&mut self.chat_widget);
-        if let Some(primary_thread_id) = self.primary_thread_id {
-            chat_widget.set_primary_collab_agent_metadata(primary_thread_id);
+        let agent_root_thread_id = self.agent_root_thread_id();
+        if let Some(agent_root_thread_id) = agent_root_thread_id {
+            chat_widget.set_primary_collab_agent_metadata(agent_root_thread_id);
         }
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
-            if self.primary_thread_id == Some(thread_id) {
+            if agent_root_thread_id == Some(thread_id) {
                 continue;
             }
             chat_widget.set_collab_agent_metadata(
@@ -766,6 +759,7 @@ impl App {
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
         self.agent_navigation.clear();
+        self.queued_agent_prompts.clear();
         self.side_threads.clear();
         self.active_thread_id = None;
         self.active_thread_rx = None;
@@ -1017,6 +1011,14 @@ impl App {
             return LoadedSubagentBackfill::default();
         };
 
+        match app_server.agent_aliases(primary_thread_id).await {
+            Ok(aliases) => self.apply_primary_agent_aliases(aliases),
+            Err(err) => {
+                tracing::warn!(%err, "failed to load durable agent aliases during backfill");
+            }
+        }
+        let agent_root_thread_id = self.agent_root_thread_id().unwrap_or(primary_thread_id);
+
         let loaded_thread_ids = match app_server
             .thread_loaded_list(ThreadLoadedListParams {
                 cursor: None,
@@ -1039,7 +1041,7 @@ impl App {
                 continue;
             };
 
-            if thread_id == primary_thread_id {
+            if thread_id == agent_root_thread_id {
                 continue;
             }
 
@@ -1056,17 +1058,26 @@ impl App {
         }
 
         let mut refreshed_thread_ids = HashSet::new();
-        for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
+        for thread in find_loaded_subagent_threads_for_primary(threads, agent_root_thread_id) {
             let agent_path = thread.agent_path;
             let parent_thread_id = thread.parent_thread_id;
             let has_live_channel = self
                 .thread_event_channels
                 .get(&thread.thread_id)
                 .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
-            let is_closed = !has_live_channel && thread.is_closed;
+            let is_closed = self
+                .agent_navigation
+                .alias(thread.thread_id)
+                .is_some_and(|alias| {
+                    alias.state != codex_app_server_protocol::AgentAliasState::Active
+                })
+                || !has_live_channel && thread.is_closed;
+            let agent_nickname = self
+                .agent_navigation
+                .authoritative_nickname(thread.thread_id, thread.agent_nickname);
             self.upsert_agent_picker_thread(
                 thread.thread_id,
-                thread.agent_nickname,
+                agent_nickname,
                 thread.agent_role,
                 is_closed,
             );

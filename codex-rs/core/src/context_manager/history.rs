@@ -35,6 +35,7 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::WorldStateItem;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 use codex_utils_audio::estimate_audio_token_count;
 use codex_utils_cache::BlockingLruCache;
 use codex_utils_cache::sha1_digest;
@@ -508,7 +509,16 @@ impl ContextManager {
         cut_idx =
             self.trim_pre_turn_context_updates(&snapshot, first_instruction_turn_idx, cut_idx);
 
+        let retained_agent_tasks = snapshot[cut_idx..]
+            .iter()
+            .filter(|item| {
+                item.id()
+                    .is_some_and(|id| is_user_agent_task_context_response_item_id(id.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let mut retained_items = snapshot[..cut_idx].to_vec();
+        retained_items.extend(retained_agent_tasks);
         if cut_idx == first_instruction_turn_idx
             && let Some(first_turn_id) = snapshot[first_instruction_turn_idx].turn_id()
         {

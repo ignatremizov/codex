@@ -39,6 +39,10 @@ use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
 use codex_app_server_protocol::RawResponseCompletedNotification;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ReviewDelivery;
+use codex_app_server_protocol::ReviewStartParams;
+use codex_app_server_protocol::ReviewStartResponse;
+use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::SubAgentActivityKind;
@@ -442,7 +446,6 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
         .with_codex_home(codex_home.path())
         .build_initialized()
         .await?;
-
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
@@ -507,6 +510,78 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
         )?;
         assert_eq!(turn_metadata["turn_trigger"].as_str(), Some("user"));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_reports_admission_failure_during_non_steerable_review() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let review_payload = json!({
+        "findings": [],
+        "overall_correctness": "good",
+        "overall_explanation": "No findings.",
+        "overall_confidence_score": 1.0
+    })
+    .to_string();
+    let body = responses::sse(vec![
+        responses::ev_response_created("resp-review-admission-race"),
+        responses::ev_assistant_message("msg-review-admission-race", &review_payload),
+        responses::ev_completed("resp-review-admission-race"),
+    ]);
+    let _response_mock = responses::mount_response_once(
+        &server,
+        responses::sse_response(body).set_delay(std::time::Duration::from_secs(/*secs*/ 5)),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let ReviewStartResponse { turn, .. } = mcp
+        .request(|request_id| ClientRequest::ReviewStart {
+            request_id,
+            params: ReviewStartParams {
+                thread_id: thread.id.clone(),
+                delivery: Some(ReviewDelivery::Inline),
+                target: ReviewTarget::Custom {
+                    instructions: "hold review open".to_string(),
+                },
+            },
+        })
+        .await?;
+    assert_eq!(turn.status, TurnStatus::InProgress);
+
+    let request_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "must not be reported as sent".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        error.error.message.contains("cannot steer a review turn"),
+        "unexpected turn/start admission error: {}",
+        error.error.message
+    );
     Ok(())
 }
 

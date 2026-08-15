@@ -1,6 +1,8 @@
 mod shared;
 
 mod account;
+mod agent_alias;
+mod agent_control;
 mod apps;
 mod attestation;
 mod bedrock;
@@ -36,6 +38,8 @@ mod turn;
 mod windows_sandbox;
 
 pub use account::*;
+pub use agent_alias::*;
+pub use agent_control::*;
 pub use apps::*;
 pub use attestation::*;
 pub use bedrock::*;

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 
 use crate::RolloutItem;
 
@@ -9,9 +11,11 @@ use crate::RolloutItem;
 ///
 /// A marker's cutoff is an absolute index in the same raw rollout. The marker and items from that
 /// cutoff through the marker are removed together, except that a terminal event is retained when
-/// its matching turn start survives the range and durable out-of-band subagent completion
-/// artifacts are retained regardless of their position. A terminal `wait_agent` item is one such
-/// artifact when that durable item owns completion presentation instead of a background row.
+/// its matching turn start survives the range and durable out-of-band agent artifacts are retained
+/// regardless of their position. These include accepted subagent responses, their presentation
+/// state, trusted user-agent task links, and source-side user-agent control audit. A terminal
+/// `wait_agent` item is one such artifact when that durable item owns completion presentation
+/// instead of a background row.
 /// Computing all ranges before replay also ensures that rollback markers inside a newer removed
 /// range cannot affect the surviving history.
 pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
@@ -95,7 +99,7 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
     // later exact rollback must not erase them. Preserve inter-agent delivery metadata immediately
     // preceding a committed response item as part of the same durable pair.
     for index in 0..items.len() {
-        if !removed[index] || !is_sub_agent_completion_artifact(items, index) {
+        if !removed[index] || !is_durable_agent_artifact(items, index) {
             continue;
         }
         removed[index] = false;
@@ -111,12 +115,15 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
     removed
 }
 
-fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool {
+fn is_durable_agent_artifact(items: &[RolloutItem], index: usize) -> bool {
     match &items[index] {
         RolloutItem::ResponseItem(item) => {
             let Some(response_item_id) = item.id() else {
                 return false;
             };
+            if is_user_agent_task_context_response_item_id(response_item_id.as_str()) {
+                return true;
+            }
             let reserved_completion_context =
                 is_sub_agent_completion_context_response_item_id(response_item_id.as_str())
                     && matches!(
@@ -141,6 +148,7 @@ fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool
         RolloutItem::AgentResponseObservation(_) => true,
         RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
             event.item.is_sub_agent_completion_presentation()
+                || matches!(&event.item, TurnItem::UserAgentControl(_))
         }
         RolloutItem::SessionMeta(_)
         | RolloutItem::InterAgentCommunication(_)

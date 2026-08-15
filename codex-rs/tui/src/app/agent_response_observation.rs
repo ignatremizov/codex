@@ -1,15 +1,18 @@
-//! Live wake-subscription projection for the `/agent` picker.
+//! Live model-authored response-observation projection for the `/agent` picker.
 
+use codex_app_server_protocol::AgentResponseHandling;
+
+use super::agent_observation_display::AgentResponseObservationBinding;
 use super::*;
 
 impl App {
-    /// Tracks live V1 wake subscriptions without restoring them from saved transcript replay.
+    /// Tracks live model-authored response observation without restoring transcript state.
     ///
     /// The picker cache is observer-relative because a sibling's subscription must not appear as
-    /// the active thread's subscription. Resume wakes remain visible when the target is already
-    /// terminal because they bind to its next admitted turn; spawn and send wakes are consumed
+    /// the active thread's policy. Resume policies remain visible when the target is already
+    /// terminal because they bind to its next admitted turn; spawn and send policies are consumed
     /// when their admitted target turn has already reached a final status.
-    pub(super) fn cache_collab_wake_subscription_for_notification(
+    pub(super) fn cache_collab_response_observation_for_notification(
         &mut self,
         notification: &ServerNotification,
     ) {
@@ -19,6 +22,7 @@ impl App {
         let ThreadItem::CollabAgentToolCall {
             tool,
             status,
+            observe_commentary,
             wake_on_completion,
             sender_thread_id,
             receiver_thread_ids,
@@ -29,7 +33,15 @@ impl App {
             return;
         };
         let observer = ThreadId::from_string(sender_thread_id).ok();
-        let records_wake = *wake_on_completion == Some(true)
+        let response_handling = match (*observe_commentary, *wake_on_completion) {
+            (Some(false), Some(false)) | (None, _) => None,
+            (Some(true), Some(false)) => Some(AgentResponseHandling::Commentary),
+            (Some(false), Some(true)) => Some(AgentResponseHandling::Wake),
+            (Some(true), Some(true)) => Some(AgentResponseHandling::CommentaryWake),
+            (Some(false), None) => Some(AgentResponseHandling::Presentation),
+            (Some(true), None) => Some(AgentResponseHandling::CommentaryPresentation),
+        };
+        let records_observation = observe_commentary.is_some()
             && matches!(
                 tool,
                 codex_app_server_protocol::CollabAgentTool::SpawnAgent
@@ -59,17 +71,21 @@ impl App {
                         | codex_app_server_protocol::CollabAgentStatus::NotFound
                 )
             });
-            if records_wake
+            if records_observation
                 && (!target_is_final || resume_binds_next_turn)
                 && let Some(observer) = observer
             {
                 let binding = if target_is_final {
-                    super::agent_navigation::WakeSubscriptionBinding::NextTurn
+                    AgentResponseObservationBinding::NextTurn
                 } else {
-                    super::agent_navigation::WakeSubscriptionBinding::Bound
+                    AgentResponseObservationBinding::Bound
                 };
-                self.agent_navigation
-                    .note_wake_subscription(observer, target, binding);
+                self.agent_navigation.note_response_observation(
+                    observer,
+                    target,
+                    binding,
+                    response_handling,
+                );
             }
             if target_is_final && !resume_binds_next_turn {
                 self.agent_navigation.mark_stopped(target);

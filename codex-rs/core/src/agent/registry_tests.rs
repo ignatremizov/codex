@@ -241,6 +241,31 @@ fn agent_nickname_resets_used_pool_when_exhausted() {
 }
 
 #[test]
+fn reserved_main_candidate_never_acquires_an_ordinal_suffix() {
+    let registry = Arc::new(AgentRegistry::default());
+    let mut first = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve first slot");
+    assert_eq!(
+        first
+            .reserve_agent_nickname_with_preference(&["Main", "Hopper"], /*preferred*/ None,)
+            .expect("ordinary candidate should remain available"),
+        "Hopper"
+    );
+    first.commit(agent_metadata(ThreadId::new()));
+
+    let mut second = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve second slot");
+    assert_eq!(
+        second
+            .reserve_agent_nickname_with_preference(&["main", "Hopper"], /*preferred*/ None,)
+            .expect("pool reset should suffix only the ordinary candidate"),
+        "Hopper the 2nd"
+    );
+}
+
+#[test]
 fn released_nickname_stays_used_until_pool_reset() {
     let registry = Arc::new(AgentRegistry::default());
 
@@ -280,6 +305,32 @@ fn released_nickname_stays_used_until_pool_reset() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert_eq!(active_agents.nickname_reset_count, 1);
+}
+
+#[test]
+fn durable_nickname_reservations_survive_pool_resets() {
+    let registry = Arc::new(AgentRegistry::default());
+    registry.reserve_durable_agent_nicknames(["alpha".to_string()]);
+
+    let mut first = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve first slot");
+    let first_name = first
+        .reserve_agent_nickname_with_preference(&["alpha", "beta"], /*preferred*/ None)
+        .expect("reserve first agent name");
+    assert_eq!(first_name, "beta");
+    first.commit(agent_metadata(ThreadId::new()));
+
+    let mut second = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve second slot");
+    let second_name = second
+        .reserve_agent_nickname_with_preference(&["alpha", "beta"], /*preferred*/ None)
+        .expect("reserve suffixed agent name");
+    assert!(
+        matches!(second_name.as_str(), "alpha the 2nd" | "beta the 2nd"),
+        "pool reset should advance past durable base names, got {second_name}"
+    );
 }
 
 #[test]
@@ -334,10 +385,13 @@ fn register_root_thread_indexes_root_path() {
         Some(root_thread_id)
     );
     assert_eq!(
-        registry
-            .agent_metadata_for_thread(root_thread_id)
-            .and_then(|metadata| metadata.agent_path),
-        Some(AgentPath::root())
+        registry.agent_metadata_for_thread(root_thread_id),
+        Some(AgentMetadata {
+            agent_id: Some(root_thread_id),
+            agent_path: Some(AgentPath::root()),
+            agent_nickname: Some(MAIN_AGENT_NICKNAME.to_string()),
+            ..Default::default()
+        })
     );
 
     let other_thread_id = ThreadId::new();
@@ -348,10 +402,13 @@ fn register_root_thread_indexes_root_path() {
         Some(root_thread_id)
     );
     assert_eq!(
-        registry
-            .agent_metadata_for_thread(root_thread_id)
-            .and_then(|metadata| metadata.agent_path),
-        Some(AgentPath::root())
+        registry.agent_metadata_for_thread(root_thread_id),
+        Some(AgentMetadata {
+            agent_id: Some(root_thread_id),
+            agent_path: Some(AgentPath::root()),
+            agent_nickname: Some(MAIN_AGENT_NICKNAME.to_string()),
+            ..Default::default()
+        })
     );
     assert!(
         registry

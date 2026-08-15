@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 pub(crate) const MAX_AGENT_MESSAGE_PAYLOAD_BYTES: usize = 8 * 1024;
-const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
+const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
 const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str =
@@ -73,7 +73,7 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let inherited_model_guidance =
         (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
     let return_value_description =
-        "Returns the spawned agent id plus the user-facing nickname when available.";
+        "Returns canonical agent id and, when available, compact ref and user-facing nickname.";
     let mut properties = spawn_agent_common_properties_v1(&options.agent_type_description);
     if !options.expose_agent_type {
         properties.remove("agent_type");
@@ -159,13 +159,12 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     let properties = BTreeMap::from([
         (
             "target".to_string(),
-            JsonSchema::string(Some("Agent id to message (from spawn_agent).".to_string())),
+            JsonSchema::string(Some("Target agent.".to_string())),
         ),
         (
             "message".to_string(),
             JsonSchema::string(Some(
-                "Legacy plain-text message to send to the agent. Use either message or items."
-                    .to_string(),
+                "Plain-text message. Use either message or items.".to_string(),
             )),
         ),
         ("items".to_string(), create_collab_input_items_schema()),
@@ -283,7 +282,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
             "id".to_string(),
-            JsonSchema::string(Some("Agent id to resume.".to_string())),
+            JsonSchema::string(Some("Agent to resume.".to_string())),
         ),
         (
             "w".to_string(),
@@ -297,7 +296,7 @@ pub fn create_resume_agent_tool() -> ToolSpec {
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "resume_agent".to_string(),
             description:
-                "Resume a previously closed agent by id so it can receive send_input and wait_agent calls. Cannot target current thread."
+                "Resume a previously closed agent so it can receive send_input and wait_agent calls. Cannot target current thread."
                     .to_string(),
             strict: false,
             defer_loading: None,
@@ -359,7 +358,7 @@ pub fn create_list_agents_tool() -> ToolSpec {
 pub fn create_close_agent_tool_v1() -> ToolSpec {
     let properties = BTreeMap::from([(
         "target".to_string(),
-        JsonSchema::string(Some("Agent id to close (from spawn_agent).".to_string())),
+        JsonSchema::string(Some("Agent to close.".to_string())),
     )]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
@@ -440,6 +439,10 @@ fn spawn_agent_output_schema_v1() -> Value {
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
+            },
+            "ref": {
+                "type": "string",
+                "description": "Compact root-scoped ref preferred for V1 follow-up tools."
             }
         },
         "required": ["agent_id", "nickname"],
@@ -922,7 +925,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
                 Some(
-                    "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
+                    "Agents to wait on. Pass multiple to wait for whichever finishes first."
                         .to_string(),
                 ),
             ),

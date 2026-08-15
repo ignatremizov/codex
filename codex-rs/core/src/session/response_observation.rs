@@ -64,6 +64,13 @@ pub(crate) struct InputTurnAdmissionResolution {
     pub(crate) after_item_id: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InputTurnAdmissionPolicy {
+    #[default]
+    AnyTurn,
+    IdleOnly,
+}
+
 #[derive(Default)]
 pub(super) struct AgentResponseObservationState {
     pub(super) active_turn_id: Option<String>,
@@ -74,6 +81,7 @@ pub(super) struct AgentResponseObservationState {
     next_subscriber_id: u64,
     subscribers: HashMap<u64, AgentResponseSubscriber>,
     input_admissions: HashMap<String, oneshot::Sender<CodexResult<InputTurnAdmissionResolution>>>,
+    input_admission_policies: HashMap<String, InputTurnAdmissionPolicy>,
     communication_deliveries: HashMap<ResponseItemId, PendingCommunicationDelivery>,
 }
 
@@ -104,6 +112,7 @@ pub(crate) struct InputTurnAdmission {
     submission_id: String,
     state: std::sync::Weak<Mutex<AgentResponseObservationState>>,
     receiver: Option<oneshot::Receiver<CodexResult<InputTurnAdmissionResolution>>>,
+    submitted: bool,
 }
 
 pub(crate) struct CommunicationDeliveryReceipt {
@@ -131,6 +140,11 @@ impl Drop for AgentResponseSubscription {
 }
 
 impl InputTurnAdmission {
+    /// Preserve the dispatch policy if the caller stops waiting after the submission was queued.
+    pub(crate) fn mark_submitted(&mut self) {
+        self.submitted = true;
+    }
+
     pub(crate) async fn recv(mut self) -> Option<CodexResult<InputTurnAdmissionResolution>> {
         self.receiver.take()?.await.ok()
     }
@@ -139,11 +153,13 @@ impl InputTurnAdmission {
 impl Drop for InputTurnAdmission {
     fn drop(&mut self) {
         if let Some(state) = self.state.upgrade() {
-            state
+            let mut state = state
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .input_admissions
-                .remove(&self.submission_id);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.input_admissions.remove(&self.submission_id);
+            if !self.submitted {
+                state.input_admission_policies.remove(&self.submission_id);
+            }
         }
     }
 }
@@ -195,6 +211,16 @@ impl Session {
         &self,
     ) -> (AgentResponseSnapshot, AgentResponseSubscription) {
         self.subscribe_agent_responses_inner(/*terminal_observer*/ None)
+    }
+
+    /// Returns the turn whose response lifecycle is still active, including the short
+    /// finalization window after its task has detached from [`crate::state::ActiveTurn`].
+    pub(crate) fn active_agent_response_turn_id(&self) -> Option<String> {
+        self.response_observation_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active_turn_id
+            .clone()
     }
 
     pub(crate) fn subscribe_agent_responses_observing_terminal(
@@ -282,18 +308,36 @@ impl Session {
     pub(crate) fn register_input_turn_admission(
         &self,
         submission_id: String,
+        policy: InputTurnAdmissionPolicy,
     ) -> InputTurnAdmission {
         let (sender, receiver) = oneshot::channel();
-        self.response_observation_state
+        let mut state = self
+            .response_observation_state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .input_admissions
-            .insert(submission_id.clone(), sender);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.input_admissions.insert(submission_id.clone(), sender);
+        state
+            .input_admission_policies
+            .insert(submission_id.clone(), policy);
         InputTurnAdmission {
             submission_id,
             state: Arc::downgrade(&self.response_observation_state),
             receiver: Some(receiver),
+            submitted: false,
         }
+    }
+
+    pub(super) fn input_turn_admission_policy(
+        &self,
+        submission_id: &str,
+    ) -> InputTurnAdmissionPolicy {
+        self.response_observation_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .input_admission_policies
+            .get(submission_id)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub(super) fn capture_input_turn_admission_resolution(
@@ -336,19 +380,19 @@ impl Session {
             .response_observation_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.input_admission_policies.remove(submission_id);
         if let Some(sender) = state.input_admissions.remove(submission_id) {
             let _ = sender.send(Ok(resolution));
         }
     }
 
     pub(super) fn reject_input_turn_admission(&self, submission_id: &str, error: CodexErr) {
-        if let Some(sender) = self
+        let mut state = self
             .response_observation_state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .input_admissions
-            .remove(submission_id)
-        {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.input_admission_policies.remove(submission_id);
+        if let Some(sender) = state.input_admissions.remove(submission_id) {
             let _ = sender.send(Err(error));
         }
     }
@@ -469,6 +513,40 @@ impl Session {
         };
         self.persist_agent_response_observations_locked(observations)
             .await
+    }
+
+    pub(crate) async fn persist_agent_response_observation_replacement(
+        &self,
+        observations: &[AgentResponseObservation],
+    ) -> bool {
+        if observations.is_empty() {
+            return true;
+        }
+        let Ok(_permit) = self.durable_context_lock.acquire().await else {
+            return false;
+        };
+        let rollout_items = observations
+            .iter()
+            .cloned()
+            .map(RolloutItem::AgentResponseObservation)
+            .collect::<Vec<_>>();
+        if let Some(live_thread) = self.live_thread()
+            && let Err(err) = live_thread
+                .append_items_and_flush_canonical(&rollout_items)
+                .await
+        {
+            tracing::warn!("failed to persist replaced agent response observation state: {err}");
+            return false;
+        }
+        if let Some(task_item) = observations
+            .iter()
+            .find_map(AgentResponseObservation::promoted_task_context_item)
+        {
+            let parent_turn = self.new_default_turn().await;
+            self.record_into_history(std::slice::from_ref(&task_item), parent_turn.as_ref())
+                .await;
+        }
+        true
     }
 
     pub(super) async fn persist_agent_response_observations_locked(

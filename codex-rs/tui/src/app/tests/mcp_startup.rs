@@ -42,6 +42,7 @@ async fn subagent_mcp_startup_settles_while_cached_servers_remain_deferred() {
             )),
             turns: Vec::new(),
             events: Vec::new(),
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,

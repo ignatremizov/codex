@@ -1290,6 +1290,14 @@ impl MessageProcessor {
                     .thread_background_terminals_terminate(params)
                     .await
             }
+            ClientRequest::AgentAliasList { params, .. } => {
+                self.thread_processor.agent_alias_list(params).await
+            }
+            ClientRequest::AgentControl { params, .. } => {
+                self.thread_processor
+                    .agent_control(&request_id, params)
+                    .await
+            }
             ClientRequest::ThreadRollback { params, .. } => {
                 self.thread_processor
                     .thread_rollback(&request_id, params, app_server_client_name.as_deref())

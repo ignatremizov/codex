@@ -1,5 +1,6 @@
 //! Context fragments injected into model input.
 
+mod agent_context_identity;
 mod approved_command_prefix_saved;
 mod apps_instructions;
 mod available_plugins_instructions;
@@ -46,10 +47,12 @@ mod token_budget_context;
 mod turn_aborted;
 mod unsupported_media;
 mod update_plan_instructions;
+mod user_agent_task;
 mod user_instructions;
 mod user_shell_command;
 pub(crate) mod world_state;
 
+pub(crate) use agent_context_identity::AgentContextIdentity;
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;
 pub(crate) use apps_instructions::AppsInstructions;
@@ -125,6 +128,7 @@ pub(crate) use token_budget_context::TokenBudgetReminder;
 pub(crate) use turn_aborted::TurnAborted;
 pub(crate) use unsupported_media::UnsupportedMedia;
 pub use update_plan_instructions::without_update_plan_instructions;
+pub(crate) use user_agent_task::UserAgentTask;
 pub(crate) use user_instructions::UserInstructions;
 pub(crate) use user_shell_command::UserShellCommand;
 pub(crate) use world_state::ManagedDeveloperInstructions;

@@ -68,15 +68,33 @@ pub fn project_rollout_line(line: &RolloutLine) -> ThreadHistoryChangeSet {
                 ..Default::default()
             }
         }
-        RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => ThreadHistoryChangeSet {
-            changed_items: vec![ThreadHistoryItemChange {
+        RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
+            let changed_turns = matches!(
+                &event.item,
+                codex_protocol::items::TurnItem::UserAgentControl(control)
+                    if control.id == event.turn_id
+            )
+            .then(|| ThreadHistoryTurnChange {
                 turn_id: event.turn_id.clone(),
-                item: ThreadItem::from(event.item.clone()),
-                started_at_ms: event.started_at_ms,
-                completed_at_ms: (event.completed_at_ms != 0).then_some(event.completed_at_ms),
-            }],
-            ..Default::default()
-        },
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            })
+            .into_iter()
+            .collect();
+            ThreadHistoryChangeSet {
+                changed_turns,
+                changed_items: vec![ThreadHistoryItemChange {
+                    turn_id: event.turn_id.clone(),
+                    item: ThreadItem::from(event.item.clone()),
+                    started_at_ms: event.started_at_ms,
+                    completed_at_ms: (event.completed_at_ms != 0).then_some(event.completed_at_ms),
+                }],
+                ..Default::default()
+            }
+        }
         RolloutItem::ResponseItem(item) => project_inter_agent_message(item),
         RolloutItem::InterAgentCommunication(communication) => {
             project_inter_agent_message(&communication.to_model_input_item())

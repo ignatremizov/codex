@@ -252,7 +252,7 @@ impl Renderable for ChatWidget {
 }
 
 #[cfg(test)]
-mod tests {
+mod persistent_layout_tests {
     use super::*;
     use crate::exec_cell::ExecCall;
     use crate::render::renderable::Renderable;

@@ -204,6 +204,7 @@ fn without_thread_item_media(mut item: ThreadItem) -> ThreadItem {
         }
         | ThreadItem::CollabAgentToolCall { .. }
         | ThreadItem::SubAgentActivity { .. }
+        | ThreadItem::UserAgentControl { .. }
         | ThreadItem::WebSearch(_)
         | ThreadItem::ImageView { .. }
         | ThreadItem::Sleep(_)

@@ -468,6 +468,11 @@ impl ChatWidget {
                 },
                 deadline_at_ms,
             ),
+            item @ ThreadItem::UserAgentControl { .. } => {
+                if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
+                    self.add_boxed_history(Box::new(cell));
+                }
+            }
             ThreadItem::EnteredReviewMode { review, .. } if !from_replay => {
                 self.enter_review_mode_with_hint(review, /*from_replay*/ false);
             }

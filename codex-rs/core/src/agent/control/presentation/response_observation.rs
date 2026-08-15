@@ -10,6 +10,7 @@ mod snapshot;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ResponseTurnObservation {
+    pub(super) task_preview: Option<String>,
     pub(super) commentary_admissions: Vec<AgentResponseCommentaryAdmission>,
     pub(super) commentary_delivery: Option<AgentResponseCommentaryDelivery>,
     pub(super) final_response: FinalResponseObservation,
@@ -20,6 +21,7 @@ pub(super) struct ResponseTurnObservation {
 impl Default for ResponseTurnObservation {
     fn default() -> Self {
         Self {
+            task_preview: None,
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             final_response: FinalResponseObservation::None,
@@ -61,7 +63,11 @@ impl ResponseTurnObservation {
     }
 }
 
-#[derive(Clone)]
+fn compact_task_preview(task_preview: Option<String>) -> Option<String> {
+    task_preview.and_then(super::super::compact_user_agent_task_preview)
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::agent::control) struct ResponseObserverRelationship {
     pub(super) persistence: ResponseObservationPersistence,
     pub(super) baseline_final_response: FinalResponseObservation,
@@ -114,6 +120,33 @@ pub(crate) enum ResponseObservationDeliveryKind {
     Final,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::agent::control) enum FinalResponseObservationReplacement {
+    Replaced {
+        previous: FinalResponseObservation,
+        binding: ReplacedFinalResponseObservationBinding,
+        task_preview: Option<String>,
+    },
+    NoObservation,
+    DeliveryClaimed,
+}
+
+pub(in crate::agent::control) struct PreparedFinalResponseObservationReplacement {
+    pub(in crate::agent::control) previous: FinalResponseObservation,
+    pub(in crate::agent::control) binding: ReplacedFinalResponseObservationBinding,
+    pub(in crate::agent::control) target_turn_id: Option<String>,
+    pub(in crate::agent::control) task_preview: Option<String>,
+    pub(in crate::agent::control) previous_relationship: ResponseObserverRelationship,
+    pub(in crate::agent::control) replacement_relationship: ResponseObserverRelationship,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::agent) enum ReplacedFinalResponseObservationBinding {
+    ActiveTurn,
+    NextTurn,
+    UndeliveredCompletion,
+}
+
 /// Identifies a durably claimed response whose committed snapshot is written when the observer
 /// consumes its mailbox item.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,8 +168,9 @@ impl AgentControl {
     /// Returns whether a V2 child completion should use the watcher-owned V1 delivery path.
     ///
     /// Native V2 parent/child relationships are runtime-only and keep direct completion
-    /// publication. A V1 caller observing that same target owns durable response state, so its
-    /// terminal publication must enter the watcher path before final status becomes visible.
+    /// publication. A durable caller (V1 tool or user control) observing that same target owns
+    /// response state, so terminal publication must enter the watcher path before final status
+    /// becomes visible.
     pub(crate) fn completion_uses_durable_response_observer(
         &self,
         child: SessionPresentationId,
@@ -195,6 +229,58 @@ impl AgentControl {
             .is_some_and(|observation| observation.final_response == FinalResponseObservation::Wake)
     }
 
+    pub(in crate::agent::control) fn pending_next_turn_response_observation(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+    ) -> Option<ResponseObservationPolicy> {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+            .and_then(|relationship| relationship.pending_next_turn.as_ref())
+            .map(|observation| {
+                ResponseObservationPolicy::from_parts(
+                    /*commentary*/ !observation.commentary_admissions.is_empty(),
+                    observation.final_response,
+                )
+            })
+    }
+
+    pub(in crate::agent) async fn current_response_observation_binding_for_thread(
+        &self,
+        observer: SessionPresentationId,
+        target_thread_id: ThreadId,
+    ) -> Option<ReplacedFinalResponseObservationBinding> {
+        let manager = self.upgrade().ok()?;
+        let target_thread = manager.get_thread(target_thread_id).await.ok()?;
+        let target = target_thread.session.presentation_id();
+        let (snapshot, subscription) = target_thread.session.subscribe_agent_responses();
+        drop(subscription);
+        let state = self.wait_agent_presentations.state();
+        let relationship = state
+            .response_observation_by_observer_child
+            .get(&(observer, target))?;
+        if snapshot
+            .active_turn_id
+            .as_deref()
+            .is_some_and(|turn_id| relationship.turns.contains_key(turn_id))
+        {
+            return Some(ReplacedFinalResponseObservationBinding::ActiveTurn);
+        }
+        if snapshot
+            .last_terminal
+            .as_ref()
+            .is_some_and(|(turn_id, _)| relationship.turns.contains_key(turn_id))
+        {
+            return Some(ReplacedFinalResponseObservationBinding::UndeliveredCompletion);
+        }
+        relationship
+            .pending_next_turn
+            .is_some()
+            .then_some(ReplacedFinalResponseObservationBinding::NextTurn)
+    }
+
     pub(in crate::agent::control) fn response_observation_relationship_snapshot(
         &self,
         parent: SessionPresentationId,
@@ -232,6 +318,163 @@ impl AgentControl {
             .notify_waiters();
     }
 
+    pub(in crate::agent::control) fn replace_final_response_observation(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        active_turn_id: Option<&str>,
+        last_terminal_turn_id: Option<&str>,
+        replacement: FinalResponseObservation,
+    ) -> FinalResponseObservationReplacement {
+        let mut state = self.wait_agent_presentations.state();
+        let Some(relationship) = state
+            .response_observation_by_observer_child
+            .get_mut(&(parent, child))
+        else {
+            return FinalResponseObservationReplacement::NoObservation;
+        };
+        let replacement_result = replace_final_response_observation_in_relationship(
+            relationship,
+            active_turn_id,
+            last_terminal_turn_id,
+            replacement,
+        );
+        if matches!(
+            &replacement_result,
+            FinalResponseObservationReplacement::Replaced { .. }
+        ) {
+            drop(state);
+            self.wait_agent_presentations
+                .response_observation_changed
+                .notify_waiters();
+        }
+        replacement_result
+    }
+
+    pub(in crate::agent::control) fn prepare_final_response_observation_replacement(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        active_turn_id: Option<&str>,
+        last_terminal_turn_id: Option<&str>,
+        replacement: FinalResponseObservation,
+    ) -> Result<PreparedFinalResponseObservationReplacement, FinalResponseObservationReplacement>
+    {
+        let state = self.wait_agent_presentations.state();
+        let Some(previous_relationship) = state
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .cloned()
+        else {
+            return Err(FinalResponseObservationReplacement::NoObservation);
+        };
+        let mut replacement_relationship = previous_relationship.clone();
+        match replace_final_response_observation_in_relationship(
+            &mut replacement_relationship,
+            active_turn_id,
+            last_terminal_turn_id,
+            replacement,
+        ) {
+            FinalResponseObservationReplacement::Replaced {
+                previous,
+                binding,
+                task_preview,
+            } => {
+                let target_turn_id = match binding {
+                    ReplacedFinalResponseObservationBinding::ActiveTurn => {
+                        active_turn_id.map(ToOwned::to_owned)
+                    }
+                    ReplacedFinalResponseObservationBinding::UndeliveredCompletion => {
+                        last_terminal_turn_id.map(ToOwned::to_owned)
+                    }
+                    ReplacedFinalResponseObservationBinding::NextTurn => None,
+                };
+                Ok(PreparedFinalResponseObservationReplacement {
+                    previous,
+                    binding,
+                    target_turn_id,
+                    task_preview,
+                    previous_relationship,
+                    replacement_relationship,
+                })
+            }
+            result @ (FinalResponseObservationReplacement::NoObservation
+            | FinalResponseObservationReplacement::DeliveryClaimed) => Err(result),
+        }
+    }
+
+    pub(in crate::agent::control) fn commit_final_response_observation_replacement(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        prepared: &PreparedFinalResponseObservationReplacement,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        let Some(current) = state
+            .response_observation_by_observer_child
+            .get_mut(&(parent, child))
+        else {
+            return false;
+        };
+        if current != &prepared.previous_relationship {
+            return false;
+        }
+        *current = prepared.replacement_relationship.clone();
+        drop(state);
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+        true
+    }
+}
+
+fn replace_final_response_observation_in_relationship(
+    relationship: &mut ResponseObserverRelationship,
+    active_turn_id: Option<&str>,
+    last_terminal_turn_id: Option<&str>,
+    replacement: FinalResponseObservation,
+) -> FinalResponseObservationReplacement {
+    let binding = if active_turn_id.is_some_and(|turn_id| relationship.turns.contains_key(turn_id))
+    {
+        ReplacedFinalResponseObservationBinding::ActiveTurn
+    } else if last_terminal_turn_id.is_some_and(|turn_id| relationship.turns.contains_key(turn_id))
+    {
+        ReplacedFinalResponseObservationBinding::UndeliveredCompletion
+    } else if relationship.pending_next_turn.is_some() {
+        ReplacedFinalResponseObservationBinding::NextTurn
+    } else {
+        return FinalResponseObservationReplacement::NoObservation;
+    };
+    let observation = match binding {
+        ReplacedFinalResponseObservationBinding::ActiveTurn => {
+            active_turn_id.and_then(|turn_id| relationship.turns.get_mut(turn_id))
+        }
+        ReplacedFinalResponseObservationBinding::UndeliveredCompletion => {
+            last_terminal_turn_id.and_then(|turn_id| relationship.turns.get_mut(turn_id))
+        }
+        ReplacedFinalResponseObservationBinding::NextTurn => {
+            relationship.pending_next_turn.as_mut()
+        }
+    };
+    let Some(observation) = observation else {
+        return FinalResponseObservationReplacement::NoObservation;
+    };
+    if observation.final_delivery_response_item_id.is_some()
+        || !observation.committed_delivery_response_item_ids.is_empty()
+    {
+        return FinalResponseObservationReplacement::DeliveryClaimed;
+    }
+    let previous = observation.final_response;
+    let task_preview = observation.task_preview.clone();
+    observation.final_response = replacement;
+    FinalResponseObservationReplacement::Replaced {
+        previous,
+        binding,
+        task_preview,
+    }
+}
+
+impl AgentControl {
     #[cfg(test)]
     pub(crate) fn register_completion_watcher(
         &self,
@@ -366,6 +609,7 @@ impl AgentControl {
             },
         };
         if let Some(turn_observation) = turn_observation {
+            turn_observation.task_preview = compact_task_preview(observation.task_preview.clone());
             if !observation.commentary_admissions.is_empty() {
                 turn_observation.commentary_admissions = observation.commentary_admissions.clone();
             } else if !observation.commentary_after_sequences.is_empty() {
@@ -455,8 +699,12 @@ impl AgentControl {
             .response_observation_changed
             .notify_waiters();
         let mut state = self.wait_agent_presentations.state();
-        if !state.completion_watcher_sessions.insert(observer_child) {
-            return None;
+        let registration_id = Uuid::now_v7();
+        match state.completion_watcher_sessions.entry(observer_child) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(registration_id);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => return None,
         }
         let parents = state
             .completion_observers_by_child
@@ -480,6 +728,7 @@ impl AgentControl {
             presentations: Arc::clone(&self.wait_agent_presentations),
             child,
             parent,
+            registration_id,
             child_lifecycle_generation: self.agent_lifecycle_generation(child.thread_id),
             preserve_state_for_replacement_on_drop: false,
             active: true,

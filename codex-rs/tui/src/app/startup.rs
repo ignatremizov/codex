@@ -403,7 +403,11 @@ impl App {
                 let forked = match startup_draft
                     .run_until(
                         tui,
-                        app_server.fork_thread(config.clone(), target_session.thread_id),
+                        app_server.fork_thread(
+                            config.clone(),
+                            target_session.thread_id,
+                            target_session.source_rollout_path.clone(),
+                        ),
                     )
                     .await
                 {
@@ -467,7 +471,15 @@ impl App {
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
 
         let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
-        let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).map_err(|err| {
+        let runtime_keymap = RuntimeKeymap::from_config_with_features(
+            &config.tui_keymap,
+            crate::keymap::RuntimeKeymapFeatures {
+                voice_transcription_enabled: crate::voice_availability::transcription_enabled(
+                    &config,
+                ),
+            },
+        )
+        .map_err(|err| {
             color_eyre::eyre::eyre!(
                 "Invalid `tui.keymap` configuration: {err}\n\
 Fix the config and retry.\n\
@@ -526,6 +538,7 @@ See the Codex keymap documentation for supported actions and examples."
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
             agents_overview: Default::default(),
+            queued_agent_prompts: HashMap::new(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
             active_thread_id: None,

@@ -1,4 +1,6 @@
 use super::AgentResponseEvent;
+use super::InputTurnAdmissionPolicy;
+use super::InputTurnAdmissionResolution;
 use super::agent_response_event;
 use super::agent_response_events_from_rollout;
 use super::initial_agent_response_observation_state;
@@ -30,6 +32,35 @@ use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
+
+#[tokio::test]
+async fn canceled_waiter_preserves_submitted_idle_only_policy_until_dispatch() {
+    let (session, _turn_context, _events) = make_session_and_context_with_rx().await;
+    let submission_id = "queued-submission".to_string();
+    let mut admission = session
+        .register_input_turn_admission(submission_id.clone(), InputTurnAdmissionPolicy::IdleOnly);
+
+    admission.mark_submitted();
+    drop(admission);
+
+    assert_eq!(
+        session.input_turn_admission_policy(&submission_id),
+        InputTurnAdmissionPolicy::IdleOnly
+    );
+
+    session.resolve_input_turn_admission(
+        &submission_id,
+        InputTurnAdmissionResolution {
+            target_turn_id: "queued-turn".to_string(),
+            minimum_event_sequence: 0,
+            after_item_id: None,
+        },
+    );
+    assert_eq!(
+        session.input_turn_admission_policy(&submission_id),
+        InputTurnAdmissionPolicy::AnyTurn
+    );
+}
 
 #[test]
 fn complete_commentary_item_becomes_observable_response() {

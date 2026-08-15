@@ -5,6 +5,7 @@ use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::MultiAgentMessageDelivery;
 use crate::config::PermissionProfileSnapshot;
+use crate::context::AgentContextIdentity;
 use crate::context::SubagentNotification;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentState;
@@ -3433,8 +3434,9 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
-            child_thread_id.to_string().as_str(),
-            child_thread_id,
+            AgentContextIdentity::Canonical {
+                agent_id: child_thread_id,
+            },
             &AgentStatus::Completed(Some("child done".to_string())),
         )]
     );
@@ -3656,8 +3658,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
-            agent_id.to_string().as_str(),
-            agent_id,
+            AgentContextIdentity::Canonical { agent_id },
             &AgentStatus::Completed(Some("standalone done".to_string())),
         )]
     );
@@ -3742,8 +3743,9 @@ async fn live_adoption_reconciles_terminal_that_raced_observed_running_status() 
     assert_eq!(
         subagent_notification_texts(parent.thread.session.as_ref()).await,
         vec![format_subagent_notification_message(
-            child.thread_id.to_string().as_str(),
-            child.thread_id,
+            AgentContextIdentity::Canonical {
+                agent_id: child.thread_id,
+            },
             &AgentStatus::Completed(Some("completed during adoption".to_string())),
         )]
     );
@@ -3898,8 +3900,9 @@ async fn live_adoption_synthesizes_terminal_from_final_snapshot_status() {
     assert_eq!(
         subagent_notification_texts(parent.thread.session.as_ref()).await,
         vec![format_subagent_notification_message(
-            child.thread_id.to_string().as_str(),
-            child.thread_id,
+            AgentContextIdentity::Canonical {
+                agent_id: child.thread_id,
+            },
             &AgentStatus::Shutdown,
         )]
     );

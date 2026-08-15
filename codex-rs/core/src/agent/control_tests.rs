@@ -5,16 +5,19 @@ use crate::ThreadManager;
 use crate::agent::agent_status_from_event;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::control::InitialTerminalObservation;
+use crate::agent::control::setup_cleanup::SetupCleanupGuard;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigBuilder;
+use crate::context::AgentContextIdentity;
 use crate::context::ContextualUserFragment;
 use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::SubagentNotification;
+use crate::context::UserAgentTask;
 use crate::init_state_db;
 use crate::session::TurnInput;
 use crate::session::session::Session;
@@ -24,6 +27,7 @@ use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskResult;
 use crate::thread_manager::StartThreadOptions;
 use crate::tools::handlers::multi_agents_common::thread_spawn_source;
+use crate::thread_manager::ThreadRuntimePublication;
 use assert_matches::assert_matches;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
@@ -44,6 +48,8 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::UserAgentControlAction;
+use codex_protocol::items::UserAgentControlItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
@@ -91,6 +97,26 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
+
+#[test]
+fn forked_history_excludes_source_user_agent_control_audit() {
+    let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: ThreadId::new(),
+        turn_id: "source-control-turn".to_string(),
+        item: TurnItem::UserAgentControl(UserAgentControlItem::succeeded(
+            UserAgentControlAction::Prompt,
+        )),
+        started_at_ms: Some(1),
+        completed_at_ms: 1,
+    }));
+
+    assert!(!keep_forked_rollout_item(
+        &item, /*preserve_reference_context_item*/ true
+    ));
+    assert!(!keep_forked_rollout_item(
+        &item, /*preserve_reference_context_item*/ false
+    ));
+}
 
 struct BlockingTask {
     kind: TaskKind,
@@ -230,6 +256,23 @@ fn register_session_root_skips_threads_with_explicit_parent() {
     assert_eq!(control.state.agent_id_for_path(&AgentPath::root()), None);
 }
 
+#[test]
+fn session_binding_retains_a_stable_unbound_placeholder() {
+    let unbound = AgentControl::default();
+    let placeholder_session_id = unbound.session_id();
+    assert_eq!(
+        (unbound.session_id(), unbound.bound_session_id()),
+        (placeholder_session_id, None),
+    );
+
+    let session_id = SessionId::new();
+    let bound = AgentControl::default().with_session_id(session_id, /*max_threads*/ 4);
+    assert_eq!(
+        (bound.session_id(), bound.bound_session_id()),
+        (session_id, Some(session_id)),
+    );
+}
+
 fn spawn_agent_call(call_id: &str) -> ResponseItem {
     ResponseItem::FunctionCall {
         id: None,
@@ -254,6 +297,25 @@ impl AgentControlHarness {
     async fn new() -> Self {
         let (home, config) = test_config().await;
         Self::new_with_config(home, config).await
+    }
+
+    async fn new_without_state_db() -> Self {
+        let (home, config) = test_config().await;
+        let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+            CodexAuth::from_api_key("dummy"),
+            config.model_provider.clone(),
+            config.codex_home.to_path_buf(),
+            std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            /*state_db*/ None,
+        );
+        let control = manager.agent_control();
+        Self {
+            _home: home,
+            config,
+            state_db: None,
+            manager,
+            control,
+        }
     }
 
     async fn new_with_config(home: TempDir, config: Config) -> Self {
@@ -320,6 +382,7 @@ impl AgentControlHarness {
                 /*inherited_environments*/ None,
                 /*inherited_exec_policy*/ None,
                 /*environments*/ None,
+                ThreadRuntimePublication::Immediate,
             )
             .await
             .expect("start thread with source");
@@ -347,6 +410,244 @@ impl AgentControlHarness {
             .await
             .expect("child spawn should succeed")
             .thread_id
+    }
+}
+
+#[tokio::test]
+async fn unpublished_runtime_cleanup_releases_metadata_and_v2_residency() {
+    let (home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("enable multi-agent v2");
+    config.multi_agent_v2.max_concurrent_threads_per_session = 1;
+    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    let state = harness
+        .control
+        .upgrade()
+        .expect("thread manager should be live");
+    let child = state
+        .spawn_new_thread_with_source(
+            config.clone(),
+            harness.control.clone(),
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+            /*history_mode*/ None,
+            /*parent_thread_id*/ Some(parent_thread_id),
+            /*forked_from_thread_id*/ None,
+            /*thread_source*/ Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+            ThreadRuntimePublication::Deferred,
+        )
+        .await
+        .expect("create unpublished child");
+    assert!(harness.manager.get_thread(child.thread_id).await.is_err());
+
+    let metadata_reservation = harness
+        .control
+        .state
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve metadata slot");
+    metadata_reservation.commit(AgentMetadata {
+        agent_id: Some(child.thread_id),
+        agent_role: Some("worker".to_string()),
+        ..Default::default()
+    });
+    let residency_slot = harness
+        .control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("reserve residency slot");
+    residency_slot.commit(child.thread_id);
+
+    harness
+        .control
+        .discard_unpublished_agent_instance(&child.thread, LiveAgentMetadataDisposition::Release)
+        .await
+        .expect("discard unpublished child");
+
+    assert_eq!(harness.control.get_agent_metadata(child.thread_id), None);
+    let replacement_residency_slot = harness
+        .control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("released residency should be reusable");
+    drop(replacement_residency_slot);
+    child
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown discarded child");
+    parent_thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown parent");
+}
+
+#[tokio::test]
+async fn setup_pending_observer_can_persist_inter_agent_response_handling() {
+    let harness = AgentControlHarness::new_without_state_db().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    let (direct_parent_thread_id, direct_parent_thread) = harness
+        .start_thread_with_source(
+            harness.config.clone(),
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("parent".to_string()),
+                agent_role: Some("worker".to_string()),
+            }),
+        )
+        .await;
+    let state = harness
+        .control
+        .upgrade()
+        .expect("thread manager should be live");
+    let pending_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: direct_parent_thread_id,
+        depth: 2,
+        agent_path: None,
+        agent_nickname: Some("observer".to_string()),
+        agent_role: Some("worker".to_string()),
+    });
+    let pending_observer = state
+        .spawn_new_thread_with_source(
+            harness.config.clone(),
+            harness.control.clone(),
+            pending_source.clone(),
+            /*history_mode*/ None,
+            /*parent_thread_id*/ Some(direct_parent_thread_id),
+            /*forked_from_thread_id*/ None,
+            /*thread_source*/ Some(ThreadSource::Subagent),
+            /*metrics_service_name*/ None,
+            /*inherited_environments*/ None,
+            /*inherited_exec_policy*/ None,
+            /*environments*/ None,
+            ThreadRuntimePublication::Deferred,
+        )
+        .await
+        .expect("create setup-pending observer");
+    assert!(
+        harness
+            .manager
+            .get_thread(pending_observer.thread_id)
+            .await
+            .is_err()
+    );
+    harness
+        .control
+        .maybe_start_completion_watcher(
+            &pending_observer.thread,
+            Some(pending_source),
+            "observer".to_string(),
+            /*child_agent_path*/ None,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::PresentationOnly,
+            ),
+            ResponseObserverKind::Native,
+            InitialTerminalObservation::FutureTurnsOnly,
+        )
+        .await
+        .expect("watcher setup should resolve its setup-pending child");
+
+    let submission_id = harness
+        .control
+        .send_input_observing_response(
+            root_thread_id,
+            text_input("message from a setup-pending sibling"),
+            TurnStartOptions::default(),
+            pending_observer.thread.session.presentation_id(),
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::None,
+            ),
+        )
+        .await
+        .expect("pending observer should persist response handling");
+    assert!(!submission_id.is_empty());
+    assert!(
+        harness
+            .manager
+            .get_thread(pending_observer.thread_id)
+            .await
+            .is_err(),
+        "internal observer access must not publish the pending runtime"
+    );
+
+    harness
+        .control
+        .discard_unpublished_agent_instance(
+            &pending_observer.thread,
+            LiveAgentMetadataDisposition::Preserve,
+        )
+        .await
+        .expect("discard setup-pending observer");
+    pending_observer
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown setup-pending observer");
+    direct_parent_thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown direct parent");
+    root_thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown root");
+}
+
+#[tokio::test]
+async fn controlled_uuid_fallback_requires_explicit_adoption_without_alias_storage() {
+    let harness = AgentControlHarness::new_without_state_db().await;
+    let (_source_thread_id, source_thread) = harness.start_thread().await;
+    let source_control = &source_thread.session.services.agent_control;
+    let foreign_thread_id = ThreadId::new();
+
+    let controlled = source_control
+        .resolve_controlled_v1_agent_target(&foreign_thread_id.to_string())
+        .await;
+    assert_matches!(
+        controlled,
+        Err(err)
+            if err.to_string().contains(&format!(
+                "agent {foreign_thread_id} is not controlled by this root"
+            ))
+    );
+    assert_eq!(
+        source_control
+            .resolve_resumable_v1_agent_target(&foreign_thread_id.to_string())
+            .await
+            .expect("explicit UUID adoption should remain available"),
+        foreign_thread_id
+    );
+}
+
+#[tokio::test]
+async fn reserved_main_nickname_resolves_case_insensitively_without_alias_storage() {
+    let harness = AgentControlHarness::new_without_state_db().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    let control = &root_thread.session.services.agent_control;
+
+    for target in ["main", "Main", "MAIN", "nick:mAiN"] {
+        assert_eq!(
+            control
+                .resolve_controlled_v1_agent_target(target)
+                .await
+                .expect("reserved Main nickname should resolve"),
+            root_thread_id
+        );
     }
 }
 
@@ -1564,6 +1865,14 @@ async fn ephemeral_spawn_does_not_persist_agent_graph_edge() {
         harness.manager.get_thread(child_thread_id).await.is_ok(),
         "ephemeral child should remain live"
     );
+    assert_eq!(
+        harness
+            .control
+            .resolve_controlled_v1_agent_target(&child_thread_id.to_string())
+            .await
+            .expect("live ephemeral child UUID should remain controlled"),
+        child_thread_id
+    );
 }
 
 #[tokio::test]
@@ -2100,6 +2409,14 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                         },
                     ),
                 },
+                ContextualUserFragment::into(UserAgentTask::new(
+                    AgentContextIdentity::V2 {
+                        agent_id: ThreadId::new(),
+                        agent_path: AgentPath::try_from("/root/reviewer")
+                            .expect("valid agent path"),
+                    },
+                    "parent-only user agent task",
+                )),
                 assistant_message("parent commentary", Some(MessagePhase::Commentary)),
                 assistant_message("parent final answer", Some(MessagePhase::FinalAnswer)),
                 standalone_output,
@@ -2383,6 +2700,13 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
         ContextualUserFragment::into(MultiAgentRoleInstructions::catalog(
             "Catalog parent root guidance.",
         )),
+        ContextualUserFragment::into(UserAgentTask::new(
+            AgentContextIdentity::V2 {
+                agent_id: ThreadId::new(),
+                agent_path: AgentPath::try_from("/root/reviewer").expect("valid agent path"),
+            },
+            "compacted parent-only user agent task",
+        )),
         parent_task.to_model_input_item(),
         ResponseItem::Message {
             id: None,
@@ -2504,6 +2828,10 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
             .raw_items()
             .any(|item| matches!(item, ResponseItem::AgentMessage { .. })),
         "forked child history should not inherit compacted parent agent messages"
+    );
+    assert!(
+        !history_contains_text(history.raw_items(), "compacted parent-only user agent task"),
+        "forked child history should not inherit source-relative task observation context"
     );
     assert!(
         !history_contains_text(history.raw_items(), "Parent root guidance."),
@@ -3788,6 +4116,7 @@ async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
             tester_path.to_string(),
             Some(tester_path.clone()),
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -3813,8 +4142,9 @@ async fn v1_observer_of_v2_shutdown_queues_notification_for_direct_parent() {
         .await;
 
     let expected_message = crate::session_prefix::format_subagent_notification_message(
-        tester_path.as_str(),
-        tester_thread_id,
+        AgentContextIdentity::Canonical {
+            agent_id: tester_thread_id,
+        },
         &AgentStatus::Shutdown,
     );
     assert!(wait_for_subagent_notification(&worker_thread).await);
@@ -3902,6 +4232,7 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("start v1 observer");
@@ -3928,6 +4259,7 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("start v2 target");
@@ -3942,6 +4274,7 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
                 /*commentary*/ false,
                 FinalResponseObservation::Wake,
             ),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -3993,8 +4326,9 @@ async fn multi_agent_v2_target_wake_cleanup_rechecks_idle_v1_observer() {
         .await;
 
     let expected_message = crate::session_prefix::format_subagent_notification_message(
-        child_path.as_str(),
-        child.thread_id,
+        AgentContextIdentity::Canonical {
+            agent_id: child.thread_id,
+        },
         &AgentStatus::Completed(Some("v2 target done".to_string())),
     );
     timeout(Duration::from_secs(5), async {
@@ -4080,6 +4414,7 @@ async fn v1_observer_of_v2_raw_error_queues_notification_for_direct_parent() {
             tester_path.to_string(),
             Some(tester_path.clone()),
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -4114,8 +4449,9 @@ async fn v1_observer_of_v2_raw_error_queues_notification_for_direct_parent() {
         .await;
 
     let expected_message = crate::session_prefix::format_subagent_notification_message(
-        tester_path.as_str(),
-        tester_thread_id,
+        AgentContextIdentity::Canonical {
+            agent_id: tester_thread_id,
+        },
         &AgentStatus::Errored(error.to_string()),
     );
     assert!(wait_for_subagent_notification(&worker_thread).await);
@@ -4153,6 +4489,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -4202,6 +4539,7 @@ async fn removing_child_notifies_parent_while_another_thread_arc_is_retained() {
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -4476,6 +4814,7 @@ async fn removing_child_publishes_not_found_to_an_already_active_wait() {
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -4529,6 +4868,7 @@ async fn completion_watcher_starts_once_for_the_same_session() {
                 child_thread_id.to_string(),
                 /*child_agent_path*/ None,
                 ResponseObservationPolicy::default(),
+                ResponseObserverKind::Native,
                 InitialTerminalObservation::FutureTurnsOnly,
             )
             .await
@@ -4581,6 +4921,7 @@ async fn cancelled_wait_releases_v1_completion_to_background_watcher() {
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -4629,6 +4970,7 @@ async fn completed_wait_suppresses_v1_background_watcher() {
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -4691,6 +5033,7 @@ async fn late_wait_does_not_suppress_v1_background_watcher() {
             child_thread_id.to_string(),
             /*child_agent_path*/ None,
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -5541,6 +5884,1175 @@ async fn close_agent_closes_descendants_when_started_at_child() {
     assert_eq!(shutdown_ids, expected_shutdown_ids);
 }
 
+#[tokio::test]
+async fn transferred_uuid_generic_resume_uses_current_owner_and_rejects_stale_metadata() {
+    let harness = AgentControlHarness::new().await;
+    let (previous_root_thread_id, previous_root) = harness.start_thread().await;
+    let previous_control = previous_root.session.services.agent_control.clone();
+    let child_thread_id = previous_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: previous_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let stale_metadata = previous_control
+        .get_agent_metadata(child_thread_id)
+        .expect("previous owner should know its child");
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    let child_rollout_path = child_thread
+        .rollout_path()
+        .expect("child rollout path should exist");
+    wait_for_live_thread_spawn_children(
+        &previous_control,
+        previous_root_thread_id,
+        &[child_thread_id],
+    )
+    .await;
+    let previous_owner = previous_control
+        .current_agent_owner_session(child_thread_id)
+        .await
+        .expect("previous owner should load");
+    previous_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("previous owner should close the child");
+
+    let (new_root_thread_id, new_root) = harness.start_thread().await;
+    let new_control = new_root.session.services.agent_control.clone();
+    new_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: new_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            child_thread_id.to_string(),
+        )
+        .await
+        .expect("new owner should adopt the closed child");
+
+    previous_control
+        .restore_agent_metadata(child_thread_id, stale_metadata.clone())
+        .expect("simulate stale metadata retained by another process");
+    let stale_resolution = previous_control
+        .resolve_controlled_v1_agent_target(&child_thread_id.to_string())
+        .await;
+    assert_matches!(
+        stale_resolution,
+        Err(err) if err.to_string().contains("was transferred out of this root")
+    );
+    let stale_interrupt = previous_control.interrupt_agent(child_thread_id).await;
+    assert_matches!(
+        stale_interrupt,
+        Err(err) if err.to_string().contains("is no longer controlled by this root")
+    );
+    assert!(
+        previous_control.clear_agent_metadata_if_current(child_thread_id, &stale_metadata),
+        "test cleanup should release simulated stale metadata"
+    );
+
+    new_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("new owner should close the adopted child");
+    new_control
+        .shutdown_live_agent(new_root_thread_id)
+        .await
+        .expect("new owner root shutdown should succeed");
+    let generic_resume = harness
+        .manager
+        .resume_thread_from_rollout(
+            harness.config.clone(),
+            child_rollout_path,
+            harness.manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await
+        .expect("generic resume should reopen under the current durable owner");
+    let generic_control = generic_resume.thread.session.services.agent_control.clone();
+    assert_eq!(generic_control.session_id(), new_control.session_id());
+    let generic_metadata = generic_control
+        .get_agent_metadata(child_thread_id)
+        .expect("generic resume should rebuild the current owner's process-local control plane");
+    let current_alias = generic_control
+        .find_session_agent_alias(child_thread_id)
+        .await
+        .expect("current alias should load")
+        .expect("current alias should exist");
+    assert_eq!(generic_metadata.agent_nickname, current_alias.nickname);
+    assert_matches!(
+        generic_resume.thread.session_source.clone(),
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            ..
+        }) if parent_thread_id == new_root_thread_id
+    );
+    generic_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("new owner should close the generically resumed child");
+    let stale_resume = previous_control
+        .resume_user_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: previous_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+        )
+        .await;
+    assert_matches!(
+        stale_resume,
+        Err(err) if err.to_string().contains("is no longer controlled by this root")
+    );
+    assert_eq!(
+        previous_control.get_status(child_thread_id).await,
+        AgentStatus::NotFound,
+        "stale same-root resume must not reopen the transferred runtime"
+    );
+    let current_owner = generic_control
+        .current_agent_owner_session(child_thread_id)
+        .await
+        .expect("current owner should remain readable");
+    previous_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: previous_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+            current_owner,
+            child_thread_id.to_string(),
+        )
+        .await
+        .expect("the previous root should explicitly adopt the closed rollout back");
+    assert_eq!(
+        previous_control
+            .current_agent_owner_session(child_thread_id)
+            .await
+            .expect("returned owner should remain readable"),
+        Some(previous_control.session_id())
+    );
+    previous_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("returned child cleanup should succeed");
+    previous_control
+        .shutdown_live_agent(previous_root_thread_id)
+        .await
+        .expect("previous root shutdown should succeed");
+}
+
+#[tokio::test]
+async fn cancelled_resume_setup_durably_revokes_its_destination_response_observer() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root) = harness.start_thread().await;
+    let control = root.session.services.agent_control.clone();
+    let parent = root.session.presentation_id();
+    let child = SessionPresentationId::new(ThreadId::new(), uuid::Uuid::now_v7());
+    let _watcher_registration = control
+        .register_response_watcher_with_admission(
+            child,
+            parent,
+            &root.session.submission_admission,
+            ResponseObservationPolicy::from_parts(
+                /*commentary*/ true,
+                FinalResponseObservation::Wake,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            /*target_turn_id*/ None,
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("destination watcher should install");
+    assert!(
+        control
+            .persist_response_observation_snapshot(parent, child)
+            .await
+    );
+    let registration_id = control
+        .response_watcher_registration_id(parent, child)
+        .expect("destination watcher identity");
+    let target_turn_ids = control
+        .response_observation_snapshots(parent, child)
+        .into_iter()
+        .map(|observation| observation.target_turn_id)
+        .collect::<Vec<_>>();
+    let cleanup = SetupCleanupGuard::new("cancelled resume observer test", {
+        let control = control.clone();
+        async move {
+            control
+                .rollback_installed_response_observer_if_current(
+                    parent,
+                    child,
+                    registration_id,
+                    target_turn_ids,
+                )
+                .await
+        }
+    });
+
+    drop(cleanup);
+    let final_observation = timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if !control.has_completion_watcher(parent, child)
+                && control
+                    .response_observation_snapshots(parent, child)
+                    .is_empty()
+            {
+                let history = root.session.clone_history().await;
+                if let Some(observation) = history
+                    .raw_items()
+                    .iter()
+                    .filter_map(|item| match item {
+                        RolloutItem::AgentResponseObservation(observation)
+                            if observation.target_thread_id == child.thread_id =>
+                        {
+                            Some(observation)
+                        }
+                        _ => None,
+                    })
+                    .next_back()
+                    .filter(|observation| {
+                        !observation.pending_commentary
+                            && observation.final_delivery
+                                == codex_protocol::protocol::AgentResponseFinalDelivery::None
+                    })
+                    .cloned()
+                {
+                    break observation;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled setup should durably revoke its destination watcher");
+    assert_eq!(
+        (
+            final_observation.target_turn_id.clone(),
+            final_observation.pending_commentary,
+            final_observation.final_delivery,
+        ),
+        (
+            None,
+            false,
+            codex_protocol::protocol::AgentResponseFinalDelivery::None,
+        )
+    );
+
+    control
+        .shutdown_live_agent(root_thread_id)
+        .await
+        .expect("root shutdown should succeed");
+}
+
+#[tokio::test]
+async fn ownership_transfer_revokes_recovering_v1_subtree_observers_before_publication() {
+    let harness = AgentControlHarness::new().await;
+    let (previous_root_thread_id, previous_root) = harness.start_thread().await;
+    let previous_control = previous_root.session.services.agent_control.clone();
+    let no_response_observation = ResponseObservationPolicy::from_parts(
+        /*commentary*/ false,
+        FinalResponseObservation::None,
+    );
+    let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: previous_root_thread_id,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: Some("Transferred Child".to_string()),
+        agent_role: Some("worker".to_string()),
+    });
+    let child_thread_id = previous_control
+        .spawn_idle_agent_with_metadata(
+            harness.config.clone(),
+            Some(child_source),
+            SpawnAgentOptions {
+                parent_thread_id: Some(previous_root_thread_id),
+                response_observation: no_response_observation,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("child spawn should succeed")
+        .thread_id;
+    let grandchild_thread_id = previous_control
+        .spawn_idle_agent_with_metadata(
+            harness.config.clone(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: Some("Transferred Grandchild".to_string()),
+                agent_role: Some("worker".to_string()),
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(child_thread_id),
+                response_observation: no_response_observation,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("grandchild spawn should succeed")
+        .thread_id;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be live");
+    let grandchild_thread = harness
+        .manager
+        .get_thread(grandchild_thread_id)
+        .await
+        .expect("grandchild thread should be live");
+    persist_thread_for_tree_resume(&child_thread, "child persisted before transfer").await;
+    persist_thread_for_tree_resume(&grandchild_thread, "grandchild persisted before transfer")
+        .await;
+    wait_for_live_thread_spawn_children(
+        &previous_control,
+        previous_root_thread_id,
+        &[child_thread_id],
+    )
+    .await;
+    wait_for_live_thread_spawn_children(
+        &previous_control,
+        child_thread_id,
+        &[grandchild_thread_id],
+    )
+    .await;
+
+    let state = previous_control
+        .upgrade()
+        .expect("thread manager should be live");
+    let previous_parent = previous_root.session.presentation_id();
+    let previous_child = child_thread.session.presentation_id();
+    let previous_grandchild = grandchild_thread.session.presentation_id();
+    assert!(
+        previous_control
+            .response_observer_can_retry(previous_parent)
+            .await,
+        "test requires a live former-root response destination"
+    );
+    let child_generation = state.agent_lifecycle_generation(child_thread_id);
+    let grandchild_generation = state.agent_lifecycle_generation(grandchild_thread_id);
+    let mut replaced_registration = previous_control
+        .register_response_watcher_with_admission(
+            previous_child,
+            previous_parent,
+            &previous_root.session.submission_admission,
+            ResponseObservationPolicy::default(),
+            /*retain_passive_completion_relationship*/ true,
+            /*target_turn_id*/ None,
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("previous owner watcher registration");
+    let previous_observations =
+        previous_control.response_observation_snapshots(previous_parent, previous_child);
+    assert!(
+        !previous_observations.is_empty(),
+        "test requires a recoverable former-owner response relationship"
+    );
+    // Preserve the relationship exactly as a V1 watcher does after transient runtime loss, then
+    // invoke its recovery path directly so the transfer race has no scheduler-dependent setup.
+    replaced_registration.preserve_state_for_replacement_on_drop();
+    drop(replaced_registration);
+    let mut replaced_descendant_registration = previous_control
+        .register_response_watcher_with_admission(
+            previous_grandchild,
+            previous_parent,
+            &previous_root.session.submission_admission,
+            ResponseObservationPolicy::default(),
+            /*retain_passive_completion_relationship*/ true,
+            /*target_turn_id*/ None,
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("previous owner descendant watcher registration");
+    assert!(
+        !previous_control
+            .response_observation_snapshots(previous_parent, previous_grandchild)
+            .is_empty(),
+        "test requires a recoverable descendant response relationship"
+    );
+    replaced_descendant_registration.preserve_state_for_replacement_on_drop();
+    drop(replaced_descendant_registration);
+
+    for thread in [&grandchild_thread, &child_thread] {
+        thread
+            .shutdown_and_wait()
+            .await
+            .expect("runtime loss should close its rollout writer");
+        let removed = harness
+            .manager
+            .remove_thread(&thread.session.thread_id())
+            .await
+            .expect("runtime loss should unregister the thread");
+        assert!(Arc::ptr_eq(&removed, thread));
+    }
+    let previous_owner = previous_control
+        .current_agent_owner_session(child_thread_id)
+        .await
+        .expect("previous owner should remain durable");
+    let mut recovery = tokio::spawn({
+        let previous_control = previous_control.clone();
+        async move {
+            previous_control
+                .restore_v1_response_observer(
+                    previous_parent,
+                    child_thread_id,
+                    child_generation,
+                    Some(previous_child),
+                    previous_observations,
+                )
+                .await;
+        }
+    });
+
+    let (destination_root_thread_id, destination_root) = harness.start_thread().await;
+    let destination_control = destination_root.session.services.agent_control.clone();
+    destination_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: destination_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            child_thread_id.to_string(),
+        )
+        .await
+        .expect("destination root should adopt the unloaded subtree");
+
+    timeout(Duration::from_secs(/*secs*/ 5), &mut recovery)
+        .await
+        .expect("former-owner recovery should stop at the transfer boundary")
+        .expect("former-owner recovery task should not panic");
+    assert_eq!(
+        (
+            state.agent_lifecycle_generation(child_thread_id),
+            state.agent_lifecycle_generation(grandchild_thread_id),
+        ),
+        (
+            child_generation.wrapping_add(1),
+            grandchild_generation.wrapping_add(1),
+        ),
+        "ownership transfer must invalidate every persisted subtree member",
+    );
+    assert!(
+        previous_control
+            .response_observation_snapshots(previous_parent, previous_child)
+            .is_empty(),
+        "the former root must release its durable response relationship"
+    );
+    assert!(
+        previous_control
+            .response_observation_snapshots(previous_parent, previous_grandchild)
+            .is_empty(),
+        "the former root must release descendant response relationships"
+    );
+
+    let adopted_child = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("adopted child should be published");
+    let destination_parent = destination_root.session.presentation_id();
+    let adopted_child_presentation = adopted_child.session.presentation_id();
+    assert!(
+        destination_control.has_completion_watcher(destination_parent, adopted_child_presentation),
+        "the destination watcher must register after transfer invalidation"
+    );
+    assert!(
+        !previous_control.has_completion_watcher(previous_parent, adopted_child_presentation),
+        "the former owner must not attach to the replacement runtime"
+    );
+
+    let adopted_turn = adopted_child.session.new_default_turn().await;
+    adopted_child
+        .session
+        .send_event(
+            adopted_turn.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: adopted_turn.sub_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+            }),
+        )
+        .await;
+    adopted_child
+        .session
+        .send_event(
+            adopted_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: adopted_turn.sub_id.clone(),
+                last_agent_message: Some("destination-only completion".to_string()),
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    timeout(Duration::from_secs(/*secs*/ 10), async {
+        loop {
+            let history = destination_root.session.clone_history().await;
+            if subagent_notification_history_contains_text(
+                history.raw_items(),
+                "destination-only completion",
+            ) {
+                break;
+            }
+            sleep(Duration::from_millis(/*millis*/ 25)).await;
+        }
+    })
+    .await
+    .expect("destination root should receive the adopted child's completion");
+    assert!(
+        !subagent_notification_history_contains_text(
+            previous_root.session.clone_history().await.raw_items(),
+            "destination-only completion",
+        ),
+        "the former root must not receive post-transfer completion context"
+    );
+
+    destination_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("adopted subtree cleanup should succeed");
+    destination_control
+        .shutdown_live_agent(destination_root_thread_id)
+        .await
+        .expect("destination root shutdown should succeed");
+    previous_control
+        .shutdown_live_agent(previous_root_thread_id)
+        .await
+        .expect("previous root shutdown should succeed");
+}
+
+#[tokio::test]
+async fn cross_manager_writer_conflict_prevents_ownership_transfer() {
+    let harness = AgentControlHarness::new().await;
+    let (previous_root_thread_id, previous_root) = harness.start_thread().await;
+    let previous_control = previous_root.session.services.agent_control.clone();
+    let child_thread_id = previous_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("live child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: previous_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let previous_owner = previous_control
+        .current_agent_owner_session(child_thread_id)
+        .await
+        .expect("previous owner should load");
+
+    let competing_manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        harness.config.model_provider.clone(),
+        harness.config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        harness.state_db.clone(),
+    );
+    let competing_root = competing_manager
+        .start_thread(StartThreadOptions::new(harness.config.clone()))
+        .await
+        .expect("start competing root");
+    let competing_control = competing_root.thread.session.services.agent_control.clone();
+    let adoption = competing_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: competing_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            child_thread_id.to_string(),
+        )
+        .await;
+    assert_matches!(
+        adoption,
+        Err(err) if err.to_string().contains("already has an active writer")
+    );
+    assert_eq!(
+        competing_control
+            .current_agent_owner_session(child_thread_id)
+            .await
+            .expect("owner should remain readable"),
+        previous_owner,
+        "writer exclusion must win before durable ownership transfer"
+    );
+
+    previous_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("close original child");
+    competing_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: competing_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            child_thread_id.to_string(),
+        )
+        .await
+        .expect("adoption should succeed after the original writer closes");
+    assert_eq!(
+        competing_control
+            .current_agent_owner_session(child_thread_id)
+            .await
+            .expect("transferred owner should remain readable"),
+        Some(competing_control.session_id())
+    );
+    competing_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("close adopted child");
+    previous_control
+        .shutdown_live_agent(previous_root_thread_id)
+        .await
+        .expect("shutdown original root");
+    competing_control
+        .shutdown_live_agent(competing_root.thread_id)
+        .await
+        .expect("shutdown competing root");
+}
+
+#[tokio::test]
+async fn cross_manager_descendant_writer_conflict_prevents_subtree_transfer() {
+    let harness = AgentControlHarness::new().await;
+    let (previous_root_thread_id, previous_root) = harness.start_thread().await;
+    let previous_control = previous_root.session.services.agent_control.clone();
+    let child_thread_id = previous_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("unloaded transfer target"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: previous_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let grandchild_thread_id = previous_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("live transfer descendant"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("grandchild spawn should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child should be live");
+    let grandchild_thread = harness
+        .manager
+        .get_thread(grandchild_thread_id)
+        .await
+        .expect("grandchild should be live");
+    persist_thread_for_tree_resume(&child_thread, "persist transfer target").await;
+    persist_thread_for_tree_resume(&grandchild_thread, "persist transfer descendant").await;
+    wait_for_live_thread_spawn_children(
+        &previous_control,
+        child_thread_id,
+        &[grandchild_thread_id],
+    )
+    .await;
+    let previous_owner = previous_control
+        .current_agent_owner_session(child_thread_id)
+        .await
+        .expect("previous owner should load");
+
+    child_thread
+        .shutdown_and_wait()
+        .await
+        .expect("target runtime loss should release its rollout writer");
+    let removed = harness
+        .manager
+        .remove_thread(&child_thread_id)
+        .await
+        .expect("target runtime should unregister");
+    assert!(Arc::ptr_eq(&removed, &child_thread));
+
+    let competing_manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        harness.config.model_provider.clone(),
+        harness.config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        harness.state_db.clone(),
+    );
+    let competing_root = competing_manager
+        .start_thread(StartThreadOptions::new(harness.config.clone()))
+        .await
+        .expect("start competing root");
+    let competing_control = competing_root.thread.session.services.agent_control.clone();
+    let adoption = competing_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: competing_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            child_thread_id.to_string(),
+        )
+        .await;
+    assert_matches!(
+        adoption,
+        Err(err)
+            if err
+                .to_string()
+                .contains(&format!("thread {grandchild_thread_id} already has an active writer"))
+    );
+    assert_eq!(
+        competing_control
+            .current_agent_owner_session(child_thread_id)
+            .await
+            .expect("owner should remain readable"),
+        previous_owner,
+        "a live descendant writer must reject transfer before ownership changes"
+    );
+
+    previous_control
+        .close_agent(grandchild_thread_id)
+        .await
+        .expect("close original descendant");
+    competing_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: competing_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            child_thread_id.to_string(),
+        )
+        .await
+        .expect("subtree transfer should succeed after every old writer closes");
+    assert_eq!(
+        competing_control
+            .current_agent_owner_session(child_thread_id)
+            .await
+            .expect("transferred owner should remain readable"),
+        Some(competing_control.session_id())
+    );
+
+    competing_control
+        .close_agent(child_thread_id)
+        .await
+        .expect("close adopted subtree");
+    previous_control
+        .shutdown_live_agent(previous_root_thread_id)
+        .await
+        .expect("shutdown original root");
+    competing_control
+        .shutdown_live_agent(competing_root.thread_id)
+        .await
+        .expect("shutdown competing root");
+}
+
+#[tokio::test]
+async fn transferred_descendant_resumes_without_its_colliding_rollout_nickname() {
+    let mut harness = AgentControlHarness::new().await;
+    harness.config.agent_roles.insert(
+        "target".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: None,
+            nickname_candidates: Some(vec!["Hopper".to_string()]),
+        },
+    );
+    harness.config.agent_roles.insert(
+        "collider".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: None,
+            nickname_candidates: Some(vec!["Noether".to_string()]),
+        },
+    );
+
+    let (source_root_thread_id, source_root) = harness.start_thread().await;
+    let source_control = source_root.session.services.agent_control.clone();
+    let target_thread_id = source_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("source target"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: source_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("target".to_string()),
+            })),
+        )
+        .await
+        .expect("source target should spawn");
+    let descendant_thread_id = source_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("source descendant"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: target_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("collider".to_string()),
+            })),
+        )
+        .await
+        .expect("source descendant should spawn");
+    let target_thread = harness
+        .manager
+        .get_thread(target_thread_id)
+        .await
+        .expect("source target should be live");
+    let descendant_thread = harness
+        .manager
+        .get_thread(descendant_thread_id)
+        .await
+        .expect("source descendant should be live");
+    persist_thread_for_tree_resume(&target_thread, "persist source target").await;
+    persist_thread_for_tree_resume(&descendant_thread, "persist source descendant").await;
+    wait_for_live_thread_spawn_children(
+        &source_control,
+        source_root_thread_id,
+        &[target_thread_id],
+    )
+    .await;
+    wait_for_live_thread_spawn_children(&source_control, target_thread_id, &[descendant_thread_id])
+        .await;
+
+    let (destination_root_thread_id, destination_root) = harness.start_thread().await;
+    let destination_control = destination_root.session.services.agent_control.clone();
+    let nickname_owner_thread_id = destination_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("destination nickname owner"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: destination_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("collider".to_string()),
+            })),
+        )
+        .await
+        .expect("destination nickname owner should spawn");
+
+    let previous_owner = source_control
+        .current_agent_owner_session(target_thread_id)
+        .await
+        .expect("source owner should load");
+    source_control
+        .close_agent(target_thread_id)
+        .await
+        .expect("source subtree should close before adoption");
+    destination_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            target_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: destination_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("target".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            target_thread_id.to_string(),
+        )
+        .await
+        .expect("target subtree should transfer");
+
+    let transferred_descendant_alias = destination_control
+        .find_session_agent_alias(descendant_thread_id)
+        .await
+        .expect("transferred descendant alias should load")
+        .expect("transferred descendant alias should exist");
+    assert_eq!(transferred_descendant_alias.nickname, None);
+    destination_control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            descendant_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: target_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("collider".to_string()),
+            }),
+            ResponseObservationPolicy::default(),
+        )
+        .await
+        .expect("transferred descendant should resume without the colliding nickname");
+    assert_eq!(
+        destination_control
+            .get_agent_metadata(descendant_thread_id)
+            .and_then(|metadata| metadata.agent_nickname),
+        None
+    );
+    assert_eq!(
+        destination_control
+            .get_agent_metadata(nickname_owner_thread_id)
+            .and_then(|metadata| metadata.agent_nickname),
+        Some("Noether".to_string())
+    );
+
+    destination_control
+        .close_agent(target_thread_id)
+        .await
+        .expect("adopted subtree cleanup should succeed");
+    destination_control
+        .close_agent(nickname_owner_thread_id)
+        .await
+        .expect("nickname owner cleanup should succeed");
+    source_control
+        .shutdown_live_agent(source_root_thread_id)
+        .await
+        .expect("source root cleanup should succeed");
+    destination_control
+        .shutdown_live_agent(destination_root_thread_id)
+        .await
+        .expect("destination root cleanup should succeed");
+}
+
+#[tokio::test]
+async fn adoption_rejects_an_unloaded_target_with_a_live_descendant() {
+    let harness = AgentControlHarness::new().await;
+    let (previous_root_thread_id, previous_root) = harness.start_thread().await;
+    let previous_control = previous_root.session.services.agent_control.clone();
+    let child_thread_id = previous_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: previous_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let grandchild_thread_id = previous_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello grandchild"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: child_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("grandchild spawn should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let grandchild_thread = harness
+        .manager
+        .get_thread(grandchild_thread_id)
+        .await
+        .expect("grandchild thread should exist");
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    persist_thread_for_tree_resume(&grandchild_thread, "grandchild persisted").await;
+    wait_for_live_thread_spawn_children(
+        &previous_control,
+        previous_root_thread_id,
+        &[child_thread_id],
+    )
+    .await;
+    wait_for_live_thread_spawn_children(
+        &previous_control,
+        child_thread_id,
+        &[grandchild_thread_id],
+    )
+    .await;
+    let previous_owner = previous_control
+        .current_agent_owner_session(child_thread_id)
+        .await
+        .expect("child owner should load");
+    assert_eq!(previous_owner, Some(previous_control.session_id()));
+
+    previous_control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("child runtime should unload independently");
+    assert_thread_not_loaded(&harness.manager, child_thread_id).await;
+    assert!(
+        harness
+            .manager
+            .get_thread(grandchild_thread_id)
+            .await
+            .is_ok(),
+        "test requires the persisted descendant to remain live"
+    );
+
+    let cyclic_adoption = timeout(
+        Duration::from_secs(5),
+        harness
+            .manager
+            .agent_control()
+            .resume_agent_from_rollout_adopting(
+                harness.config.clone(),
+                child_thread_id,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: grandchild_thread_id,
+                    depth: 3,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                }),
+                ResponseObservationPolicy::default(),
+                previous_owner,
+                child_thread_id.to_string(),
+            ),
+    )
+    .await
+    .expect("cyclic adoption should reject instead of relocking the live descendant");
+    assert_matches!(
+        cyclic_adoption,
+        Err(err)
+            if err.to_string().contains(&format!(
+                "agent {child_thread_id} cannot be adopted beneath its own descendant \
+                 {grandchild_thread_id}"
+            ))
+    );
+
+    let (new_root_thread_id, new_root) = harness.start_thread().await;
+    let new_control = new_root.session.services.agent_control.clone();
+    let result = new_control
+        .resume_agent_from_rollout_adopting(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: new_root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            ResponseObservationPolicy::default(),
+            previous_owner,
+            child_thread_id.to_string(),
+        )
+        .await;
+    assert_matches!(
+        result,
+        Err(err)
+            if err.to_string().contains(&format!(
+                "agent {child_thread_id} has live descendant {grandchild_thread_id}"
+            ))
+    );
+    assert_eq!(
+        previous_control
+            .current_agent_owner_session(child_thread_id)
+            .await
+            .expect("child owner should remain readable"),
+        previous_owner,
+        "failed adoption must not transfer durable ownership"
+    );
+    assert_thread_not_loaded(&harness.manager, child_thread_id).await;
+
+    previous_control
+        .shutdown_live_agent(grandchild_thread_id)
+        .await
+        .expect("grandchild shutdown should succeed");
+    previous_control
+        .shutdown_live_agent(previous_root_thread_id)
+        .await
+        .expect("previous root shutdown should succeed");
+    new_control
+        .shutdown_live_agent(new_root_thread_id)
+        .await
+        .expect("new root shutdown should succeed");
+}
+
 async fn harness_for_multi_agent_version(
     multi_agent_version: MultiAgentVersion,
 ) -> AgentControlHarness {
@@ -5553,6 +7065,208 @@ async fn harness_for_multi_agent_version(
         }
     }
     AgentControlHarness::new_with_config(home, config).await
+}
+
+async fn assert_same_root_resume_preserves_persisted_parent(
+    multi_agent_version: MultiAgentVersion,
+) {
+    let harness = harness_for_multi_agent_version(multi_agent_version).await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    let control = root_thread.session.services.agent_control.clone();
+    let parent_thread_id = control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("parent work"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("parent spawn should succeed");
+    let child_thread_id = control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("nested work"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("reviewer".to_string()),
+            })),
+        )
+        .await
+        .expect("nested child spawn should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("nested child should be live");
+    persist_thread_for_tree_resume(&child_thread, "nested child persisted").await;
+    wait_for_live_thread_spawn_children(&control, parent_thread_id, &[child_thread_id]).await;
+
+    control
+        .close_agent(child_thread_id)
+        .await
+        .expect("nested child close should succeed");
+    control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                // Simulate Main or a sibling initiating the resume. This source owns response
+                // observation, but it must not replace the target's durable lifecycle parent.
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            ResponseObservationPolicy::default(),
+        )
+        .await
+        .expect("same-root child resume should succeed");
+
+    let resumed_snapshot = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("resumed nested child should be live")
+        .config_snapshot()
+        .await;
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: resumed_parent_thread_id,
+        depth: resumed_depth,
+        ..
+    }) = resumed_snapshot.session_source
+    else {
+        panic!("resumed nested child should retain a thread-spawn source");
+    };
+    assert_eq!(
+        (resumed_parent_thread_id, resumed_depth),
+        (parent_thread_id, 2)
+    );
+    let resumed_child = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("resumed nested child should remain live");
+    assert!(
+        control.has_completion_watcher(
+            root_thread.session.presentation_id(),
+            resumed_child.session.presentation_id(),
+        ),
+        "the initiating observer must not be replaced by the target's persisted parent"
+    );
+    let state = control.upgrade().expect("thread manager should be live");
+    assert_eq!(
+        state
+            .agent_graph_store()
+            .expect("agent graph store should exist")
+            .find_thread_spawn_parent(child_thread_id)
+            .await
+            .expect("persisted parent should load"),
+        Some(parent_thread_id)
+    );
+
+    control
+        .close_agent(parent_thread_id)
+        .await
+        .expect("parent subtree close should succeed");
+    control
+        .shutdown_live_agent(root_thread_id)
+        .await
+        .expect("root shutdown should succeed");
+}
+
+#[tokio::test]
+async fn v1_same_root_resume_preserves_persisted_parent() {
+    assert_same_root_resume_preserves_persisted_parent(MultiAgentVersion::V1).await;
+}
+
+#[tokio::test]
+async fn v2_same_root_resume_preserves_persisted_parent() {
+    assert_same_root_resume_preserves_persisted_parent(MultiAgentVersion::V2).await;
+}
+
+#[tokio::test]
+async fn close_flush_failure_keeps_the_live_agent_alias_active() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    let control = root_thread.session.services.agent_control.clone();
+    let child_thread_id = control
+        .spawn_idle_agent_with_metadata(
+            harness.config.clone(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("Durable Child".to_string()),
+                agent_role: Some("worker".to_string()),
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("child spawn should succeed")
+        .thread_id;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be live");
+    let state = control.upgrade().expect("thread manager should be live");
+    let graph_store = state
+        .agent_graph_store()
+        .expect("agent graph store should exist");
+    assert_eq!(
+        graph_store
+            .find_agent_alias_by_thread(control.session_id(), child_thread_id)
+            .await
+            .expect("child alias lookup should succeed")
+            .map(|alias| alias.state),
+        Some(codex_agent_graph_store::AgentAliasState::Active)
+    );
+
+    child_thread
+        .session
+        .live_thread()
+        .expect("child should have persistence")
+        .shutdown()
+        .await
+        .expect("test should close the rollout writer");
+    assert!(
+        control.close_agent(child_thread_id).await.is_err(),
+        "the close preflight should surface the failed rollout durability barrier"
+    );
+
+    assert_eq!(
+        graph_store
+            .find_agent_alias_by_thread(control.session_id(), child_thread_id)
+            .await
+            .expect("child alias lookup should succeed")
+            .map(|alias| alias.state),
+        Some(codex_agent_graph_store::AgentAliasState::Active),
+        "a failed close preflight must not publish a closed alias"
+    );
+    let current_child = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("failed close should leave the child runtime registered");
+    assert!(Arc::ptr_eq(&current_child, &child_thread));
+
+    child_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("test cleanup should submit shutdown");
+    child_thread.wait_until_terminated().await;
 }
 
 async fn assert_close_wins_lifecycle_race_and_revokes_observation(
@@ -5600,6 +7314,7 @@ async fn assert_close_wins_lifecycle_race_and_revokes_observation(
             agent_path.to_string(),
             Some(agent_path),
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -5787,6 +7502,7 @@ async fn adopted_v1_child_records_foreign_wait_presentation_before_final_status(
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("independently controlled child should start");
@@ -5888,6 +7604,7 @@ async fn completed_child_releases_foreign_watcher_with_retained_runtime() {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("independently controlled child should start");
@@ -6136,6 +7853,7 @@ async fn v1_observer_honors_response_policy_for_a_v2_target() {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("independently controlled V2 child should start");
@@ -6247,6 +7965,7 @@ async fn restored_foreign_v1_observer_records_v2_terminal_before_async_delivery(
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("independently controlled V2 child should start");
@@ -6386,6 +8105,7 @@ async fn response_observer_retries_a_transient_canonical_history_read_failure() 
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("start child thread");
@@ -7022,6 +8742,179 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
         .close_agent(parent_thread_id)
         .await
         .expect("tree shutdown after subtree resume should succeed");
+}
+
+#[tokio::test]
+async fn v1_child_resuming_unloaded_main_restores_root_topology_and_observation() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    let root_control = root_thread.session.services.agent_control.clone();
+    let observer_thread_id = root_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("observer child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("observer child should spawn");
+    let sibling_thread_id = root_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("sibling child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("sibling child should spawn");
+    let grandchild_thread_id = root_control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("sibling grandchild"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: sibling_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: Some("reviewer".to_string()),
+            })),
+        )
+        .await
+        .expect("grandchild should spawn");
+    let observer_thread = harness
+        .manager
+        .get_thread(observer_thread_id)
+        .await
+        .expect("observer child should be live");
+    let sibling_thread = harness
+        .manager
+        .get_thread(sibling_thread_id)
+        .await
+        .expect("sibling should be live");
+    let grandchild_thread = harness
+        .manager
+        .get_thread(grandchild_thread_id)
+        .await
+        .expect("grandchild should be live");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&observer_thread, "observer persisted").await;
+    persist_thread_for_tree_resume(&sibling_thread, "sibling persisted").await;
+    persist_thread_for_tree_resume(&grandchild_thread, "grandchild persisted").await;
+    let observer_rollout_path = observer_thread
+        .rollout_path()
+        .expect("observer child should have a rollout path");
+    wait_for_live_thread_spawn_children(
+        &root_control,
+        root_thread_id,
+        &[observer_thread_id, sibling_thread_id],
+    )
+    .await;
+    wait_for_live_thread_spawn_children(&root_control, sibling_thread_id, &[grandchild_thread_id])
+        .await;
+
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+
+    let resumed_observer = harness
+        .manager
+        .resume_thread_from_rollout(
+            harness.config.clone(),
+            observer_rollout_path,
+            harness.manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await
+        .expect("cold observer-child resume should succeed");
+    assert_thread_not_loaded(&harness.manager, root_thread_id).await;
+    assert_thread_not_loaded(&harness.manager, sibling_thread_id).await;
+    assert_thread_not_loaded(&harness.manager, grandchild_thread_id).await;
+    let observer_control = resumed_observer
+        .thread
+        .session
+        .services
+        .agent_control
+        .clone();
+    observer_control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            root_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                // This is the response-observer identity, not Main's lifecycle parent.
+                parent_thread_id: observer_thread_id,
+                depth: 2,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            ResponseObservationPolicy::default(),
+        )
+        .await
+        .expect("observer child should resume Main");
+
+    let resumed_root = harness
+        .manager
+        .get_thread(root_thread_id)
+        .await
+        .expect("Main should be live");
+    let resumed_sibling = harness
+        .manager
+        .get_thread(sibling_thread_id)
+        .await
+        .expect("Main should restore its open sibling child");
+    let resumed_grandchild = harness
+        .manager
+        .get_thread(grandchild_thread_id)
+        .await
+        .expect("Main should restore its open grandchild");
+    assert_eq!(
+        resumed_root.config_snapshot().await.session_source,
+        SessionSource::Exec
+    );
+    assert_matches!(
+        resumed_sibling.config_snapshot().await.session_source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            ..
+        }) if parent_thread_id == root_thread_id
+    );
+    assert_matches!(
+        resumed_grandchild.config_snapshot().await.session_source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 2,
+            ..
+        }) if parent_thread_id == sibling_thread_id
+    );
+    assert!(
+        observer_control.has_completion_watcher(
+            resumed_observer.thread.session.presentation_id(),
+            resumed_root.session.presentation_id(),
+        ),
+        "the initiating child should observe the Main turn it resumed"
+    );
+
+    let cleanup = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(cleanup.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(cleanup.timed_out, Vec::<ThreadId>::new());
 }
 
 #[tokio::test]

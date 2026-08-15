@@ -7,6 +7,7 @@ use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
 use crate::thread_manager::ThreadManagerState;
+use crate::thread_manager::ThreadRuntimePublication;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
@@ -241,6 +242,7 @@ async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("spawn v2 child");
@@ -251,6 +253,7 @@ async fn interrupted_v2_residency_eviction_does_not_notify_parent() {
             child_path.to_string(),
             Some(child_path),
             ResponseObservationPolicy::default(),
+            ResponseObserverKind::Native,
             InitialTerminalObservation::FutureTurnsOnly,
         )
         .await
@@ -326,6 +329,7 @@ async fn completed_v2_eviction_does_not_rebind_retired_foreign_v1_watcher() {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("spawn independently controlled V2 child");
@@ -416,7 +420,7 @@ async fn spawn_v2_subagent(
     config: Config,
     parent_thread_id: ThreadId,
     label: &str,
-) -> crate::thread_manager::NewThread {
+) -> crate::thread_manager::ThreadSpawnResult {
     state
         .spawn_new_thread_with_source(
             config,
@@ -430,6 +434,7 @@ async fn spawn_v2_subagent(
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            ThreadRuntimePublication::Immediate,
         )
         .await
         .expect("spawn v2 subagent")

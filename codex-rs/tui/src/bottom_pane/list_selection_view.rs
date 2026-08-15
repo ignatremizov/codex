@@ -12,6 +12,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+use super::selection_popup_common::menu_surface_padding_height;
 use super::selection_popup_common::render_menu_surface;
 use super::selection_popup_common::wrap_styled_line;
 use crate::app_event_sender::AppEventSender;
@@ -142,6 +143,11 @@ pub(crate) struct SelectionItem {
     pub is_default: bool,
     pub is_disabled: bool,
     pub actions: Vec<SelectionAction>,
+    /// Optional action invoked with Tab without accepting or dismissing the row.
+    ///
+    /// This is intended for contextual child views such as the `/agent` action menu. The primary
+    /// Enter action remains unchanged.
+    pub secondary_action: Option<SelectionAction>,
     pub dismiss_on_select: bool,
     /// Require an explicit accept key after a direct shortcut highlights this sensitive item.
     pub require_explicit_confirmation: bool,
@@ -176,6 +182,8 @@ pub(crate) struct SelectionViewParams {
     pub tabs: Vec<SelectionTab>,
     pub initial_tab_id: Option<String>,
     pub is_searchable: bool,
+    /// Whether enabled rows render and accept transient numeric selection shortcuts.
+    pub show_row_numbers: bool,
     pub search_placeholder: Option<String>,
     pub col_width_mode: ColumnWidthMode,
     pub row_display: SelectionRowDisplay,
@@ -228,6 +236,7 @@ impl Default for SelectionViewParams {
             tabs: Vec::new(),
             initial_tab_id: None,
             is_searchable: false,
+            show_row_numbers: true,
             search_placeholder: None,
             col_width_mode: ColumnWidthMode::AutoVisible,
             row_display: SelectionRowDisplay::Wrapped,
@@ -265,6 +274,7 @@ pub(crate) struct ListSelectionView {
     pub(super) dismiss_after_child_accept: bool,
     app_event_tx: AppEventSender,
     is_searchable: bool,
+    show_row_numbers: bool,
     search_query: String,
     search_placeholder: Option<String>,
     col_width_mode: ColumnWidthMode,
@@ -397,6 +407,7 @@ impl ListSelectionView {
             dismiss_after_child_accept: false,
             app_event_tx,
             is_searchable: params.is_searchable,
+            show_row_numbers: params.show_row_numbers,
             search_query: String::new(),
             search_placeholder: if params.is_searchable {
                 params.search_placeholder
@@ -593,7 +604,7 @@ impl ListSelectionView {
                     };
                     let name_with_marker = format!("{name}{marker}");
                     let is_disabled = item.is_disabled || item.disabled_reason.is_some();
-                    let wrap_prefix = if self.is_searchable {
+                    let wrap_prefix = if self.is_searchable || !self.show_row_numbers {
                         // The number keys don't work when search is enabled (since we let the
                         // numbers be used for the search query).
                         format!("{prefix} ")
@@ -831,6 +842,17 @@ impl ListSelectionView {
         }
     }
 
+    fn accept_secondary(&self) {
+        let secondary_action = self
+            .selected_actual_idx()
+            .and_then(|actual_idx| self.active_items().get(actual_idx))
+            .filter(|item| Self::item_is_enabled(item))
+            .and_then(|item| item.secondary_action.as_ref());
+        if let Some(secondary_action) = secondary_action {
+            secondary_action(&self.app_event_tx);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_search_query(&mut self, query: String) {
         self.search_query = query;
@@ -1042,6 +1064,11 @@ impl BottomPaneView for ListSelectionView {
             _ if self.allow_cancel && self.keymap.cancel.is_pressed(key_event) => {
                 self.on_ctrl_c();
             }
+            KeyEvent {
+                code: KeyCode::Tab,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => self.accept_secondary(),
             _ if self.keymap.accept.is_pressed(key_event) => self.accept(),
             KeyEvent {
                 code: KeyCode::Char(c),
@@ -1074,10 +1101,11 @@ impl BottomPaneView for ListSelectionView {
                     self.select_shortcut(idx);
                     return;
                 }
-                if let Some(idx) = c
-                    .to_digit(10)
-                    .map(|d| d as usize)
-                    .and_then(|number| self.actual_idx_for_enabled_number(number))
+                if self.show_row_numbers
+                    && let Some(idx) = c
+                        .to_digit(10)
+                        .map(|d| d as usize)
+                        .and_then(|number| self.actual_idx_for_enabled_number(number))
                 {
                     self.select_shortcut(idx);
                 }
@@ -1181,9 +1209,15 @@ impl Renderable for ListSelectionView {
 
         // Side content: when the terminal is wide enough the panel sits beside
         // the list and shares vertical space; otherwise it stacks below.
-        if self.side_layout_width(inner_width).is_some() {
-            // Side-by-side — side content shares list rows vertically so it
-            // doesn't add to total height.
+        if let Some(side_width) = self.side_layout_width(inner_width) {
+            // Side-by-side content shares the same vertical region as the list, so the popup must
+            // be tall enough for whichever column is taller. Add the menu surface's top/bottom
+            // inset because the renderable is placed inside that surface.
+            height = height.max(
+                self.side_content
+                    .desired_height(side_width)
+                    .saturating_add(menu_surface_padding_height()),
+            );
         } else {
             let side_h = self.stacked_side_content().desired_height(inner_width);
             if side_h > 0 {
@@ -2155,6 +2189,31 @@ mod tests {
     }
 
     #[test]
+    fn tab_invokes_secondary_action_without_accepting_row() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut view = new_view(
+            SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Agent".to_string(),
+                    secondary_action: Some(Box::new(|tx: &_| {
+                        tx.send(AppEvent::OpenApprovalsPopup);
+                    })),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            tx,
+        );
+
+        view.handle_key_event(KeyEvent::from(KeyCode::Tab));
+
+        assert!(!view.is_complete());
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::OpenApprovalsPopup)));
+    }
+
+    #[test]
     fn move_down_without_selection_change_does_not_fire_callback() {
         let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
@@ -2782,6 +2841,37 @@ mod tests {
         );
 
         assert_eq!(view.side_layout_width(/*content_width*/ 80), None);
+    }
+
+    #[test]
+    fn side_by_side_content_can_determine_popup_height() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let view = new_view(
+            SelectionViewParams {
+                title: Some("Debug".to_string()),
+                items: vec![SelectionItem {
+                    name: "Item 1".to_string(),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }],
+                side_content: Box::new(MarkerRenderable {
+                    marker: "W",
+                    height: 12,
+                }),
+                side_content_width: SideContentWidth::Half,
+                side_content_min_width: 10,
+                ..Default::default()
+            },
+            tx,
+        );
+
+        assert_eq!(view.desired_height(/*width*/ 120), 14);
+        let rendered = render_lines_with_width(&view, /*width*/ 120);
+        assert_eq!(
+            rendered.lines().filter(|line| line.contains('W')).count(),
+            12
+        );
     }
 
     #[test]

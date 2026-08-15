@@ -1,5 +1,8 @@
 mod account;
 mod account_thread_usage;
+mod agent_alias;
+mod agent_control_interrupt;
+mod agent_control_v2;
 mod analytics;
 mod app_installed;
 mod app_list;

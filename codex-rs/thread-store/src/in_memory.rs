@@ -21,6 +21,7 @@ use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::RolloutItem;
+use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 use codex_rollout::persisted_rollout_items;
 
 use crate::AppendThreadItemsParams;
@@ -48,6 +49,7 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
+use crate::ThreadWriterReservation;
 use crate::UpdateThreadMetadataParams;
 use crate::error::reject_paginated_history_mode;
 
@@ -540,6 +542,7 @@ pub enum InMemoryThreadStoreFailure {
     SubAgentCompletionPresentationFlush,
     AgentResponseObservationFlush,
     AgentResponseObservationHistoryRead,
+    UserAgentTaskContextFlush,
     ThreadMetadataUpdate,
 }
 
@@ -555,6 +558,7 @@ impl InMemoryThreadStoreFailure {
             Self::SubAgentCompletionPresentationFlush => "subagent completion presentation flush",
             Self::AgentResponseObservationFlush => "agent response observation flush",
             Self::AgentResponseObservationHistoryRead => "agent response observation history read",
+            Self::UserAgentTaskContextFlush => "user agent task context flush",
             Self::ThreadMetadataUpdate => "thread metadata update",
         }
     }
@@ -1151,6 +1155,19 @@ fn append_persisted_items_to_state(
     let appends_agent_response_observation = persisted_items
         .iter()
         .any(|item| matches!(item, RolloutItem::AgentResponseObservation(_)));
+    let appends_user_agent_task_context = persisted_items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::ResponseItem(response)
+                if response.id().is_some_and(|id| {
+                    is_user_agent_task_context_response_item_id(id.as_str())
+                })
+        ) || matches!(
+            item,
+            RolloutItem::AgentResponseObservation(observation)
+                if observation.promoted_task_context.is_some()
+        )
+    });
     let planned_agent_response_observation_flush_failure = if appends_agent_response_observation
         && matches!(durability, InMemoryAppendDurability::Flushed)
         && state.agent_response_observation_flush_failures_remaining > 0
@@ -1248,6 +1265,13 @@ fn append_persisted_items_to_state(
                 state.fail_next_operation = None;
                 Some(InMemoryThreadStoreFailure::AgentResponseObservationFlush)
             }
+            Some(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
+                if appends_user_agent_task_context
+                    && matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                Some(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
+            }
             Some(
                 InMemoryThreadStoreFailure::CompactedMediaRepairAppend
                 | InMemoryThreadStoreFailure::CompactedMediaRepairFlush
@@ -1258,6 +1282,7 @@ fn append_persisted_items_to_state(
                 | InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush
                 | InMemoryThreadStoreFailure::AgentResponseObservationFlush
                 | InMemoryThreadStoreFailure::AgentResponseObservationHistoryRead
+                | InMemoryThreadStoreFailure::UserAgentTaskContextFlush
                 | InMemoryThreadStoreFailure::ThreadMetadataUpdate,
             )
             | None => None,
@@ -1293,6 +1318,13 @@ impl ThreadStore for InMemoryThreadStore {
 
     fn resume_thread(&self, params: ResumeThreadParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(InMemoryThreadStore::resume_thread(self, params))
+    }
+
+    fn reserve_thread_writers(
+        &self,
+        _thread_ids: Vec<ThreadId>,
+    ) -> ThreadStoreFuture<'_, ThreadWriterReservation> {
+        Box::pin(async { Ok(ThreadWriterReservation::new(())) })
     }
 
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
