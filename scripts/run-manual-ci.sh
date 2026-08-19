@@ -215,18 +215,20 @@ dispatch_verify_with_retry() {
   done
 }
 
-verify_infrastructure_failure() {
+workflow_infrastructure_failure() {
   local run_id="$1"
-  local verify_json="$2"
+  local workflow_json="$2"
   local step_count
   local failed_log
 
-  step_count="$(jq '[.jobs[].steps[]] | length' <<<"$verify_json")"
+  step_count="$(jq '[.jobs[].steps[]] | length' <<<"$workflow_json")"
   if [[ "$step_count" == 0 ]]; then
     return 0
   fi
   failed_log="$(gh run view "$run_id" --repo "$repo" --log-failed 2>&1 || true)"
-  rg -q 'Service Unavailable|Failed to resolve action download info' <<<"$failed_log"
+  rg -q \
+    'Service Unavailable|Failed to resolve action download info|apt-get (update|install) failed after [0-9]+ bounded attempts' \
+    <<<"$failed_log"
 }
 
 if [[ -n "$verify_run" ]]; then
@@ -279,7 +281,7 @@ while true; do
         echo "Verify $verify_run was superseded; adopting active run $replacement_run."
         verify_run="$replacement_run"
         retry_verify=true
-      elif verify_infrastructure_failure "$verify_run" "$verify_json"; then
+      elif workflow_infrastructure_failure "$verify_run" "$verify_json"; then
         echo "Verify $verify_run failed before repository checks; retrying in ${infra_retry_seconds}s."
         sleep "$infra_retry_seconds"
         verify_run="$(dispatch_verify_with_retry)"
@@ -369,6 +371,19 @@ while true; do
     exit 22
   fi
   if [[ "$build_status" == "completed" && "$build_conclusion" != "success" ]]; then
+    if workflow_infrastructure_failure "$build_run" "$build_json"; then
+      echo "Build $build_run failed in infrastructure; retrying in ${infra_retry_seconds}s."
+      sleep "$infra_retry_seconds"
+      while ! build_run="$(dispatch_run manual-release-build.yml)"; do
+        echo "Build dispatch failed; retrying in ${infra_retry_seconds}s." >&2
+        sleep "$infra_retry_seconds"
+      done
+      echo "Monitoring replacement Build $build_run: $(run_url "$build_run")"
+      last_pair=""
+      linux_ready_reported=false
+      macos_ready_reported=false
+      continue
+    fi
     echo "Build failed: $(run_url "$build_run")" >&2
     exit 23
   fi
