@@ -166,10 +166,10 @@ async fn ultra_reasoning_uses_highest_non_ultra_and_proactive_mode() -> Result<(
 
 #[test_case(ModeHintSource::ConfiguredHint, false; "configured hint overrides catalog")]
 #[test_case(ModeHintSource::ConfiguredHint, true; "configured hint overrides hosted default")]
-#[test_case(ModeHintSource::CatalogHint, false; "catalog hint overrides reasoning effort")]
+#[test_case(ModeHintSource::CatalogHint, false; "reasoning policy ignores catalog hints")]
 #[test_case(ModeHintSource::CatalogHint, true; "hosted default overrides catalog")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mode_hints_override_reasoning_effort(
+async fn configured_mode_and_reasoning_select_delegation_policy(
     source: ModeHintSource,
     disable_native_tools: bool,
 ) -> Result<()> {
@@ -216,51 +216,47 @@ async fn mode_hints_override_reasoning_effort(
     let first_texts = developer_texts(&first_input);
     let second_input = requests[1].input();
     let second_texts = developer_texts(&second_input);
-    let (expected_hint, suppressed_hint) = match source {
-        ModeHintSource::ConfiguredHint => (CUSTOM_MODE_HINT_TEXT, CATALOG_MODE_HINT_TEXT),
-        ModeHintSource::CatalogHint if disable_native_tools => (
-            "read the full multi-agent skill using its listed package locator",
-            CATALOG_MODE_HINT_TEXT,
-        ),
-        ModeHintSource::CatalogHint => (CATALOG_MODE_HINT_TEXT, CATALOG_EXPLICIT_TEXT),
-    };
-    let hosted_default = disable_native_tools && matches!(source, ModeHintSource::CatalogHint);
+    let configured = matches!(source, ModeHintSource::ConfiguredHint);
     for (index, texts) in [&first_texts, &second_texts].into_iter().enumerate() {
-        let proactive = usize::from(hosted_default && index == 1);
         assert_eq!(
             (
-                count_containing(texts, expected_hint),
+                count_containing(texts, CUSTOM_MODE_HINT_TEXT),
                 count_containing(texts, NO_SPAWN_TEXT),
                 count_containing(texts, PROACTIVE_TEXT),
-                count_containing(texts, "using multi-agent tools"),
-                count_containing(texts, "using collaboration tools"),
+                count_containing(texts, CATALOG_MODE_HINT_TEXT),
+                count_containing(texts, CATALOG_EXPLICIT_TEXT),
                 count_containing(texts, CATALOG_PROACTIVE_TEXT),
+                count_containing(
+                    texts,
+                    "read the full multi-agent skill using its listed package locator"
+                ),
             ),
             (
-                1 + proactive,
-                usize::from(hosted_default),
-                proactive,
-                proactive,
+                usize::from(configured),
+                usize::from(!configured),
+                usize::from(!configured && index == 1),
                 0,
-                0
+                0,
+                0,
+                // A changed hosted policy appends the new mode after the retained one.
+                usize::from(!configured && disable_native_tools) * (index + 1),
             )
         );
-        assert_eq!(count_containing(texts, suppressed_hint), 0);
     }
 
     Ok(())
 }
 
-#[test_case(ReasoningEffort::Ultra, Some(CATALOG_PROACTIVE_TEXT), Some(CATALOG_PROACTIVE_TEXT); "ultra uses proactive override")]
-#[test_case(ReasoningEffort::High, Some(CATALOG_PROACTIVE_TEXT), Some(CATALOG_EXPLICIT_TEXT); "non ultra ignores proactive override")]
-#[test_case(ReasoningEffort::Ultra, None, Some(PROACTIVE_TEXT); "ultra falls back to built in")]
-#[test_case(ReasoningEffort::Ultra, Some(""), None; "empty proactive suppresses ultra mode")]
-#[test_case(ReasoningEffort::High, Some(""), Some(CATALOG_EXPLICIT_TEXT); "empty proactive leaves non ultra unchanged")]
+#[test_case(ReasoningEffort::Ultra, Some(CATALOG_PROACTIVE_TEXT), PROACTIVE_TEXT; "ultra with catalog mode")]
+#[test_case(ReasoningEffort::High, Some(CATALOG_PROACTIVE_TEXT), NO_SPAWN_TEXT; "high with catalog mode")]
+#[test_case(ReasoningEffort::Ultra, None, PROACTIVE_TEXT; "ultra without catalog mode")]
+#[test_case(ReasoningEffort::Ultra, Some(""), PROACTIVE_TEXT; "ultra with empty catalog mode")]
+#[test_case(ReasoningEffort::High, Some(""), NO_SPAWN_TEXT; "high with empty catalog mode")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn catalog_proactive_mode_is_ultra_only(
+async fn reasoning_policy_selects_mode_independently_of_catalog_metadata(
     effort: ReasoningEffort,
     proactive: Option<&'static str>,
-    expected_hint: Option<&str>,
+    expected_hint: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -289,27 +285,25 @@ async fn catalog_proactive_mode_is_ultra_only(
 
     let input = response.single_request().input();
     let texts = developer_texts(&input);
+    assert_eq!(count_containing(&texts, MULTI_AGENT_MODE_OPEN_TAG), 1);
+    assert_eq!(count_containing(&texts, expected_hint), 1);
     assert_eq!(
-        count_containing(&texts, MULTI_AGENT_MODE_OPEN_TAG),
-        usize::from(expected_hint.is_some())
-    );
-    if let Some(expected_hint) = expected_hint {
-        assert_eq!(count_containing(&texts, expected_hint), 1);
-    }
-    assert_eq!(
-        count_containing(&texts, CATALOG_PROACTIVE_TEXT),
-        usize::from(expected_hint == Some(CATALOG_PROACTIVE_TEXT))
+        (
+            count_containing(&texts, CATALOG_EXPLICIT_TEXT),
+            count_containing(&texts, CATALOG_PROACTIVE_TEXT),
+        ),
+        (0, 0)
     );
 
     Ok(())
 }
 
-#[test_case(ReasoningEffort::High, [CATALOG_EXPLICIT_TEXT, SECOND_MODEL_EXPLICIT_TEXT]; "explicit mode")]
-#[test_case(ReasoningEffort::Ultra, [CATALOG_PROACTIVE_TEXT, SECOND_MODEL_PROACTIVE_TEXT]; "proactive mode")]
+#[test_case(ReasoningEffort::High, NO_SPAWN_TEXT; "explicit mode")]
+#[test_case(ReasoningEffort::Ultra, PROACTIVE_TEXT; "proactive mode")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_switch_refreshes_catalog_role_and_mode(
+async fn model_switch_refreshes_catalog_role_without_changing_reasoning_policy(
     effort: ReasoningEffort,
-    expected_hints: [&str; 2],
+    expected_hint: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -367,12 +361,13 @@ async fn model_switch_refreshes_catalog_role_and_mode(
         let texts = developer_texts(&input);
         assert_eq!(
             (
-                count_containing(&texts, expected_hints[0]),
-                count_containing(&texts, expected_hints[1]),
-                count_containing(&texts, NO_SPAWN_TEXT),
-                count_containing(&texts, PROACTIVE_TEXT),
+                count_containing(&texts, expected_hint),
+                count_containing(&texts, CATALOG_EXPLICIT_TEXT),
+                count_containing(&texts, CATALOG_PROACTIVE_TEXT),
+                count_containing(&texts, SECOND_MODEL_EXPLICIT_TEXT),
+                count_containing(&texts, SECOND_MODEL_PROACTIVE_TEXT),
             ),
-            (1, usize::from(index == 1), 0, 0)
+            (index + 1, 0, 0, 0, 0)
         );
     }
 

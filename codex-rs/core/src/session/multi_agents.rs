@@ -64,6 +64,7 @@ pub(crate) fn resolve_usage_hints(
             max_concurrency: config.max_concurrent_threads_per_session,
             wait_agent_enabled: config.wait_agent_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
+            default_fork_turns: config.default_fork_turns.clone(),
         })
     };
 
@@ -87,27 +88,17 @@ pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<M
     }
 
     let config = &turn_context.config.multi_agent_v2;
-    let model_messages = if config.disable_native_tools {
-        ResolvedModelMessages::bundled()
-    } else {
-        ResolvedModelMessages::from_model(&settings.model_info)
-    };
-    let multi_agent_messages = model_messages.multi_agent();
-    let hint = config
-        .multi_agent_mode_hint_text
-        .as_deref()
-        .or(multi_agent_messages.hint);
+    let hint = config.multi_agent_mode_hint_text.as_deref();
     let multi_agent_mode = match hint {
         Some(text) => MultiAgentMode::Custom(text.to_owned()),
         None => {
+            // Runtime delegation policy is user-controlled, not model-catalog instructions.
+            let bundled = ResolvedModelMessages::bundled().multi_agent();
             let (message, builtin) =
                 if settings.effective_reasoning_effort() == Some(ReasoningEffort::Ultra) {
-                    (multi_agent_messages.proactive, MultiAgentMode::Proactive)
+                    (bundled.proactive, MultiAgentMode::Proactive)
                 } else {
-                    (
-                        multi_agent_messages.explicit,
-                        MultiAgentMode::ExplicitRequestOnly,
-                    )
+                    (bundled.explicit, MultiAgentMode::ExplicitRequestOnly)
                 };
             if config.disable_native_tools {
                 let policy = message
@@ -117,10 +108,7 @@ pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<M
                     "\n{policy}\n\n{HOSTED_MULTI_AGENT_SKILL_GUIDANCE}\n"
                 ))
             } else {
-                match message {
-                    ResolvedMessage::Catalog(text) => MultiAgentMode::Custom(text.to_owned()),
-                    ResolvedMessage::Bundled(_) => builtin,
-                }
+                builtin
             }
         }
     };

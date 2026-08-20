@@ -43,8 +43,8 @@ impl ContextualUserFragment for MultiAgentModeInstructions {
     }
 
     fn body(&self) -> ContentItem {
-        // `effective_multi_agent_mode` carries configured and catalog overrides as `Custom`.
-        // The other variants explicitly select bundled text.
+        // `Custom` carries configured policy or bundled policy with hosted-tool guidance.
+        // Model-catalog delegation text never selects the runtime policy.
         let bundled = ResolvedModelMessages::bundled().multi_agent();
         input_text(
             match &self.multi_agent_mode {
