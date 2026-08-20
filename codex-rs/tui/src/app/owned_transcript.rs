@@ -475,6 +475,10 @@ impl App {
 mod tests;
 
 #[cfg(test)]
+#[path = "code_mode_history_tests.rs"]
+mod code_mode_history_tests;
+
+#[cfg(test)]
 #[path = "empty_state_animation_tests.rs"]
 mod empty_state_animation_tests;
 

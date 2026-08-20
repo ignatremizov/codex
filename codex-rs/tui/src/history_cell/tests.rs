@@ -1468,7 +1468,7 @@ fn active_mcp_tool_call_snapshot() {
 }
 
 #[test]
-fn code_mode_tool_call_uses_title_and_preserves_full_transcript() {
+fn code_mode_tool_call_preserves_complete_history_and_transcript() {
     let output = format!("{} transcript tail", "0123456789".repeat(20));
     let mut cell = new_active_mcp_tool_call(
         "call-code-mode".into(),
@@ -1497,17 +1497,14 @@ fn code_mode_tool_call_uses_title_and_preserves_full_transcript() {
         }),
     );
 
-    let history = render_lines(&cell.display_lines(/*width*/ 40)).join("\n");
+    let history = render_lines(&cell.display_lines(/*width*/ 180)).join("\n");
     let transcript = render_lines(&cell.transcript_lines(/*width*/ 180)).join("\n");
-    insta::assert_snapshot!(format!("history:\n{history}\n\ntranscript:\n{transcript}"), @r#"
-    history:
-    • Inspect Spotify workspace
-      └ 012345678901234567890123456789012345
-        678901234567890123456789012345678901
-        234567890123456789012345678901234567
-        +1 line (ctrl+t to view transcript)
-
-    transcript:
+    assert_eq!(history, transcript);
+    assert_eq!(
+        cell.display_hyperlink_lines(/*width*/ 40),
+        cell.transcript_hyperlink_lines(/*width*/ 40)
+    );
+    insta::assert_snapshot!(history, @r#"
     • Called node_repl.js({"title":"Inspect Spotify workspace","code":"await tools.exec_command({ cmd: 'git status' })"})
       └ Script completed
         Wall time 0.1 seconds
@@ -1539,16 +1536,10 @@ fn code_mode_tool_call_preserves_failure_details() {
         }),
     );
 
-    let history = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+    let history = render_lines(&cell.display_lines(/*width*/ 120)).join("\n");
     let transcript = render_lines(&cell.transcript_lines(/*width*/ 120)).join("\n");
-    insta::assert_snapshot!(format!("history:\n{history}\n\ntranscript:\n{transcript}"), @r#"
-    history:
-    • Inspect workspace
-      └ Script failed
-        Output:
-        permission denied
-
-    transcript:
+    assert_eq!(history, transcript);
+    insta::assert_snapshot!(history, @r#"
     • Called node_repl.js({"title":"Inspect workspace","code":"throw Error('denied')"})
       └ Script failed
         Output:

@@ -113,7 +113,7 @@ async fn older_page_hydration_keeps_pending_computer_and_exploration_completion(
                     &app.chat_widget,
                     /*width*/ 80
                 )
-                .contains("Using computer · 3 actions")
+                .contains("Calling cua_repl.js")
             );
         }
         match kind {

@@ -1370,11 +1370,11 @@ async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
         }
         insta::allow_duplicates! {
             insta::assert_snapshot!(lines_to_single_string(lines), @r#"
-            • Inspect workspace
+            • Called node_repl.js({"title":"Inspect workspace"})
               └ Script failed
-                {"exit_code": 0, "output": "ready", "chunk_id": "chunk-1"}
+                {"exit_code":0,"output":"ready","chunk_id":"chunk-1"}
                 Script error:
-                +1 line (ctrl+t to view transcript)
+                permission denied
             "#);
         }
         assert_eq!(
@@ -1382,7 +1382,14 @@ async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
             Some(&Line::from(vec![
                 "•".red().bold(),
                 " ".into(),
-                "Inspect workspace".fg(crate::style::accent_color()),
+                "Called".bold(),
+                " ".into(),
+                server.fg(crate::style::accent_color()),
+                ".".into(),
+                "js".fg(crate::style::accent_color()),
+                "(".into(),
+                "{\"title\":\"Inspect workspace\"}".dim(),
+                ")".into(),
             ])),
             "{server}",
         );

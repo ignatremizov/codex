@@ -1,5 +1,5 @@
 use super::*;
-use base64::Engine;
+use crate::text_formatting::format_json_compact;
 use codex_protocol::mcp::CallToolResult;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -189,7 +189,7 @@ fn mcp_preview_shares_one_limit_across_blocks_and_preserves_transcript() {
 }
 
 #[test]
-fn code_mode_output_shares_a_row_budget_across_blocks() {
+fn code_mode_output_retains_every_block_in_normal_history() {
     let mut cell = new_active_mcp_tool_call(
         "browser-call".to_string(),
         McpInvocation {
@@ -209,18 +209,22 @@ fn code_mode_output_shares_a_row_budget_across_blocks() {
     );
 
     let display = cell
-        .display_lines(/*width*/ 40)
+        .display_lines(/*width*/ 100)
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    insta::assert_snapshot!(display, @r"
-    • Inspect page
-      └ Page title
+    insta::assert_snapshot!(display, @r#"
+    • Called node_repl.js({"title":"Inspect page","code":"await tab.snapshot()"})
+      └ Script completed
+        Output:
+        Page title
         Navigation
         Main content
-        +3 lines (ctrl+t to view transcript)
-    ");
+        Button
+        Link
+        Footer
+    "#);
     let transcript = cell
         .transcript_lines(/*width*/ 100)
         .iter()
@@ -229,10 +233,11 @@ fn code_mode_output_shares_a_row_budget_across_blocks() {
         .join("\n");
     assert!(transcript.contains("await tab.snapshot()"));
     assert!(transcript.ends_with("    Button\n    Link\n    Footer"));
+    assert_eq!(display, transcript);
 }
 
 #[test]
-fn code_mode_output_preserves_trailing_failure_diagnostics_in_transcript() {
+fn code_mode_output_preserves_trailing_failure_diagnostics_in_history() {
     let mut cell = new_active_mcp_tool_call(
         "browser-error".to_string(),
         McpInvocation {
@@ -254,18 +259,23 @@ fn code_mode_output_preserves_trailing_failure_diagnostics_in_transcript() {
         }),
     );
     let display = cell
-        .display_lines(/*width*/ 40)
+        .display_lines(/*width*/ 80)
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    insta::assert_snapshot!(display, @r"
-    • Inspect page
+    insta::assert_snapshot!(display, @r#"
+    • Called node_repl.js({"title":"Inspect page"})
       └ Script failed
         Page title
         Navigation
-        +6 lines (ctrl+t to view transcript)
-    ");
+        Main content
+        Button
+        Link
+        Footer
+        Script error:
+        permission denied
+    "#);
     let transcript = cell
         .transcript_lines(/*width*/ 80)
         .iter()
@@ -273,10 +283,11 @@ fn code_mode_output_preserves_trailing_failure_diagnostics_in_transcript() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(transcript.ends_with("    Script error:\n    permission denied"));
+    assert_eq!(display, transcript);
 }
 
 #[test]
-fn code_mode_output_row_budget_applies_after_wrapping_and_to_errors() {
+fn code_mode_complete_output_wraps_without_truncating_successes_or_errors() {
     let output = format!("{}\ntranscript tail", "Browser 页面 👩‍💻\n".repeat(40));
     for server in ["node_repl", "cua_repl"] {
         for completion in [
@@ -303,23 +314,15 @@ fn code_mode_output_row_budget_applies_after_wrapping_and_to_errors() {
             cell.complete(Duration::ZERO, completion);
             for width in [20, 40, 80] {
                 let compact = cell.compact_hyperlink_lines(width);
-                assert!(compact.len() <= 4);
-                assert!(
-                    compact
-                        .last()
-                        .unwrap()
-                        .line
-                        .to_string()
-                        .ends_with("transcript tail")
-                );
+                assert_eq!(compact, cell.transcript_hyperlink_lines(width));
+                assert!(!cell.has_hidden_activity_details(width));
                 let display = cell.display_lines(width);
-                assert_eq!(display.len(), 5); // Header, three output rows, and omission hint.
+                assert_eq!(display, cell.transcript_lines(width));
                 assert!(
                     display
                         .iter()
                         .all(|line| line.width() <= usize::from(width))
                 );
-                assert!(display.last().unwrap().to_string().starts_with("    +"));
                 let transcript = cell
                     .transcript_lines(width)
                     .iter()
@@ -382,20 +385,23 @@ fn projected_content_preserves_full_rendering() {
 }
 
 #[test]
-fn projected_image_marker_still_requires_a_complete_image() {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(PNG)
-        .expect("decode PNG fixture");
-    let truncated = base64::engine::general_purpose::STANDARD.encode(&bytes[..33]);
-    let invalid = json!({"type": "image", "mimeType": "image/png", "data": truncated});
-    let valid = json!({"type": "image", "mimeType": "image/png", "data": format!("data:image/png;base64,{PNG}")});
-
-    let projected = McpToolResult::new(result(vec![invalid.clone()]), McpResultKind::Standard);
-    assert!(!projected.has_image);
-    assert_eq!(projected.content[0].render(), "Returned image");
-
-    let projected = McpToolResult::new(result(vec![invalid, valid]), McpResultKind::Standard);
-    assert!(projected.has_image);
+fn projected_image_blocks_retain_markers_without_wire_payloads() {
+    let projected = McpToolResult::new(
+        result(vec![
+            json!({"type": "image", "mimeType": "image/png", "data": PNG}),
+            json!({"type": "image", "mimeType": "image/png", "data": format!("data:image/png;base64,{PNG}")}),
+        ]),
+        McpResultKind::Standard,
+    );
+    assert_eq!(
+        projected
+            .content
+            .iter()
+            .map(|block| (block.is_image, block.render_full()))
+            .collect::<Vec<_>>(),
+        vec![(true, "Returned image"), (true, "Returned image")],
+    );
+    assert!(!format!("{projected:?}").contains(PNG));
 }
 
 #[test]
@@ -419,15 +425,7 @@ fn code_mode_preserves_text_fields_on_nontext_and_unknown_blocks() {
 
     let narrow = cell.display_lines(/*width*/ 16);
     assert!(narrow.iter().all(|line| line.width() <= 16));
-    assert_eq!(
-        narrow
-            .iter()
-            .skip(1)
-            .take(2)
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        vec!["  └ Returned", "    image"],
-    );
+    assert_eq!(narrow, cell.transcript_lines(/*width*/ 16));
 
     let compact = cell.compact_hyperlink_lines(/*width*/ 80);
     let compact = visible_lines(compact)
@@ -452,15 +450,23 @@ fn code_mode_preserves_text_fields_on_nontext_and_unknown_blocks() {
         .join("\n");
     insta::assert_snapshot!(format!("compact:\n{compact}\n\nhistory:\n{display}\n\ntranscript:\n{transcript}"), @r#"
     compact:
-    • Called Inspect results
+    • Called node_repl.js({"title":"Inspect results"})
       └ Returned image
+        Script completed
+        Output:
         image-side output
+        Script completed
+        Output:
         unknown-side output
 
     history:
-    • Inspect results
+    • Called node_repl.js({"title":"Inspect results"})
       └ Returned image
+        Script completed
+        Output:
         image-side output
+        Script completed
+        Output:
         unknown-side output
 
     transcript:
@@ -510,9 +516,13 @@ fn code_mode_preserves_text_fields_on_nontext_and_unknown_blocks() {
         .join("\n");
     insta::assert_snapshot!(format!("history:\n{display}\n\ntranscript:\n{transcript}"), @r"
     history:
-    • Called cua_repl.js
+    • Called cua_repl.js()
       └ Returned image
+        Script completed
+        Output:
         image-side output
+        Script completed
+        Output:
         unknown-side output
 
     transcript:
@@ -541,7 +551,7 @@ fn titled_image_call_keeps_error_and_full_title_when_narrow() {
     );
     assert_eq!(
         cell.display_lines(/*width*/ 80)[0].to_string(),
-        format!("• {title}")
+        format!("• Calling node_repl.js({{\"title\":\"{title}\"}})")
     );
     cell.complete(
         Duration::ZERO,
@@ -554,10 +564,11 @@ fn titled_image_call_keeps_error_and_full_title_when_narrow() {
         }),
     );
     let lines = cell.display_lines(/*width*/ 32);
+    assert_eq!(lines, cell.transcript_lines(/*width*/ 32));
     assert!(lines[0].width() <= 32);
     assert_eq!(lines[0].spans[0].style, "•".red().bold().style);
     insta::assert_snapshot!(
-        lines
+        cell.display_lines(/*width*/ 200)
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
@@ -613,6 +624,8 @@ fn code_mode_transcript_preserves_long_code_and_indentation_across_wrapping() {
     let expected = code.split('\n').map(str::to_owned).collect::<Vec<_>>();
     for width in [16, 24, 40, 80] {
         let lines = cell.transcript_hyperlink_lines(width);
+        assert_eq!(cell.display_hyperlink_lines(width), lines);
+        assert_eq!(cell.compact_hyperlink_lines(width), lines);
         let source = source_lines(&lines);
         assert!(source.ends_with(&expected), "{source:?}");
         assert!(
