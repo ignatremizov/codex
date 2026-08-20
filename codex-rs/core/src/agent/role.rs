@@ -1,7 +1,8 @@
 //! Applies bounded agent-role overrides to an existing session config.
 //!
 //! Roles may customize the child or reduce its capabilities, but never replace the parent
-//! session's authority, except for explicit user-authored history-fork authorization.
+//! session's managed authority. Explicit role capabilities include MCP registrations and
+//! user-authored history-fork authorization.
 //! A projected layer keeps existing layer-based consumers in sync.
 
 use crate::config::AgentRoleConfig;
@@ -12,6 +13,7 @@ use codex_agent_roles::parse_agent_role_file_contents;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
+use codex_config::McpServerConfig;
 use codex_config::SkillsConfig;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
 use codex_exec_server::read_sensitive_file_to_string;
@@ -45,6 +47,8 @@ struct AgentRoleOverrides {
     service_tier: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     features: BTreeMap<String, bool>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    mcp_servers: BTreeMap<String, McpServerConfig>,
     skills: Option<SkillsConfig>,
     agents: Option<AgentRoleHistoryOverrides>,
 }
@@ -93,6 +97,7 @@ async fn apply_role_to_config_inner(
         model_verbosity: role_config.model_verbosity,
         personality: role_config.personality,
         service_tier: role_config.service_tier,
+        mcp_servers: role_config.mcp_servers.into_iter().collect(),
         agents: role_config
             .agents
             .as_ref()
@@ -196,6 +201,16 @@ mod role_overrides {
     ) -> anyhow::Result<Config> {
         let mut next_config = config.clone();
         next_config.config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
+        if !overrides.mcp_servers.is_empty() {
+            let mut mcp_servers = next_config.mcp_servers.get().clone();
+            mcp_servers.extend(
+                overrides
+                    .mcp_servers
+                    .iter()
+                    .map(|(name, server)| (name.clone(), server.clone())),
+            );
+            next_config.mcp_servers.set(mcp_servers)?;
+        }
         if let Some(agents) = &overrides.agents {
             next_config.agent_allow_history_forks = agents.allow_history_forks;
         }

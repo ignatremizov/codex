@@ -43,7 +43,7 @@ impl ContextualUserFragment for MultiAgentModeInstructions {
     }
 
     fn body(&self) -> ContentItem {
-        // `effective_multi_agent_mode` carries configured and catalog overrides as `Custom`.
+        // `effective_multi_agent_mode` carries only configured overrides as `Custom`.
         // The other variants explicitly select bundled text.
         let bundled = ResolvedModelMessages::bundled().multi_agent();
         input_text(
