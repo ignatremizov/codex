@@ -491,7 +491,7 @@ writable_roots = ["./sandbox-root"]
 }
 
 #[tokio::test]
-async fn apply_role_cannot_expand_parent_authority() {
+async fn apply_role_preserves_parent_authority_outside_explicit_role_capabilities() {
     let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     config.notify = Some(vec!["parent-notifier".to_string()]);
     for feature in [Feature::MemoryTool, Feature::RequestPermissionsTool] {
@@ -551,7 +551,7 @@ command = "attacker-command"
     assert_eq!(config.model_provider, parent.model_provider);
     assert_eq!(config.model_providers, parent.model_providers);
     assert_eq!(config.approvals_reviewer, parent.approvals_reviewer);
-    assert_eq!(config.mcp_servers, parent.mcp_servers);
+    assert!(config.mcp_servers.get().contains_key("attacker"));
     assert_eq!(config.chatgpt_base_url, parent.chatgpt_base_url);
     assert_eq!(config.notify, parent.notify);
     for feature in [Feature::MemoryTool, Feature::RequestPermissionsTool] {
@@ -571,12 +571,64 @@ command = "attacker-command"
         "sandbox_mode",
         "notify",
         "apps",
-        "mcp_servers",
     ] {
         assert_eq!(
             role_layer.config.get(key),
             None,
             "role must not control {key}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn role_mcp_servers_merge_without_bypassing_managed_requirements() {
+    let home = TempDir::new().expect("create temp dir");
+    let role_path = write_role_config(
+        &home,
+        "mcp-role.toml",
+        "[mcp_servers.role_tool]\ncommand = \"role-command\"\n",
+    )
+    .await;
+    for (allowed_command, expected_enabled) in
+        [("role-command", true), ("different-managed-command", false)]
+    {
+        let requirements = format!(
+            "[mcp_servers.parent_tool.identity]\ncommand = \"parent-command\"\n\
+             [mcp_servers.role_tool.identity]\ncommand = \"{allowed_command}\"\n"
+        );
+        let mut config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(home.path().to_path_buf())
+            .fallback_cwd(Some(home.path().to_path_buf()))
+            .cli_overrides(vec![(
+                "mcp_servers.parent_tool.command".to_string(),
+                TomlValue::String("parent-command".to_string()),
+            )])
+            .cloud_config_bundle(
+                CloudConfigBundleFixture::loader_with_enterprise_requirement(&requirements),
+            )
+            .build()
+            .await
+            .expect("load managed parent");
+        let parent_server = config.mcp_servers.get()["parent_tool"].clone();
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                config_file: Some(role_path.clone()),
+                ..Default::default()
+            },
+        );
+        apply_role_to_config(&mut config, Some("custom"))
+            .await
+            .expect("apply role MCP configuration");
+        let servers = config.mcp_servers.get();
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers["parent_tool"], parent_server);
+        assert_eq!(
+            (
+                servers["role_tool"].enabled,
+                servers["role_tool"].disabled_reason.is_some(),
+            ),
+            (expected_enabled, !expected_enabled),
         );
     }
 }

@@ -1170,12 +1170,12 @@ async fn active_model_switch_updates_core_context_from_captured_settings(
     let initial_instructions = format!("Instructions for {MODEL_A}.");
     assert_eq!(requests[0].instructions_text(), initial_instructions);
     assert!(!requests[0].body_contains_text("<model_switch>"));
-    for text in [
-        format!("Root role for {MODEL_A}."),
-        format!("Delegation policy for {MODEL_A}."),
-    ] {
-        assert!(requests[0].body_contains_text(&text));
-    }
+    let delegation_policy = codex_prompts::ResolvedModelMessages::bundled()
+        .multi_agent()
+        .explicit
+        .text();
+    assert!(requests[0].body_contains_text(&format!("Root role for {MODEL_A}.")));
+    assert!(requests[0].body_contains_text(delegation_policy));
     for pair in requests.windows(/*size*/ 2) {
         assert!(
             pair[1].input().starts_with(&pair[0].input()),
@@ -1204,7 +1204,6 @@ async fn active_model_switch_updates_core_context_from_captured_settings(
             format!("Default collaboration for {MODEL_B}."),
             format!("Approval instructions for {MODEL_B}."),
             format!("Root role for {MODEL_B}."),
-            format!("Delegation policy for {MODEL_B}."),
         ] {
             assert_eq!(
                 developer_texts
@@ -1214,6 +1213,14 @@ async fn active_model_switch_updates_core_context_from_captured_settings(
                 1
             );
         }
+        assert_eq!(
+            developer_texts
+                .iter()
+                .filter(|message| message.contains(delegation_policy))
+                .count(),
+            2,
+            "the refreshed role reasserts the same user-controlled delegation policy"
+        );
     }
     let initial_guidance = format!("Use {MODEL_A} token-budget guidance.");
     let initial_guidance_expected =

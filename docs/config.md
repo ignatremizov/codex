@@ -62,6 +62,14 @@ spawn tools, not explicit user control-plane forks, and do not select Legacy
 versus Paginated storage. Child context drops parent-owned runtime notification
 fragments while preserving literal user text and the parent's canonical audit.
 
+## Delegation guidance and role capabilities
+
+Configured `features.multi_agent_v2.multi_agent_mode_hint_text` is preserved in full, including intentional empty text. Without that override, the selected reasoning policy chooses bundled explicit-request-only guidance, or proactive guidance for ultra reasoning. Model-catalog delegation metadata does not replace this policy. Catalog root and subagent role text remains a fallback when the corresponding configured role text is absent; configured role text is not rewritten by the composed runtime guidance.
+
+Composed V2 role guidance reports the configured history-fork default and recommends fresh context. Model and reasoning overrides remain independent of history inheritance, but their use requires explicit user, applicable `AGENTS.md`, or skill instructions rather than an inferred preference.
+
+Role-local MCP server registrations merge with the parent's server configuration through the existing constrained configuration and catalog. Managed server identity requirements remain authoritative and can disable an incompatible role registration. This capability does not let a role replace the parent provider, permissions, or notification authority. Cold restoration keeps the captured executor, working directory, workspace roots, and non-permission settings; a remote read-only reduction is accepted only when it is provably within the current owner's authority using the executor's path convention.
+
 ## Unified exec yield windows
 
 The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:

@@ -323,6 +323,25 @@ Cold history retains audit and transcript content but recreates neither a queue 
 Source-authored regression cases still require remote execution; schemas, complete snapshots,
 and batched owning-commit formatting remain pending.
 
+### User-controlled delegation and role capabilities
+
+Ownership anchor: `fix(multi-agent): keep delegation policy user-controlled`.
+`core/src/session/multi_agents.rs` selects configured delegation hints or the explicit reasoning
+policy, not catalog delegation metadata. Configured text remains complete and intentional empty
+text remains authoritative. `prompts/src/multi_agent_instructions.rs` keeps catalog role fallback
+and current capability-sensitive composition while reporting the configured fork default and
+requiring explicit instructions for model/reasoning overrides. History inheritance is a separate
+user-authorized choice.
+
+Role MCP registrations merge through constrained configuration and the existing catalog without
+replacing provider, managed command identity, permissions, or notification authority. The
+`agent/control/restore_environments.rs` owner retains exact executor and attachment checks,
+materialized local intersections, and only proven managed read-only reductions remotely. Remote
+filesystem proofs use the selected executor's convention, never host-native path assumptions.
+Cold-resume fixtures retain real residency and request correlation, current foreign-environment
+restart support, canonical flushes, and complete provider/MCP comparisons. Source regression
+coverage is not a passed executable result; formatting and remote qualification remain pending.
+
 ## Integration boundaries and deferred work
 
 - Upstream unified exec supersedes the legacy `shell`/`shell_command` handlers and the fork's `feat(config): add default shell command timeout` carry. `exec_command_timeout_ms` is retired, not a missing feature to replay or an alias for a yield window or user-shell deadline. Normal resumable `exec_command` yields output without terminating the process; the managed-policy one-shot fallback retains its separate per-call deadline. Keep the maintained yield-window, poll-cap, and human user-shell timing capabilities above. Historical commits and backup refs remain valid evidence; remove the old setting from user configs after promotion rather than restoring the handlers or rewriting historical backups.
