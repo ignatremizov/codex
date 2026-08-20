@@ -1,5 +1,6 @@
 //! Reload a V2 runtime using its canonical identity and the current owner's authority.
 
+use super::restore_environments::bound_cached_environment_selections;
 use super::restore_environments::explicit_workspace_environments;
 use super::restore_metadata::apply_restored_agent_model;
 use super::restore_metadata::apply_restored_v2_agent_role;
@@ -9,11 +10,7 @@ use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agents_md_manager::SessionInstructions;
 use crate::codex_thread::CodexThread;
-use crate::config::PermissionProfileSnapshot;
-use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::mcp::ClientMcpExtensions;
-use codex_protocol::protocol::EnvironmentConfigState;
-use codex_utils_path_uri::PathUri;
 
 impl LocalAgentControl {
     pub(crate) async fn ensure_v2_agent_loaded(
@@ -391,84 +388,11 @@ impl LocalAgentControl {
                     parent_environments.clone()
                 };
                 if let Some(selections) = environment_selections.as_mut() {
-                    for selection in selections {
-                        let environment_id = &selection.environment_id;
-                        let invalid_environment = |reason: &str| {
-                            CodexErr::InvalidRequest(format!(
-                                "cannot resume multi-agent v2 child {thread_id}: cached environment {environment_id} {reason}"
-                            ))
-                        };
-                        // Matching the attachment also keeps startup on the captured owner executor.
-                        let owner_environment = parent_environments
-                            .turn_environments()
-                            .find(|environment| {
-                                let parent_selection = &environment.selection;
-                                parent_selection.environment_id == selection.environment_id
-                                    && parent_selection.cwd == selection.cwd
-                                    && parent_selection.workspace_roots == selection.workspace_roots
-                            })
-                            .ok_or_else(|| {
-                                invalid_environment("no longer matches a ready parent environment")
-                            })?;
-                        let owner_config = owner_environment.config();
-                        let child_config = match &selection.config {
-                            EnvironmentConfigState::FromThread => {
-                                // Pin current owner authority instead of re-inferring child settings.
-                                selection.config =
-                                    EnvironmentConfigState::Ready(owner_config.clone());
-                                continue;
-                            }
-                            EnvironmentConfigState::Ready(config) => config,
-                            EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
-                                return Err(invalid_environment("configuration is not ready"));
-                            }
-                        };
-                        let mut bounded_config = child_config.clone();
-                        bounded_config.permission_profile = owner_config.permission_profile.clone();
-                        if bounded_config != *owner_config {
-                            return Err(invalid_environment(
-                                "configuration differs from the current parent",
-                            ));
-                        }
-                        if child_config.permission_profile == owner_config.permission_profile {
-                            continue;
-                        }
-                        if owner_environment.environment.is_remote() {
-                            return Err(invalid_environment(
-                                "permissions changed on a remote executor",
-                            ));
-                        }
-                        let cwd = selection.cwd.to_abs_path().map_err(|_| {
-                            invalid_environment("working directory is not a local absolute path")
-                        })?;
-                        let roots = owner_environment
-                            .workspace_roots()
-                            .iter()
-                            .map(PathUri::to_abs_path)
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(|_| {
-                                invalid_environment("workspace roots are not local absolute paths")
-                            })?;
-                        let authority = owner_environment
-                            .permission_profile()
-                            .clone()
-                            .materialize_project_roots_with_workspace_roots(&roots);
-                        let requested = child_config
-                            .permission_profile
-                            .permission_profile()
-                            .clone()
-                            .materialize_project_roots_with_workspace_roots(&roots);
-                        let permissions =
-                            intersect_effective_permission_profiles(&authority, &requested, &cwd)
-                                .map_err(|err| {
-                                invalid_environment(&format!(
-                                    "permissions cannot be intersected safely: {err}"
-                                ))
-                            })?;
-                        bounded_config.permission_profile =
-                            PermissionProfileSnapshot::legacy(permissions);
-                        selection.config = EnvironmentConfigState::Ready(bounded_config);
-                    }
+                    bound_cached_environment_selections(
+                        selections,
+                        parent_environments,
+                        thread_id,
+                    )?;
                 }
                 (
                     Some(inherited_environments),
