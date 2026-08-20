@@ -1,0 +1,43 @@
+---
+source: tui/src/app/code_mode_history_tests.rs
+expression: "snapshots.join(\"\\n\\n\")"
+---
+node_repl completed
+• Called node_repl.js({"title":"Inspect","code":"text(1)"})
+  └ Script completed
+    Output:
+    first
+    second
+    third
+    fourth
+    final result
+
+node_repl failed
+• Called node_repl.js({"title":"Inspect","code":"text(1)"})
+  └ Script failed
+    first
+    second
+    third
+    fourth
+    Script error:
+    final diagnostic
+
+cua_repl completed
+• Called cua_repl.js({"title":"Inspect","code":"text(1)"})
+  └ Script completed
+    Output:
+    first
+    second
+    third
+    fourth
+    final result
+
+cua_repl failed
+• Called cua_repl.js({"title":"Inspect","code":"text(1)"})
+  └ Script failed
+    first
+    second
+    third
+    fourth
+    Script error:
+    final diagnostic

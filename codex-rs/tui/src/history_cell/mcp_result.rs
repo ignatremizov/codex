@@ -4,16 +4,11 @@
 //! block once with the MCP model, then retain only what history rendering actually displays.
 
 use crate::text_formatting::format_json_compact;
-use base64::Engine;
 use codex_protocol::mcp::CallToolResult;
-use image::DynamicImage;
-use image::ImageReader;
 use rmcp::model::ContentBlock;
 use rmcp::model::ResourceContents;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::io::Cursor;
-use tracing::error;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum McpResultKind {
@@ -25,7 +20,6 @@ pub(super) enum McpResultKind {
 pub(super) struct McpToolResult {
     pub(super) content: Vec<McpContentBlock>,
     pub(super) is_error: bool,
-    pub(super) has_image: bool,
 }
 
 #[derive(Debug)]
@@ -47,10 +41,8 @@ impl McpToolResult {
     /// Consumes a wire result, dropping bodies represented only by media or resource summaries.
     ///
     /// Canonical MCP deserialization preserves full text and the exact JSON fallback for malformed
-    /// or unknown blocks. Every block is projected, but image decoding stops at the first fully
-    /// valid image.
+    /// or unknown blocks. Media payloads are represented by markers without decoding their bodies.
     pub(super) fn new(result: CallToolResult, kind: McpResultKind) -> Self {
-        let mut has_image = false;
         let content = result
             .content
             .into_iter()
@@ -68,12 +60,7 @@ impl McpToolResult {
                 };
                 let display = match parsed {
                     Ok(ContentBlock::Text(text)) => McpContentDisplay::Text(text.text),
-                    Ok(ContentBlock::Image(image)) => {
-                        // Computer activity previews require a valid image. Stop decoding once
-                        // one has been found; the result text only retains a readable marker.
-                        if !has_image {
-                            has_image = decode_mcp_image(&image.data).is_some();
-                        }
+                    Ok(ContentBlock::Image(_)) => {
                         McpContentDisplay::Summary("Returned image".into())
                     }
                     Ok(ContentBlock::Audio(_)) => {
@@ -105,7 +92,6 @@ impl McpToolResult {
         Self {
             content,
             is_error: result.is_error.unwrap_or(false),
-            has_image,
         }
     }
 }
@@ -151,38 +137,4 @@ impl McpContentBlock {
             McpContentDisplay::Summary(summary) => Cow::Borrowed(summary),
         }
     }
-}
-
-/// Fully decodes an MCP image before exposing an image preview in computer activity.
-///
-/// A header-only check would accept images whose decoder rejects their pixel data. Preserve the
-/// existing behavior for invalid base64, unknown formats, corrupt images, and data URLs.
-fn decode_mcp_image(data: &str) -> Option<DynamicImage> {
-    let base64_data = if let Some(data_url) = data.strip_prefix("data:") {
-        data_url.split_once(',')?.1
-    } else {
-        data
-    };
-    let raw_data = base64::engine::general_purpose::STANDARD
-        .decode(base64_data)
-        .map_err(|e| {
-            error!("Failed to decode image data: {e}");
-            e
-        })
-        .ok()?;
-    let reader = ImageReader::new(Cursor::new(raw_data))
-        .with_guessed_format()
-        .map_err(|e| {
-            error!("Failed to guess image format: {e}");
-            e
-        })
-        .ok()?;
-
-    reader
-        .decode()
-        .map_err(|e| {
-            error!("Image decoding failed: {e}");
-            e
-        })
-        .ok()
 }
