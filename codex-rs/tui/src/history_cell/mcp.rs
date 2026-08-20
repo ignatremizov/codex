@@ -56,20 +56,6 @@ pub(crate) struct McpInvocation {
     pub(crate) arguments: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum McpToolCallRenderMode {
-    /// Compact presentation used in normal conversation history.
-    Display,
-    /// Complete invocation and result used by the Ctrl+T transcript.
-    Transcript,
-}
-
-#[derive(serde::Deserialize)]
-struct NodeReplExecOutput {
-    exit_code: i64,
-    output: String,
-}
-
 impl McpToolCallCell {
     pub(crate) fn new(
         call_id: String,
@@ -128,11 +114,10 @@ impl McpToolCallCell {
         }
     }
 
-    fn render_lines(&self, width: u16, mode: McpToolCallRenderMode) -> Vec<Line<'static>> {
+    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         let status = self.success();
         let node_repl = self.result_kind() == McpResultKind::NodeRepl;
-        let compact = node_repl && mode == McpToolCallRenderMode::Display;
         let bullet = match status {
             Some(true) => "•".green().bold(),
             Some(false) => "•".red().bold(),
@@ -149,21 +134,7 @@ impl McpToolCallCell {
             "Calling"
         };
 
-        let invocation_line = if compact {
-            let title = self
-                .invocation
-                .arguments
-                .as_ref()
-                .and_then(|arguments| arguments.get("title"))
-                .and_then(serde_json::Value::as_str)
-                .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
-                .filter(|title| !title.is_empty())
-                .map(|title| title.graphemes(true).take(80).collect::<String>())
-                .unwrap_or_else(|| format!("{}.{}", self.invocation.server, self.invocation.tool));
-            Line::from(title.cyan())
-        } else {
-            line_to_static(&format_mcp_invocation(&self.invocation))
-        };
+        let invocation_line = line_to_static(&format_mcp_invocation(&self.invocation));
         let mut compact_spans = vec![bullet.clone(), " ".into(), header_text.bold(), " ".into()];
         let mut compact_header = Line::from(compact_spans.clone());
         let reserved = compact_header.width();
@@ -195,31 +166,7 @@ impl McpToolCallCell {
                 Ok(McpToolResult { content, .. }) => {
                     if !content.is_empty() {
                         for block in content {
-                            let text = if compact && status == Some(true) {
-                                let meaningful_output = block.text().and_then(|text| {
-                                    if text.starts_with("Script completed\n") {
-                                        return text
-                                            .split_once("\nOutput:\n")
-                                            .map(|(_, output)| output.to_string());
-                                    }
-                                    serde_json::from_str::<NodeReplExecOutput>(text)
-                                        .ok()
-                                        .filter(|output| output.exit_code == 0)
-                                        .map(|output| output.output)
-                                });
-                                match meaningful_output {
-                                    Some(output) if output.is_empty() => continue,
-                                    Some(output) => format_and_truncate_tool_result(
-                                        &output,
-                                        TOOL_CALL_MAX_LINES,
-                                        detail_wrap_width,
-                                    ),
-                                    None => block.render(detail_wrap_width),
-                                }
-                            } else if node_repl
-                                && mode == McpToolCallRenderMode::Transcript
-                                && let Some(output) = block.text()
-                            {
+                            let text = if node_repl && let Some(output) = block.text() {
                                 output.trim_end_matches('\n').to_string()
                             } else {
                                 block.render(detail_wrap_width)
@@ -238,16 +185,11 @@ impl McpToolCallCell {
                     }
                 }
                 Err(err) => {
-                    let err_text = format!("Error: {err}");
-                    let err_text = if node_repl && mode == McpToolCallRenderMode::Transcript {
-                        err_text
-                    } else {
-                        format_and_truncate_tool_result(
-                            &err_text,
-                            TOOL_CALL_MAX_LINES,
-                            width as usize,
-                        )
-                    };
+                    let err_text = format_and_truncate_tool_result(
+                        &format!("Error: {err}"),
+                        TOOL_CALL_MAX_LINES,
+                        width as usize,
+                    );
                     let err_line = Line::from(err_text.dim());
                     let wrapped = adaptive_wrap_line(
                         &err_line,
@@ -275,11 +217,11 @@ impl McpToolCallCell {
 
 impl HistoryCell for McpToolCallCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.render_lines(width, McpToolCallRenderMode::Display)
+        self.render_lines(width)
     }
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.render_lines(width, McpToolCallRenderMode::Transcript)
+        self.render_lines(width)
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {

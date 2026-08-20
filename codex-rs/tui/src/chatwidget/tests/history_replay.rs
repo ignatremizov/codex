@@ -1275,14 +1275,22 @@ async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
         let [lines] = cells.as_slice() else {
             panic!("expected one completed MCP tool call for {server}");
         };
-        insta::allow_duplicates! {
-            insta::assert_snapshot!(lines_to_single_string(lines), @r#"
-            • Called Inspect workspace
-              └ Script failed
-                {"exit_code": 0, "output": "ready", "chunk_id": "chunk-1"}
-                Script error:
-                permission denied
-            "#);
+        match server {
+            "node_repl" => insta::assert_snapshot!(lines_to_single_string(lines), @r#"
+                • Called node_repl.js({"title":"Inspect workspace"})
+                  └ Script failed
+                    {"exit_code":0,"output":"ready","chunk_id":"chunk-1"}
+                    Script error:
+                    permission denied
+                "#),
+            "cua_repl" => insta::assert_snapshot!(lines_to_single_string(lines), @r#"
+                • Called cua_repl.js({"title":"Inspect workspace"})
+                  └ Script failed
+                    {"exit_code":0,"output":"ready","chunk_id":"chunk-1"}
+                    Script error:
+                    permission denied
+                "#),
+            other => panic!("unexpected REPL server {other}"),
         }
         assert_eq!(
             lines.first(),
@@ -1291,7 +1299,12 @@ async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
                 " ".into(),
                 "Called".bold(),
                 " ".into(),
-                "Inspect workspace".cyan(),
+                server.cyan(),
+                ".".into(),
+                "js".cyan(),
+                "(".into(),
+                "{\"title\":\"Inspect workspace\"}".dim(),
+                ")".into(),
             ])),
             "{server}",
         );
