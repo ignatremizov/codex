@@ -4238,6 +4238,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         max_concurrency: 2,
         wait_agent_enabled: false,
         expose_model_overrides: false,
+        default_fork_turns: "none".to_string(),
     };
     let parent_task = InterAgentCommunication::new(
         AgentPath::root(),
