@@ -10,8 +10,9 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
     let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT;
     let wait = DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT;
     let model_override = DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT;
+    let delegation = DEFAULT_MULTI_AGENT_V2_DELEGATION_USAGE_HINT_TEXT;
     let expected_body = format!(
-        "Role.\n## Work\nContinue.\n{shared}\n{wait}\n\nThere are 2 available concurrency slots, meaning that up to 2 agents can be active at once, including you.\n\n{model_override}"
+        "Role.\n## Work\nContinue.\n{shared}\n{wait}\n\nThere are 2 available concurrency slots, meaning that up to 2 agents can be active at once, including you.\n\n{delegation} `none`. Request parent turns only when the task cannot be specified in the initial message and user configuration allows history forks.\n\n{model_override}"
     );
     for marked in [false, true] {
         let instructions = MultiAgentRoleInstructions::Composed {
@@ -22,6 +23,7 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
             max_concurrency: 2,
             wait_agent_enabled: true,
             expose_model_overrides: true,
+            default_fork_turns: "none".to_string(),
         };
         let expected_text = if marked {
             format!("<multi_agent_role>{expected_body}</multi_agent_role>")
