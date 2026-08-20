@@ -3,7 +3,6 @@ use super::*;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::WorldState;
 use codex_protocol::models::ResponseItem;
-use codex_utils_output_truncation::approx_token_count;
 use pretty_assertions::assert_eq;
 
 fn state(mode: Option<MultiAgentMode>) -> MultiAgentModeState {
@@ -98,6 +97,7 @@ fn catalog_role_updates_remain_separate_from_active_mode() {
         max_concurrency: 2,
         wait_agent_enabled: false,
         expose_model_overrides: false,
+        default_fork_turns: "none".to_string(),
     };
     let previous_hint = MultiAgentUsageHintState::new(catalog_role("Previous role."));
     let previous_mode =
@@ -129,16 +129,17 @@ fn catalog_role_updates_remain_separate_from_active_mode() {
 }
 
 #[test]
-fn custom_mode_is_bounded_before_snapshot_and_rendering() {
-    let state = state(Some(MultiAgentMode::Custom("custom mode ".repeat(1_000))));
+fn custom_mode_is_preserved_before_snapshot_and_rendering() {
+    let mode = "custom mode ".repeat(1_000);
+    let state = state(Some(MultiAgentMode::Custom(mode.clone())));
     let Some(MultiAgentMode::Custom(snapshot_mode)) = state.snapshot().mode else {
         panic!("expected custom multi-agent mode")
     };
-    assert!(approx_token_count(&snapshot_mode) < 1_000);
+    assert_eq!(snapshot_mode, mode);
 
     let rendered = state
         .render_diff(PreviousSectionState::Absent)
         .expect("custom mode should render")
         .render();
-    assert!(approx_token_count(&rendered) < 1_000);
+    assert!(rendered.contains(&mode));
 }

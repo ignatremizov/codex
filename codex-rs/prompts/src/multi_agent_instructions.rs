@@ -5,7 +5,9 @@ use crate::without_update_plan_instructions;
 use codex_context_fragments::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
 
-const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
+const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Model and reasoning-effort overrides are independent of history inheritance. Only set overrides when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions.";
+const DEFAULT_MULTI_AGENT_V2_DELEGATION_USAGE_HINT_TEXT: &str =
+    "Use no inherited context by default. Omitted `fork_turns` uses the configured default";
 const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
@@ -29,6 +31,7 @@ pub enum MultiAgentRoleInstructions {
         max_concurrency: usize,
         wait_agent_enabled: bool,
         expose_model_overrides: bool,
+        default_fork_turns: String,
     },
 }
 
@@ -65,6 +68,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 max_concurrency,
                 wait_agent_enabled,
                 expose_model_overrides,
+                default_fork_turns,
                 ..
             } => {
                 let base = if *omit_update_plan_instructions {
@@ -81,6 +85,9 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                 let mut text = format!(
                     "{base}\n{shared}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
                 );
+                text.push_str(&format!(
+                    "\n\n{DEFAULT_MULTI_AGENT_V2_DELEGATION_USAGE_HINT_TEXT} `{default_fork_turns}`. Request parent turns only when the task cannot be specified in the initial message and user configuration allows history forks."
+                ));
                 if *expose_model_overrides {
                     text.push_str("\n\n");
                     text.push_str(DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT);
