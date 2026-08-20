@@ -1,6 +1,7 @@
 ---
 source: tui/src/history_cell/computer_activity_tests.rs
-expression: "render(&cell, 80)"
+expression: "render(&cell, 100)"
 ---
-• Using computer · 2 actions
-  └ Load the terminal
+• Called cua_repl.js({"title":"Opened Chrome","code":"await cua.getState()"})
+  └ ready
+• Calling cua_repl.js({"title":"Load the terminal","code":"await cua.getState()"})

@@ -27,7 +27,7 @@ fn result(text: &str) -> Result<CallToolResult, String> {
 fn render(cell: &ComputerActivityCell, width: u16) -> String {
     cell.display_lines(width)
         .iter()
-        .map(ToString::to_string)
+        .map(|line| line.to_string().trim_end().to_owned())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -70,9 +70,12 @@ fn computer_activity_active_and_interrupted() {
     cell.complete(call("1", "Opened Chrome"), Duration::ZERO, result("ready"));
     cell.start(call("2", "Load the terminal"));
     cell.start(call("2", "Duplicate start"));
-    insta::assert_snapshot!("computer_activity_active", render(&cell, /*width*/ 80));
+    insta::assert_snapshot!("computer_activity_active", render(&cell, /*width*/ 100));
     cell.mark_failed();
-    insta::assert_snapshot!("computer_activity_interrupted", render(&cell, /*width*/ 80));
+    insta::assert_snapshot!(
+        "computer_activity_interrupted",
+        render(&cell, /*width*/ 100)
+    );
     assert_eq!(
         cell.group
             .calls
@@ -84,7 +87,7 @@ fn computer_activity_active_and_interrupted() {
 }
 
 #[test]
-fn computer_activity_prioritizes_errors_and_images_without_reordering() {
+fn computer_activity_retains_all_calls_errors_and_images_in_order() {
     let mut cell = ComputerActivityCell::default();
     cell.complete(
         call("1", "Open browser"),
@@ -113,16 +116,13 @@ fn computer_activity_prioritizes_errors_and_images_without_reordering() {
         Duration::ZERO,
         result("checked"),
     );
-    insta::assert_snapshot!("computer_activity_mixed", render(&cell, /*width*/ 90));
-    insta::assert_snapshot!("computer_activity_narrow", render(&cell, /*width*/ 24));
-    insta::assert_snapshot!(
-        "computer_activity_compact",
-        cell.compact_hyperlink_lines(/*width*/ 24)
-            .iter()
-            .map(|line| line.line.to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    insta::assert_snapshot!("computer_activity_mixed", render(&cell, /*width*/ 100));
+    for width in [24, 90, 100] {
+        let full = cell.transcript_hyperlink_lines(width);
+        assert_eq!(cell.display_hyperlink_lines(width), full);
+        assert_eq!(cell.compact_hyperlink_lines(width), full);
+        assert!(!cell.has_hidden_activity_details(width));
+    }
     let transcript = cell
         .transcript_lines(/*width*/ 100)
         .iter()
@@ -151,7 +151,7 @@ fn computer_activity_completed_and_transport_errors_keep_full_details() {
         result("A successful result with details"),
     );
     cell.complete(call("2", "Reload page"), Duration::ZERO, result("Loaded"));
-    insta::assert_snapshot!("computer_activity_success", render(&cell, /*width*/ 80));
+    insta::assert_snapshot!("computer_activity_success", render(&cell, /*width*/ 100));
     let mut failure =
         result("Browser state changed\nRe-query the browser before continuing").unwrap();
     failure.is_error = Some(true);
@@ -162,7 +162,7 @@ fn computer_activity_completed_and_transport_errors_keep_full_details() {
     );
     insta::assert_snapshot!(
         "computer_activity_failed_result",
-        render(&cell, /*width*/ 90)
+        render(&cell, /*width*/ 100)
     );
     cell.mark_failed();
     assert_eq!(
@@ -176,19 +176,30 @@ fn computer_activity_completed_and_transport_errors_keep_full_details() {
 }
 
 #[test]
-fn computer_activity_preview_handles_unicode_and_long_diagnostics() {
-    assert_eq!(preview(" 你好\nworld ", /*width*/ 6), "你好 …");
+fn computer_activity_retains_unicode_and_long_diagnostics_at_narrow_widths() {
     let mut cell = ComputerActivityCell::default();
     cell.complete(
         call("1", "检查浏览器"),
         Duration::ZERO,
         Err("diagnostic ".repeat(200)),
     );
-    insta::assert_snapshot!("computer_activity_unicode", render(&cell, /*width*/ 24));
+    for width in [24, 40, 100] {
+        let full = cell.transcript_hyperlink_lines(width);
+        assert_eq!(cell.display_hyperlink_lines(width), full);
+        assert_eq!(cell.compact_hyperlink_lines(width), full);
+    }
     assert!(
         cell.display_lines(/*width*/ 24)
             .iter()
             .all(|line| line.width() <= 24)
     );
     assert!(cell.transcript_lines(/*width*/ 100).len() > 20);
+    let raw = cell
+        .raw_lines()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(raw.contains("检查浏览器"));
+    assert!(raw.contains(&format!("Error: {}", "diagnostic ".repeat(200).trim_end())));
 }
