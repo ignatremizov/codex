@@ -246,7 +246,7 @@ async fn apply_restored_v2_agent_role(
         None => PermissionProfileSnapshot::legacy(config.permissions.permission_profile().clone()),
     };
 
-    apply_role_to_config_for_multi_agent_v2(config, Some(&role_name))
+    apply_role_to_config(config, Some(&role_name))
         .await
         .map_err(CodexErr::InvalidRequest)?;
     config
@@ -971,106 +971,130 @@ impl AgentControl {
         config.model_reasoning_effort = stored_reasoning_effort;
         let (inherited_environments, inherited_exec_policy, client_mcp_extensions_override) =
             if let Some((parent, parent_environments)) = parent_context.as_ref() {
-            let parent_config = parent.session.get_config().await;
-            if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config) {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
-                )));
-            }
-            if let Some(selections) = environment_selections.as_mut() {
-                for selection in selections {
-                    let environment_id = &selection.environment_id;
-                    let invalid_environment = |reason: &str| {
-                        CodexErr::InvalidRequest(format!(
-                            "cannot resume multi-agent v2 child {thread_id}: cached environment {environment_id} {reason}"
-                        ))
-                    };
-                    // Matching the attachment also keeps startup on the captured owner executor.
-                    let owner_environment = parent_environments
-                        .turn_environments()
-                        .find(|environment| {
-                            let parent_selection = &environment.selection;
-                            parent_selection.environment_id == selection.environment_id
-                                && parent_selection.cwd == selection.cwd
-                                && parent_selection.workspace_roots == selection.workspace_roots
-                        })
-                        .ok_or_else(|| {
-                            invalid_environment("no longer matches a ready parent environment")
-                        })?;
-                    let owner_config = owner_environment.config();
-                    let child_config = match &selection.config {
-                        EnvironmentConfigState::FromThread => {
-                            // Pin current owner authority instead of re-inferring child settings.
-                            selection.config = EnvironmentConfigState::Ready(owner_config.clone());
+                let parent_config = parent.session.get_config().await;
+                if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config) {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
+                    )));
+                }
+                if let Some(selections) = environment_selections.as_mut() {
+                    for selection in selections {
+                        let environment_id = &selection.environment_id;
+                        let invalid_environment = |reason: &str| {
+                            CodexErr::InvalidRequest(format!(
+                                "cannot resume multi-agent v2 child {thread_id}: cached environment {environment_id} {reason}"
+                            ))
+                        };
+                        // Matching the attachment also keeps startup on the captured owner executor.
+                        let owner_environment = parent_environments
+                            .turn_environments()
+                            .find(|environment| {
+                                let parent_selection = &environment.selection;
+                                parent_selection.environment_id == selection.environment_id
+                                    && parent_selection.cwd == selection.cwd
+                                    && parent_selection.workspace_roots == selection.workspace_roots
+                            })
+                            .ok_or_else(|| {
+                                invalid_environment("no longer matches a ready parent environment")
+                            })?;
+                        let owner_config = owner_environment.config();
+                        let child_config = match &selection.config {
+                            EnvironmentConfigState::FromThread => {
+                                // Pin current owner authority instead of re-inferring child settings.
+                                selection.config =
+                                    EnvironmentConfigState::Ready(owner_config.clone());
+                                continue;
+                            }
+                            EnvironmentConfigState::Ready(config) => config,
+                            EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
+                                return Err(invalid_environment("configuration is not ready"));
+                            }
+                        };
+                        let mut bounded_config = child_config.clone();
+                        bounded_config.permission_profile = owner_config.permission_profile.clone();
+                        if bounded_config != *owner_config {
+                            return Err(invalid_environment(
+                                "configuration differs from the current parent",
+                            ));
+                        }
+                        if child_config.permission_profile == owner_config.permission_profile {
                             continue;
                         }
-                        EnvironmentConfigState::Ready(config) => config,
-                        EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
-                            return Err(invalid_environment("configuration is not ready"));
+                        if owner_environment.environment.is_remote() {
+                            let owner_permissions =
+                                owner_config.permission_profile.permission_profile();
+                            let child_permissions =
+                                child_config.permission_profile.permission_profile();
+                            let child_is_read_only =
+                                child_permissions.intersect_with_read_only().as_ref()
+                                    == Some(child_permissions);
+                            let owner_read_only = owner_permissions.intersect_with_read_only();
+                            if matches!(owner_permissions, PermissionProfile::Managed { .. })
+                                && child_is_read_only
+                                && owner_read_only.as_ref().is_some_and(|read_only| {
+                                    read_only == child_permissions
+                                        || read_only
+                                            .file_system_sandbox_policy()
+                                            .has_full_disk_read_access()
+                                })
+                            {
+                                // A cached read-only child remains a strict reduction of its
+                                // current managed owner's authority. Exact profiles preserve
+                                // narrower read rules; a full-read owner also authorizes any
+                                // self-read-only child despite redundant read entries. Disabled
+                                // and externally enforced profiles do not prove that reduction.
+                                continue;
+                            }
+                            return Err(invalid_environment(
+                                "permissions changed on a remote executor",
+                            ));
                         }
-                    };
-                    let mut bounded_config = child_config.clone();
-                    bounded_config.permission_profile = owner_config.permission_profile.clone();
-                    if bounded_config != *owner_config {
-                        return Err(invalid_environment(
-                            "configuration differs from the current parent",
-                        ));
-                    }
-                    if child_config.permission_profile == owner_config.permission_profile {
-                        continue;
-                    }
-                    if owner_environment.environment.is_remote() {
-                        return Err(invalid_environment(
-                            "permissions changed on a remote executor",
-                        ));
-                    }
-                    let cwd = selection.cwd.to_abs_path().map_err(|_| {
-                        invalid_environment("working directory is not a local absolute path")
-                    })?;
-                    let roots = owner_environment
-                        .workspace_roots()
-                        .iter()
-                        .map(PathUri::to_abs_path)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| {
-                            invalid_environment("workspace roots are not local absolute paths")
+                        let cwd = selection.cwd.to_abs_path().map_err(|_| {
+                            invalid_environment("working directory is not a local absolute path")
                         })?;
-                    let authority = owner_environment
-                        .permission_profile()
-                        .clone()
-                        .materialize_project_roots_with_workspace_roots(&roots);
-                    let requested = child_config
-                        .permission_profile
-                        .permission_profile()
-                        .clone()
-                        .materialize_project_roots_with_workspace_roots(&roots);
-                    let permissions =
-                        intersect_effective_permission_profiles(&authority, &requested, &cwd)
-                            .map_err(|err| {
+                        let roots = owner_environment
+                            .workspace_roots()
+                            .iter()
+                            .map(PathUri::to_abs_path)
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|_| {
+                                invalid_environment("workspace roots are not local absolute paths")
+                            })?;
+                        let authority = owner_environment
+                            .permission_profile()
+                            .clone()
+                            .materialize_project_roots_with_workspace_roots(&roots);
+                        let requested = child_config
+                            .permission_profile
+                            .permission_profile()
+                            .clone()
+                            .materialize_project_roots_with_workspace_roots(&roots);
+                        let permissions =
+                            intersect_effective_permission_profiles(&authority, &requested, &cwd)
+                                .map_err(|err| {
                                 invalid_environment(&format!(
                                     "permissions cannot be intersected safely: {err}"
                                 ))
                             })?;
-                    bounded_config.permission_profile =
-                        PermissionProfileSnapshot::legacy(permissions);
-                    selection.config = EnvironmentConfigState::Ready(bounded_config);
+                        bounded_config.permission_profile =
+                            PermissionProfileSnapshot::legacy(permissions);
+                        selection.config = EnvironmentConfigState::Ready(bounded_config);
+                    }
                 }
-            }
-            (
-                Some(parent_environments.clone()),
-                Some(Arc::clone(&parent.session.services.exec_policy)),
-                client_mcp_extensions_override
-                    .or_else(|| Some(parent.client_mcp_extensions())),
-            )
-        } else {
-            (
-                self.inherited_environments_for_source(&state, Some(&session_source))
-                    .await,
-                self.inherited_exec_policy_for_source(&state, Some(&session_source), &config)
-                    .await,
-                client_mcp_extensions_override,
-            )
-        };
+                (
+                    Some(parent_environments.clone()),
+                    Some(Arc::clone(&parent.session.services.exec_policy)),
+                    client_mcp_extensions_override.or_else(|| Some(parent.client_mcp_extensions())),
+                )
+            } else {
+                (
+                    self.inherited_environments_for_source(&state, Some(&session_source))
+                        .await,
+                    self.inherited_exec_policy_for_source(&state, Some(&session_source), &config)
+                        .await,
+                    client_mcp_extensions_override,
+                )
+            };
         // Reserving a slot can evict an idle nested parent. Keep its authority captured above.
         let residency_slot = self
             .reserve_v2_residency_slot(&state, &config, Some(thread_id))
