@@ -1,7 +1,8 @@
 ---
 source: tui/src/history_cell/computer_activity_tests.rs
-expression: "render(&cell, 80)"
+expression: "render(&cell, 100)"
 ---
-• Used computer · 2 actions
-  ├ Inspect page
-  └ Reload page
+• Called cua_repl.js({"title":"Inspect page","code":"await cua.getState()"})
+  └ A successful result with details
+• Called cua_repl.js({"title":"Reload page","code":"await cua.getState()"})
+  └ Loaded

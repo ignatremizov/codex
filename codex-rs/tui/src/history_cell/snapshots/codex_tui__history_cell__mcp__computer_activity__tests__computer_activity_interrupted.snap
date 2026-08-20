@@ -1,7 +1,8 @@
 ---
 source: tui/src/history_cell/computer_activity_tests.rs
-expression: "render(&cell, 80)"
+expression: "render(&cell, 100)"
 ---
-• Used computer · 2 actions · 1 failed
-  ├ Opened Chrome
-  └ Failed: Load the terminal — interrupted
+• Called cua_repl.js({"title":"Opened Chrome","code":"await cua.getState()"})
+  └ ready
+• Called cua_repl.js({"title":"Load the terminal","code":"await cua.getState()"})
+  └ Error: interrupted

@@ -191,6 +191,10 @@ impl HistoryCell for CompositeHistoryCell {
         out
     }
 
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        visible_lines(self.transcript_hyperlink_lines(width))
+    }
+
     fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         let mut out = Vec::new();
         let mut first = true;

@@ -5,6 +5,50 @@ use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
 #[test]
+fn composite_plain_transcript_preserves_each_parts_complete_content() {
+    #[derive(Debug)]
+    struct PreviewCell;
+
+    impl HistoryCell for PreviewCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec!["short preview".into()]
+        }
+
+        fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            self.raw_lines()
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            vec!["full first line".into(), "full last line".into()]
+        }
+    }
+
+    let composite = CompositeHistoryCell::new(vec![
+        Box::new(PlainHistoryCell::new(vec!["heading".into()])),
+        Box::new(PreviewCell),
+    ]);
+    assert_eq!(
+        composite.display_lines(/*width*/ 80),
+        vec![
+            Line::from("heading"),
+            Line::default(),
+            Line::from("short preview")
+        ],
+    );
+    let expected = vec![
+        Line::from("heading"),
+        Line::default(),
+        Line::from("full first line"),
+        Line::from("full last line"),
+    ];
+    assert_eq!(composite.transcript_lines(/*width*/ 80), expected);
+    assert_eq!(
+        visible_lines(composite.transcript_hyperlink_lines(/*width*/ 80)),
+        expected,
+    );
+}
+
+#[test]
 fn prefixed_wrapping_retains_one_source_line_across_widths_and_gutters() {
     let source = "  let result = compute(alpha, beta, gamma);  print(result);";
     let styled = Line::from(vec![

@@ -1,0 +1,9 @@
+---
+source: tui/src/history_cell/mcp_tests.rs
+expression: "lines.iter().map(|line| line.line.to_string()).collect::<Vec<_>>().join(\"\\n\")"
+---
+• Called node_repl.js()
+  └ https://example.com/
+        a/long/path/whos
+        e/destination/mu
+        st/stay/intact
