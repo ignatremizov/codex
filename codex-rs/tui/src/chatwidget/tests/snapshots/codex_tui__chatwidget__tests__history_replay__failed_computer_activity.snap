@@ -2,5 +2,8 @@
 source: tui/src/chatwidget/tests/history_replay.rs
 expression: lines_to_single_string(lines)
 ---
-• Used computer · 1 action · 1 failed
-  └ Failed: Inspect workspace — permission denied
+• Called cua_repl.js({"title":"Inspect workspace"})
+  └ Script failed
+    {"exit_code":0,"output":"ready","chunk_id":"chunk-1"}
+    Script error:
+    permission denied
