@@ -318,7 +318,6 @@ async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
     tokio::fs::write(
         &role_config_path,
         r#"model = "gpt-5-role-override"
-model_provider = "ollama"
 model_reasoning_effort = "minimal"
 
 [agents]
@@ -557,6 +556,7 @@ async fn spawn_agent_history_fork_applies_authorized_role_override() {
 
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
+    let parent_provider_id = turn.config.model_provider_id.clone();
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -589,7 +589,7 @@ async fn spawn_agent_history_fork_applies_authorized_role_override() {
 
     assert_eq!(snapshot.model, "gpt-5-role-override");
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Minimal));
-    assert_eq!(snapshot.model_provider_id, "ollama");
+    assert_eq!(snapshot.model_provider_id, parent_provider_id);
 }
 
 #[tokio::test]

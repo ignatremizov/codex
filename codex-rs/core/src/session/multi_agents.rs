@@ -16,7 +16,7 @@ All agents in the team, including the agents that you can assign tasks to, are e
 
 You can use `spawn_agent` to create a new agent, `followup_task` to give an existing agent a new task and trigger a turn, and `send_message` to pass a message to a running agent without triggering a turn.
 Child agents can also spawn their own sub-agents.
-You can decide how much context you want to propagate to your sub-agents with the `fork_turns` parameter.
+Start sub-agents without parent history unless the task cannot be specified in the initial message and user configuration allows history forks.
 
 You will receive messages in the analysis channel in the form:
 ```
@@ -47,7 +47,6 @@ Payload:
 ```
 You may also see them addressed as to=/root/..., which indicates your identity is /root/...
 "#;
-const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
 const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
@@ -126,9 +125,19 @@ pub(crate) fn resolve_usage_hints(
         let mut text = format!(
             "{base}\n{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
         );
+        text.push_str(&format!(
+            "\n\nUse no inherited context by default. Omitted `fork_turns` uses the configured \
+             default `{}`. Request parent turns only when the task cannot be specified in the \
+             initial message and user configuration allows history forks.",
+            config.default_fork_turns
+        ));
         if config.expose_spawn_agent_model_overrides {
             text.push_str("\n\n");
-            text.push_str(DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT);
+            text.push_str(
+                "Model and reasoning-effort overrides are independent of history inheritance. \
+                 Only set overrides when explicitly requested by the user, applicable `AGENTS.md` \
+                 instructions, or skill instructions.",
+            );
         }
 
         Some(if catalog.is_some() {
@@ -157,32 +166,19 @@ pub(crate) fn effective_multi_agent_mode(turn_context: &TurnContext) -> Option<M
         return None;
     }
 
-    let catalog_mode = turn_context
-        .model_info()
-        .model_messages
-        .as_ref()
-        .and_then(|messages| messages.multi_agent.as_ref())
-        .and_then(|messages| messages.mode.as_ref());
     let mode_hint_text = turn_context
         .config
         .multi_agent_v2
         .multi_agent_mode_hint_text
-        .as_deref()
-        .or_else(|| catalog_mode.and_then(|mode| mode.hint_text.as_deref()));
+        .as_deref();
 
-    // A configured or catalog hint, including an empty string, defines a custom policy instead
-    // of an effort-derived built-in policy.
+    // Only user-controlled configuration may replace delegation policy. Model-catalog metadata is
+    // descriptive and must not silently change whether the harness delegates proactively.
     let multi_agent_mode = match mode_hint_text {
         Some(hint_text) => MultiAgentMode::Custom(hint_text.to_string()),
         None => match turn_context.effective_reasoning_effort() {
-            Some(ReasoningEffort::Ultra) => catalog_mode
-                .and_then(|messages| messages.proactive.clone())
-                .map(MultiAgentMode::Custom)
-                .unwrap_or(MultiAgentMode::Proactive),
-            _ => catalog_mode
-                .and_then(|messages| messages.explicit.clone())
-                .map(MultiAgentMode::Custom)
-                .unwrap_or(MultiAgentMode::ExplicitRequestOnly),
+            Some(ReasoningEffort::Ultra) => MultiAgentMode::Proactive,
+            _ => MultiAgentMode::ExplicitRequestOnly,
         },
     };
 

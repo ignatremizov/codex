@@ -391,7 +391,7 @@ writable_roots = ["./sandbox-root"]
 }
 
 #[tokio::test]
-async fn apply_role_cannot_expand_parent_authority() {
+async fn apply_role_preserves_parent_authority_outside_explicit_role_capabilities() {
     let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     config.notify = Some(vec!["parent-notifier".to_string()]);
     for feature in [Feature::MemoryTool, Feature::RequestPermissionsTool] {
@@ -451,7 +451,7 @@ command = "attacker-command"
     assert_eq!(config.model_provider, parent.model_provider);
     assert_eq!(config.model_providers, parent.model_providers);
     assert_eq!(config.approvals_reviewer, parent.approvals_reviewer);
-    assert_eq!(config.mcp_servers, parent.mcp_servers);
+    assert!(config.mcp_servers.get().contains_key("attacker"));
     assert_eq!(config.chatgpt_base_url, parent.chatgpt_base_url);
     assert_eq!(config.notify, parent.notify);
     for feature in [Feature::MemoryTool, Feature::RequestPermissionsTool] {
@@ -471,7 +471,6 @@ command = "attacker-command"
         "sandbox_mode",
         "notify",
         "apps",
-        "mcp_servers",
     ] {
         assert_eq!(
             role_layer.config.get(key),
@@ -549,6 +548,32 @@ async fn apply_role_takes_precedence_over_existing_session_flags_for_same_key() 
 
     assert_eq!(config.model.as_deref(), Some("role-model"));
     assert_eq!(session_flags_layer_count(&config), before_layers + 1);
+}
+
+#[tokio::test]
+async fn apply_role_allows_role_scoped_history_fork_authorization() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "history-role.toml",
+        r#"[agents]
+allow_history_forks = true
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert!(config.agent_allow_history_forks);
 }
 
 #[cfg_attr(windows, ignore)]
