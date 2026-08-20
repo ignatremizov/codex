@@ -1,4 +1,7 @@
+use anyhow::Context;
 use anyhow::Result;
+use codex_core::CodexThread;
+use codex_core::ThreadManager;
 use codex_core::TurnInputRequest;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::MultiAgentMessageDelivery;
@@ -115,6 +118,22 @@ fn request_has_function_call_output(request: &wiremock::Request, call_id: &str) 
         })
 }
 
+async fn wait_for_resident_thread(
+    thread_manager: &ThreadManager,
+    thread_id: codex_protocol::ThreadId,
+) -> Result<Arc<CodexThread>> {
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
+    loop {
+        if let Ok(thread) = thread_manager.get_thread(thread_id).await {
+            return Ok(thread);
+        }
+        if Instant::now() >= deadline {
+            return Ok(thread_manager.get_thread(thread_id).await?);
+        }
+        sleep(Duration::from_millis(/*millis*/ 10)).await;
+    }
+}
+
 async fn mount_root_collaboration_call(
     server: &wiremock::MockServer,
     prompt: &'static str,
@@ -229,7 +248,7 @@ message_delivery = "plaintext"
     std::fs::write(
         &role_path,
         format!(
-            "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"high\"\ndeveloper_instructions = \"{ROLE_DEVELOPER_INSTRUCTIONS}\"\nsandbox_mode = \"read-only\"\nmodel_provider = \"mock\"\n\n[model_providers.mock]\nname = \"mock\"\nbase_url = \"{model_provider_base_url}\"\nenv_key = \"PATH\"\nwire_api = \"responses\"\n"
+            "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"high\"\ndeveloper_instructions = \"{ROLE_DEVELOPER_INSTRUCTIONS}\"\nsandbox_mode = \"read-only\"\nmodel_provider = \"mock\"\n\n[model_providers.mock]\nname = \"mock\"\nbase_url = \"{model_provider_base_url}\"\nenv_key = \"PATH\"\nwire_api = \"responses\"\n\n[mcp_servers.role_fixture]\ncommand = \"disabled-role-fixture\"\nenabled = false\n"
         ),
     )
     .expect("write durable worker role config");
@@ -355,7 +374,10 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     let mut initial_builder = test_codex().with_config(move |config| {
         configure_multi_agent_v2_with_role(config, &initial_model_provider_base_url);
     });
-    let initial = initial_builder.build_with_auto_env(&server).await?;
+    let initial = initial_builder
+        .build_with_auto_env(&server)
+        .await
+        .context("build initial root")?;
     let root_thread_id = initial.session_configured.thread_id;
     initial
         .codex
@@ -369,7 +391,8 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
                 ..Default::default()
             }),
         )
-        .await?;
+        .await
+        .context("submit initial spawn turn")?;
     wait_for_event(&initial.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -397,14 +420,11 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         }
         sleep(Duration::from_millis(10)).await;
     };
-    let worker_thread = initial.thread_manager.get_thread(worker_thread_id).await?;
+    let worker_thread = wait_for_resident_thread(&initial.thread_manager, worker_thread_id).await?;
     let (grandchild_thread_id, _) =
         wait_for_child_request_from(&grandchild_request, NESTED_TASK, worker_thread_id).await?;
-    let grandchild_thread = initial
-        .thread_manager
-        .get_thread(grandchild_thread_id)
-        .await
-        .expect("spawned grandchild should remain resident");
+    let grandchild_thread =
+        wait_for_resident_thread(&initial.thread_manager, grandchild_thread_id).await?;
     let deadline = Instant::now() + Duration::from_secs(/*secs*/ 5);
     loop {
         if matches!(
@@ -443,6 +463,16 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         "roles must inherit the parent's complete model provider",
     );
     wait_for_child_request_with_role(&initial_child_request, INITIAL_TASK).await?;
+    let initial_worker_mcp_servers = worker_thread.config().await.mcp_servers.get().clone();
+    assert!(initial_worker_mcp_servers.contains_key("role_fixture"));
+    worker_thread
+        .flush_rollout()
+        .await
+        .context("flush worker rollout before sibling residency changes")?;
+    grandchild_thread
+        .flush_rollout()
+        .await
+        .context("flush grandchild rollout before sibling residency changes")?;
     let initial_worker_config = worker_thread.config_snapshot().await;
     let initial_worker_role_config = (
         initial_worker_config.model,
@@ -487,7 +517,10 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         ]),
     )
     .await;
-    initial.submit_turn(SIBLING_PROMPT).await?;
+    initial
+        .submit_turn(SIBLING_PROMPT)
+        .await
+        .context("submit sibling spawn turn")?;
 
     let (sibling_thread_id, _) =
         wait_for_child_request_from(&initial_sibling_request, SIBLING_TASK, root_thread_id).await?;
@@ -510,20 +543,36 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         }
         sleep(Duration::from_millis(10)).await;
     }
-    worker_thread.flush_rollout().await?;
-    grandchild_thread.flush_rollout().await?;
-    sibling_thread.flush_rollout().await?;
-    initial.codex.flush_rollout().await?;
-    for thread in [&grandchild_thread, &worker_thread, &sibling_thread] {
-        thread.submit(Op::Shutdown).await?;
-        tokio::time::timeout(Duration::from_secs(5), thread.wait_until_terminated()).await?;
+    sibling_thread
+        .flush_rollout()
+        .await
+        .context("flush sibling rollout")?;
+    initial
+        .codex
+        .flush_rollout()
+        .await
+        .context("flush initial root rollout")?;
+    for (label, thread) in [
+        ("grandchild", &grandchild_thread),
+        ("worker", &worker_thread),
+        ("sibling", &sibling_thread),
+    ] {
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 5), thread.shutdown_and_wait())
+            .await
+            .with_context(|| format!("time out shutting down {label}"))?
+            .with_context(|| format!("shut down {label}"))?;
     }
-    initial.codex.submit(Op::Shutdown).await?;
+    initial
+        .codex
+        .submit(Op::Shutdown)
+        .await
+        .context("submit initial root shutdown")?;
     tokio::time::timeout(
         Duration::from_secs(5),
         initial.codex.wait_until_terminated(),
     )
-    .await?;
+    .await
+    .context("wait for initial root shutdown")?;
     drop(worker_thread);
     // ResponseMock records before the custom matcher runs, including requests
     // rejected by that matcher. Count only the required nested-call continuation.
@@ -593,7 +642,10 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     let mut resume_builder = test_codex().with_config(move |config| {
         configure_multi_agent_v2_with_role(config, &resumed_model_provider_base_url);
     });
-    let resumed = resume_builder.restart(&server, &initial).await?;
+    let resumed = resume_builder
+        .restart(&server, &initial)
+        .await
+        .context("cold resume root")?;
     drop(initial);
     assert_eq!(
         resumed.thread_manager.list_thread_ids().await,
@@ -645,6 +697,10 @@ model_reasoning_effort = "high"
 developer_instructions = "{ROLE_DEVELOPER_INSTRUCTIONS}"
 model_provider = "{ROLE_MODEL_PROVIDER_ID}"
 openai_base_url = "{redirected_base_url}"
+
+[mcp_servers.role_fixture]
+command = "disabled-role-fixture"
+enabled = false
 "#
         ),
     )?;
@@ -664,24 +720,36 @@ openai_base_url = "{redirected_base_url}"
         ]),
     )
     .await;
-    resumed.submit_turn(QUEUE_PROMPT).await?;
-
-    let reloaded_worker = resumed
-        .thread_manager
-        .get_thread(worker_thread_id)
+    resumed
+        .submit_turn(QUEUE_PROMPT)
         .await
-        .expect("queued message should lazily reload the original worker");
+        .context("submit queued worker message")?;
+
+    let reloaded_worker =
+        wait_for_resident_thread(&resumed.thread_manager, worker_thread_id).await?;
     assert_eq!(
         reloaded_worker.config().await.model_provider,
         resumed.codex.config().await.model_provider,
         "cold reload must preserve the parent's complete model provider",
     );
-    resumed.submit_turn(FOLLOWUP_PROMPT).await?;
+    resumed
+        .submit_turn(FOLLOWUP_PROMPT)
+        .await
+        .context("submit worker follow-up")?;
     wait_for_child_request_with_role(&followup_child_request, FOLLOWUP_TASK).await?;
-    wait_for_event(reloaded_worker.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if matches!(
+            reloaded_worker.agent_status().await,
+            AgentStatus::Completed(_)
+        ) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for reloaded worker completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
     assert!(followup_child_request.requests().iter().any(|request| {
         request.body_contains_text(FOLLOWUP_TASK)
             && request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)
@@ -817,8 +885,15 @@ openai_base_url = "{redirected_base_url}"
         reloaded_worker_config.permission_profile,
     );
     assert_eq!(reloaded_worker_role_config, initial_worker_role_config);
+    assert_eq!(
+        reloaded_worker.config().await.mcp_servers.get(),
+        &initial_worker_mcp_servers,
+    );
 
-    reloaded_worker.shutdown_and_wait().await?;
+    reloaded_worker
+        .shutdown_and_wait()
+        .await
+        .context("shut down reloaded worker")?;
     assert!(
         resumed
             .thread_manager
@@ -838,7 +913,10 @@ openai_base_url = "{redirected_base_url}"
         &interrupt_args,
     )
     .await;
-    resumed.submit_turn(INTERRUPT_PROMPT).await?;
+    resumed
+        .submit_turn(INTERRUPT_PROMPT)
+        .await
+        .context("submit worker interrupt")?;
     assert!(
         resumed
             .thread_manager
@@ -885,7 +963,10 @@ openai_base_url = "{redirected_base_url}"
         ]),
     )
     .await;
-    resumed.submit_turn(SIBLING_FOLLOWUP_PROMPT).await?;
+    resumed
+        .submit_turn(SIBLING_FOLLOWUP_PROMPT)
+        .await
+        .context("submit sibling follow-up")?;
     let deadline = Instant::now() + Duration::from_secs(2);
     while !sibling_followup_matched.load(Ordering::Acquire) {
         if Instant::now() >= deadline {

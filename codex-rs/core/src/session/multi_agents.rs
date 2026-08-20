@@ -59,6 +59,7 @@ pub(crate) fn resolve_usage_hints(
             max_concurrency: config.max_concurrent_threads_per_session,
             wait_agent_enabled: config.wait_agent_enabled,
             expose_model_overrides: config.expose_spawn_agent_model_overrides,
+            default_fork_turns: config.default_fork_turns.clone(),
         })
     };
 
@@ -81,31 +82,17 @@ pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<M
         return None;
     }
 
-    let multi_agent_messages =
-        ResolvedModelMessages::from_model(&settings.model_info).multi_agent();
     let hint = turn_context
         .config
         .multi_agent_v2
         .multi_agent_mode_hint_text
-        .as_deref()
-        .or(multi_agent_messages.hint);
+        .as_deref();
     let multi_agent_mode = match hint {
         Some(text) => MultiAgentMode::Custom(text.to_owned()),
-        None => {
-            let (message, builtin) =
-                if settings.effective_reasoning_effort() == Some(ReasoningEffort::Ultra) {
-                    (multi_agent_messages.proactive, MultiAgentMode::Proactive)
-                } else {
-                    (
-                        multi_agent_messages.explicit,
-                        MultiAgentMode::ExplicitRequestOnly,
-                    )
-                };
-            match message {
-                ResolvedMessage::Catalog(text) => MultiAgentMode::Custom(text.to_owned()),
-                ResolvedMessage::Bundled(_) => builtin,
-            }
-        }
+        None => match settings.effective_reasoning_effort() {
+            Some(ReasoningEffort::Ultra) => MultiAgentMode::Proactive,
+            _ => MultiAgentMode::ExplicitRequestOnly,
+        },
     };
 
     match &turn_context.session_source {

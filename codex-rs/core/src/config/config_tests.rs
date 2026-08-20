@@ -12652,7 +12652,7 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
             .expect("model-override guidance should extend the base usage hint");
         assert_eq!(
             model_override_guidance,
-            "\n\nModel and reasoning-effort overrides are independent of history inheritance. Only set overrides when explicitly requested by the user, applicable instructions, or a clear task-specific reason.",
+            "\n\nModel and reasoning-effort overrides are independent of history inheritance. Only set overrides when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions.",
         );
     }
 }
