@@ -9,12 +9,8 @@ use crate::context::multi_agent_mode_instructions::MultiAgentModeInstructions;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::models::ContentItemNamespace;
-use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::truncate_text;
 use serde::Deserialize;
 use serde::Serialize;
-
-const MULTI_AGENT_MODE_MAX_TOKENS: usize = 400;
 
 /// Effective multi-agent mode currently visible to the model.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -29,13 +25,7 @@ pub(crate) struct MultiAgentModeState {
 impl MultiAgentModeState {
     pub(crate) fn new(mode: Option<MultiAgentMode>) -> Self {
         Self {
-            mode: mode.map(|mode| match mode {
-                MultiAgentMode::Custom(hint_text) => MultiAgentMode::Custom(truncate_text(
-                    &hint_text,
-                    TruncationPolicy::Tokens(MULTI_AGENT_MODE_MAX_TOKENS),
-                )),
-                mode @ (MultiAgentMode::ExplicitRequestOnly | MultiAgentMode::Proactive) => mode,
-            }),
+            mode,
             usage_hint_hash: None,
             namespace: None,
         }
