@@ -2848,6 +2848,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_thread_start_requests_paginated_history() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+
+        let params = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+
+        assert_eq!(params.ephemeral, Some(false));
+        assert_eq!(params.history_mode, Some(ThreadHistoryMode::Paginated));
+    }
+
+    #[tokio::test]
     async fn shared_thread_start_preserves_explicit_session_overrides() -> Result<()> {
         let codex_home = tempfile::tempdir()?;
         let workspace = codex_home.path().join("workspace");

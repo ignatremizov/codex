@@ -346,7 +346,8 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                     let requires_pagination = match request.method.as_str() {
                         "thread/start" => params
                             .and_then(|params| params.get("historyMode"))
-                            .is_some_and(|mode| !mode.is_null()),
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|mode| mode == "paginated"),
                         "thread/resume" | "thread/fork" => params
                             .and_then(|params| params.get("excludeTurns"))
                             .and_then(serde_json::Value::as_bool)
@@ -523,9 +524,21 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                             matches!(inventories, 2 | 4)
                         };
                         let detach = request.method == "thread/unsubscribe";
-                        let request = serde_json::from_value::<ClientRequest>(
+                        let mut request = serde_json::from_value::<ClientRequest>(
                             serde_json::to_value(request)?,
                         )?;
+                        if matches!(
+                            history_capabilities,
+                            HistoryCapabilities::LegacyOnly
+                                | HistoryCapabilities::LegacyOnlyUnsupportedVariant
+                                | HistoryCapabilities::LegacyDynamicToolsAndHistory
+                        ) && let ClientRequest::ThreadStart { params, .. } = &mut request
+                            && params.history_mode.is_none()
+                        {
+                            // Emulate the old server's default without changing the recorded wire
+                            // request or inheriting the current embedded server's Paginated default.
+                            params.history_mode = Some(ThreadHistoryMode::Legacy);
+                        }
                         if let ClientRequest::ThreadList { params, .. } = &request
                             && let Some((root, started, release)) = blocked_thread_list.take()
                         {
@@ -2367,11 +2380,12 @@ async fn remote_legacy_history_start_negotiates_once_for_resume_and_fork() -> Re
     assert_eq!(starts[0]["historyMode"], "paginated");
     assert_eq!(starts[1]["historyMode"], serde_json::Value::Null);
 
-    for method in ["thread/resume", "thread/fork"] {
-        let params = recorded_params(&requests, method);
-        assert_eq!(params.len(), 1, "legacy {method} must not be reprobed");
-        assert_ne!(params[0]["excludeTurns"], true);
-    }
+    let resumes = recorded_params(&requests, "thread/resume");
+    assert_eq!(resumes.len(), 1, "resume must reuse start negotiation");
+    assert_ne!(resumes[0]["excludeTurns"], true);
+    let forks = recorded_params(&requests, "thread/fork");
+    assert_eq!(forks.len(), 1, "fork must reuse start negotiation");
+    assert_ne!(forks[0]["excludeTurns"], true);
     assert!(recorded_params(&requests, "thread/turns/list").is_empty());
     assert!(recorded_params(&requests, "thread/items/list").is_empty());
 
@@ -2427,7 +2441,7 @@ async fn remote_legacy_history_start_negotiates_once_for_resume_and_fork() -> Re
 }
 
 #[tokio::test]
-async fn remote_legacy_history_start_retries_unsupported_paginated_variant() -> Result<()> {
+async fn remote_default_paginated_start_retries_unsupported_variant() -> Result<()> {
     let (app, _codex_home) = make_history_test_app().await?;
     let (mut app_server, requests, proxy) = start_recording_app_server_with_history(
         &app.config,
@@ -2448,6 +2462,63 @@ async fn remote_legacy_history_start_retries_unsupported_paginated_variant() -> 
 
     app_server.shutdown().await?;
     proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_explicit_history_modes_only_negotiate_when_paginated_is_rejected() -> Result<()> {
+    for mode in [ThreadHistoryMode::Paginated, ThreadHistoryMode::Legacy] {
+        let (app, _codex_home) = make_history_test_app().await?;
+        let (mut app_server, requests, proxy) = start_recording_app_server_with_history(
+            &app.config,
+            HistoryCapabilities::LegacyOnlyUnsupportedVariant,
+            /*blocked_thread_list*/ None,
+            /*failed_thread_name*/ None,
+            crate::app_server_session::ThreadParamsMode::Embedded,
+            LoaderOverrides::default(),
+        )
+        .await?;
+
+        let (response, history_support, task_tools_available) =
+            crate::app_server_session::request_thread_start_with_history_fallback(
+                &app_server.request_handle(),
+                AppServerRequestId::String("explicit-history-start".to_string()),
+                codex_app_server_protocol::ThreadStartParams {
+                    history_mode: Some(mode),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let (expected_support, expected_modes) = match mode {
+            ThreadHistoryMode::Paginated => (
+                crate::app_server_session::ThreadHistorySupport::LegacyOnly,
+                vec![serde_json::json!("paginated"), serde_json::Value::Null],
+            ),
+            // Asking for Legacy does not establish that the server lacks pagination support.
+            ThreadHistoryMode::Legacy => (
+                crate::app_server_session::ThreadHistorySupport::Paginated,
+                vec![serde_json::json!("legacy")],
+            ),
+        };
+        assert_eq!(
+            (
+                response.thread.history_mode,
+                history_support,
+                task_tools_available
+            ),
+            (ThreadHistoryMode::Legacy, expected_support, false),
+        );
+        assert_eq!(
+            recorded_params(&requests, "thread/start")
+                .into_iter()
+                .map(|params| params["historyMode"].clone())
+                .collect::<Vec<_>>(),
+            expected_modes,
+        );
+
+        app_server.shutdown().await?;
+        proxy.await??;
+    }
     Ok(())
 }
 

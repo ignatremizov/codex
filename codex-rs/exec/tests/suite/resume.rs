@@ -1,10 +1,13 @@
 #![allow(clippy::unwrap_used)]
 use anyhow::Context;
 use codex_core::config::ConfigBuilder;
+use codex_core::find_thread_path_by_id_str;
 use codex_core::init_state_db;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::ThreadHistoryMode;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex_exec::test_codex_exec;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -253,6 +256,231 @@ async fn exec_resume_last_appends_to_existing_file() -> anyhow::Result<()> {
     let resumed_request = requests[1].body_json().to_string();
     assert!(resumed_request.contains(&marker));
     assert!(resumed_request.contains(&marker2));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_resume_preserves_paginated_history_and_replays_token_usage() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let test = test_codex_exec();
+    let server = MockServer::start().await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-paginated-seed"),
+                responses::ev_assistant_message("msg-paginated-seed", "persisted response"),
+                responses::ev_completed_with_tokens("resp-paginated-seed", /*total_tokens*/ 7),
+            ]),
+            exec_sse_response(/*index*/ 1),
+        ],
+    )
+    .await;
+    let seed = test_codex()
+        .with_history_mode(ThreadHistoryMode::Paginated)
+        .build_with_auto_env(&server)
+        .await?;
+    let marker = format!("paginated-resume-{}", Uuid::new_v4());
+    seed.submit_turn(&marker).await?;
+    // Release the persisted writer before exec opens this same thread. Keep the fixture alive
+    // through resume so its home and selected execution environment remain available.
+    seed.codex.shutdown_and_wait().await?;
+
+    let thread_id = seed.session_configured.thread_id.to_string();
+    let sessions_dir = seed.codex_home_path().join("sessions");
+    let path = find_session_file_containing_marker(&sessions_dir, &marker)
+        .context("Paginated seed should persist its user turn")?;
+    let content = std::fs::read_to_string(&path)?;
+    let meta: Value = serde_json::from_str(
+        content
+            .lines()
+            .next()
+            .context("Paginated rollout should contain session metadata")?,
+    )?;
+    assert_eq!(meta["payload"]["history_mode"], "paginated");
+    assert_eq!(meta["payload"]["id"], thread_id);
+
+    let resumed_marker = format!("paginated-resumed-{}", Uuid::new_v4());
+    let mut command = test.cmd_with_server(&server);
+    if let Some(url) = seed.executor_environment().exec_server_url() {
+        command.env("CODEX_EXEC_SERVER_URL", url);
+    }
+    let output = command
+        .env("CODEX_HOME", seed.codex_home_path())
+        .env("CODEX_SQLITE_HOME", seed.config.sqlite.home())
+        .env("RUST_LOG", "codex_app_server::outgoing_message=trace")
+        .arg("--skip-git-repo-check")
+        .arg("resume")
+        .arg(&thread_id)
+        .arg(&resumed_marker)
+        .output()
+        .context("Paginated resume run should succeed")?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "Paginated resume failed: {stderr}");
+    assert_eq!(
+        stderr
+            .matches("app-server event: thread/tokenUsage/updated")
+            .count(),
+        2,
+        "paginated resume should replay restored token usage before the new turn: {stderr}"
+    );
+
+    let resumed_path = find_session_file_containing_marker(&sessions_dir, &resumed_marker)
+        .context("resumed Paginated rollout should contain the new turn")?;
+    assert_eq!(resumed_path, path);
+    let resumed_content = std::fs::read_to_string(&resumed_path)?;
+    let resumed_meta: Value = serde_json::from_str(
+        resumed_content
+            .lines()
+            .next()
+            .context("resumed rollout should retain session metadata")?,
+    )?;
+    assert_eq!(resumed_meta, meta);
+    assert!(resumed_content.contains(&marker));
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let resumed_request = requests[1].body_json().to_string();
+    assert!(resumed_request.contains(&marker));
+    assert!(resumed_request.contains(&resumed_marker));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_resumes_and_forks_explicit_legacy_history() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let test = test_codex_exec();
+    let server = MockServer::start().await;
+    let response_mock = mount_exec_responses(&server, /*count*/ 3).await;
+    let seed = test_codex()
+        .with_history_mode(ThreadHistoryMode::Legacy)
+        .build_with_auto_env(&server)
+        .await?;
+    let source_marker = format!("legacy-source-{}", Uuid::new_v4());
+    seed.submit_turn(&source_marker).await?;
+    seed.codex.shutdown_and_wait().await?;
+    let source_id = seed.session_configured.thread_id.to_string();
+    let source_path = find_thread_path_by_id_str(
+        seed.codex_home_path(),
+        &source_id,
+        /*state_db_ctx*/ None,
+    )
+    .await?
+    .context("Legacy seed should have a persisted rollout")?;
+    let seed_contents = std::fs::read_to_string(&source_path)?;
+    let seed_meta: Value = serde_json::from_str(
+        seed_contents
+            .lines()
+            .next()
+            .context("Legacy seed metadata")?,
+    )?;
+    assert_eq!(seed_meta["payload"]["id"], source_id);
+    assert_eq!(seed_meta["payload"]["history_mode"], "legacy");
+
+    // Keep the seed's home and execution environment alive for every child process.
+    let exec_command = || {
+        let mut command = test.cmd_with_server(&server);
+        command
+            .env("CODEX_HOME", seed.codex_home_path())
+            .env("CODEX_SQLITE_HOME", seed.config.sqlite.home())
+            .arg("--skip-git-repo-check");
+        if let Some(url) = seed.executor_environment().exec_server_url() {
+            command.env("CODEX_EXEC_SERVER_URL", url);
+        }
+        command
+    };
+    let resumed_marker = format!("legacy-resumed-{}", Uuid::new_v4());
+    exec_command()
+        .arg("resume")
+        .arg(&source_id)
+        .arg(&resumed_marker)
+        .assert()
+        .success();
+    assert_eq!(
+        find_thread_path_by_id_str(
+            seed.codex_home_path(),
+            &source_id,
+            /*state_db_ctx*/ None,
+        )
+        .await?,
+        Some(source_path.clone()),
+    );
+    let resumed_source = std::fs::read_to_string(&source_path)?;
+    let resumed_meta: Value = serde_json::from_str(
+        resumed_source
+            .lines()
+            .next()
+            .context("resumed Legacy metadata")?,
+    )?;
+    assert_eq!(resumed_meta, seed_meta);
+    assert!(resumed_source.contains(&source_marker));
+    assert!(resumed_source.contains(&resumed_marker));
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let resumed_request = requests[1].body_json().to_string();
+    assert!(resumed_request.contains(&source_marker));
+    assert!(resumed_request.contains(&resumed_marker));
+
+    let fork_marker = format!("legacy-fork-{}", Uuid::new_v4());
+    let mut fork_ids = Vec::new();
+    for prompt in [None, Some(fork_marker.as_str())] {
+        let mut command = exec_command();
+        command.arg("fork").arg(&source_id).arg("--json");
+        if let Some(prompt) = prompt {
+            command.arg(prompt);
+        }
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "Legacy fork failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let events = String::from_utf8(output.stdout)?
+            .lines()
+            .map(serde_json::from_str::<Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(events[0]["type"], "thread.started");
+        let fork_id = events[0]["thread_id"].as_str().context("Legacy fork ID")?;
+        assert_ne!(fork_id, source_id);
+        assert!(!fork_ids.iter().any(|id| id == fork_id));
+        fork_ids.push(fork_id.to_string());
+        // Copied Legacy rollouts contain the same markers; resolve the emitted ID instead.
+        let fork_path =
+            find_thread_path_by_id_str(seed.codex_home_path(), fork_id, /*state_db_ctx*/ None)
+                .await?
+                .context("Legacy fork should have its own rollout")?;
+        assert_ne!(fork_path, source_path);
+        let fork_contents = std::fs::read_to_string(fork_path)?;
+        let fork_meta: Value = serde_json::from_str(
+            fork_contents
+                .lines()
+                .next()
+                .context("Legacy fork metadata")?,
+        )?;
+        assert_eq!(fork_meta["payload"]["id"], fork_id);
+        assert_eq!(fork_meta["payload"]["forked_from_id"], source_id);
+        assert_eq!(fork_meta["payload"]["history_mode"], "legacy");
+        assert_eq!(fork_meta["payload"]["history_base"], Value::Null);
+        assert!(fork_contents.contains(&source_marker));
+        assert!(fork_contents.contains(&resumed_marker));
+        assert_eq!(std::fs::read_to_string(&source_path)?, resumed_source);
+        let requests = response_mock.requests();
+        match prompt {
+            None => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(requests.len(), 2, "promptless fork must not sample");
+            }
+            Some(prompt) => {
+                assert_eq!(requests.len(), 3);
+                assert!(fork_contents.contains(prompt));
+                let fork_request = requests[2].body_json().to_string();
+                assert!(fork_request.contains(&source_marker));
+                assert!(fork_request.contains(&resumed_marker));
+                assert!(fork_request.contains(prompt));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -922,6 +1150,7 @@ async fn exec_fork_creates_distinct_threads_with_and_without_a_prompt() -> anyho
             .expect("source rollout should contain session metadata"),
     )?;
     assert_eq!(source_meta["payload"]["thread_source"], "source_feature");
+    assert_eq!(source_meta["payload"]["history_mode"], "paginated");
 
     for (args, expected_error) in [
         (
@@ -1051,6 +1280,7 @@ async fn exec_fork_creates_distinct_threads_with_and_without_a_prompt() -> anyho
     )?;
     assert_eq!(fork_meta["payload"]["forked_from_id"], source_id);
     assert_eq!(fork_meta["payload"]["thread_source"], "fork_feature");
+    assert_eq!(fork_meta["payload"]["history_mode"], "paginated");
     assert_eq!(fork_meta["payload"]["history_base"]["thread_id"], source_id);
     assert!(!fork_contents.contains(&source_marker));
     assert!(fork_contents.contains(&fork_marker));
