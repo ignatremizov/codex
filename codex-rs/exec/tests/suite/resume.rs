@@ -198,7 +198,7 @@ async fn exec_resume_last_appends_to_existing_file() -> anyhow::Result<()> {
             .next()
             .expect("rollout should contain session metadata"),
     )?;
-    assert_eq!(meta["payload"]["history_mode"], "paginated");
+    assert_eq!(meta["payload"]["history_mode"], "legacy");
     assert_eq!(meta["payload"]["thread_source"], "user");
 
     // 2) Second run: resume the most recent file with a new marker.
@@ -207,7 +207,6 @@ async fn exec_resume_last_appends_to_existing_file() -> anyhow::Result<()> {
 
     let output = test
         .cmd_with_server(&server)
-        .env("RUST_LOG", "codex_app_server::outgoing_message=trace")
         .arg("--skip-git-repo-check")
         .arg("-C")
         .arg(&repo_root)
@@ -218,13 +217,6 @@ async fn exec_resume_last_appends_to_existing_file() -> anyhow::Result<()> {
         .context("resume run should succeed")?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "resume failed: {stderr}");
-    assert_eq!(
-        stderr
-            .matches("app-server event: thread/tokenUsage/updated")
-            .count(),
-        2,
-        "paginated resume should replay restored token usage before the new turn: {stderr}"
-    );
 
     // Ensure the same file was updated and contains both markers.
     let resumed_path = find_session_file_containing_marker(&sessions_dir, &marker2)
@@ -1039,8 +1031,11 @@ async fn exec_fork_creates_distinct_threads_with_and_without_a_prompt() -> anyho
     )?;
     assert_eq!(fork_meta["payload"]["forked_from_id"], source_id);
     assert_eq!(fork_meta["payload"]["thread_source"], "fork_feature");
-    assert_eq!(fork_meta["payload"]["history_base"]["thread_id"], source_id);
-    assert!(!fork_contents.contains(&source_marker));
+    assert_eq!(
+        fork_meta["payload"]["history_base"],
+        serde_json::Value::Null
+    );
+    assert!(fork_contents.contains(&source_marker));
     assert!(fork_contents.contains(&fork_marker));
     assert_eq!(std::fs::read_to_string(&source_path)?, original_source);
 

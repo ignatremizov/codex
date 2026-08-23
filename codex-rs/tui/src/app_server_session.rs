@@ -1895,7 +1895,7 @@ pub(crate) fn thread_start_params_from_config(
         permissions,
         config: config_request_overrides_from_config(config),
         ephemeral: Some(config.ephemeral),
-        history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
+        history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Legacy),
         session_start_source,
         thread_source: Some(ThreadSource::User),
         developer_instructions: with_terminal_visualization_instructions(
@@ -2577,6 +2577,22 @@ mod tests {
 
         assert_eq!(params.ephemeral, Some(true));
         assert_eq!(params.history_mode, None);
+    }
+
+    #[tokio::test]
+    async fn durable_thread_start_requests_non_paginated_history() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+
+        let params = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+
+        assert_eq!(params.ephemeral, Some(false));
+        assert_eq!(params.history_mode, Some(ThreadHistoryMode::Legacy));
     }
 
     #[tokio::test]
