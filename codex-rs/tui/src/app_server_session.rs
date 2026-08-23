@@ -3329,6 +3329,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_thread_start_requests_paginated_history() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = build_config(&temp_dir).await;
+
+        let params = thread_start_params_from_config(
+            &config,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+            /*session_start_source*/ None,
+        );
+
+        assert_eq!(params.ephemeral, Some(false));
+        assert_eq!(params.history_mode, Some(ThreadHistoryMode::Paginated));
+    }
+
+    #[tokio::test]
     async fn cloud_start_resume_and_turn_leave_settings_server_owned() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let mut config = build_config(&temp_dir).await;
