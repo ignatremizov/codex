@@ -160,7 +160,8 @@ async fn start_recording_app_server_with_history(
                     let requires_pagination = match request.method.as_str() {
                         "thread/start" => params
                             .and_then(|params| params.get("historyMode"))
-                            .is_some_and(|mode| !mode.is_null()),
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|mode| mode == "paginated"),
                         "thread/resume" | "thread/fork" => params
                             .and_then(|params| params.get("excludeTurns"))
                             .and_then(serde_json::Value::as_bool)
@@ -1024,14 +1025,12 @@ async fn older_external_server_starts_without_unsupported_dynamic_tools_or_histo
     assert!(!startup.task_tools_available);
 
     let starts = recorded_params(&requests, "thread/start");
-    assert_eq!(starts.len(), 6);
-    for attempts in starts.chunks_exact(3) {
+    assert_eq!(starts.len(), 4);
+    for attempts in starts.chunks_exact(2) {
         assert_eq!(attempts[0]["dynamicTools"][0]["type"], "namespace");
-        assert_eq!(attempts[0]["historyMode"], "paginated");
+        assert_eq!(attempts[0]["historyMode"], "legacy");
         assert_eq!(attempts[1]["dynamicTools"], serde_json::Value::Null);
-        assert_eq!(attempts[1]["historyMode"], "paginated");
-        assert_eq!(attempts[2]["dynamicTools"], serde_json::Value::Null);
-        assert_eq!(attempts[2]["historyMode"], serde_json::Value::Null);
+        assert_eq!(attempts[1]["historyMode"], "legacy");
     }
 
     app_server.shutdown().await?;
@@ -1837,7 +1836,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
 }
 
 #[tokio::test]
-async fn remote_legacy_history_start_negotiates_once_for_resume_and_fork() -> Result<()> {
+async fn remote_non_paginated_start_negotiates_on_resume_once_for_fork() -> Result<()> {
     let (app, _codex_home) = make_history_test_app().await?;
     let legacy_thread_id =
         create_history_rollout(&app.config, ThreadHistoryMode::Legacy, "legacy history")?;
@@ -1871,15 +1870,16 @@ async fn remote_legacy_history_start_negotiates_once_for_resume_and_fork() -> Re
     assert_eq!(resumed.session.thread_id, legacy_thread_id);
     assert_ne!(forked.session.thread_id, legacy_thread_id);
     let starts = recorded_params(&requests, "thread/start");
-    assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0]["historyMode"], "paginated");
-    assert_eq!(starts[1]["historyMode"], serde_json::Value::Null);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0]["historyMode"], "legacy");
 
-    for method in ["thread/resume", "thread/fork"] {
-        let params = recorded_params(&requests, method);
-        assert_eq!(params.len(), 1, "legacy {method} must not be reprobed");
-        assert_ne!(params[0]["excludeTurns"], true);
-    }
+    let resumes = recorded_params(&requests, "thread/resume");
+    assert_eq!(resumes.len(), 2);
+    assert_eq!(resumes[0]["excludeTurns"], true);
+    assert_ne!(resumes[1]["excludeTurns"], true);
+    let forks = recorded_params(&requests, "thread/fork");
+    assert_eq!(forks.len(), 1, "fork must reuse resume negotiation");
+    assert_ne!(forks[0]["excludeTurns"], true);
     assert!(recorded_params(&requests, "thread/turns/list").is_empty());
     assert!(recorded_params(&requests, "thread/items/list").is_empty());
 
@@ -1935,7 +1935,7 @@ async fn remote_legacy_history_start_negotiates_once_for_resume_and_fork() -> Re
 }
 
 #[tokio::test]
-async fn remote_legacy_history_start_retries_unsupported_paginated_variant() -> Result<()> {
+async fn remote_legacy_history_start_avoids_unsupported_paginated_variant() -> Result<()> {
     let (app, _codex_home) = make_history_test_app().await?;
     let (mut app_server, requests, proxy) = start_recording_app_server_with_history(
         &app.config,
@@ -1949,9 +1949,8 @@ async fn remote_legacy_history_start_retries_unsupported_paginated_variant() -> 
     app_server.start_thread(&app.config).await?;
 
     let starts = recorded_params(&requests, "thread/start");
-    assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0]["historyMode"], "paginated");
-    assert_eq!(starts[1]["historyMode"], serde_json::Value::Null);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0]["historyMode"], "legacy");
 
     app_server.shutdown().await?;
     proxy.await??;

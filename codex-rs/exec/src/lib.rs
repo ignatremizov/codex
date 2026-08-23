@@ -1196,7 +1196,7 @@ fn thread_start_params_from_config(
         permissions,
         config: thread_config_overrides_from_config(config),
         ephemeral: Some(config.ephemeral),
-        history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
+        history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Legacy),
         thread_source: Some(thread_source.clone()),
         ..ThreadStartParams::default()
     }
