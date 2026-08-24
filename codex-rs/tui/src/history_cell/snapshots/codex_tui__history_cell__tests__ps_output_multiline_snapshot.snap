@@ -8,7 +8,9 @@ Background terminals
 
   • echo hello
     and then some extra text
+    id 1000
     ↳ hello
       done
   • rg "foo" src
+    id 1001
     ↳ src/main.rs:12:foo

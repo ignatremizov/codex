@@ -970,6 +970,22 @@ impl App {
                     .await?;
                 Ok(true)
             }
+            AppCommand::TerminateBackgroundTerminal { process_id } => {
+                let terminated = app_server
+                    .thread_background_terminal_terminate(thread_id, *process_id)
+                    .await?;
+                if terminated {
+                    self.chat_widget.add_info_message(
+                        format!("Stopping background terminal {process_id}."),
+                        /*hint*/ None,
+                    );
+                } else {
+                    self.chat_widget.add_error_message(format!(
+                        "Background terminal {process_id} was not found."
+                    ));
+                }
+                Ok(true)
+            }
             AppCommand::RealtimeConversationStart {
                 thread_id: realtime_thread_id,
                 offer_sdp,

@@ -20,3 +20,4 @@ Background terminals
     echo line 11
     echo line 12
     wc -l /tmp/codex_multiline_pty_test.txt
+    id 1000

@@ -102,6 +102,9 @@ pub(crate) enum AppCommand {
     },
     Interrupt,
     CleanBackgroundTerminals,
+    TerminateBackgroundTerminal {
+        process_id: i32,
+    },
     RealtimeConversationStart {
         thread_id: ThreadId,
         offer_sdp: RealtimeOfferSdp,
@@ -211,6 +214,26 @@ impl AppCommand {
 
     pub(crate) fn clean_background_terminals() -> Self {
         Self::CleanBackgroundTerminals
+    }
+
+    pub(crate) fn terminate_background_terminal(process_id: i32) -> Self {
+        Self::TerminateBackgroundTerminal { process_id }
+    }
+
+    pub(crate) fn realtime_conversation_start(
+        transport: Option<ThreadRealtimeStartTransport>,
+        voice: Option<Value>,
+    ) -> Self {
+        Self::RealtimeConversationStart { transport, voice }
+    }
+
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub(crate) fn realtime_conversation_audio(frame: ThreadRealtimeAudioChunk) -> Self {
+        Self::RealtimeConversationAudio(frame)
+    }
+
+    pub(crate) fn realtime_conversation_close() -> Self {
+        Self::RealtimeConversationClose
     }
 
     pub(crate) fn run_user_shell_command(command: String) -> Self {

@@ -1,5 +1,11 @@
 use super::*;
+use core_test_support::responses;
 use pretty_assertions::assert_eq;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 #[tokio::test]
 async fn external_writer_view_quits_with_escape_ctrl_c_or_q() -> Result<()> {
@@ -314,6 +320,20 @@ async fn exit_interrupts_before_requesting_shutdown() -> Result<()> {
     prepare_running_local_daemon(&mut app)?;
     app.chat_widget
         .set_feature_enabled(Feature::Goals, /*enabled*/ true);
+    let model_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(responses::sse_completed("background-exit-response"))
+                .set_delay(Duration::from_secs(/*secs*/ 30)),
+        )
+        .mount(&model_server)
+        .await;
+    app.config.model_provider.base_url = Some(format!("{}/v1", model_server.uri()));
+    app.config.model_provider.env_key = None;
+    app.config.model_provider.experimental_bearer_token = Some("test-token".to_string().into());
     let (mut app_server, mut tui) =
         prepare_background_exit_test(&app, &mut app_event_rx, &mut op_rx).await?;
     let started = app_server.start_thread(&app.config).await?;
@@ -343,60 +363,16 @@ async fn exit_interrupts_before_requesting_shutdown() -> Result<()> {
         ),
         /*replay_kind*/ None,
     );
-    // Keep the command alive until interruption, even on a busy runner. Dropping
-    // the directory also releases it if the test fails before reaching the exit.
-    let running = tempdir()?;
-    let running_path = running.path().to_string_lossy();
-    let command = if cfg!(windows) {
-        format!(
-            "Write-Output 'exit-test-ready'; while (Test-Path -LiteralPath '{}') {{ Start-Sleep -Milliseconds 100 }}",
-            running_path.replace('\'', "''"),
+    let started_turn = app_server
+        .turn_start_with_thread_defaults(
+            thread_id,
+            vec![AppServerUserInput::Text {
+                text: "keep this turn active until exit".to_string(),
+                text_elements: Vec::new(),
+            }],
         )
-    } else {
-        format!(
-            "printf 'exit-test-ready\\n'; while [ -d {} ]; do sleep 0.1; done",
-            shlex::try_quote(&running_path)?,
-        )
-    };
-    app_server.thread_shell_command(thread_id, command).await?;
-    let turn_id = time::timeout(Duration::from_secs(/*secs*/ 10), async {
-        let mut turn_id = None;
-        let mut output = String::new();
-        loop {
-            let event = app_server
-                .next_event()
-                .await
-                .expect("app-server event stream should remain open");
-            if let codex_app_server_client::AppServerEvent::ServerNotification(notification) = event
-            {
-                match notification.as_ref() {
-                    ServerNotification::TurnStarted(notification)
-                        if notification.thread_id == thread_id.to_string() =>
-                    {
-                        turn_id = Some(notification.turn.id.clone());
-                    }
-                    ServerNotification::CommandExecutionOutputDelta(notification)
-                        if notification.thread_id == thread_id.to_string() =>
-                    {
-                        output.push_str(&notification.delta);
-                    }
-                    ServerNotification::TurnCompleted(notification)
-                        if notification.thread_id == thread_id.to_string() =>
-                    {
-                        panic!("shell command ended before interruption: {notification:?}");
-                    }
-                    _ => {}
-                }
-            }
-            if output.contains("exit-test-ready")
-                && let Some(turn_id) = turn_id.as_ref()
-            {
-                break turn_id.clone();
-            }
-        }
-    })
-    .await
-    .expect("shell command should be running before interruption");
+        .await?;
+    let turn_id = started_turn.turn.id;
     app.thread_event_channels.insert(
         thread_id,
         ThreadEventChannel::new_with_session(

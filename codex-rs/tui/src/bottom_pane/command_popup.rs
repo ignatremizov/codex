@@ -31,11 +31,20 @@ pub(crate) enum CommandItem {
     Builtin(SlashCommand),
     ServiceTier(ServiceTierCommand),
     Mcp(super::mcp_completion::McpCompletion),
+    BackgroundTerminal(BackgroundTerminalCompletion),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BackgroundTerminalCompletion {
+    pub(crate) process_id: String,
+    pub(crate) command_display: String,
 }
 
 pub(crate) struct CommandPopup {
     command_filter: String,
     commands: Vec<CommandItem>,
+    composer_text: String,
+    background_terminals: Vec<BackgroundTerminalCompletion>,
     state: ScrollState,
     mcp_server_names: Vec<String>,
     mcp_candidates: Option<Vec<super::mcp_completion::McpCompletion>>,
@@ -94,17 +103,34 @@ impl CommandPopup {
         Self {
             command_filter: String::new(),
             commands,
+            composer_text: String::new(),
+            background_terminals: Vec::new(),
             state: ScrollState::new(),
             mcp_server_names: Vec::new(),
             mcp_candidates: None,
         }
     }
 
+    pub(crate) fn set_background_terminals(
+        &mut self,
+        background_terminals: Vec<BackgroundTerminalCompletion>,
+    ) {
+        if self.background_terminals == background_terminals {
+            return;
+        }
+        self.background_terminals = background_terminals;
+        self.state.reset();
+        let matches_len = self.filtered_items().len();
+        self.state.clamp_selection(matches_len);
+        self.state
+            .ensure_visible(matches_len, MAX_POPUP_ROWS.min(matches_len));
+    }
     /// Update the filter string based on the current composer text. The text
     /// passed in is expected to start with a leading '/'. Everything after the
     /// *first* '/' on the *first* line becomes the active filter that is used
     /// to narrow down the list of available commands.
     pub(crate) fn on_composer_text_change(&mut self, text: String) {
+        self.composer_text = text.clone();
         let first_line = text.lines().next().unwrap_or("");
         let previous_filter = self.command_filter.clone();
         let previous_candidates = self.mcp_candidates.clone();
@@ -163,6 +189,9 @@ impl CommandPopup {
                 .map(|item| (CommandItem::Mcp(item), None))
                 .collect();
         }
+        if let Some(matches) = self.filtered_stop_args() {
+            return matches;
+        }
         let filter = self.command_filter.trim();
         let mut out: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
         if filter.is_empty() {
@@ -212,6 +241,28 @@ impl CommandPopup {
         out
     }
 
+    fn filtered_stop_args(&self) -> Option<Vec<(CommandItem, Option<Vec<usize>>)>> {
+        let tail = self.composer_text.strip_prefix("/stop")?;
+        if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return None;
+        }
+
+        let query = tail.trim_start();
+        if query.contains(char::is_whitespace) {
+            return Some(Vec::new());
+        }
+        let matches = self
+            .background_terminals
+            .iter()
+            .filter(|terminal| terminal.process_id.starts_with(query))
+            .map(|terminal| {
+                let indices = (!query.is_empty()).then(|| (0..query.chars().count()).collect());
+                (CommandItem::BackgroundTerminal(terminal.clone()), indices)
+            })
+            .collect();
+        Some(matches)
+    }
+
     fn filtered_items(&self) -> Vec<CommandItem> {
         self.filtered().into_iter().map(|(c, _)| c).collect()
     }
@@ -224,8 +275,26 @@ impl CommandPopup {
             .into_iter()
             .enumerate()
             .map(|(index, (item, indices))| {
-                let name = format!("/{}", item.command());
-                let description = item.description().to_string();
+                let (name, description) = match &item {
+                    CommandItem::Builtin(cmd) => {
+                        (format!("/{}", cmd.command()), cmd.description().to_string())
+                    }
+                    CommandItem::ServiceTier(command) => {
+                        (format!("/{}", command.name), command.description.clone())
+                    }
+                    CommandItem::Mcp(completion) => (
+                        completion
+                            .text()
+                            .trim_start_matches('/')
+                            .trim_end()
+                            .to_string(),
+                        completion.description().to_string(),
+                    ),
+                    CommandItem::BackgroundTerminal(terminal) => (
+                        terminal.process_id.clone(),
+                        terminal.command_display.clone(),
+                    ),
+                };
                 GenericDisplayRow {
                     category_tag: None,
                     name,
@@ -281,14 +350,16 @@ impl CommandItem {
                 .trim_end()
                 .to_string()
                 .into(),
+            Self::BackgroundTerminal(terminal) => terminal.process_id.as_str().into(),
         }
     }
 
     fn description(&self) -> &str {
         match self {
-            Self::Builtin(cmd) => cmd.description(),
+            Self::Builtin(command) => command.description(),
             Self::ServiceTier(command) => &command.description,
             Self::Mcp(completion) => completion.description(),
+            Self::BackgroundTerminal(terminal) => &terminal.command_display,
         }
     }
 }
@@ -326,6 +397,7 @@ mod tests {
         let has_init = matches.iter().any(|item| match item {
             CommandItem::Builtin(cmd) => cmd.command() == "init",
             CommandItem::ServiceTier(_) | CommandItem::Mcp(_) => false,
+            CommandItem::BackgroundTerminal(_) => false,
         });
         assert!(
             has_init,
@@ -348,6 +420,9 @@ mod tests {
             }
             None => panic!("expected a selected command for exact match"),
             Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
+            Some(CommandItem::BackgroundTerminal(terminal)) => {
+                panic!("unexpected background terminal {terminal:?}")
+            }
         }
     }
 
@@ -363,6 +438,9 @@ mod tests {
             }
             None => panic!("expected at least one match for '/mo'"),
             Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
+            Some(CommandItem::BackgroundTerminal(terminal)) => {
+                panic!("unexpected background terminal {terminal:?}")
+            }
         }
     }
 
@@ -456,6 +534,7 @@ mod tests {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
                 CommandItem::Mcp(command) => command.text(),
+                CommandItem::BackgroundTerminal(terminal) => terminal.process_id,
             })
             .collect();
         assert_eq!(
@@ -545,6 +624,7 @@ mod tests {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
                 CommandItem::Mcp(command) => command.text(),
+                CommandItem::BackgroundTerminal(terminal) => terminal.process_id,
             })
             .collect();
         assert!(
@@ -621,6 +701,7 @@ mod tests {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
                 CommandItem::Mcp(command) => command.text(),
+                CommandItem::BackgroundTerminal(terminal) => terminal.process_id,
             })
             .collect();
         assert!(
@@ -674,5 +755,37 @@ mod tests {
             !cmds.iter().any(|name| name.starts_with("debug")),
             "expected no /debug* command in popup menu, got {cmds:?}"
         );
+    }
+    #[test]
+    fn stop_args_suggest_live_background_terminal_ids() {
+        let terminals = vec![
+            BackgroundTerminalCompletion {
+                process_id: "95306".to_string(),
+                command_display: "sleep 600".to_string(),
+            },
+            BackgroundTerminalCompletion {
+                process_id: "87742".to_string(),
+                command_display: "date -Ins; sleep 3900; date -Ins".to_string(),
+            },
+        ];
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.set_background_terminals(terminals.clone());
+        popup.on_composer_text_change("/stop 9".to_string());
+        assert_eq!(
+            popup.filtered_items(),
+            vec![CommandItem::BackgroundTerminal(terminals[0].clone())]
+        );
+
+        popup.on_composer_text_change("/stop ".to_string());
+        let width = 72;
+        let area = Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            width,
+            popup.calculate_required_height(width),
+        );
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+        insta::assert_snapshot!("command_popup_stop_processes", format!("{buf:?}"));
     }
 }
