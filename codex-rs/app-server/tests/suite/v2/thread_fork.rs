@@ -1319,6 +1319,42 @@ async fn thread_fork_can_load_source_by_path_from_another_home() -> Result<()> {
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
+    let before = list_threads(&mut mcp).await?.data;
+    let rejected = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            path: Some(source_path.clone()),
+            attach_to_source: true,
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(rejected)),
+    )
+    .await??;
+    assert!(
+        error.error.message.contains("active Codex home"),
+        "{}",
+        error.error.message
+    );
+    assert_eq!(
+        list_threads(&mut mcp)
+            .await?
+            .data
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>(),
+        before
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(std::fs::read_to_string(&source_path)?, source_contents);
+    assert_eq!(
+        std::fs::read_to_string(&active_path)?,
+        source_contents.replace(preview, "Active-home collision")
+    );
+
     let fork_id = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: "not-a-valid-thread-id".to_string(),
@@ -1755,6 +1791,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
         .send_thread_fork_request(ThreadForkParams {
             thread_id: conversation_id.clone(),
             config: Some([("thread_unload_delay_secs".into(), json!(0))].into()),
+            path: Some(source_path.clone()),
             ..Default::default()
         })
         .await?;

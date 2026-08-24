@@ -1145,65 +1145,81 @@ impl RolloutRecorder {
         path: &Path,
     ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
         trace!("Resuming rollout from {path:?}");
-        compression::read_rollout_lines(path, |reader| {
-            let mut items: Vec<RolloutItem> = Vec::new();
-            let mut thread_id: Option<ThreadId> = None;
-            let mut parse_errors = 0usize;
-            let mut saw_non_empty_line = false;
-            for line in reader {
-                let line = line?;
-                if line.trim().is_empty() {
+        compression::read_rollout_lines(path, Self::load_rollout_items_from_reader).await
+    }
+
+    /// Loads rollout items from one fixed seekable prefix on the shared blocking reader.
+    pub async fn load_rollout_items_from_seekable_prefix(
+        path: &Path,
+        mut file: File,
+        byte_limit: u64,
+    ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
+        trace!("Resuming rollout prefix from {path:?}");
+        file.seek(SeekFrom::Start(0))?;
+        compression::RolloutLineReader::from_seekable_prefix(file, byte_limit)
+            .read_lines(Self::load_rollout_items_from_reader)
+            .await
+    }
+
+    fn load_rollout_items_from_reader(
+        reader: &mut dyn Iterator<Item = std::io::Result<String>>,
+    ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
+        let mut items: Vec<RolloutItem> = Vec::new();
+        let mut thread_id: Option<ThreadId> = None;
+        let mut parse_errors = 0usize;
+        let mut saw_non_empty_line = false;
+        for line in reader {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            saw_non_empty_line = true;
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(e) => {
+                    warn!("failed to parse line as JSON: {line:?}, error: {e}");
+                    parse_errors = parse_errors.saturating_add(1);
                     continue;
                 }
-                saw_non_empty_line = true;
-                let value: Value = match serde_json::from_str(&line) {
-                    Ok(value) => value,
-                    Err(e) => {
-                        warn!("failed to parse line as JSON: {line:?}, error: {e}");
-                        parse_errors = parse_errors.saturating_add(1);
-                        continue;
-                    }
-                };
-                if thread_id.is_none() {
-                    // The first SessionMeta belongs to this rollout. Later SessionMeta lines
-                    // can be copied from fork history, so only validate unknown history modes
-                    // before we have parsed the rollout's own SessionMeta.
-                    reject_unknown_thread_history_mode(&value)?;
-                }
-
-                let rollout_line = match crate::decode_canonical_rollout_line(value) {
-                    Ok(Some(rollout_line)) => rollout_line,
-                    Ok(None) => continue,
-                    Err(e) => {
-                        trace!("failed to parse rollout line: {e}");
-                        parse_errors = parse_errors.saturating_add(1);
-                        continue;
-                    }
-                };
-
-                let item = rollout_line.item;
-                // Use the FIRST SessionMeta encountered in the file as the canonical
-                // thread id and main session information. Keep all items intact.
-                if thread_id.is_none()
-                    && let RolloutItem::SessionMeta(session_meta_line) = &item
-                {
-                    thread_id = Some(session_meta_line.meta.id);
-                }
-                items.push(item);
-            }
-            if !saw_non_empty_line {
-                return Err(IoError::other("empty session file"));
+            };
+            if thread_id.is_none() {
+                // The first SessionMeta belongs to this rollout. Later SessionMeta lines
+                // can be copied from fork history, so only validate unknown history modes
+                // before we have parsed the rollout's own SessionMeta.
+                reject_unknown_thread_history_mode(&value)?;
             }
 
-            tracing::debug!(
-                "Resumed rollout with {} items, thread ID: {:?}, parse errors: {}",
-                items.len(),
-                thread_id,
-                parse_errors,
-            );
-            Ok((items, thread_id, parse_errors))
-        })
-        .await
+            let rollout_line = match crate::decode_canonical_rollout_line(value) {
+                Ok(Some(rollout_line)) => rollout_line,
+                Ok(None) => continue,
+                Err(e) => {
+                    trace!("failed to parse rollout line: {e}");
+                    parse_errors = parse_errors.saturating_add(1);
+                    continue;
+                }
+            };
+
+            let item = rollout_line.item;
+            // Use the FIRST SessionMeta encountered in the file as the canonical
+            // thread id and main session information. Keep all items intact.
+            if thread_id.is_none()
+                && let RolloutItem::SessionMeta(session_meta_line) = &item
+            {
+                thread_id = Some(session_meta_line.meta.id);
+            }
+            items.push(item);
+        }
+        if !saw_non_empty_line {
+            return Err(IoError::other("empty session file"));
+        }
+
+        tracing::debug!(
+            "Resumed rollout with {} items, thread ID: {:?}, parse errors: {}",
+            items.len(),
+            thread_id,
+            parse_errors,
+        );
+        Ok((items, thread_id, parse_errors))
     }
 
     pub async fn get_rollout_history(path: &Path) -> std::io::Result<InitialHistory> {
