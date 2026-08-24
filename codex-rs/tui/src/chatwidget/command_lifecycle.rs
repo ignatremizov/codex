@@ -4,7 +4,10 @@
 //! exec-cell grouping and unified exec wait state.
 
 use super::*;
+use crate::bottom_pane::BackgroundTerminalCompletion;
 use crate::exec_cell::CommandOutput;
+
+const MAX_COMPLETED_UNIFIED_EXEC_PROCESSES: usize = 16;
 
 impl ChatWidget {
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
@@ -39,6 +42,9 @@ impl ChatWidget {
         };
         let (_command, parsed_cmd) = command_execution_command_and_parsed(command, command_actions);
         self.flush_answer_stream_with_separator();
+        if *source == ExecCommandSource::UserShell && process_id.is_some() {
+            self.track_unified_exec_process_begin(id, process_id.as_deref(), command);
+        }
         if is_unified_exec_source(*source) {
             if *source == ExecCommandSource::UnifiedExecStartup {
                 self.track_unified_exec_process_begin(id, process_id.as_deref(), command);
@@ -241,6 +247,9 @@ impl ChatWidget {
         else {
             return;
         };
+        if *source == ExecCommandSource::UserShell && process_id.is_some() {
+            self.track_unified_exec_process_end(id, process_id.as_deref());
+        }
         if is_unified_exec_source(*source) {
             let owner = StatusCountdownOwner::UnifiedExec {
                 turn_id: turn_id.to_string(),
@@ -308,7 +317,10 @@ impl ChatWidget {
         let processes = self
             .unified_exec_processes
             .iter()
-            .map(|process| process.command_display.clone())
+            .map(|process| BackgroundTerminalCompletion {
+                process_id: process.key.clone(),
+                command_display: process.command_display.clone(),
+            })
             .collect();
         self.bottom_pane.set_unified_exec_processes(processes);
     }
@@ -341,8 +353,11 @@ impl ChatWidget {
         };
         let (command, parsed_cmd) =
             command_execution_command_and_parsed(&command, &command_actions);
-        // Ensure the status indicator is visible while the command runs.
-        self.bottom_pane.ensure_status_indicator();
+        // Detached user-shell commands use the background-terminal footer and
+        // must not make the composer look like a model turn is running.
+        if self.bottom_pane.is_task_running() {
+            self.bottom_pane.ensure_status_indicator();
+        }
         let parsed_cmd = self.annotate_skill_reads_in_parsed_cmd(parsed_cmd);
         self.running_commands.insert(
             id.clone(),

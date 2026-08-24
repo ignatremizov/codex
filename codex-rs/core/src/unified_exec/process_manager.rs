@@ -143,6 +143,26 @@ pub(super) fn should_use_deterministic_process_ids() -> bool {
     cfg!(test) || deterministic_process_ids_forced_for_tests()
 }
 
+pub(super) fn reserve_process_id(store: &mut ProcessStore) -> i32 {
+    loop {
+        let process_id = if should_use_deterministic_process_ids() {
+            store
+                .reserved_process_ids
+                .iter()
+                .copied()
+                .max()
+                .map(|maximum| std::cmp::max(maximum, 999) + 1)
+                .unwrap_or(1000)
+        } else {
+            rand::rng().random_range(1_000..100_000)
+        };
+
+        if store.reserved_process_ids.insert(process_id) {
+            return process_id;
+        }
+    }
+}
+
 pub(super) fn apply_unified_exec_env(mut env: HashMap<String, String>) -> HashMap<String, String> {
     for (key, value) in UNIFIED_EXEC_ENV {
         env.insert(key.to_string(), value.to_string());
@@ -467,30 +487,8 @@ fn terminate_process_on_network_denial(
 
 impl UnifiedExecProcessManager {
     pub(crate) async fn allocate_process_id(&self) -> i32 {
-        loop {
-            let mut store = self.process_store.lock().await;
-
-            let process_id = if should_use_deterministic_process_ids() {
-                // test or deterministic mode
-                store
-                    .reserved_process_ids
-                    .iter()
-                    .copied()
-                    .max()
-                    .map(|m| std::cmp::max(m, 999) + 1)
-                    .unwrap_or(1000)
-            } else {
-                // production mode → random
-                rand::rng().random_range(1_000..100_000)
-            };
-
-            if store.reserved_process_ids.contains(&process_id) {
-                continue;
-            }
-
-            store.reserved_process_ids.insert(process_id);
-            return process_id;
-        }
+        let mut store = self.process_store.lock().await;
+        reserve_process_id(&mut store)
     }
 
     pub(crate) async fn release_process_id(&self, process_id: i32) {
@@ -1960,20 +1958,29 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_all_processes(&self) {
-        let entries: Vec<ProcessEntry> = {
+        let (entries, user_shell_cancellations): (Vec<ProcessEntry>, Vec<CancellationToken>) = {
             let mut processes = self.process_store.lock().await;
             let entries: Vec<ProcessEntry> = processes
                 .processes
                 .drain()
                 .map(|(_, entry)| entry)
                 .collect();
-            processes.reserved_process_ids.clear();
-            entries
+            let user_shell_cancellations = processes
+                .user_shell_commands
+                .values()
+                .map(|entry| entry.cancellation_token.clone())
+                .collect();
+            processes.reserved_process_ids =
+                processes.user_shell_commands.keys().copied().collect();
+            (entries, user_shell_cancellations)
         };
 
         for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
             entry.process.terminate();
+        }
+        for cancellation_token in user_shell_cancellations {
+            cancellation_token.cancel();
         }
     }
 
@@ -1983,20 +1990,46 @@ impl UnifiedExecProcessManager {
             .processes
             .values()
             .filter(|entry| !entry.process.has_exited())
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.process_id);
-        entries
-            .into_iter()
-            .map(|entry| BackgroundTerminalInfo {
-                item_id: entry.call_id.clone(),
-                process_id: entry.process_id.to_string(),
-                command: entry.hook_command.clone(),
-                cwd: entry.cwd.clone(),
+            .map(|entry| {
+                (
+                    entry.process_id,
+                    BackgroundTerminalInfo {
+                        item_id: entry.call_id.clone(),
+                        process_id: entry.process_id.to_string(),
+                        command: entry.hook_command.clone(),
+                        cwd: entry.cwd.clone(),
+                    },
+                )
             })
-            .collect()
+            .chain(store.user_shell_commands.values().map(|entry| {
+                (
+                    entry.process_id,
+                    BackgroundTerminalInfo {
+                        item_id: entry.call_id.clone(),
+                        process_id: entry.process_id.to_string(),
+                        command: entry.command.clone(),
+                        cwd: entry.cwd.clone(),
+                    },
+                )
+            }))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(process_id, _)| *process_id);
+        entries.into_iter().map(|(_, entry)| entry).collect()
     }
 
     pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {
+        let user_shell_cancellation = {
+            let store = self.process_store.lock().await;
+            store
+                .user_shell_commands
+                .get(&process_id)
+                .map(|entry| entry.cancellation_token.clone())
+        };
+        if let Some(cancellation_token) = user_shell_cancellation {
+            cancellation_token.cancel();
+            return true;
+        }
+
         let (process, already_exited) = {
             let store = self.process_store.lock().await;
             let Some(entry) = store.processes.get(&process_id) else {

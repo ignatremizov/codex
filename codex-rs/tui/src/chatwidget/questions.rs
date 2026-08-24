@@ -127,7 +127,6 @@ impl ChatWidget {
                     || self.is_plan_streaming_in_tui()
                     || self.input_queue.user_turn_pending_start
                         && !self.turn_lifecycle.agent_turn_running
-                    || self.only_user_shell_commands_running()
                 {
                     self.queue_user_message_with_options_and_source(
                         UserMessage::from(text),

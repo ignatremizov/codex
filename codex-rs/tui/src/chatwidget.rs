@@ -1597,6 +1597,7 @@ impl ChatWidget {
             .unified_exec_processes
             .iter()
             .map(|process| history_cell::UnifiedExecProcessDetails {
+                process_id: process.key.clone(),
                 command_display: process.command_display.clone(),
                 recent_chunks: process.recent_chunks.clone(),
             })
@@ -1999,12 +2000,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn prepare_local_op_submission(&mut self, op: &AppCommand) {
-        if matches!(
-            op,
-            AppCommand::Compact
-                | AppCommand::Review { .. }
-                | AppCommand::RunUserShellCommand { .. }
-        ) {
+        if matches!(op, AppCommand::Compact | AppCommand::Review { .. }) {
             self.transcript.last_status_copy_targets = None;
             self.input_queue.user_turn_pending_start = true;
         }

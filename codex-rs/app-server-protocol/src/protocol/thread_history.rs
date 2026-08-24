@@ -816,22 +816,39 @@ impl ThreadHistoryBuilder {
         item: &codex_protocol::items::TurnItem,
     ) {
         let is_completion_presentation = item.is_sub_agent_completion_presentation();
+        let is_attributed_agent_input_presentation = matches!(
+            item,
+            codex_protocol::items::TurnItem::AgentMessage(item)
+                if item.is_attributed_agent_input_presentation()
+        );
+        let is_durable_agent_presentation =
+            is_completion_presentation || is_attributed_agent_input_presentation;
+        let is_user_agent_control =
+            matches!(item, codex_protocol::items::TurnItem::UserAgentControl(_));
+        let is_detached_user_shell = matches!(
+            item,
+            codex_protocol::items::TurnItem::CommandExecution(command)
+                if command.source == codex_protocol::protocol::ExecCommandSource::UserShell
+                    && command.id == turn_id
+        );
         let turn_exists = self
             .current_turn
             .as_ref()
             .is_some_and(|turn| turn.id == turn_id)
             || self.turns.iter().any(|turn| turn.id == turn_id);
-        let is_orphaned_standalone_item = is_completion_presentation && !turn_exists;
-        if is_orphaned_standalone_item {
-            self.upsert_inter_agent_item_in_turn_id(
-                turn_id,
-                ThreadItem::from(orphaned_sub_agent_completion_presentation(item)),
-            );
-            return;
-        }
         if let codex_protocol::items::TurnItem::CommandExecution(command) = item {
             self.non_paginated_exec_history
                 .mark_authoritative(&command.id, turn_id);
+        }
+        let is_orphaned_standalone_item =
+            (is_durable_agent_presentation || is_user_agent_control) && !turn_exists;
+        if is_detached_user_shell && !turn_exists {
+            self.insert_completed_standalone_turn(turn_id);
+        } else if is_orphaned_standalone_item {
+            self.finish_current_turn();
+            let turn = self.new_turn(Some(turn_id.to_string()));
+            self.record_changed_pending_turn(&turn);
+            self.current_turn = Some(turn);
         }
         let is_review_mode_item = matches!(
             item,
@@ -1691,6 +1708,19 @@ impl ThreadHistoryBuilder {
         }
     }
 
+    /// Inserts a completed activity turn without disturbing concurrently active model work.
+    ///
+    /// Detached user-shell commands have item lifecycle events but deliberately do not own the
+    /// session's turn lifecycle. Keeping their activity in a separate completed turn lets a later
+    /// completion update the same row while ordinary user input continues in `current_turn`.
+    fn insert_completed_standalone_turn(&mut self, turn_id: &str) {
+        let turn = self.new_turn(Some(turn_id.to_string()));
+        self.record_changed_pending_turn(&turn);
+        self.turn_rollout_start_indices
+            .push(turn.rollout_start_index);
+        self.turns.push(turn);
+    }
+
     fn ensure_turn(&mut self) -> &mut PendingTurn {
         if self.current_turn.is_none() {
             let turn = self.new_turn(/*id*/ None);
@@ -1889,25 +1919,6 @@ impl ThreadHistoryBuilder {
         );
         content
     }
-}
-
-fn orphaned_sub_agent_completion_presentation(
-    item: &codex_protocol::items::TurnItem,
-) -> codex_protocol::items::TurnItem {
-    let mut item = item.clone();
-    if let codex_protocol::items::TurnItem::CollabAgentToolCall(wait) = &mut item {
-        let owned_agent_ids = wait
-            .completion_presentation_agent_ids
-            .clone()
-            .unwrap_or_default();
-        wait.receiver_thread_ids
-            .retain(|id| owned_agent_ids.contains(id));
-        wait.receiver_agents
-            .retain(|agent| owned_agent_ids.contains(&agent.thread_id));
-        wait.agents_states
-            .retain(|id, _| owned_agent_ids.contains(id));
-    }
-    item
 }
 
 fn convert_dynamic_tool_content_items(
@@ -2531,6 +2542,158 @@ mod tests {
                     text_elements: Vec::new(),
                 }],
             }
+        );
+    }
+
+    #[test]
+    fn detached_user_shell_activity_does_not_replace_the_active_turn() {
+        let thread_id = ThreadId::new();
+        let active_turn_id = "active-turn";
+        let shell_turn_id = "shell-turn";
+        let cwd = test_path_buf("/tmp").abs();
+        let started_item = CoreTurnItem::CommandExecution(CoreCommandExecutionItem {
+            id: shell_turn_id.to_string(),
+            plugin_id: None,
+            script_path: None,
+            process_id: Some("12345".to_string()),
+            command: vec!["sleep".to_string(), "60".to_string()],
+            cwd: cwd.into(),
+            parsed_cmd: vec![ParsedCommand::Unknown {
+                cmd: "sleep 60".to_string(),
+            }],
+            source: ExecCommandSource::UserShell,
+            interaction_input: None,
+            status: CoreCommandExecutionStatus::InProgress,
+            stdout: None,
+            stderr: None,
+            aggregated_output: None,
+            exit_code: None,
+            duration: None,
+            formatted_output: None,
+        });
+        let mut completed_item = started_item.clone();
+        let CoreTurnItem::CommandExecution(completed_command) = &mut completed_item else {
+            unreachable!();
+        };
+        completed_command.status = CoreCommandExecutionStatus::Completed;
+        completed_command.stdout = Some("done\n".to_string());
+        completed_command.stderr = Some(String::new());
+        completed_command.aggregated_output = Some("done\n".to_string());
+        completed_command.exit_code = Some(0);
+        completed_command.duration = Some(Duration::from_secs(1));
+        completed_command.formatted_output = Some("done\n".to_string());
+
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: active_turn_id.to_string(),
+            trace_id: None,
+            started_at: Some(10),
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+            agent_queue: None,
+        }));
+        assert_eq!(
+            builder.handle_event_with_changes(&EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: shell_turn_id.to_string(),
+                item: started_item.clone(),
+                started_at_ms: 100,
+            })),
+            ThreadHistoryChangeSet {
+                changed_turns: vec![ThreadHistoryTurnChange {
+                    turn_id: shell_turn_id.to_string(),
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                }],
+                changed_items: vec![ThreadHistoryItemChange {
+                    turn_id: shell_turn_id.to_string(),
+                    item: ThreadItem::from(started_item),
+                    started_at_ms: None,
+                    completed_at_ms: None,
+                }],
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            builder.current_turn_snapshot(),
+            Some(Turn {
+                id: active_turn_id.to_string(),
+                items: Vec::new(),
+                items_view: TurnItemsView::Full,
+                status: TurnStatus::InProgress,
+                error: None,
+                started_at: Some(10),
+                completed_at: None,
+                duration_ms: None,
+            })
+        );
+
+        assert_eq!(
+            builder.handle_event_with_changes(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: shell_turn_id.to_string(),
+                item: completed_item.clone(),
+                started_at_ms: Some(100),
+                completed_at_ms: 200,
+            })),
+            ThreadHistoryChangeSet {
+                changed_items: vec![ThreadHistoryItemChange {
+                    turn_id: shell_turn_id.to_string(),
+                    item: ThreadItem::from(completed_item.clone()),
+                    started_at_ms: None,
+                    completed_at_ms: None,
+                }],
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            builder.finish(),
+            vec![
+                Turn {
+                    id: shell_turn_id.to_string(),
+                    items: vec![ThreadItem::from(completed_item.clone())],
+                    items_view: TurnItemsView::Full,
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                },
+                Turn {
+                    id: active_turn_id.to_string(),
+                    items: Vec::new(),
+                    items_view: TurnItemsView::Full,
+                    status: TurnStatus::InProgress,
+                    error: None,
+                    started_at: Some(10),
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            ]
+        );
+        assert_eq!(
+            build_turns_from_rollout_items(&[RolloutItem::EventMsg(EventMsg::ItemCompleted(
+                ItemCompletedEvent {
+                    thread_id,
+                    turn_id: shell_turn_id.to_string(),
+                    item: completed_item.clone(),
+                    started_at_ms: Some(100),
+                    completed_at_ms: 200,
+                }
+            ))]),
+            vec![Turn {
+                id: shell_turn_id.to_string(),
+                items: vec![ThreadItem::from(completed_item)],
+                items_view: TurnItemsView::Full,
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }]
         );
     }
 

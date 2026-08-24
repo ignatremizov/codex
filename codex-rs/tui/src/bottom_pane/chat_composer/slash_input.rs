@@ -167,6 +167,32 @@ impl<'a> SlashInput<'a> {
         has_slash_command_prefix(name, self.command_flags, self.service_tier_commands)
     }
 
+    pub(super) fn is_editing_mcp_args(&self, first_line: &str, cursor: usize) -> bool {
+        if !self.enabled || self.is_bash_mode {
+            return false;
+        }
+        let Some(tail) = first_line.strip_prefix("/mcp") else {
+            return false;
+        };
+        if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return false;
+        }
+        cursor <= first_line.len() && cursor > "/mcp".len()
+    }
+
+    pub(super) fn is_editing_stop_args(&self, first_line: &str, cursor: usize) -> bool {
+        if !self.enabled || self.is_bash_mode {
+            return false;
+        }
+        let Some(tail) = first_line.strip_prefix("/stop") else {
+            return false;
+        };
+        if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return false;
+        }
+        cursor <= first_line.len() && cursor > "/stop".len()
+    }
+
     pub(super) fn command_popup(&self, filter_text: &str) -> CommandPopup {
         let mut command_popup = CommandPopup::new(
             CommandPopupFlags {
@@ -263,7 +289,9 @@ impl ChatComposer {
             {
                 let end = match selected {
                     CommandItem::Mcp(_) => cursor.min(first_line.len()),
-                    CommandItem::Builtin(_) | CommandItem::ServiceTier(_) => first_line
+                    CommandItem::Builtin(_)
+                    | CommandItem::ServiceTier(_)
+                    | CommandItem::BackgroundTerminal(_) => first_line
                         .find(char::is_whitespace)
                         .unwrap_or(first_line.len()),
                 };
@@ -427,10 +455,31 @@ impl ChatComposer {
                     }
 
                     self.stage_selected_slash_command_history(&sel);
-                    if !matches!(sel, CommandItem::Builtin(cmd) if cmd.requires_dispatch_validation())
-                    {
-                        self.draft.textarea.set_text_clearing_elements("");
-                        self.draft.is_bash_mode = false;
+                    match sel {
+                        CommandItem::Builtin(cmd) => {
+                            self.draft.textarea.set_text_clearing_elements("");
+                            self.draft.is_bash_mode = false;
+                            return (InputResult::Command(cmd), true);
+                        }
+                        CommandItem::ServiceTier(command) => {
+                            self.draft.textarea.set_text_clearing_elements("");
+                            self.draft.is_bash_mode = false;
+                            return (InputResult::ServiceTierCommand(command), true);
+                        }
+                        CommandItem::BackgroundTerminal(_) => {
+                            if let Some(completed_text) =
+                                selected_command_completion(&first_line, &sel)
+                            {
+                                self.draft
+                                    .textarea
+                                    .set_text_clearing_elements(&completed_text);
+                                self.draft
+                                    .textarea
+                                    .set_cursor(self.draft.textarea.text().len());
+                                return self.handle_submission(/*should_queue*/ false);
+                            }
+                        }
+                        CommandItem::Mcp(_) => {}
                     }
                     return (
                         match sel {
@@ -438,7 +487,9 @@ impl ChatComposer {
                             CommandItem::ServiceTier(command) => {
                                 InputResult::ServiceTierCommand(command)
                             }
-                            CommandItem::Mcp(_) => unreachable!("MCP completion handled above"),
+                            CommandItem::Mcp(_) | CommandItem::BackgroundTerminal(_) => {
+                                unreachable!("completion handled above")
+                            }
                         },
                         true,
                     );
@@ -566,6 +617,9 @@ pub(super) fn selected_command_completion(
 ) -> Option<String> {
     if let CommandItem::Mcp(completion) = command {
         return Some(completion.text());
+    }
+    if let CommandItem::BackgroundTerminal(terminal) = command {
+        return Some(format!("/stop {}", terminal.process_id));
     }
     let selected_command_text = format!("/{}", command.command());
     (!first_line.trim_start().starts_with(&selected_command_text))

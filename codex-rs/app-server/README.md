@@ -308,6 +308,14 @@ The experimental `agentAlias/list` method lists durable aliases in a root-scoped
 
 The experimental `agentQueue/list` and `agentQueue/delete` methods expose and cancel pending target-owned FIFO entries. Queue acceptance is not target-turn admission: queued entries have no synthetic turn ID, and their start metadata records the source and response policy once a target turn actually begins.
 
+## User shell commands
+
+`thread/shellCommand` runs a user-authored command with full access, independently of the thread's model-turn lifecycle. Its immediate acknowledgement does not mean the process has exited. Omitted or null `timeoutMs` uses `user_shell_command_timeout_ms`, which defaults to no deadline; a positive value sets a deadline and an explicit request value of `0` requests an immediate timeout.
+
+Commands emit `item/started`, optional `item/commandExecution/outputDelta` notifications, and `item/completed` with the same `commandExecution` item ID and `source: "userShell"`. An idle-thread command uses a standalone activity ID without emitting `turn/started` or `turn/completed`; later model turns can start while it runs. An active-thread command uses that turn's presentation identity without inheriting its cancellation. Completed output remains available to model context and reconstructible thread history.
+
+`thread/backgroundTerminals/list` includes the command's process ID. Use `thread/backgroundTerminals/terminate` to stop one process or `thread/backgroundTerminals/clean` to stop all; a model-turn interrupt does not stop these commands. Thread shutdown requests cancellation, but a cancellation request alone is not confirmation of process exit or durable output teardown.
+
 ## Stored thread attachments
 
 - `thread/attachment/add` — add a durable resource reference to a stored thread without loading it. Repeated writes with the same attachment type and identity key return the existing attachment.

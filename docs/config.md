@@ -93,7 +93,7 @@ The optional `user_shell_command_timeout_ms` setting controls the maximum runtim
 user_shell_command_timeout_ms = 3600000
 ```
 
-When unset, the default is one hour. An explicit timeout supplied by the request takes precedence over the configured value. Setting the configuration value to `0` disables the deadline while keeping the command interruptible.
+When unset, user shell commands run until they finish, are explicitly stopped through `/stop` or the background-terminal API, or the thread shuts down. Interrupting a model turn does not terminate them. A positive configured value enforces a maximum runtime. Setting the configuration value to `0` leaves the command unbounded; an explicit per-request timeout of `0` instead requests immediate timeout.
 
 ## Lifecycle hooks
 

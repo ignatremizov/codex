@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codex_async_utils::CancelErr;
-use codex_async_utils::OrCancelExt;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio_util::sync::CancellationToken;
@@ -18,10 +16,8 @@ use crate::exec_env::create_env;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_session_env;
 use crate::sandboxing::ExecRequest;
-use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::shell::Shell;
-use crate::state::TaskKind;
 use crate::tools::format_exec_output_str;
 use crate::tools::runtimes::RuntimePathPrepends;
 #[cfg(unix)]
@@ -43,62 +39,51 @@ use codex_sandboxing::SandboxType;
 use codex_shell_command::parse_command::parse_command;
 use codex_thread_store::PersistContext;
 
-use super::SessionTask;
-use super::SessionTaskResult;
 use crate::session::session::Session;
 use codex_protocol::models::PermissionProfile;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum UserShellCommandMode {
-    /// Executes as an independent turn lifecycle (emits TurnStarted/TurnComplete
-    /// via task lifecycle plumbing).
-    StandaloneTurn,
-    /// Executes while another turn is already active. This mode must not emit a
-    /// second TurnStarted/TurnComplete pair for the same active turn.
-    ActiveTurnAuxiliary,
+pub(crate) enum UserShellCommandPlacement {
+    /// Uses its submission id as a completed activity-history identity without owning a turn.
+    Detached,
+    /// Reuses an already active turn's presentation identity without inheriting its cancellation.
+    ActiveTurn,
 }
 
-#[derive(Clone)]
-pub(crate) struct UserShellCommandTask {
-    command: String,
-    timeout_ms: Option<u64>,
+struct UserShellCommandRegistration {
+    session: Arc<Session>,
+    process_id: Option<i32>,
+    call_id: String,
 }
 
-impl UserShellCommandTask {
-    pub(crate) fn new(command: String, timeout_ms: Option<u64>) -> Self {
-        Self {
-            command,
-            timeout_ms,
-        }
+impl UserShellCommandRegistration {
+    async fn unregister(&mut self) {
+        let Some(process_id) = self.process_id else {
+            return;
+        };
+        self.session
+            .services
+            .unified_exec_manager
+            .unregister_user_shell_command(process_id, &self.call_id)
+            .await;
+        self.process_id = None;
     }
 }
 
-impl SessionTask for UserShellCommandTask {
-    fn kind(&self) -> TaskKind {
-        TaskKind::Regular
-    }
-
-    fn span_name(&self) -> &'static str {
-        "session_task.user_shell"
-    }
-
-    async fn run(
-        self: Arc<Self>,
-        session: Arc<Session>,
-        turn_context: Arc<TurnContext>,
-        _input: Vec<TurnInput>,
-        cancellation_token: CancellationToken,
-    ) -> SessionTaskResult {
-        execute_user_shell_command(
-            session,
-            turn_context,
-            self.command.clone(),
-            self.timeout_ms,
-            cancellation_token,
-            UserShellCommandMode::StandaloneTurn,
-        )
-        .await;
-        Ok(None)
+impl Drop for UserShellCommandRegistration {
+    fn drop(&mut self) {
+        let Some(process_id) = self.process_id.take() else {
+            return;
+        };
+        let session = Arc::clone(&self.session);
+        let call_id = self.call_id.clone();
+        self.session.services.runtime_handle.spawn(async move {
+            session
+                .services
+                .unified_exec_manager
+                .unregister_user_shell_command(process_id, &call_id)
+                .await;
+        });
     }
 }
 
@@ -107,24 +92,12 @@ pub(crate) async fn execute_user_shell_command(
     turn_context: Arc<TurnContext>,
     command: String,
     timeout_ms: Option<u64>,
-    cancellation_token: CancellationToken,
-    mode: UserShellCommandMode,
+    placement: UserShellCommandPlacement,
 ) {
     session
         .services
         .session_telemetry
         .counter("codex.task.user_shell", /*inc*/ 1, &[]);
-
-    if mode == UserShellCommandMode::StandaloneTurn {
-        // Auxiliary mode runs within an existing active turn. That turn already
-        // emitted TurnStarted, so emitting another TurnStarted here would create
-        // duplicate turn lifecycle events and confuse clients.
-        // TODO(ccunningham): After TurnStarted, emit model-visible turn context diffs for
-        // standalone lifecycle tasks (for example /shell, and review once it emits TurnStarted).
-        // `/compact` is an intentional exception because compaction requests should not include
-        // freshly reinjected context before the summary/replacement history is applied.
-        session.emit_turn_started(&turn_context).await;
-    }
 
     let Some((turn_environment, environment_shell)) = turn_context
         .initial_environments
@@ -181,8 +154,28 @@ pub(crate) async fn execute_user_shell_command(
         &mut exec_env_map,
     );
 
-    let call_id = Uuid::new_v4().to_string();
+    let call_id = match placement {
+        UserShellCommandPlacement::Detached => turn_context.sub_id.clone(),
+        UserShellCommandPlacement::ActiveTurn => Uuid::new_v4().to_string(),
+    };
     let raw_command = command;
+    let command_cancellation = CancellationToken::new();
+    let process_id = session
+        .services
+        .unified_exec_manager
+        .register_user_shell_command(
+            call_id.clone(),
+            raw_command.clone(),
+            cwd.clone().into(),
+            command_cancellation.clone(),
+        )
+        .await;
+    let mut registration = UserShellCommandRegistration {
+        session: Arc::clone(&session),
+        process_id: Some(process_id),
+        call_id: call_id.clone(),
+    };
+    let process_id_string = process_id.to_string();
 
     let parsed_cmd = parse_command(&display_command);
     session
@@ -193,7 +186,7 @@ pub(crate) async fn execute_user_shell_command(
                 id: call_id.clone(),
                 plugin_id: None,
                 script_path: None,
-                process_id: None,
+                process_id: Some(process_id_string.clone()),
                 command: display_command.clone(),
                 cwd: cwd.clone().into(),
                 parsed_cmd: parsed_cmd.clone(),
@@ -212,11 +205,16 @@ pub(crate) async fn execute_user_shell_command(
         .await;
 
     let permission_profile = PermissionProfile::Disabled;
-    let timeout_ms =
-        timeout_ms.unwrap_or_else(|| turn_context.config.user_shell_command_timeout_ms());
     let expiration = match timeout_ms {
-        0 => ExecExpiration::Cancellation(CancellationToken::new()),
-        timeout_ms => timeout_ms.into(),
+        Some(timeout_ms) => {
+            ExecExpiration::from(timeout_ms).with_cancellation(command_cancellation.clone())
+        }
+        None => match turn_context.config.user_shell_command_timeout_ms() {
+            0 => ExecExpiration::Cancellation(command_cancellation.clone()),
+            timeout_ms => {
+                ExecExpiration::from(timeout_ms).with_cancellation(command_cancellation.clone())
+            }
+        },
     };
     let exec_env = ExecRequest {
         command: exec_command.clone(),
@@ -249,58 +247,23 @@ pub(crate) async fn execute_user_shell_command(
         tx_event: session.get_tx_event(),
     });
 
-    let exec_result = execute_exec_request(exec_env, stdout_stream, /*after_spawn*/ None)
-        .or_cancel(&cancellation_token)
-        .await;
+    let exec_result = if command_cancellation.is_cancelled() {
+        let message = "command stopped before it started".to_string();
+        Ok(ExecToolCallOutput {
+            exit_code: 130,
+            stdout: StreamOutput::new(String::new()),
+            stderr: StreamOutput::new(message.clone()),
+            aggregated_output: StreamOutput::new(message),
+            duration: Duration::ZERO,
+            timed_out: false,
+        })
+    } else {
+        execute_exec_request(exec_env, stdout_stream, /*after_spawn*/ None).await
+    };
 
     let output = match exec_result {
-        Err(CancelErr::Cancelled) => {
-            let aborted_message = "command aborted by user".to_string();
-            let exec_output = ExecToolCallOutput {
-                exit_code: -1,
-                stdout: StreamOutput::new(String::new()),
-                stderr: StreamOutput::new(aborted_message.clone()),
-                aggregated_output: StreamOutput::new(aborted_message.clone()),
-                duration: Duration::ZERO,
-                timed_out: false,
-            };
-            persist_user_shell_output(
-                &session,
-                turn_context.as_ref(),
-                &raw_command,
-                &exec_output,
-                mode,
-            )
-            .await;
-            session
-                .emit_turn_item_completed(
-                    turn_context.as_ref(),
-                    TurnItem::CommandExecution(CommandExecutionItem {
-                        model_context: None,
-                        id: call_id,
-                        plugin_id: None,
-                        script_path: None,
-                        process_id: None,
-                        command: display_command.clone(),
-                        cwd: cwd.clone().into(),
-                        parsed_cmd: parsed_cmd.clone(),
-                        source: ExecCommandSource::UserShell,
-                        interaction_input: None,
-                        status: CommandExecutionStatus::Failed,
-                        stdout: Some(String::new()),
-                        stderr: Some(aborted_message.clone()),
-                        aggregated_output: Some(aborted_message.clone()),
-                        exit_code: Some(-1),
-                        duration: Some(Duration::ZERO),
-                        deadline_at_ms: None,
-                        formatted_output: Some(aborted_message),
-                    }),
-                )
-                .await;
-            return;
-        }
-        Ok(Ok(output)) => output,
-        Ok(Err(err))
+        Ok(output) => output,
+        Err(err)
             if matches!(
                 err.details(),
                 CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. })
@@ -311,7 +274,7 @@ pub(crate) async fn execute_user_shell_command(
             };
             output.as_ref().clone()
         }
-        Ok(Err(err)) => {
+        Err(err) => {
             error!("user shell command failed: {err:?}");
             let message = format!("execution error: {err:?}");
             let exec_output = ExecToolCallOutput {
@@ -322,6 +285,8 @@ pub(crate) async fn execute_user_shell_command(
                 duration: Duration::ZERO,
                 timed_out: false,
             };
+            persist_user_shell_output(&session, turn_context.as_ref(), &raw_command, &exec_output)
+                .await;
             session
                 .emit_turn_item_completed(
                     turn_context.as_ref(),
@@ -330,7 +295,7 @@ pub(crate) async fn execute_user_shell_command(
                         id: call_id,
                         plugin_id: None,
                         script_path: None,
-                        process_id: None,
+                        process_id: Some(process_id_string),
                         command: display_command,
                         cwd: cwd.into(),
                         parsed_cmd,
@@ -350,18 +315,12 @@ pub(crate) async fn execute_user_shell_command(
                     }),
                 )
                 .await;
-            persist_user_shell_output(
-                &session,
-                turn_context.as_ref(),
-                &raw_command,
-                &exec_output,
-                mode,
-            )
-            .await;
+            registration.unregister().await;
             return;
         }
     };
 
+    persist_user_shell_output(&session, turn_context.as_ref(), &raw_command, &output).await;
     session
         .emit_turn_item_completed(
             turn_context.as_ref(),
@@ -370,7 +329,7 @@ pub(crate) async fn execute_user_shell_command(
                 id: call_id,
                 plugin_id: None,
                 script_path: None,
-                process_id: None,
+                process_id: Some(process_id_string),
                 command: display_command,
                 cwd: cwd.into(),
                 parsed_cmd,
@@ -395,7 +354,7 @@ pub(crate) async fn execute_user_shell_command(
         )
         .await;
 
-    persist_user_shell_output(&session, turn_context.as_ref(), &raw_command, &output, mode).await;
+    registration.unregister().await;
 }
 
 async fn send_user_shell_error(session: &Session, turn_context: &TurnContext, message: &str) {
@@ -478,28 +437,15 @@ async fn persist_user_shell_output(
     turn_context: &TurnContext,
     raw_command: &str,
     exec_output: &ExecToolCallOutput,
-    mode: UserShellCommandMode,
 ) {
     let output_item = user_shell_command_record_item(raw_command, exec_output, turn_context);
-
-    if mode == UserShellCommandMode::StandaloneTurn {
-        session
-            .record_conversation_items(
-                turn_context,
-                turn_context.model_info(),
-                std::slice::from_ref(&output_item),
-            )
-            .await;
-        // Standalone shell turns can run before any regular user turn, so
-        // explicitly materialize rollout persistence after recording output.
-        session
-            .ensure_rollout_materialized(PersistContext::Standard)
-            .await;
-        return;
-    }
-
     session
         .inject_no_new_turn(vec![output_item], Some(turn_context))
+        .await;
+    // A user shell command can finish before the first ordinary model turn, so materialize its
+    // model-visible result without relying on later turn lifecycle plumbing.
+    session
+        .ensure_rollout_materialized(PersistContext::Standard)
         .await;
 }
 

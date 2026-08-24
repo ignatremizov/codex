@@ -554,6 +554,42 @@ impl App {
             return Ok(());
         }
 
+        let requires_live_thread = matches!(
+            &op,
+            AppCommand::Interrupt
+                | AppCommand::CleanBackgroundTerminals
+                | AppCommand::TerminateBackgroundTerminal { .. }
+                | AppCommand::RealtimeConversationStart { .. }
+                | AppCommand::RealtimeConversationAudio(_)
+                | AppCommand::RealtimeConversationClose
+                | AppCommand::RunUserShellCommand { .. }
+                | AppCommand::UserTurn { .. }
+                | AppCommand::OverrideTurnContext { .. }
+                | AppCommand::Compact
+                | AppCommand::Review { .. }
+                | AppCommand::ActivateMcpServer { .. }
+                | AppCommand::ApproveGuardianDeniedAction { .. }
+        );
+        if requires_live_thread
+            && let Err(error) = self.resume_replay_only_thread(app_server, thread_id).await
+        {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %error,
+                "failed to resume replay-only thread for live operation"
+            );
+            let message = format!("Failed to resume agent thread: {error:#}");
+            if matches!(&op, AppCommand::UserTurn { .. })
+                && self
+                    .chat_widget
+                    .handle_turn_start_rejection(message.clone())
+            {
+                return Ok(());
+            }
+            self.chat_widget.add_error_message(message);
+            return Ok(());
+        }
+
         if self
             .try_submit_active_thread_op_via_app_server(app_server, thread_id, &op)
             .await?
@@ -968,6 +1004,22 @@ impl App {
                 app_server
                     .thread_background_terminals_clean(thread_id)
                     .await?;
+                Ok(true)
+            }
+            AppCommand::TerminateBackgroundTerminal { process_id } => {
+                let terminated = app_server
+                    .thread_background_terminal_terminate(thread_id, *process_id)
+                    .await?;
+                if terminated {
+                    self.chat_widget.add_info_message(
+                        format!("Stopping background terminal {process_id}."),
+                        /*hint*/ None,
+                    );
+                } else {
+                    self.chat_widget.add_error_message(format!(
+                        "Background terminal {process_id} was not found."
+                    ));
+                }
                 Ok(true)
             }
             AppCommand::RealtimeConversationStart {
