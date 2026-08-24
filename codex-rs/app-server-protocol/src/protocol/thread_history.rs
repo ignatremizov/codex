@@ -818,6 +818,19 @@ impl ThreadHistoryBuilder {
         item: &codex_protocol::items::TurnItem,
     ) {
         let is_completion_presentation = item.is_sub_agent_completion_presentation();
+        let is_attributed_agent_input_presentation = matches!(
+            item,
+            codex_protocol::items::TurnItem::AgentMessage(item)
+                if item.is_attributed_agent_input_presentation()
+        );
+        let is_durable_agent_presentation =
+            is_completion_presentation || is_attributed_agent_input_presentation;
+        let is_detached_user_shell = matches!(
+            item,
+            codex_protocol::items::TurnItem::CommandExecution(command)
+                if command.source == codex_protocol::protocol::ExecCommandSource::UserShell
+                    && command.id == turn_id
+        );
         let turn_exists = self
             .current_turn
             .as_ref()
@@ -828,7 +841,7 @@ impl ThreadHistoryBuilder {
             codex_protocol::items::TurnItem::UserAgentControl(control) if control.id == turn_id
         );
         let is_orphaned_standalone_item =
-            !turn_exists && (is_completion_presentation || is_standalone_user_control);
+            !turn_exists && (is_durable_agent_presentation || is_standalone_user_control);
         if is_orphaned_standalone_item {
             let item = if is_completion_presentation {
                 orphaned_sub_agent_completion_presentation(item)
@@ -842,6 +855,9 @@ impl ThreadHistoryBuilder {
             self.non_paginated_exec_history
                 .mark_authoritative(&command.id, turn_id);
         }
+        if is_detached_user_shell && !turn_exists {
+            self.insert_completed_standalone_turn(turn_id);
+        }
         let is_review_mode_item = matches!(
             item,
             codex_protocol::items::TurnItem::EnteredReviewMode(_)
@@ -850,7 +866,7 @@ impl ThreadHistoryBuilder {
         let should_upsert = match item {
             codex_protocol::items::TurnItem::Plan(plan) => !plan.text.is_empty(),
             codex_protocol::items::TurnItem::AgentMessage(_) => {
-                is_completion_presentation
+                is_durable_agent_presentation
                     && (self
                         .current_turn
                         .as_ref()
@@ -1749,6 +1765,17 @@ impl ThreadHistoryBuilder {
         }
     }
 
+    /// Inserts a completed activity turn without disturbing concurrently active model work.
+    ///
+    /// Detached user-shell commands have item lifecycle events but deliberately do not own the
+    /// session's turn lifecycle. Keeping their activity in a separate completed turn lets a later
+    /// completion update the same row while ordinary user input continues in `current_turn`.
+    fn insert_completed_standalone_turn(&mut self, turn_id: &str) {
+        let turn = self.new_turn(Some(turn_id.to_string()));
+        self.record_changed_pending_turn(&turn);
+        self.turns.push(turn);
+    }
+
     fn ensure_turn(&mut self) -> &mut PendingTurn {
         if self.current_turn.is_none() {
             let turn = self.new_turn(/*id*/ None);
@@ -2109,6 +2136,9 @@ impl From<&PendingTurn> for Turn {
 #[path = "thread_history_inter_agent_tests.rs"]
 mod inter_agent_tests;
 
+#[cfg(test)]
+#[path = "thread_history_detached_audit_tests.rs"]
+mod detached_audit_tests;
 #[cfg(test)]
 #[path = "thread_history_user_control_tests.rs"]
 mod user_control_tests;
@@ -2540,13 +2570,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -2598,6 +2628,163 @@ mod tests {
     }
 
     #[test]
+    fn detached_user_shell_activity_does_not_replace_the_active_turn() {
+        let thread_id = ThreadId::new();
+        let active_turn_id = "active-turn";
+        let shell_turn_id = "shell-turn";
+        let cwd = test_path_buf("/tmp").abs();
+        let started_item = CoreTurnItem::CommandExecution(CoreCommandExecutionItem {
+            model_context: None,
+            sandbox_type: None,
+            id: shell_turn_id.to_string(),
+            deadline_at_ms: None,
+            plugin_id: None,
+            script_path: None,
+            process_id: Some("12345".to_string()),
+            command: vec!["sleep".to_string(), "60".to_string()],
+            cwd: cwd.into(),
+            parsed_cmd: vec![ParsedCommand::Unknown {
+                cmd: "sleep 60".to_string(),
+            }],
+            source: ExecCommandSource::UserShell,
+            interaction_input: None,
+            status: CoreCommandExecutionStatus::InProgress,
+            stdout: None,
+            stderr: None,
+            aggregated_output: None,
+            exit_code: None,
+            duration: None,
+            formatted_output: None,
+        });
+        let mut completed_item = started_item.clone();
+        let CoreTurnItem::CommandExecution(completed_command) = &mut completed_item else {
+            unreachable!();
+        };
+        completed_command.status = CoreCommandExecutionStatus::Completed;
+        completed_command.stdout = Some("done\n".to_string());
+        completed_command.stderr = Some(String::new());
+        completed_command.aggregated_output = Some("done\n".to_string());
+        completed_command.exit_code = Some(0);
+        completed_command.duration = Some(Duration::from_secs(1));
+        completed_command.formatted_output = Some("done\n".to_string());
+
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: active_turn_id.to_string(),
+            root_turn_id: None,
+            trace_id: None,
+            started_at: Some(10),
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+            agent_queue: None,
+        }));
+        assert_eq!(
+            builder.handle_event_with_changes(&EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: shell_turn_id.to_string(),
+                item: started_item.clone(),
+                started_at_ms: 100,
+            })),
+            ThreadHistoryChangeSet {
+                changed_turns: vec![ThreadHistoryTurnMetadata {
+                    turn_id: shell_turn_id.to_string(),
+                    root_turn_id: None,
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                }],
+                changed_items: vec![ThreadHistoryItemChange {
+                    turn_id: shell_turn_id.to_string(),
+                    item: ThreadItem::from(started_item),
+                    started_at_ms: None,
+                    completed_at_ms: None,
+                }],
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            builder.active_turn_snapshot(),
+            Some(Turn {
+                id: active_turn_id.to_string(),
+                items: Vec::new(),
+                items_view: TurnItemsView::Full,
+                status: TurnStatus::InProgress,
+                error: None,
+                started_at: Some(10),
+                completed_at: None,
+                duration_ms: None,
+            })
+        );
+
+        assert_eq!(
+            builder.handle_event_with_changes(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: shell_turn_id.to_string(),
+                item: completed_item.clone(),
+                started_at_ms: Some(100),
+                completed_at_ms: 200,
+            })),
+            ThreadHistoryChangeSet {
+                changed_items: vec![ThreadHistoryItemChange {
+                    turn_id: shell_turn_id.to_string(),
+                    item: ThreadItem::from(completed_item.clone()),
+                    started_at_ms: None,
+                    completed_at_ms: None,
+                }],
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            builder.finish(),
+            vec![
+                Turn {
+                    id: shell_turn_id.to_string(),
+                    items: vec![ThreadItem::from(completed_item.clone())],
+                    items_view: TurnItemsView::Full,
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                },
+                Turn {
+                    id: active_turn_id.to_string(),
+                    items: Vec::new(),
+                    items_view: TurnItemsView::Full,
+                    status: TurnStatus::InProgress,
+                    error: None,
+                    started_at: Some(10),
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            ]
+        );
+        assert_eq!(
+            build_turns_from_rollout_items(&[RolloutItem::EventMsg(EventMsg::ItemCompleted(
+                ItemCompletedEvent {
+                    thread_id,
+                    turn_id: shell_turn_id.to_string(),
+                    item: completed_item.clone(),
+                    started_at_ms: Some(100),
+                    completed_at_ms: 200,
+                }
+            ))]),
+            vec![Turn {
+                id: shell_turn_id.to_string(),
+                items: vec![ThreadItem::from(completed_item)],
+                items_view: TurnItemsView::Full,
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }]
+        );
+    }
+
+    #[test]
     fn rebuilds_sleep_item_from_persisted_completion() {
         let turn_id = "turn-1";
         let thread_id = ThreadId::new();
@@ -2607,13 +2794,13 @@ mod tests {
         }));
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -2681,13 +2868,13 @@ mod tests {
         let saved_path = test_path_buf("/tmp/image-1.png").abs();
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -2779,13 +2966,13 @@ mod tests {
         });
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                 call_id: "exec-1".to_string(),
@@ -2903,13 +3090,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemStarted(ItemStartedEvent {
                 thread_id,
@@ -3006,13 +3193,13 @@ mod tests {
     fn replays_image_generation_end_events_into_turn_history() {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-image".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3414,13 +3601,13 @@ mod tests {
     fn uses_explicit_turn_boundaries_for_mid_turn_steering() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3483,13 +3670,13 @@ mod tests {
     fn reconstructs_tool_items_from_persisted_completion_events() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3625,13 +3812,13 @@ mod tests {
     fn reconstructs_mcp_tool_result_meta_from_persisted_completion_events() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
                 turn_id: String::new(),
@@ -3709,13 +3896,13 @@ mod tests {
     fn reconstructs_dynamic_tool_items_from_request_and_response_events() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3795,13 +3982,13 @@ mod tests {
     fn reconstructs_declined_exec_and_patch_items() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3895,13 +4082,13 @@ mod tests {
     fn reconstructs_declined_guardian_command_item() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3995,13 +4182,13 @@ mod tests {
     fn reconstructs_in_progress_guardian_execve_item() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-1".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4104,13 +4291,13 @@ mod tests {
         };
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Find related incident discussions".into(),
@@ -4126,13 +4313,13 @@ mod tests {
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Explain retry logic while that runs".into(),
@@ -4167,13 +4354,13 @@ mod tests {
     fn assigns_late_exec_completion_to_original_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4193,13 +4380,13 @@ mod tests {
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4279,13 +4466,13 @@ mod tests {
     fn drops_late_turn_scoped_item_for_unknown_turn_id() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4305,13 +4492,13 @@ mod tests {
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4385,13 +4572,13 @@ mod tests {
             None
         );
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            agent_queue: None,
             turn_id: "turn-1".into(),
             root_turn_id: None,
             trace_id: None,
             started_at: Some(100),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::UserMessage(UserMessageEvent {
             message: "first".into(),
@@ -4455,13 +4642,13 @@ mod tests {
         let mut builder = ThreadHistoryBuilder::new();
         assert_eq!(builder.active_turn_metadata_snapshot(), None);
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            agent_queue: None,
             turn_id: "turn-1".into(),
             root_turn_id: Some("root-turn".into()),
             trace_id: None,
             started_at: Some(100),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::UserMessage(UserMessageEvent {
             message: "hello".into(),
@@ -4504,13 +4691,13 @@ mod tests {
         let mut builder = ThreadHistoryBuilder::new();
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4574,13 +4761,13 @@ mod tests {
         let mut builder = ThreadHistoryBuilder::new();
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: turn_id.to_string(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4644,13 +4831,13 @@ mod tests {
     fn late_turn_complete_does_not_close_active_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4670,13 +4857,13 @@ mod tests {
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4728,13 +4915,13 @@ mod tests {
     fn late_turn_complete_with_embedded_error_preserves_active_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4745,13 +4932,13 @@ mod tests {
                 ..Default::default()
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: Some(30),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4834,13 +5021,13 @@ mod tests {
     fn late_turn_aborted_does_not_interrupt_active_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4860,13 +5047,13 @@ mod tests {
                 time_to_first_token_ms: None,
             }),
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-b".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4909,13 +5096,13 @@ mod tests {
     fn preserves_compaction_only_turn() {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-compact".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
@@ -4964,13 +5151,13 @@ mod tests {
     fn preserves_context_compaction_payload_in_thread_history() {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-compact".into(),
                 root_turn_id: None,
                 started_at: None,
                 trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: Some("Compact summary".into()),
@@ -5260,13 +5447,13 @@ mod tests {
     fn out_of_turn_error_does_not_create_or_fail_a_turn() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5324,13 +5511,13 @@ mod tests {
     fn error_then_turn_complete_preserves_failed_status() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5385,13 +5572,13 @@ mod tests {
     fn turn_complete_with_embedded_error_marks_turn_failed() {
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5457,13 +5644,13 @@ mod tests {
         .expect("hook prompt message");
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5566,13 +5753,13 @@ mod tests {
         ] {
             let mut builder = ThreadHistoryBuilder::new();
             builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }));
             let mut expected_active = builder.active_turn_snapshot().expect("active turn");
             builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -5638,13 +5825,13 @@ mod tests {
         let expected_item = ThreadItem::from(hook_prompt.clone());
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            agent_queue: None,
             turn_id: "turn-a".into(),
             root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
             thread_id: ThreadId::new(),
@@ -5668,13 +5855,13 @@ mod tests {
             .expect("worker path");
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -5719,13 +5906,13 @@ mod tests {
     fn ignores_plain_user_response_items_in_rollout_replay() {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::ResponseItem(
                 codex_protocol::models::ResponseItem::Message {
@@ -5881,13 +6068,13 @@ mod tests {
 
         let start_changes = builder.handle_rollout_item_with_changes(&RolloutItem::EventMsg(
             EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: Some("root-turn".into()),
                 trace_id: None,
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
         ));
         assert_eq!(
@@ -6000,13 +6187,13 @@ mod tests {
         let mut builder = ThreadHistoryBuilder::new();
         let changes = builder.handle_rollout_items_with_changes(&[
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: Some("root-turn".into()),
                 trace_id: None,
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -6042,13 +6229,13 @@ mod tests {
         let mut builder = ThreadHistoryBuilder::new();
         let changes = builder.handle_rollout_items_with_changes(&[
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
-                agent_queue: None,
                 turn_id: "turn-a".into(),
                 root_turn_id: None,
                 trace_id: None,
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -6087,13 +6274,13 @@ mod tests {
             available_skills: vec!["test-tui".to_string()],
         };
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            agent_queue: None,
             turn_id: "turn-1".to_string(),
             root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
             thread_id,
@@ -6166,13 +6353,13 @@ mod tests {
     fn compaction_legacy_with_different_inventory_is_not_suppressed() {
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            agent_queue: None,
             turn_id: "turn-1".to_string(),
             root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         let item = ContextCompactionItem {
             id: "compact-1".to_string(),
@@ -6214,13 +6401,13 @@ mod tests {
     fn compaction_legacy_with_different_decode_error_is_not_suppressed() {
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
-            agent_queue: None,
             turn_id: "turn-1".to_string(),
             root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         let item = ContextCompactionItem {
             id: "compact-1".to_string(),

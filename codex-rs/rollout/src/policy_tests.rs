@@ -1,12 +1,18 @@
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::CommandExecutionItem;
+use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::new_attributed_agent_message_response_item_id;
+use codex_utils_absolute_path::test_support::PathBufExt;
+use codex_utils_absolute_path::test_support::test_path_buf;
 use pretty_assertions::assert_eq;
+use std::time::Duration;
 
 use super::should_persist_event_msg;
 
@@ -34,5 +40,58 @@ fn attributed_agent_input_presentation_is_persisted_in_every_history_mode() {
         [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated,]
             .map(|mode| should_persist_event_msg(&event, mode)),
         [true, true]
+    );
+}
+
+#[test]
+fn user_shell_completion_is_persisted_in_every_history_mode() {
+    let event = EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: codex_protocol::ThreadId::new(),
+        turn_id: "shell-turn".to_string(),
+        item: TurnItem::CommandExecution(CommandExecutionItem {
+            model_context: None,
+            sandbox_type: None,
+            id: "shell-turn".to_string(),
+            deadline_at_ms: None,
+            plugin_id: None,
+            script_path: None,
+            process_id: Some("12345".to_string()),
+            command: vec!["sleep".to_string(), "60".to_string()],
+            cwd: test_path_buf("/tmp").abs().into(),
+            parsed_cmd: Vec::new(),
+            source: ExecCommandSource::UserShell,
+            interaction_input: None,
+            status: CommandExecutionStatus::Completed,
+            stdout: Some(String::new()),
+            stderr: Some(String::new()),
+            aggregated_output: Some(String::new()),
+            exit_code: Some(0),
+            duration: Some(Duration::from_secs(1)),
+            formatted_output: Some(String::new()),
+        }),
+        started_at_ms: Some(100),
+        completed_at_ms: 200,
+    });
+
+    assert_eq!(
+        [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated]
+            .map(|mode| should_persist_event_msg(&event, mode)),
+        [true, true]
+    );
+
+    // Detached activity is retained in a bounded replay suffix but cannot replace its semantic
+    // compaction boundary with an obsolete user-turn scan or a fabricated turn completion.
+    let completion = codex_history::RolloutItem::EventMsg(event);
+    let checkpoint = codex_history::RolloutItem::Compacted(codex_history::CompactedItem {
+        replacement_history: Some(Vec::new()),
+        window_number: Some(1),
+        ..Default::default()
+    });
+    let mut scan = crate::ModelContextScan::default();
+    assert_eq!(scan.push(completion.clone()), crate::ModelContextScanProgress::Continue);
+    assert_eq!(scan.push(checkpoint.clone()), crate::ModelContextScanProgress::Complete);
+    assert_eq!(
+        serde_json::to_value(scan.finish()).expect("serialize replay scan"),
+        serde_json::to_value(vec![checkpoint, completion]).expect("serialize expected replay")
     );
 }

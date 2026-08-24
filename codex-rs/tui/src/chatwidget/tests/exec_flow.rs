@@ -2036,12 +2036,15 @@ async fn exec_history_extends_previous_when_consecutive() {
 async fn user_shell_command_renders_output_not_exploring() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let begin_ls = begin_exec_with_source(
+    let begin_ls = begin_exec_with_source_and_process_id(
         &mut chat,
         "user-shell-ls",
         "ls",
         ExecCommandSource::UserShell,
+        Some("4242"),
     );
+    assert_eq!(chat.unified_exec_processes.len(), 1);
+    assert_eq!(chat.unified_exec_processes[0].key, "4242");
     end_exec(
         &mut chat,
         begin_ls,
@@ -2049,6 +2052,7 @@ async fn user_shell_command_renders_output_not_exploring() {
         "",
         /*exit_code*/ 0,
     );
+    assert!(chat.unified_exec_processes.is_empty());
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(
@@ -2058,6 +2062,58 @@ async fn user_shell_command_renders_output_not_exploring() {
     );
     let blob = lines_to_single_string(cells.first().unwrap());
     assert_chatwidget_snapshot!("user_shell_ls_output", blob);
+}
+
+#[tokio::test]
+async fn idle_detached_shell_streams_without_model_busy_state_and_survives_turn_failure() {
+    let (mut chat, mut events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
+    assert!(!chat.bottom_pane.is_task_running());
+    let started = begin_exec_with_source_and_process_id(
+        &mut chat,
+        "independent-shell",
+        "printf progress; sleep 60",
+        ExecCommandSource::UserShell,
+        Some("5151"),
+    );
+    chat.on_exec_command_output_delta("independent-shell", "before model failure\n", None);
+    assert!(active_blob(&chat).contains("before model failure"));
+    assert!(!chat.bottom_pane.is_task_running());
+    chat.on_task_started();
+    chat.finalize_turn();
+    assert!(!chat.bottom_pane.is_task_running());
+    let cell = chat
+        .transcript
+        .active_cell
+        .as_ref()
+        .expect("shell remains active")
+        .as_any()
+        .downcast_ref::<ExecCell>()
+        .expect("shell cell");
+    assert!(cell.is_active());
+    assert_eq!(cell.group.calls.len(), 1);
+    assert_eq!(cell.group.calls[0].call_id, "independent-shell");
+    assert_eq!(cell.group.calls[0].duration, None);
+    assert_eq!(chat.unified_exec_processes[0].key, "5151");
+    chat.on_exec_command_output_delta("independent-shell", "after model failure\n", None);
+    let output = active_blob(&chat);
+    assert!(output.contains("before model failure"));
+    assert!(output.contains("after model failure"));
+    assert!(!chat.bottom_pane.is_task_running());
+    end_exec(
+        &mut chat,
+        started,
+        "before model failure\nafter model failure\n",
+        "",
+        0,
+    );
+    assert!(!chat.running_commands.contains_key("independent-shell"));
+    assert!(chat.unified_exec_processes.is_empty());
+    let history = drain_insert_history(&mut events);
+    let command_count = history
+        .iter()
+        .filter(|lines| lines_to_single_string(lines).contains("after model failure"))
+        .count();
+    assert_eq!(command_count, 1);
 }
 
 #[tokio::test]
@@ -2098,7 +2154,7 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     match op_rx.try_recv() {
-        Ok(Op::RunUserShellCommand { command }) => assert_eq!(command, "echo hi"),
+        Ok(Op::RunUserShellCommand { command, .. }) => assert_eq!(command, "echo hi"),
         other => panic!("expected RunUserShellCommand op, got {other:?}"),
     }
     assert_matches!(rx.try_recv(), Ok(AppEvent::FollowTranscript));
@@ -2110,7 +2166,58 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
 }
 
 #[tokio::test]
-async fn user_message_during_user_shell_command_is_queued_not_steered() {
+async fn stop_command_completes_process_ids_from_live_exec_tracking() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let begin = begin_exec_with_source_and_process_id(
+        &mut chat,
+        "user-shell-sleep",
+        "sleep 10",
+        ExecCommandSource::UserShell,
+        Some("4242"),
+    );
+
+    chat.bottom_pane
+        .set_composer_text("/stop 4".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+
+    assert_eq!(chat.bottom_pane.composer_text(), "/stop 4242");
+    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
+}
+
+#[tokio::test]
+async fn user_message_during_detached_user_shell_command_starts_a_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.prepare_local_op_submission(&AppCommand::run_user_shell_command("sleep 10".to_string()));
+    let begin = begin_exec_with_source(
+        &mut chat,
+        "user-shell-sleep",
+        "sleep 10",
+        ExecCommandSource::UserShell,
+    );
+
+    assert!(!chat.is_user_turn_pending_or_running());
+    chat.bottom_pane
+        .set_composer_text("hi".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "hi".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected user turn while shell command was active, got {other:?}"),
+    }
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+
+    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
+}
+
+#[tokio::test]
+async fn user_message_during_active_turn_with_user_shell_command_submits_immediately() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
@@ -2121,22 +2228,9 @@ async fn user_message_during_user_shell_command_is_queued_not_steered() {
         ExecCommandSource::UserShell,
     );
 
-    assert!(chat.only_user_shell_commands_running());
     chat.bottom_pane
         .set_composer_text("hi".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-    assert_eq!(chat.queued_user_message_texts(), vec!["hi".to_string()]);
-
-    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
-    complete_assistant_message(
-        &mut chat,
-        "msg-done",
-        "done",
-        Some(MessagePhase::FinalAnswer),
-    );
-    handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn { items, .. } => assert_eq!(
@@ -2146,9 +2240,11 @@ async fn user_message_during_user_shell_command_is_queued_not_steered() {
                 text_elements: Vec::new(),
             }]
         ),
-        other => panic!("expected queued user message after shell completion, got {other:?}"),
+        other => panic!("expected immediate user input during active turn, got {other:?}"),
     }
     assert!(chat.input_queue.queued_user_messages.is_empty());
+
+    end_exec(&mut chat, begin, "", "", /*exit_code*/ 0);
 }
 
 #[tokio::test]
@@ -2379,8 +2475,8 @@ async fn approval_modal_patch_snapshot() -> anyhow::Result<()> {
 async fn interrupt_preserves_unified_exec_processes() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    begin_unified_exec_startup(&mut chat, "call-1", "process-1", "sleep 5");
-    begin_unified_exec_startup(&mut chat, "call-2", "process-2", "sleep 6");
+    begin_unified_exec_startup(&mut chat, "call-1", "1000", "sleep 5");
+    begin_unified_exec_startup(&mut chat, "call-2", "1001", "sleep 6");
     assert_eq!(chat.unified_exec_processes.len(), 2);
 
     handle_turn_interrupted(&mut chat, "turn-1");
@@ -2401,6 +2497,10 @@ async fn interrupt_preserves_unified_exec_processes() {
     assert!(
         combined.contains("sleep 5") && combined.contains("sleep 6"),
         "expected /ps to list running unified exec processes; got {combined:?}"
+    );
+    assert!(
+        combined.contains("id 1000") && combined.contains("id 1001"),
+        "expected /ps to expose process ids for targeted stopping; got {combined:?}"
     );
 
     let _ = drain_insert_history(&mut rx);

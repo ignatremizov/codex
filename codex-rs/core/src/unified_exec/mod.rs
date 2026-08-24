@@ -57,6 +57,7 @@ mod process_manager;
 mod process_state;
 mod shell_snapshot;
 mod stdin_approval;
+mod user_shell_registry;
 
 pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
     process_manager::set_deterministic_process_ids_for_tests(enabled);
@@ -158,6 +159,8 @@ impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
 #[derive(Default)]
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
+    user_shell_commands: HashMap<i32, UserShellCommandEntry>,
+    user_shell_shutdown: bool,
     reserved_process_ids: HashSet<i32>,
 }
 
@@ -172,6 +175,8 @@ impl ProcessStore {
 
 pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
+    // Tracks result producers through final publication, separately from process cancellation.
+    user_shell_tasks: tokio_util::task::TaskTracker,
     max_write_stdin_yield_time_ms: Option<u64>,
 }
 
@@ -179,6 +184,7 @@ impl UnifiedExecProcessManager {
     pub(crate) fn new(max_write_stdin_yield_time_ms: Option<u64>) -> Self {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
+            user_shell_tasks: tokio_util::task::TaskTracker::new(),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .map(|timeout_ms| timeout_ms.max(MIN_EMPTY_YIELD_TIME_MS)),
         }
@@ -205,6 +211,14 @@ struct ProcessEntry {
     network_approval: Option<DeferredNetworkApproval>,
     session: Weak<Session>,
     last_used: tokio::time::Instant,
+}
+
+struct UserShellCommandEntry {
+    call_id: String,
+    process_id: i32,
+    command: String,
+    cwd: PathUri,
+    cancellation_token: CancellationToken,
 }
 
 type SharedPluginMetricsSidecar = Arc<std::sync::Mutex<Option<PluginMetricsSidecar>>>;

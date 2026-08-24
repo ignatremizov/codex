@@ -22,8 +22,7 @@ use crate::context::GuardianApprovedAction;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
-use crate::tasks::UserShellCommandMode;
-use crate::tasks::UserShellCommandTask;
+use crate::tasks::UserShellCommandPlacement;
 use crate::tasks::execute_user_shell_command;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::CodexErrorInfo;
@@ -122,33 +121,23 @@ pub async fn run_user_shell_command(
     command: String,
     timeout_ms: Option<u64>,
 ) {
-    if let Some((turn_context, cancellation_token)) =
-        sess.active_turn_context_and_cancellation_token().await
-    {
-        let session = Arc::clone(sess);
-        tokio::spawn(async move {
-            execute_user_shell_command(
-                session,
-                turn_context,
-                command,
-                timeout_ms,
-                cancellation_token,
-                UserShellCommandMode::ActiveTurnAuxiliary,
-            )
-            .await;
-        });
-        return;
+    let (turn_context, placement) = match sess.active_turn_context_and_cancellation_token().await {
+        Some((turn_context, _cancellation_token)) => {
+            (turn_context, UserShellCommandPlacement::ActiveTurn)
+        }
+        None => (
+            sess.new_turn_with_default_settings(sub_id, Default::default())
+                .await,
+            UserShellCommandPlacement::Detached,
+        ),
+    };
+    let session = Arc::clone(sess);
+    let execution_turn = Arc::clone(&turn_context);
+    if let Err(error) = sess.services.unified_exec_manager.spawn_user_shell_command(async move {
+        execute_user_shell_command(session, execution_turn, command, timeout_ms, placement).await;
+    }).await {
+        sess.send_event(&turn_context, EventMsg::Error(error.to_error_event(/*message_prefix*/ None))).await;
     }
-
-    let turn_context = sess
-        .new_turn_with_default_settings(sub_id, Default::default())
-        .await;
-    sess.spawn_task(
-        turn_context,
-        Vec::new(),
-        UserShellCommandTask::new(command, timeout_ms),
-    )
-    .await;
 }
 
 pub async fn resolve_elicitation(
@@ -339,11 +328,14 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
         state.shutting_down = true;
         state.take_session_startup_prewarm()
     };
+    sess.services.unified_exec_manager.shutdown_user_shell_commands().await;
     if let Some(startup_prewarm) = startup_prewarm {
         startup_prewarm.abort().await;
     }
     let _ = sess.conversation.shutdown().await;
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    // Cancellation is only a request. Detached output producers still own their final records.
+    sess.services.unified_exec_manager.drain_user_shell_commands().await;
     sess.drain_observed_communications().await;
     sess.submission_admission.drain_accepted_completions().await;
     if !sess.submission_admission.requires_reload()
