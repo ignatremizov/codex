@@ -1561,6 +1561,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
     let fork_id = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: conversation_id.clone(),
+            path: Some(source_path.clone()),
             ..Default::default()
         })
         .await?;

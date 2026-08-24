@@ -159,6 +159,13 @@ pub struct LoadThreadHistoryParams {
     pub include_archived: bool,
 }
 
+/// Parameters for loading a complete copied-fork source from a rollout path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadForkSourceByRolloutPathParams {
+    /// Local rollout JSONL path whose complete logical lineage should be copied.
+    pub rollout_path: PathBuf,
+}
+
 /// Parameters for locating one trusted subagent-completion context item in canonical history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadSubAgentCompletionContextItemParams {
@@ -201,6 +208,15 @@ pub struct StoredThreadHistory {
     pub thread_id: ThreadId,
     /// Persisted rollout items in replay order.
     pub items: Vec<RolloutItem>,
+}
+
+/// Read-only metadata and complete logical history for a copied fork source.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoredForkSource {
+    /// Source thread metadata reconstructed without consulting the active store's SQLite rows.
+    pub thread: StoredThread,
+    /// Complete effective source history in replay order.
+    pub history: StoredThreadHistory,
 }
 
 /// Persisted rollout items needed to reconstruct the latest model-visible context.

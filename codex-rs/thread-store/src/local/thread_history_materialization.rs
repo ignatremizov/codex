@@ -66,9 +66,8 @@ pub(super) async fn materialize_to_sqlite(
     {
         return Ok(());
     }
-    let rollout_reader = codex_rollout::open_rollout_seekable_reader(rollout_path)
-        .await
-        .map_err(thread_store_io_error)?;
+    let rollout_reader =
+        codex_rollout::open_rollout_seekable_reader(rollout_path).map_err(thread_store_io_error)?;
     let offset_is_valid = if let Some(projection_state) = projection_state.as_ref() {
         let rollout_len = rollout_reader
             .metadata()
@@ -156,9 +155,8 @@ pub(super) async fn rebuild_to_sqlite(
     thread_id: ThreadId,
     rollout_path: &Path,
 ) -> ThreadStoreResult<()> {
-    let rollout_reader = codex_rollout::open_rollout_seekable_reader(rollout_path)
-        .await
-        .map_err(thread_store_io_error)?;
+    let rollout_reader =
+        codex_rollout::open_rollout_seekable_reader(rollout_path).map_err(thread_store_io_error)?;
     rebuild_to_sqlite_from_reader(store, thread_id, rollout_path, rollout_reader).await
 }
 

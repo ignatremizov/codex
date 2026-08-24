@@ -22,6 +22,7 @@ use crate::ListProjectsParams;
 use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
+use crate::LoadForkSourceByRolloutPathParams;
 use crate::LoadSubAgentCompletionContextItemParams;
 use crate::LoadSubAgentCompletionPresentationParams;
 use crate::LoadThreadHistoryParams;
@@ -37,6 +38,7 @@ use crate::ResumeThreadParams;
 use crate::RevertThreadParams;
 use crate::SearchThreadOccurrencesParams;
 use crate::SearchThreadsParams;
+use crate::StoredForkSource;
 use crate::StoredModelContext;
 use crate::StoredProject;
 use crate::StoredProjectsPage;
@@ -241,6 +243,21 @@ pub trait ThreadStore: Any + Send + Sync {
         Box::pin(async {
             Err(ThreadStoreError::Unsupported {
                 operation: "prepare_fork",
+            })
+        })
+    }
+
+    /// Loads a complete copied-fork source addressed by rollout path.
+    ///
+    /// Unlike [`ThreadStore::prepare_fork`], the returned source owns its inherited records and
+    /// does not retain references to or mutate source-store rollouts.
+    fn load_fork_source_by_rollout_path(
+        &self,
+        _params: LoadForkSourceByRolloutPathParams,
+    ) -> ThreadStoreFuture<'_, StoredForkSource> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "load_fork_source_by_rollout_path",
             })
         })
     }
