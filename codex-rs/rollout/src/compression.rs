@@ -300,6 +300,38 @@ enum RolloutLineReaderInner {
 }
 
 impl RolloutLineReader {
+    pub(crate) fn from_seekable_prefix(file: File, byte_limit: u64) -> Self {
+        use std::io::BufRead;
+
+        let reader: Box<dyn Read + Send> = Box::new(file.take(byte_limit));
+        Self {
+            inner: RolloutLineReaderInner::Blocking(Some(std::io::BufReader::new(reader).lines())),
+            metrics: ReadMetrics::default(),
+        }
+    }
+
+    /// Processes a full or frozen-prefix scan on one measured, cancellation-aware worker.
+    pub(crate) async fn read_lines<T, F>(self, read: F) -> io::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut dyn Iterator<Item = io::Result<String>>) -> io::Result<T> + Send + 'static,
+    {
+        use std::io::BufRead;
+
+        let lines: BlockingLineReader = match self.inner {
+            RolloutLineReaderInner::Plain(lines) => {
+                // The fresh reader has no buffered data to preserve when converting the file.
+                let file = lines.into_inner().into_inner().into_std().await;
+                io::BufReader::new(Box::new(file) as Box<dyn io::Read + Send>).lines()
+            }
+            RolloutLineReaderInner::Blocking(Some(lines)) => lines,
+            RolloutLineReaderInner::Blocking(None) => {
+                return Err(io::Error::other("compressed rollout reader is busy"));
+            }
+        };
+        blocking_reader::scan_lines(lines, self.metrics, read).await
+    }
+
     /// Reads the next JSONL record from the rollout.
     pub async fn next_line(&mut self) -> io::Result<Option<String>> {
         let started_at = Instant::now();
