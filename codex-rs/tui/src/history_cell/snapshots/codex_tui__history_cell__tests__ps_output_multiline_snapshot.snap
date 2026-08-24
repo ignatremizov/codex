@@ -6,10 +6,18 @@ expression: rendered
 
 Background terminals
 
-  • echo hello↵and then some extra text
+  • echo hello
+    and then some extra text
     ↳ hello
       done
-  • (↵  sleep 120↵)
-  • sleep 1↵sleep 120
+    id 1000
+  • (
+      sleep 120
+    )
+    id 1001
+  • sleep 1
+    sleep 120
+    id 1002
   • rg "foo" src
     ↳ src/main.rs:12:foo
+    id 1003

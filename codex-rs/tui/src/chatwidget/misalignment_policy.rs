@@ -50,6 +50,7 @@ impl ChatWidget {
                 AppCommand::Interrupt
                     | AppCommand::RealtimeConversationStop { .. }
                     | AppCommand::CleanBackgroundTerminals
+                    | AppCommand::TerminateBackgroundTerminal { .. }
                     | AppCommand::OverrideTurnContext { .. }
                     | AppCommand::ReloadUserConfig
                     | AppCommand::ListSkills { .. }

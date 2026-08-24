@@ -102,6 +102,9 @@ pub(crate) enum AppCommand {
     },
     Interrupt,
     CleanBackgroundTerminals,
+    TerminateBackgroundTerminal {
+        process_id: i32,
+    },
     RealtimeConversationStart {
         thread_id: ThreadId,
         offer_sdp: RealtimeOfferSdp,
@@ -211,6 +214,10 @@ impl AppCommand {
 
     pub(crate) fn clean_background_terminals() -> Self {
         Self::CleanBackgroundTerminals
+    }
+
+    pub(crate) fn terminate_background_terminal(process_id: i32) -> Self {
+        Self::TerminateBackgroundTerminal { process_id }
     }
 
     pub(crate) fn run_user_shell_command(command: String) -> Self {

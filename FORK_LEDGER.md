@@ -23,7 +23,7 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through copied cross-home lineage, including scoped replies, target-owned queued turns, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
+This checkpoint inventories the integrated owners through explicit user-shell process control, including copied cross-home lineage, scoped replies, target-owned queued turns, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ This checkpoint inventories the integrated owners through copied cross-home line
 | Named early skill-read activity | Observability | Attribute `SKILL.md` reads to the selected skill even when the TUI receives the tool call before asynchronous skill metadata has populated ChatWidget state. | `codex-rs/tui/src/chatwidget/skills.rs` | TUI tool-call classification and transcript rendering | `fix(tui): retain skill names in read history before discovery completes` |
 | ChatGPT OAuth dictation | Capability | Record editable composer dictation with browser authentication, bounded silence-aware chunking, generation-owned cancellation, and ordered transcript insertion through a pinned route-aware HTTP pool. Preparation and individual uploads have deadlines; there is no claimed whole-recording pipeline deadline. | `codex-rs/tui/src/chatwidget/dictation.rs`<br>`codex-rs/tui/src/dictation/chunk_policy.rs`<br>`codex-rs/tui/src/dictation/transcription.rs` | ChatGPT authentication, shared HTTP routing and Cloudflare-cookie policy, configurable keymaps, composer lifecycle, audio dependencies | `feat(tui): add bounded browser-authenticated editable dictation` |
 | Native audio transcript markers | Observability | Keep upstream native model-audio inputs distinct from editable OAuth dictation and render an explicit `[audio]` marker for every attachment in live, paginated, resumed, and exported TUI transcripts instead of silently omitting it. | `codex-rs/tui/src/chatwidget/user_messages.rs`<br>`codex-rs/tui/src/thread_transcript.rs` | App-server user-message projection, pending-steer matching, transcript hydration and export | `fix(tui): retain native audio attachments in transcripts` |
-| Configurable shell and unified-exec timing | Capability | Configure initial/background yield windows, requested empty-poll caps, and user-shell command deadlines. An omitted background-poll cap allows long requested waits; output remains bounded and cancellation remains authoritative. | `codex-rs/core/src/tools/handlers/unified_exec/`<br>`codex-rs/core/src/tools/handlers/shell_spec.rs`<br>`codex-rs/core/src/tasks/user_shell.rs` | Config loading/locking, turn context, tool schemas, process manager | `feat(config): make unified exec yield defaults configurable per turn`, `feat(unified-exec): allow uncapped requested background poll windows`, `feat(user-shell): configure command deadlines and preserve timeout output` |
+| Configurable shell and unified-exec timing | Capability | Configure initial/background yield windows, requested empty-poll caps, and user-shell command deadlines. An omitted background-poll cap allows long requested waits; output remains bounded and cancellation remains authoritative. `!`/`/shell` commands run as detached background work until exit or explicit cancellation by default, with live IDs exposed through `/ps`, completed through `/stop`, and individually stoppable through `/stop <id>` without blocking model turns or queued follow-ups. | `codex-rs/core/src/tools/handlers/unified_exec/`<br>`codex-rs/core/src/tools/handlers/shell_spec.rs`<br>`codex-rs/core/src/tasks/user_shell.rs`<br>`codex-rs/tui/src/history_cell/exec.rs`<br>`codex-rs/tui/src/chatwidget/slash_dispatch.rs` | Config loading/locking, turn context, tool schemas, process manager, app-server background-terminal control, TUI command lifecycle | `feat(config): make unified exec yield defaults configurable per turn`, `feat(unified-exec): allow uncapped requested background poll windows`, `feat(user-shell): configure command deadlines and preserve timeout output`, `feat(user-shell): add explicit long-running process control` |
 | Fail-closed human command approval deadlines | Capability | Let unattended on-request command approvals expire against an optional core-authoritative monotonic deadline, reject late responses without executing the command, preserve untimed handling when either app-server timing field is absent, and keep Guardian, patch approvals, and omitted deadlines on their existing timing behavior. | `codex-rs/core/src/session/mod.rs`<br>`codex-rs/core/src/tools/approvals.rs`<br>`codex-rs/app-server-protocol/src/protocol/v2/item.rs`<br>`codex-rs/app-server/src/bespoke_event_handling.rs`<br>`codex-rs/tui/src/bottom_pane/approval_overlay.rs` | Approval protocol and callback routing, delegated turn configuration, app-server/MCP response arbitration, TUI pending-request lifecycle | `feat(approvals): enforce fail-closed human command deadlines` |
 | Bounded terminal execution, waits, and configurable previews | Observability | Show which terminal and command an empty poll checked, classify ordinary Python commands as executed rather than directory listings, retain bounded output across initial-yield and process-exit races, with explicit omission and output-close deadline limits, recover offset-proven remote replay gaps, render live wait countdowns, and independently cap agent/tool versus user-shell previews. | `codex-rs/core/src/unified_exec/async_watcher.rs`<br>`codex-rs/core/src/unified_exec/head_tail_buffer.rs`<br>`codex-rs/exec-server/src/client_recovery.rs`<br>`codex-rs/shell-command/src/parse_command.rs`<br>`codex-rs/tui/src/chatwidget/command_lifecycle.rs` | Unified-exec process/output ownership, exec-server replay offsets, completed-process cache, app-server terminal notifications, TUI status/history/pager | `feat(tui): configure source-preserving command output previews`, `feat(tui): show lifecycle-owned advisory wait countdowns`, `fix(history): reconstruct Legacy terminal output without restoring cold runtime state`, `fix(tui): classify non-enumerating Python commands as executed`, `fix(unified-exec): retain bounded output across polling and terminal replay` |
 | Configurable diff backgrounds | Capability | Select adaptive, disabled, theme-derived, or custom diff backgrounds while preserving syntax highlighting and normalizing tabs before wrapping. | `codex-rs/tui/src/diff_render.rs`<br>`codex-rs/tui/src/render/highlight.rs` | TUI config/schema and startup theme resolution | `feat(tui): configure diff backgrounds through client-local preferences` |
@@ -365,6 +365,37 @@ attachment membership. External goal deferral is rejected before allocating a de
 ordinary in-home goal inheritance and coordinated reference forks remain unchanged. The public
 fork/cold-resume fixture and source-authored namespace/provenance regressions require remote
 execution. No local test or compiler result is implied by this source integration.
+
+### Detached user-shell process control
+
+Ownership anchor: `feat(user-shell): add explicit long-running process control`.
+Human shell commands retain their own process lifetime without owning or faking a model turn.
+The configured zero default means no wall-clock deadline; an explicit request timeout of zero
+retains its immediate-expiry meaning. Local execution retains the selected shell, environment,
+sandbox metadata, policy, bounded output, and model-input attribution. Remote executor commands
+are rejected rather than redirected to the host.
+
+`unified_exec/user_shell_registry.rs` shares process IDs with the current process manager and
+keeps exact call-ID removal separate from cancellation. Its tracked producer is admitted before
+first poll under the shutdown gate; cancellation is registered before shell-snapshot preparation.
+Session shutdown cancels and drains the actual output/publication producers before closing history.
+Stopping a process, removing a registry entry, and publishing its final records are not equivalent
+receipts. A model interruption does not cancel an independently admitted shell command.
+
+Detached command audit uses completed standalone activity without synthetic model turn boundaries.
+Current orphaned agent-presentation provenance and bounded semantic-compaction replay remain intact.
+The TUI accepts output only for a live matching user-shell call while the model is idle, retains
+that command across model finalization, and waits for its real completion rather than rendering
+a false failure. `/ps` preserves multiline source and reports process IDs; bare `/stop` retains
+stop-all semantics, while argument completion selects a specific positive process ID. Existing
+MCP completion and App-owned realtime controls are not replaced by older helper implementations.
+
+Source tests cover producer cancellation/drain, real shutdown publication, detached audit isolation,
+live idle output, and model-failure independence. They have not run. An inherited long-command
+wrapping snapshot is explicitly assigned to its earlier preview owner for final regeneration;
+owner90 adds only the new process-ID contract. Later user-shell queued completion policies remain
+with their separate feature owner. Formatting, generated contracts, and executable validation
+remain pending.
 
 ## Integration boundaries and deferred work
 

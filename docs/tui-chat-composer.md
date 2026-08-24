@@ -98,6 +98,8 @@ The keys described here are built-in defaults. Composer and editor bindings can 
 
 `Enter` requests submission and `Tab` requests queuing. These are separate `InputResult` paths; there is no steer-mode feature switch. Queue dispatch and admission depend on the owning thread's state. The queue parser classifies shell, slash-command, and literal input before dispatch rather than treating every draft as a plain user message.
 
+Submitted shell commands become background terminals and do not block later composer input; `/ps` lists them and `/stop <process-id>` stops one, with live IDs offered as composer completions.
+
 ### Normal submit/queue path
 
 `handle_submission` calls `prepare_submission_text` for both submit and queue. That method:

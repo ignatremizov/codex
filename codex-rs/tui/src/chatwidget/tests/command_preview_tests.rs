@@ -48,6 +48,7 @@ async fn ps_retention_is_independent_of_local_display_limit_and_chunk_boundaries
 
       • printf output
         ↳ … +5 rows (ctrl+t to view transcript)
+        id process
 
     limit 2
     /ps
@@ -57,6 +58,7 @@ async fn ps_retention_is_independent_of_local_display_limit_and_chunk_boundaries
       • printf output
         ↳ first line
           … +4 rows (ctrl+t to view transcript)
+        id process
 
     limit 0
     /ps
@@ -69,6 +71,7 @@ async fn ps_retention_is_independent_of_local_display_limit_and_chunk_boundaries
           third
           fourth
           fifth
+        id process
 
     limit 30
     /ps
@@ -81,6 +84,7 @@ async fn ps_retention_is_independent_of_local_display_limit_and_chunk_boundaries
           third
           fourth
           fifth
+        id process
     ");
     assert_eq!(
         chat.unified_exec_processes[0]
