@@ -1323,6 +1323,7 @@ impl AppServerSession {
             local_settings,
             config,
             thread_id,
+            /*source_rollout_path*/ None,
             /*last_turn_id*/ None,
             /*before_prompt*/ None,
             ForkGoalContinuation::GoalFree,

@@ -80,6 +80,18 @@ pub fn open_rollout_seekable_reader(
     path: &Path,
     is_cancelled: impl Fn() -> bool,
 ) -> io::Result<impl Read + Seek> {
+    let file = open_rollout_seekable_file(path, &is_cancelled)?;
+    Ok(CancellableReader {
+        inner: file,
+        is_cancelled,
+    })
+}
+
+/// Retains the same snapshot for async file readers, which own cancellation after opening.
+pub(crate) fn open_rollout_seekable_file(
+    path: &Path,
+    is_cancelled: impl Fn() -> bool,
+) -> io::Result<File> {
     if is_cancelled() {
         return Err(io::Error::other("rollout read cancelled"));
     }
@@ -101,10 +113,7 @@ pub fn open_rollout_seekable_reader(
             decoded
         }
     };
-    Ok(CancellableReader {
-        inner: file,
-        is_cancelled,
-    })
+    Ok(file)
 }
 
 struct CancellableReader<R, F> {
