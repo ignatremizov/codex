@@ -112,6 +112,12 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                 )
                 || matches!(
                     &event.item,
+                    TurnItem::CommandExecution(item)
+                        if item.source
+                            == codex_protocol::protocol::ExecCommandSource::UserShell
+                )
+                || matches!(
+                    &event.item,
                     TurnItem::AgentMessage(item)
                         if item.has_sub_agent_completion_identity()
                             || item.is_attributed_agent_input_presentation()

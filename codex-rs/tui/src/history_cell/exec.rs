@@ -194,6 +194,7 @@ impl UnifiedExecProcessesCell {
                     .word_splitter(WordSplitter::NoHyphenation),
             );
             out.extend(wrapped_command);
+            out.push(vec!["    id ".dim(), process.process_id.clone().green()].into());
 
             let chunk_prefix_first = "    ↳ ";
             let chunk_prefix_next = "      ";
@@ -249,6 +250,7 @@ impl UnifiedExecProcessesCell {
 
 #[derive(Debug, Clone)]
 pub(crate) struct UnifiedExecProcessDetails {
+    pub(crate) process_id: String,
     pub(crate) command_display: String,
     pub(crate) recent_chunks: Vec<String>,
 }

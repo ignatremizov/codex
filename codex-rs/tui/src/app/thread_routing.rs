@@ -541,6 +541,7 @@ impl App {
             &op,
             AppCommand::Interrupt
                 | AppCommand::CleanBackgroundTerminals
+                | AppCommand::TerminateBackgroundTerminal { .. }
                 | AppCommand::RealtimeConversationStart { .. }
                 | AppCommand::RealtimeConversationAudio(_)
                 | AppCommand::RealtimeConversationClose
@@ -920,6 +921,22 @@ impl App {
                 app_server
                     .thread_background_terminals_clean(thread_id)
                     .await?;
+                Ok(true)
+            }
+            AppCommand::TerminateBackgroundTerminal { process_id } => {
+                let terminated = app_server
+                    .thread_background_terminal_terminate(thread_id, *process_id)
+                    .await?;
+                if terminated {
+                    self.chat_widget.add_info_message(
+                        format!("Stopping background terminal {process_id}."),
+                        /*hint*/ None,
+                    );
+                } else {
+                    self.chat_widget.add_error_message(format!(
+                        "Background terminal {process_id} was not found."
+                    ));
+                }
                 Ok(true)
             }
             AppCommand::RealtimeConversationStart { transport, voice } => {
@@ -1733,9 +1750,7 @@ impl App {
         started: AppServerStartedThread,
         snapshot: &mut ThreadEventSnapshot,
     ) {
-        let AppServerStartedThread {
-            session, turns, ..
-        } = started;
+        let AppServerStartedThread { session, turns, .. } = started;
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());

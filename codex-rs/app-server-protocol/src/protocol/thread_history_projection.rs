@@ -73,17 +73,24 @@ pub fn project_rollout_line(line: &RolloutLine) -> ThreadHistoryChangeSet {
                 &event.item,
                 codex_protocol::items::TurnItem::UserAgentControl(control)
                     if control.id == event.turn_id
-            )
-            .then(|| ThreadHistoryTurnChange {
-                turn_id: event.turn_id.clone(),
-                status: TurnStatus::Completed,
-                error: None,
-                started_at: None,
-                completed_at: None,
-                duration_ms: None,
-            })
-            .into_iter()
-            .collect();
+            ) || matches!(
+                &event.item,
+                codex_protocol::items::TurnItem::CommandExecution(command)
+                    if command.source
+                        == codex_protocol::protocol::ExecCommandSource::UserShell
+                        && command.id == event.turn_id
+            );
+            let changed_turns = changed_turns
+                .then(|| ThreadHistoryTurnChange {
+                    turn_id: event.turn_id.clone(),
+                    status: TurnStatus::Completed,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                })
+                .into_iter()
+                .collect();
             ThreadHistoryChangeSet {
                 changed_turns,
                 changed_items: vec![ThreadHistoryItemChange {

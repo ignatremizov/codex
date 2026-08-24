@@ -170,16 +170,6 @@ that model is available and differs from the first decoder. Cancellation does
 not start a fallback decoder. Set it to the primary decoder model to disable
 retry explicitly.
 
-## Shell command timeout
-
-Set a default timeout (in milliseconds) for shell commands when `timeout_ms` is not provided:
-
-```toml
-exec_command_timeout_ms = 30000
-```
-
-If unset, Codex uses the built-in default (10,000 ms).
-
 ## Approval timeout
 
 Set the maximum time (in milliseconds) to wait for a command approval response:
@@ -210,8 +200,9 @@ Set the maximum runtime (in milliseconds) for commands entered with `!` or `/she
 user_shell_command_timeout_ms = 3600000
 ```
 
-If unset, Codex uses the existing one-hour default. Set the value to `0` to allow user shell
-commands to run until they finish or are interrupted.
+If unset, user shell commands run until they finish, are explicitly stopped through `/stop` or the
+background-terminal API, or the thread shuts down. Interrupting a model turn does not terminate
+them. Set a positive value to enforce a maximum runtime.
 
 ## Unified exec yield windows
 

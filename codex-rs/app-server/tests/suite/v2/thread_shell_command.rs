@@ -31,6 +31,7 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
+use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
@@ -46,8 +47,7 @@ use tokio::time::timeout;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[tokio::test]
-async fn thread_shell_command_history_responses_exclude_persisted_command_executions() -> Result<()>
-{
+async fn detached_thread_shell_command_is_persisted_in_history() -> Result<()> {
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().join("codex_home");
     std::fs::create_dir(&codex_home)?;
@@ -115,16 +115,11 @@ async fn thread_shell_command_history_responses_exclude_persisted_command_execut
         unreachable!("helper returns command execution item");
     };
     assert_eq!(id, &command_id);
+    assert_eq!(completed.turn_id, command_id);
     assert_eq!(source, &CommandExecutionSource::UserShell);
     assert_eq!(status, &CommandExecutionStatus::Completed);
     assert_eq!(aggregated_output.as_deref(), Some(expected_output.as_str()));
     assert_eq!(*exit_code, Some(0));
-
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
 
     let ThreadReadResponse { thread, .. } = mcp
         .request(|request_id| ClientRequest::ThreadRead {
@@ -136,7 +131,12 @@ async fn thread_shell_command_history_responses_exclude_persisted_command_execut
         })
         .await?;
     assert_eq!(thread.turns.len(), 1);
-    assert_no_command_executions(&thread.turns[0].items, "thread/read");
+    assert_user_shell_command(
+        &thread.turns[0].items,
+        &command_id,
+        &expected_output,
+        "thread/read",
+    );
 
     let ThreadTurnsListResponse { data, .. } = mcp
         .request(|request_id| ClientRequest::ThreadTurnsList {
@@ -146,12 +146,17 @@ async fn thread_shell_command_history_responses_exclude_persisted_command_execut
                 cursor: None,
                 limit: None,
                 sort_direction: Some(SortDirection::Asc),
-                items_view: None,
+                items_view: Some(TurnItemsView::Full),
             },
         })
         .await?;
     assert_eq!(data.len(), 1);
-    assert_no_command_executions(&data[0].items, "thread/turns/list");
+    assert_user_shell_command(
+        &data[0].items,
+        &command_id,
+        &expected_output,
+        "thread/turns/list",
+    );
 
     let ThreadForkResponse { thread, .. } = mcp
         .request(|request_id| ClientRequest::ThreadFork {
@@ -163,7 +168,12 @@ async fn thread_shell_command_history_responses_exclude_persisted_command_execut
         })
         .await?;
     assert_eq!(thread.turns.len(), 1);
-    assert_no_command_executions(&thread.turns[0].items, "thread/fork");
+    assert_user_shell_command(
+        &thread.turns[0].items,
+        &command_id,
+        &expected_output,
+        "thread/fork",
+    );
 
     Ok(())
 }
@@ -229,7 +239,7 @@ async fn check_thread_shell_command_in_active_turn(timeout_ms: Option<i64>) -> R
                 "print(42)".to_string(),
             ],
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-approve",
         )?,
         create_final_assistant_message_sse_response("done")?,
@@ -334,9 +344,8 @@ async fn check_thread_shell_command_in_active_turn(timeout_ms: Option<i64>) -> R
     assert_eq!(source, &CommandExecutionSource::UserShell);
     if timeout_ms.is_some() {
         assert_eq!(status, &CommandExecutionStatus::Failed);
-        assert_eq!(*exit_code, Some(-1));
+        assert_eq!(*exit_code, Some(124));
         let output = aggregated_output.as_deref().expect("timeout output");
-        assert!(output.contains("Timeout"));
         assert!(output.contains(expected_output.trim()));
     } else {
         assert_eq!(status, &CommandExecutionStatus::Completed);
@@ -389,12 +398,21 @@ async fn check_thread_shell_command_in_active_turn(timeout_ms: Option<i64>) -> R
         })
         .await?;
     assert_eq!(thread.turns.len(), 1);
-    assert_no_command_executions(&thread.turns[0].items, "thread/read");
-    assert!(
-        mcp.pending_notification_methods()
-            .iter()
-            .all(|method| { method != "turn/started" && method != "turn/completed" })
-    );
+    if timeout_ms.is_some() {
+        assert_timed_out_user_shell_command(
+            &thread.turns[0].items,
+            &command_id,
+            Some(expected_output.as_str()),
+            "thread/read",
+        );
+    } else {
+        assert_user_shell_command(
+            &thread.turns[0].items,
+            &command_id,
+            &expected_output,
+            "thread/read",
+        );
+    }
 
     Ok(())
 }
@@ -439,11 +457,10 @@ async fn thread_shell_command_honors_optional_timeout() -> Result<()> {
             .await?;
         let _: ThreadShellCommandResponse =
             timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
-        let started: TurnStartedNotification = mcp.read_notification("turn/started").await?;
         let completed =
             wait_for_command_execution_completed(&mut mcp, /*expected_id*/ None).await?;
-        assert_eq!(completed.turn_id, started.turn.id);
         let ThreadItem::CommandExecution {
+            id,
             status,
             exit_code,
             aggregated_output,
@@ -452,11 +469,11 @@ async fn thread_shell_command_honors_optional_timeout() -> Result<()> {
         else {
             unreachable!("helper returns command execution item");
         };
-        let output = aggregated_output.expect("shell output");
+        assert_eq!(completed.turn_id, id);
+        let output = aggregated_output.unwrap_or_default();
         if expires {
             assert_eq!(status, CommandExecutionStatus::Failed);
-            assert_eq!(exit_code, Some(-1));
-            assert!(output.contains("Timeout"));
+            assert_eq!(exit_code, Some(124));
             if expect_output {
                 assert!(output.contains(expected_output.trim()));
             }
@@ -465,13 +482,11 @@ async fn thread_shell_command_honors_optional_timeout() -> Result<()> {
             assert_eq!(exit_code, Some(0));
             assert_eq!(output, expected_output);
         }
-        let completed: TurnCompletedNotification = timeout(
-            DEFAULT_READ_TIMEOUT,
-            mcp.read_notification("turn/completed"),
-        )
-        .await??;
-        assert_eq!(completed.turn.id, started.turn.id);
-        assert_eq!(completed.turn.status, TurnStatus::Completed);
+        assert!(
+            mcp.pending_notification_methods()
+                .iter()
+                .all(|method| { method != "turn/started" && method != "turn/completed" })
+        );
     }
     Ok(())
 }
@@ -544,13 +559,66 @@ fn current_shell_slow_command() -> Result<(String, String)> {
     Ok((format!("{command}{suffix}"), expected_output))
 }
 
-fn assert_no_command_executions(items: &[ThreadItem], context: &str) {
-    assert!(
-        items
-            .iter()
-            .all(|item| !matches!(item, ThreadItem::CommandExecution { .. })),
-        "{context} should always exclude command executions from returned turns"
-    );
+fn assert_user_shell_command(
+    items: &[ThreadItem],
+    expected_id: &str,
+    expected_output: &str,
+    context: &str,
+) {
+    let item = items.iter().find(|item| {
+        matches!(
+            item,
+            ThreadItem::CommandExecution { id, .. } if id == expected_id
+        )
+    });
+    let Some(ThreadItem::CommandExecution {
+        source,
+        status,
+        aggregated_output,
+        exit_code,
+        ..
+    }) = item
+    else {
+        panic!("{context} should include user shell command {expected_id}");
+    };
+    assert_eq!(source, &CommandExecutionSource::UserShell);
+    assert_eq!(status, &CommandExecutionStatus::Completed);
+    assert_eq!(aggregated_output.as_deref(), Some(expected_output));
+    assert_eq!(*exit_code, Some(0));
+}
+
+fn assert_timed_out_user_shell_command(
+    items: &[ThreadItem],
+    expected_id: &str,
+    expected_output: Option<&str>,
+    context: &str,
+) {
+    let item = items.iter().find(|item| {
+        matches!(
+            item,
+            ThreadItem::CommandExecution { id, .. } if id == expected_id
+        )
+    });
+    let Some(ThreadItem::CommandExecution {
+        source,
+        status,
+        aggregated_output,
+        exit_code,
+        ..
+    }) = item
+    else {
+        panic!("{context} should include user shell command {expected_id}");
+    };
+    assert_eq!(source, &CommandExecutionSource::UserShell);
+    assert_eq!(status, &CommandExecutionStatus::Failed);
+    assert_eq!(*exit_code, Some(124));
+    if let Some(expected_output) = expected_output {
+        assert!(
+            aggregated_output
+                .as_deref()
+                .is_some_and(|output| output.contains(expected_output.trim()))
+        );
+    }
 }
 
 fn current_shell_output_command(text: &str) -> Result<(String, String)> {

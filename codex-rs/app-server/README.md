@@ -967,25 +967,28 @@ This API runs unsandboxed with full access; it does not inherit the thread
 sandbox policy.
 
 Set `timeoutMs` to a non-negative integer to control command execution time.
-Omitting it or setting it to `null` preserves the one-hour default (3,600,000 ms).
-Values above one hour are supported; `0` requests an immediate timeout, not
-unlimited execution. Invalid values are rejected before execution. This deadline
-does not change the immediate RPC acknowledgement, and `turn/interrupt` can still
-cancel execution before the deadline.
+Omitting it or setting it to `null` uses `user_shell_command_timeout_ms`, whose
+default is unlimited. Positive values above one hour are supported; an explicit
+`0` requests an immediate timeout. Invalid values are rejected before execution.
+The deadline does not change the immediate RPC acknowledgement.
 
-If the thread already has an active turn, the command runs as an auxiliary action on that turn. A timeout ends only the shell command, not the active turn. Progress is emitted as standard `item/*` notifications on the existing turn and the formatted output is injected into the turn’s message stream:
+User shell commands are detached background processes and never own or block the thread's model
+turn lifecycle. If the thread already has an active turn, progress is emitted as standard `item/*`
+notifications on that turn and the formatted output is injected into the turn's message stream:
 
 - `item/started` with `item: { "type": "commandExecution", "source": "userShell", ... }`
 - zero or more `item/commandExecution/outputDelta`
 - `item/completed` with the same `commandExecution` item id
 
-If the thread does not already have an active turn, the server starts a standalone turn for the shell command. In that case clients should expect:
+If the thread is idle, the command uses a standalone activity id but does not emit `turn/started`
+or `turn/completed`. A later user turn can begin while the command is still running. Clients should
+expect only:
 
-- `turn/started`
 - `item/started` with `item: { "type": "commandExecution", "source": "userShell", ... }`
 - zero or more `item/commandExecution/outputDelta`
 - `item/completed` with the same `commandExecution` item id
-- `turn/completed`
+
+The completed command remains reconstructible as a completed activity in thread history.
 
 ```json
 { "method": "thread/shellCommand", "id": 26, "params": { "threadId": "thr_b", "command": "git status --short" } }

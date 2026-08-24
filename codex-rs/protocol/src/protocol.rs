@@ -819,11 +819,13 @@ pub enum Op {
     ///
     /// The command string is executed using the user's default shell and may
     /// include shell syntax (pipes, redirects, etc.). Output is streamed via
-    /// `ExecCommand*` events and the UI regains control upon `TurnComplete`.
+    /// `ExecCommand*` events while the detached command remains independently
+    /// controllable and does not own the model turn lifecycle.
     RunUserShellCommand {
         /// The raw command string after '!'
         command: String,
-        /// Maximum execution time in milliseconds. Defaults to one hour.
+        /// Explicit maximum execution time in milliseconds. Omission uses the
+        /// configured user-shell default; an explicit zero requests an immediate timeout.
         timeout_ms: Option<u64>,
     },
 }

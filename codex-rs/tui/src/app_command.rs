@@ -28,6 +28,9 @@ use serde_json::Value;
 pub(crate) enum AppCommand {
     Interrupt,
     CleanBackgroundTerminals,
+    TerminateBackgroundTerminal {
+        process_id: i32,
+    },
     RealtimeConversationStart {
         transport: Option<ThreadRealtimeStartTransport>,
         voice: Option<Value>,
@@ -116,6 +119,10 @@ impl AppCommand {
 
     pub(crate) fn clean_background_terminals() -> Self {
         Self::CleanBackgroundTerminals
+    }
+
+    pub(crate) fn terminate_background_terminal(process_id: i32) -> Self {
+        Self::TerminateBackgroundTerminal { process_id }
     }
 
     pub(crate) fn realtime_conversation_start(

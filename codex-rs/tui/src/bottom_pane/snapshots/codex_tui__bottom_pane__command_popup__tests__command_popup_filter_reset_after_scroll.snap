@@ -7,7 +7,7 @@ Buffer {
     content: [
         "  /status      show current session configuration and token usage       ",
         "  /statusline  configure which items appear in the status line          ",
-        "  /stop        stop all background terminals                            ",
+        "  /stop        stop a background terminal by id, or all when omitted    ",
     ],
     styles: [
         x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
@@ -20,6 +20,6 @@ Buffer {
         x: 3, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
         x: 5, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 15, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 44, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 68, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }

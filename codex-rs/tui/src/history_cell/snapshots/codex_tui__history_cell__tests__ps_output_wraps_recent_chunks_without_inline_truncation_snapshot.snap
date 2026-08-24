@@ -7,6 +7,7 @@ expression: rendered
 Background terminals
 
   • tail -f app.log
+    id 1000
     ↳ alpha beta gamma delta
       epsilon zeta eta theta
       iota kappa lambda omega

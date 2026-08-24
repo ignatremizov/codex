@@ -33,6 +33,13 @@ pub(crate) enum CommandItem {
     ServiceTier(ServiceTierCommand),
     McpSubcommand(&'static str),
     McpServer(String),
+    BackgroundTerminal(BackgroundTerminalCompletion),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BackgroundTerminalCompletion {
+    pub(crate) process_id: String,
+    pub(crate) command_display: String,
 }
 
 pub(crate) struct CommandPopup {
@@ -40,6 +47,7 @@ pub(crate) struct CommandPopup {
     commands: Vec<CommandItem>,
     composer_text: String,
     mcp_server_names: Vec<String>,
+    background_terminals: Vec<BackgroundTerminalCompletion>,
     state: ScrollState,
 }
 
@@ -96,12 +104,20 @@ impl CommandPopup {
             commands,
             composer_text: String::new(),
             mcp_server_names: Vec::new(),
+            background_terminals: Vec::new(),
             state: ScrollState::new(),
         }
     }
 
     pub(crate) fn set_mcp_server_names(&mut self, server_names: Vec<String>) {
         self.mcp_server_names = server_names;
+    }
+
+    pub(crate) fn set_background_terminals(
+        &mut self,
+        background_terminals: Vec<BackgroundTerminalCompletion>,
+    ) {
+        self.background_terminals = background_terminals;
     }
 
     /// Update the filter string based on the current composer text. The text
@@ -159,8 +175,8 @@ impl CommandPopup {
     /// paired with optional highlight indices. Preserves the original
     /// presentation order for built-ins and prompts.
     fn filtered(&self) -> Vec<(CommandItem, Option<Vec<usize>>)> {
-        if let Some(mcp_matches) = self.filtered_mcp_args() {
-            return mcp_matches;
+        if let Some(argument_matches) = self.filtered_argument_items() {
+            return argument_matches;
         }
 
         let filter = self.command_filter.trim();
@@ -215,13 +231,20 @@ impl CommandPopup {
                         0,
                     );
                 }
-                CommandItem::McpSubcommand(_) | CommandItem::McpServer(_) => {}
+                CommandItem::McpSubcommand(_)
+                | CommandItem::McpServer(_)
+                | CommandItem::BackgroundTerminal(_) => {}
             }
         }
 
         out.extend(exact);
         out.extend(prefix);
         out
+    }
+
+    fn filtered_argument_items(&self) -> Option<Vec<(CommandItem, Option<Vec<usize>>)>> {
+        self.filtered_mcp_args()
+            .or_else(|| self.filtered_stop_args())
     }
 
     fn filtered_mcp_args(&self) -> Option<Vec<(CommandItem, Option<Vec<usize>>)>> {
@@ -272,6 +295,28 @@ impl CommandPopup {
         Some(matches)
     }
 
+    fn filtered_stop_args(&self) -> Option<Vec<(CommandItem, Option<Vec<usize>>)>> {
+        let tail = self.composer_text.strip_prefix("/stop")?;
+        if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return None;
+        }
+
+        let query = tail.trim_start();
+        if query.contains(char::is_whitespace) {
+            return Some(Vec::new());
+        }
+        let matches = self
+            .background_terminals
+            .iter()
+            .filter(|terminal| terminal.process_id.starts_with(query))
+            .map(|terminal| {
+                let indices = (!query.is_empty()).then(|| (0..query.chars().count()).collect());
+                (CommandItem::BackgroundTerminal(terminal.clone()), indices)
+            })
+            .collect();
+        Some(matches)
+    }
+
     fn filtered_items(&self) -> Vec<CommandItem> {
         self.filtered().into_iter().map(|(c, _)| c).collect()
     }
@@ -310,6 +355,9 @@ impl CommandPopup {
                         "add this MCP server's tools to context".to_string(),
                         0,
                     ),
+                    CommandItem::BackgroundTerminal(terminal) => {
+                        (terminal.process_id, terminal.command_display, 0)
+                    }
                 };
                 GenericDisplayRow {
                     name,
@@ -358,6 +406,7 @@ impl CommandItem {
             Self::ServiceTier(command) => &command.name,
             Self::McpSubcommand(subcommand) => subcommand,
             Self::McpServer(server_name) => server_name,
+            Self::BackgroundTerminal(terminal) => &terminal.process_id,
         }
     }
 }
@@ -392,7 +441,8 @@ mod tests {
                 CommandItem::Builtin(cmd) => Some(cmd.command()),
                 CommandItem::ServiceTier(_)
                 | CommandItem::McpSubcommand(_)
-                | CommandItem::McpServer(_) => None,
+                | CommandItem::McpServer(_)
+                | CommandItem::BackgroundTerminal(_) => None,
             })
             .collect()
     }
@@ -411,7 +461,8 @@ mod tests {
             CommandItem::Builtin(cmd) => cmd.command() == "init",
             CommandItem::ServiceTier(_)
             | CommandItem::McpSubcommand(_)
-            | CommandItem::McpServer(_) => false,
+            | CommandItem::McpServer(_)
+            | CommandItem::BackgroundTerminal(_) => false,
         });
         assert!(
             has_init,
@@ -759,5 +810,38 @@ mod tests {
             popup.filtered_items(),
             vec![CommandItem::McpServer("docs search".to_string())]
         );
+    }
+
+    #[test]
+    fn stop_args_suggest_live_background_terminal_ids() {
+        let terminals = vec![
+            BackgroundTerminalCompletion {
+                process_id: "95306".to_string(),
+                command_display: "sleep 600".to_string(),
+            },
+            BackgroundTerminalCompletion {
+                process_id: "87742".to_string(),
+                command_display: "date -Ins; sleep 3900; date -Ins".to_string(),
+            },
+        ];
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.set_background_terminals(terminals.clone());
+        popup.on_composer_text_change("/stop 9".to_string());
+        assert_eq!(
+            popup.filtered_items(),
+            vec![CommandItem::BackgroundTerminal(terminals[0].clone())]
+        );
+
+        popup.on_composer_text_change("/stop ".to_string());
+        let width = 72;
+        let area = Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            width,
+            popup.calculate_required_height(width),
+        );
+        let mut buf = Buffer::empty(area);
+        popup.render_ref(area, &mut buf);
+        insta::assert_snapshot!("command_popup_stop_processes", format!("{buf:?}"));
     }
 }

@@ -1378,6 +1378,19 @@ async fn runtime_config_preserves_zero_user_shell_command_timeout_ms() -> std::i
     Ok(())
 }
 
+#[tokio::test]
+async fn runtime_config_defaults_user_shell_command_timeout_to_unbounded() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .build()
+        .await?;
+
+    assert_eq!(cfg.user_shell_command_timeout_ms(), 0);
+
+    Ok(())
+}
+
 #[test]
 fn config_toml_deserializes_unified_exec_yield_times() {
     let toml = r#"

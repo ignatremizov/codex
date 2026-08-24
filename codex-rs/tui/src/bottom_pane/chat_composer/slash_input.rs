@@ -180,6 +180,19 @@ impl<'a> SlashInput<'a> {
         cursor <= first_line.len() && cursor > "/mcp".len()
     }
 
+    pub(super) fn is_editing_stop_args(&self, first_line: &str, cursor: usize) -> bool {
+        if !self.enabled || self.is_bash_mode {
+            return false;
+        }
+        let Some(tail) = first_line.strip_prefix("/stop") else {
+            return false;
+        };
+        if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return false;
+        }
+        cursor <= first_line.len() && cursor > "/stop".len()
+    }
+
     pub(super) fn command_popup(&self, filter_text: &str) -> CommandPopup {
         let mut command_popup = CommandPopup::new(
             CommandPopupFlags {
@@ -399,7 +412,9 @@ impl ChatComposer {
                             }
                             return (InputResult::None, true);
                         }
-                        CommandItem::McpSubcommand("verbose") | CommandItem::McpServer(_) => {
+                        CommandItem::McpSubcommand("verbose")
+                        | CommandItem::McpServer(_)
+                        | CommandItem::BackgroundTerminal(_) => {
                             if let Some(completed_text) =
                                 selected_command_completion(&first_line, &sel)
                             {
@@ -540,6 +555,7 @@ pub(super) fn selected_command_completion(
         CommandItem::McpSubcommand("use") => Some("/mcp use ".to_string()),
         CommandItem::McpSubcommand("verbose") => Some("/mcp verbose".to_string()),
         CommandItem::McpServer(server_name) => Some(format!("/mcp use {server_name}")),
+        CommandItem::BackgroundTerminal(terminal) => Some(format!("/stop {}", terminal.process_id)),
         CommandItem::McpSubcommand(_) => None,
         CommandItem::Builtin(_) | CommandItem::ServiceTier(_) => {
             let selected_command_text = format!("/{}", command.command());

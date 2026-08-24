@@ -1858,6 +1858,9 @@ impl AnalyticsReducer {
                 }));
             }
             ServerNotification::ItemStarted(notification) => {
+                if is_detached_user_shell_activity(&notification.turn_id, &notification.item) {
+                    return;
+                }
                 let Some(item_id) = tracked_tool_item_id(&notification.item) else {
                     return;
                 };
@@ -1875,6 +1878,9 @@ impl AnalyticsReducer {
                 );
             }
             ServerNotification::ItemCompleted(notification) => {
+                if is_detached_user_shell_activity(&notification.turn_id, &notification.item) {
+                    return;
+                }
                 if matches!(notification.item, ThreadItem::SubAgentActivity { .. }) {
                     let Some(turn_state) = self.turns.get_mut(&notification.turn_id) else {
                         tracing::warn!(
@@ -2492,6 +2498,14 @@ pub(crate) fn tracked_tool_item_id(item: &ThreadItem) -> Option<&str> {
         | ThreadItem::ExitedReviewMode { .. }
         | ThreadItem::ContextCompaction { .. } => None,
     }
+}
+
+fn is_detached_user_shell_activity(turn_id: &str, item: &ThreadItem) -> bool {
+    matches!(
+        item,
+        ThreadItem::CommandExecution { id, source, .. }
+            if id == turn_id && *source == CommandExecutionSource::UserShell
+    )
 }
 
 fn tool_event_base_mut(event: &mut TrackEventRequest) -> Option<&mut CodexToolItemEventBase> {
