@@ -1,9 +1,11 @@
 use std::collections::HashSet;
+use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::HistoryPosition;
+use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 
 use super::LocalThreadStore;
@@ -29,6 +31,18 @@ pub(super) struct RolloutLineage {
     pub(super) segments: Vec<RolloutLineageSegment>,
 }
 
+/// One opened, immutable snapshot of a rollout range copied from another Codex home.
+pub(super) struct OpenedRolloutLineageSegment {
+    pub(super) segment: RolloutLineageSegment,
+    pub(super) file: File,
+    pub(super) byte_limit: u64,
+}
+
+/// Ordered opened snapshots contributing to one copied fork.
+pub(super) struct OpenedRolloutLineage {
+    pub(super) segments: Vec<OpenedRolloutLineageSegment>,
+}
+
 impl LocalThreadStore {
     pub(super) async fn resolve_rollout_lineage(
         &self,
@@ -39,6 +53,107 @@ impl LocalThreadStore {
             LineageRepresentation::Existing,
         )
         .await
+    }
+
+    pub(super) async fn resolve_rollout_lineage_from_snapshot(
+        &self,
+        requested_thread_id: ThreadId,
+        rollout_path: PathBuf,
+        session_meta: SessionMetaLine,
+        source_file: File,
+        source_byte_limit: u64,
+    ) -> ThreadStoreResult<OpenedRolloutLineage> {
+        let mut segments = Vec::new();
+        let mut seen = HashSet::new();
+        let mut next_rollout_id = None;
+        let mut end = None;
+        let mut source_snapshot =
+            Some((rollout_path, session_meta, source_file, source_byte_limit));
+
+        loop {
+            let (rollout_id, rollout_path, meta, file, byte_limit) = match next_rollout_id {
+                Some(rollout_id) => {
+                    let rollout_path =
+                        codex_rollout::find_rollout_path_by_rollout_id_without_recovery(
+                            self.config.codex_home.as_path(),
+                            rollout_id,
+                        )
+                        .await
+                        .map_err(|err| ThreadStoreError::InvalidRequest {
+                            message: format!("failed to locate rollout {rollout_id}: {err}"),
+                        })?
+                        .ok_or_else(|| malformed_lineage(rollout_id, "missing source rollout"))?;
+                    let file = codex_rollout::open_rollout_seekable_reader_without_recovery(
+                        rollout_path.as_path(),
+                    )
+                    .await
+                    .map_err(|err| external_lineage_read_error(rollout_path.as_path(), err))?;
+                    let byte_limit = file
+                        .metadata()
+                        .map(|metadata| metadata.len())
+                        .map_err(|err| external_lineage_read_error(rollout_path.as_path(), err))?;
+                    let (meta, file) = codex_rollout::read_session_meta_line_from_seekable_prefix(
+                        rollout_path.as_path(),
+                        file,
+                        byte_limit,
+                    )
+                    .await
+                    .map_err(|err| external_lineage_read_error(rollout_path.as_path(), err))?;
+                    (rollout_id, rollout_path, meta, file, byte_limit)
+                }
+                None => {
+                    let (rollout_path, meta, file, byte_limit) = source_snapshot
+                        .take()
+                        .ok_or_else(|| ThreadStoreError::Internal {
+                            message: "copied fork source snapshot was already consumed".to_string(),
+                        })?;
+                    (requested_thread_id, rollout_path, meta, file, byte_limit)
+                }
+            };
+            if !seen.insert(codex_rollout::plain_rollout_path(rollout_path.as_path())) {
+                return Err(malformed_lineage(requested_thread_id, "cycle detected"));
+            }
+            if next_rollout_id.is_none() && meta.meta.id != requested_thread_id {
+                return Err(malformed_lineage(
+                    requested_thread_id,
+                    "source rollout belongs to another thread",
+                ));
+            }
+            if meta.meta.history_mode != ThreadHistoryMode::Paginated {
+                return Err(malformed_lineage(
+                    requested_thread_id,
+                    "source rollout is not paginated",
+                ));
+            }
+            if let Some(end) = end {
+                validate_cutoff_against_byte_limit(requested_thread_id, byte_limit, &end)?;
+            }
+            let start_ordinal = match meta.meta.history_base {
+                Some(base) => base.end_ordinal_exclusive.checked_add(1).ok_or_else(|| {
+                    malformed_lineage(requested_thread_id, "source ordinal overflow")
+                })?,
+                None => 1,
+            };
+            segments.push(OpenedRolloutLineageSegment {
+                segment: RolloutLineageSegment {
+                    rollout_id,
+                    rollout_path,
+                    start_ordinal,
+                    end,
+                },
+                file,
+                byte_limit,
+            });
+
+            let Some(base) = meta.meta.history_base else {
+                break;
+            };
+            next_rollout_id = Some(base.thread_id);
+            end = Some(base);
+        }
+
+        segments.reverse();
+        Ok(OpenedRolloutLineage { segments })
     }
 
     pub(super) async fn resolve_rollout_lineage_for_reference(
@@ -291,6 +406,35 @@ async fn validate_cutoff_bounds(
         ));
     }
     Ok(())
+}
+
+fn validate_cutoff_against_byte_limit(
+    requested_thread_id: ThreadId,
+    byte_limit: u64,
+    end: &HistoryPosition,
+) -> ThreadStoreResult<()> {
+    if end.end_ordinal_exclusive == 0 {
+        return Err(malformed_lineage(
+            requested_thread_id,
+            "cutoff cannot include source session metadata",
+        ));
+    }
+    if end.end_byte_offset > byte_limit {
+        return Err(malformed_lineage(
+            requested_thread_id,
+            "cutoff byte offset is past the source rollout",
+        ));
+    }
+    Ok(())
+}
+
+fn external_lineage_read_error(path: &Path, err: std::io::Error) -> ThreadStoreError {
+    ThreadStoreError::InvalidRequest {
+        message: format!(
+            "failed to read paginated fork source {}: {err}",
+            path.display()
+        ),
+    }
 }
 
 fn malformed_lineage(thread_id: ThreadId, detail: &str) -> ThreadStoreError {

@@ -23,7 +23,7 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through scoped replies and target-owned queued turns. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
+This checkpoint inventories the integrated owners through copied cross-home lineage, including scoped replies, target-owned queued turns, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
@@ -50,7 +50,7 @@ This checkpoint inventories the integrated owners through scoped replies and tar
 | Inspectable remote compaction handoff | Observability | Decode the provider-opaque post-compaction handoff through a locked-down helper, show a live decode phase, and persist server-reported summary token counts without changing replacement history; the user-controlled remote-compaction feature gate remains authoritative even for provider-capable models. | `codex-rs/core/src/compact_handoff_summary.rs`<br>`codex-rs/core/src/compact_remote_v2.rs`<br>`codex-rs/core/src/compact_remote_history.rs`<br>`codex-rs/core/src/tasks/compact.rs` | Agent delegation, compaction protocol/events, rollout reconstruction, app-server notifications, TUI status | `feat(compact): decode installed remote handoffs for display`, `feat(compact): expose live decoding progress and durable diagnostics`, `feat(history): persist remote compaction output token counts` |
 | Compacted-media retention and vacuuming | Efficiency | Remove obsolete inline images and structured tool-output media from compacted model history while retaining bounded, reopenable local-image provenance for one compaction window and providing guarded canonical repair and vacuum paths for existing rollouts. | `codex-rs/core/src/context/compacted_media.rs`<br>`codex-rs/core/src/session/compacted_media_repair.rs`<br>`codex-rs/rollout/src/media_vacuum.rs` | Compaction replacement history, rollout reconstruction and rollback, thread-history projections, plain and compressed rollout storage | `fix(compaction): sanitize retained media and publish canonical history repairs safely` |
 | Explicit MCP prompt invocation policy | Capability | Keep configured MCP servers live, deferred, searchable, and callable while hiding selected inventories from direct context until `/mcp use` or `thread/mcpServer/activate` explicitly contributes them. | `codex-rs/core/src/context/mcp_server_use_instructions.rs`<br>`codex-rs/core/src/mcp_tool_exposure.rs`<br>`codex-rs/app-server/src/request_processors/mcp_processor.rs` | MCP catalog/runtime, config editing, session input ordering, compaction, TUI commands, app-server protocol and SDK | `feat(mcp): separate implicit exposure from explicit prompt activation` |
-| Cross-home and path-based session forks | Capability | Fork a saved or archived rollout from another Codex home while creating the child under the active home and leaving ordinary in-home forks unchanged. | `codex-rs/cli/src/main.rs`<br>`codex-rs/app-server/src/request_processors/thread_processor.rs`<br>`codex-rs/tui/src/cli.rs` | TUI startup/resume picker, app-server `thread/fork`, rollout metadata resolution | `feat(cli): fork saved sessions from explicit local sources` |
+| Cross-home and path-based session forks | Capability | Fork saved or archived history into the active home, copying complete external paginated lineage read-only while preserving ordinary coordinated in-home forks. External UUIDs cannot borrow local runtime or goal authority; flattening cannot manufacture canonical observation evidence. | `codex-rs/cli/src/main.rs`<br>`codex-rs/app-server/src/request_processors/thread_processor.rs`<br>`codex-rs/core/src/thread_manager/external_fork.rs`<br>`codex-rs/thread-store/src/local/fork_copy.rs` | TUI source lookup, app-server `thread/fork`, opened lineage snapshots, rollback/provenance coordinates, runtime/source namespace separation | `feat(cli): fork saved sessions from explicit local sources`, `fix(fork): copy paginated lineage across Codex homes` |
 | Durable promoted skills and goal context | Capability | Keep explicitly selected skills discoverable across compaction and resume through canonical receipt publication, reconstruct only current active-goal context, anchor steering to sources authoritative for the objective, prevent ordinary forks/subagents from inheriting goal authority, and tolerate transient user-side Git breakage in configured skill directories. | `codex-rs/ext/goal/src/runtime/objective_projection.rs`<br>`codex-rs/ext/goal/templates/goals/`<br>`codex-rs/ext/skills/src/selection.rs`<br>`codex-rs/core/src/session/durable_context.rs`<br>`codex-rs/core/src/session/checkpoint_publication.rs` | Skills inventory/provider lifecycle, compaction installation, app-server goal/fork APIs, state goal storage, extension contribution ordering | `feat(context): durably publish goal authority and promoted skill inventories`, `fix(goal): preserve objective source authority through steering` |
 | Compact discovered skill paths | Efficiency | Preserve canonical skill identity internally while rendering user-facing discovery routes such as `~/.agents/skills/...` instead of resolved checkout paths and repeated home-directory prefixes. | `codex-rs/ext/skills/src/loader/host.rs`<br>`codex-rs/ext/skills/src/provider/host.rs` | Host skill discovery and model-visible inventory rendering | `fix(skills): render compact host discovery paths without changing authority` |
 | Named early skill-read activity | Observability | Attribute `SKILL.md` reads to the selected skill even when the TUI receives the tool call before asynchronous skill metadata has populated ChatWidget state. | `codex-rs/tui/src/chatwidget/skills.rs` | TUI tool-call classification and transcript rendering | `fix(tui): retain skill names in read history before discovery completes` |
@@ -341,6 +341,30 @@ filesystem proofs use the selected executor's convention, never host-native path
 Cold-resume fixtures retain real residency and request correlation, current foreign-environment
 restart support, canonical flushes, and complete provider/MCP comparisons. Source regression
 coverage is not a passed executable result; formatting and remote qualification remain pending.
+
+### Read-only cross-home lineage copies
+
+Ownership anchor: `fix(fork): copy paginated lineage across Codex homes`.
+`thread-store/src/local/fork_copy.rs` reads opened source representations at captured complete-line
+limits; inherited prefixes retain their original immutable rollout IDs and byte/ordinal cutoffs.
+Compressed sources use anonymous decoded readers and backup-only sources require existing journal
+authority. Symlink resolution selects the actual source home. Active-home SQLite rows cannot
+replace external metadata, and source files are never recovered in place or rewritten.
+
+Exact rollback uses original decoded coordinates before flattening. The destination owns its one
+session header and copied history, including copied-deferred initialization. Both leading delivery
+metadata and following observation/task snapshots retain their original evidence relationship:
+`fork_copy_provenance.rs` rejects copies that would create new proof by deleting a source boundary.
+The guard compares complete envelopes and snapshots, not IDs alone, and does not convert audit
+history into a positive writer acknowledgment or a live subscription.
+
+`core/src/thread_manager/external_fork.rs` separates persisted source identity from authority to
+look up a local runtime. External root forks keep explicit destination providers and saved history
+without inheriting a coincident local UUID's provider snapshot, runtime fallback, originator, or
+attachment membership. External goal deferral is rejected before allocating a destination;
+ordinary in-home goal inheritance and coordinated reference forks remain unchanged. The public
+fork/cold-resume fixture and source-authored namespace/provenance regressions require remote
+execution. No local test or compiler result is implied by this source integration.
 
 ## Integration boundaries and deferred work
 

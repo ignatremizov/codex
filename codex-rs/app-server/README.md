@@ -441,6 +441,12 @@ Read the selection from `threadSettings.disabledPluginIds` in
 across resume. Forks restore the selection from the history retained at the
 requested fork boundary.
 
+# Cross-home paginated forks
+
+Experimental clients may identify a local rollout with `path`. Paginated paths outside the active Codex home are copied with their inherited lineage into one standalone destination rollout, so the fork never depends on source-home files after creation. Source files are read-only; paths managed by the active store retain coordinated reference-backed fork behavior.
+
+External source UUIDs are audit identity, not authority to inherit a same-ID local runtime's instruction provider, runtime settings, or attachment membership. Explicit destination providers and settings still apply. `deferGoalContinuation` requires a source in the active home; external history does not authorize an active-home goal lookup. Copying preserves original source evidence and rejects a lineage whose flattening would manufacture an observation or task-promotion proof across removed metadata, rollback markers, or source-file boundaries. It never repairs or rewrites the source to make that copy succeed.
+
 # Deprecated thread personality setting
 
 `thread/start`, `thread/resume`, `thread/settings/update`, and `turn/start` still
