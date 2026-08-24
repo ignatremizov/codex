@@ -493,6 +493,8 @@ To branch from a stored session, call `thread/fork` with the `thread.id`. This c
 { "method": "thread/started", "params": { "thread": { … } } }
 ```
 
+Experimental clients may identify a local rollout with `path` instead. Paginated paths outside the active Codex home are copied into one standalone destination rollout, including inherited lineage, so the fork never depends on source-home files after creation. Paths managed by the active store retain coordinated, reference-backed fork behavior. An external paginated source with inherited history must be located under its Codex home's `sessions` or `archived_sessions` directory so the server can resolve its ancestors.
+
 Like `thread/resume`, full-history hydration is deprecated for paginated `thread/fork` and emits `deprecationNotice`. Clients should pass `excludeTurns: true` to return only thread metadata in `thread.turns` and page history with `thread/turns/list` and `thread/items/list`. Metadata-only forks do not replay restored `thread/tokenUsage/updated`. Ephemeral forks of paginated threads require `excludeTurns: true`.
 
 ### Listing projects
@@ -516,7 +518,6 @@ Nulls sort last in either direction; project IDs break ties in the same directio
 Cursor anchors retain millisecond precision. Continue with the same sort options;
 existing position cursors remain supported. Pagination is a live view, so concurrent
 activity can move projects across a cursor.
-
 ### Example: List threads (with pagination & filters)
 
 `thread/list` lets you render a history UI. Results default to `createdAt` (newest first) descending.

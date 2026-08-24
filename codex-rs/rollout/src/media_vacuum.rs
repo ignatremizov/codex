@@ -7,6 +7,7 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 
 use codex_protocol::models::is_local_image_close_tag_text;
 use codex_protocol::models::is_local_image_open_tag_with_path_text;
@@ -225,17 +226,34 @@ pub(crate) fn recover_compacted_media_backup_if_needed(path: &Path) -> io::Resul
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => return Err(err),
     }
+    let Some(backup_path) = find_valid_compacted_media_backup(path)? else {
+        return Ok(());
+    };
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    match restore_compacted_media_backup(backup_path.as_path(), path, parent) {
+        Ok(()) => Ok(()),
+        Err(_) if validate_rollout_for_vacuum_recovery(path).is_ok_and(std::convert::identity) => {
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+pub(crate) fn find_valid_compacted_media_backup(path: &Path) -> io::Result<Option<PathBuf>> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return Ok(());
+        return Ok(None);
     };
     let mut candidates = Vec::new();
     let entries = match fs::read_dir(parent) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
     for entry in entries {
@@ -254,19 +272,10 @@ pub(crate) fn recover_compacted_media_backup_if_needed(path: &Path) -> io::Resul
         if validate_rollout_for_vacuum_recovery(backup_path.as_path())
             .is_ok_and(std::convert::identity)
         {
-            match restore_compacted_media_backup(backup_path.as_path(), path, parent) {
-                Ok(()) => return Ok(()),
-                Err(_)
-                    if validate_rollout_for_vacuum_recovery(path)
-                        .is_ok_and(std::convert::identity) =>
-                {
-                    return Ok(());
-                }
-                Err(err) => return Err(err),
-            }
+            return Ok(Some(backup_path));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn validate_rollout_for_vacuum_recovery(path: &Path) -> io::Result<bool> {

@@ -180,7 +180,7 @@ async fn read_session_meta_line_preserves_pre_header_and_error_semantics() -> an
 }
 
 #[tokio::test]
-async fn seekable_reader_spools_compressed_rollout_without_changing_representation()
+async fn seekable_reader_spools_compressed_rollout_without_source_directory_writes()
 -> anyhow::Result<()> {
     let home = TempDir::new()?;
     let uuid = Uuid::from_u128(12);
@@ -191,7 +191,30 @@ async fn seekable_reader_spools_compressed_rollout_without_changing_representati
     compress_now(&rollout_path)?;
     let compressed_path = compressed_rollout_path(&rollout_path);
 
-    let mut reader = open_rollout_seekable_reader(&rollout_path).await?;
+    #[cfg(unix)]
+    let (rollout_dir, original_mode) = {
+        let rollout_dir = rollout_path
+            .parent()
+            .expect("rollout directory")
+            .to_path_buf();
+        let mut permissions = fs::metadata(rollout_dir.as_path())?.permissions();
+        let original_mode = permissions.mode();
+        permissions.set_mode(original_mode & !0o222);
+        fs::set_permissions(rollout_dir.as_path(), permissions)?;
+        (rollout_dir, original_mode)
+    };
+
+    let reader = crate::open_rollout_seekable_reader(&rollout_path);
+
+    #[cfg(unix)]
+    {
+        fs::set_permissions(
+            rollout_dir.as_path(),
+            fs::Permissions::from_mode(original_mode),
+        )?;
+    }
+
+    let mut reader = reader?;
     let mut actual = Vec::new();
     reader.read_to_end(&mut actual)?;
 
@@ -199,6 +222,44 @@ async fn seekable_reader_spools_compressed_rollout_without_changing_representati
     assert!(!rollout_path.exists());
     assert!(compressed_path.exists());
     Ok(())
+}
+
+#[tokio::test]
+async fn recovery_disabled_readers_leave_media_vacuum_backup_untouched() {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let backup_path = rollout_path.with_file_name(format!(
+        ".rollout.jsonl.pre-media-vacuum-{}.bak",
+        Uuid::now_v7()
+    ));
+    let backup_record = serde_json::json!({
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "type": "compacted",
+        "payload": {
+            "message": "legacy",
+            "replacement_history": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,old"
+                }]
+            }]
+        }
+    });
+    fs::write(backup_path.as_path(), format!("{backup_record}\n")).expect("write recovery backup");
+
+    let metadata_err = crate::read_session_meta_line_without_recovery(rollout_path.as_path())
+        .await
+        .expect_err("metadata reader should not restore backup");
+    let seekable_err = open_rollout_seekable_reader_without_recovery(rollout_path.as_path())
+        .await
+        .expect_err("seekable reader should not restore backup");
+
+    assert_eq!(metadata_err.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(seekable_err.kind(), std::io::ErrorKind::NotFound);
+    assert!(!rollout_path.exists());
+    assert!(backup_path.exists());
 }
 
 #[test]
@@ -692,38 +753,8 @@ async fn find_thread_path_by_id_handles_compressed_rollout_filenames() -> anyhow
 async fn find_thread_path_by_id_recovers_media_vacuum_backup() -> anyhow::Result<()> {
     let home = TempDir::new()?;
     let uuid = Uuid::from_u128(18);
-    let thread_id = ThreadId::from_string(&uuid.to_string())?;
-    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
-    write_rollout(&rollout_path, thread_id, "media vacuum recovery lookup")?;
-    append_rollout_item_to_path(
-        &rollout_path,
-        &RolloutItem::Compacted(crate::CompactedItem {
-            message: "checkpointless media vacuum source".to_string(),
-            replacement_history: Some(vec![crate::ResponseItemEnvelope::new(
-                codex_protocol::models::ResponseItem::Message {
-                    id: None,
-                    role: "user".to_string(),
-                    content: vec![codex_protocol::models::ContentItem::InputImage {
-                        image_url: "data:image/png;base64,recoverable".to_string(),
-                        detail: None,
-                    }],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                },
-            )]),
-            ..Default::default()
-        }),
-    )
-    .await?;
-    let file_name = rollout_path
-        .file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .expect("rollout path should have a UTF-8 file name");
-    let backup_path = rollout_path.with_file_name(format!(
-        ".{file_name}.pre-media-vacuum-{}.bak",
-        Uuid::from_u128(19)
-    ));
-    fs::rename(&rollout_path, &backup_path)?;
+    let (rollout_path, backup_path) =
+        replace_rollout_with_media_vacuum_backup(home.path(), uuid, Uuid::from_u128(19)).await?;
 
     assert_eq!(
         crate::find_thread_path_by_id_str(
@@ -736,6 +767,24 @@ async fn find_thread_path_by_id_recovers_media_vacuum_backup() -> anyhow::Result
     );
     assert!(rollout_path.exists());
     assert!(!backup_path.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn find_thread_path_by_id_without_recovery_preserves_media_vacuum_backup()
+-> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(20);
+    let (rollout_path, backup_path) =
+        replace_rollout_with_media_vacuum_backup(home.path(), uuid, Uuid::from_u128(21)).await?;
+    let backup_contents = fs::read(&backup_path)?;
+
+    assert_eq!(
+        crate::find_thread_path_by_id_str_without_recovery(home.path(), &uuid.to_string()).await?,
+        Some(backup_path.clone())
+    );
+    assert!(!rollout_path.exists());
+    assert_eq!(fs::read(&backup_path)?, backup_contents);
     Ok(())
 }
 
@@ -769,6 +818,44 @@ fn rollout_path(home: &std::path::Path, ts: &str, uuid: Uuid) -> std::path::Path
 fn archived_rollout_path(home: &std::path::Path, ts: &str, uuid: Uuid) -> std::path::PathBuf {
     home.join("archived_sessions")
         .join(format!("rollout-{ts}-{uuid}.jsonl"))
+}
+
+async fn replace_rollout_with_media_vacuum_backup(
+    home: &std::path::Path,
+    uuid: Uuid,
+    backup_uuid: Uuid,
+) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let rollout_path = rollout_path(home, "2025-01-03T12-00-00", uuid);
+    write_rollout(&rollout_path, thread_id, "media vacuum recovery lookup")?;
+    append_rollout_item_to_path(
+        &rollout_path,
+        &RolloutItem::Compacted(crate::CompactedItem {
+            message: "checkpointless media vacuum source".to_string(),
+            replacement_history: Some(vec![crate::ResponseItemEnvelope::new(
+                codex_protocol::models::ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![codex_protocol::models::ContentItem::InputImage {
+                        image_url: "data:image/png;base64,recoverable".to_string(),
+                        detail: None,
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            )]),
+            ..Default::default()
+        }),
+    )
+    .await?;
+    let file_name = rollout_path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .expect("rollout path should have a UTF-8 file name");
+    let backup_path =
+        rollout_path.with_file_name(format!(".{file_name}.pre-media-vacuum-{backup_uuid}.bak"));
+    fs::rename(&rollout_path, &backup_path)?;
+    Ok((rollout_path, backup_path))
 }
 
 fn write_rollout(path: &std::path::Path, thread_id: ThreadId, message: &str) -> anyhow::Result<()> {

@@ -3,6 +3,7 @@ use std::fs::File;
 use std::fs::FileTimes;
 use std::fs::Permissions;
 use std::io;
+use std::io::BufRead;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
@@ -46,6 +47,25 @@ pub(crate) async fn file_modified_time(path: &Path) -> io::Result<Option<time::O
 /// If the requested path disappears during a representation transition, this briefly retries
 /// resolution so callers do not need to know which representation is on disk.
 pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineReader> {
+    open_rollout_line_reader_with_recovery(path, RolloutRecovery::Enabled).await
+}
+
+pub(crate) async fn open_rollout_line_reader_without_recovery(
+    path: &Path,
+) -> io::Result<RolloutLineReader> {
+    open_rollout_line_reader_with_recovery(path, RolloutRecovery::Disabled).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RolloutRecovery {
+    Enabled,
+    Disabled,
+}
+
+async fn open_rollout_line_reader_with_recovery(
+    path: &Path,
+    recovery: RolloutRecovery,
+) -> io::Result<RolloutLineReader> {
     for _ in 0..MAX_NOT_FOUND_RETRIES {
         match reader::open_once(path).await {
             Ok(reader) => return Ok(reader),
@@ -54,6 +74,9 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
             }
             Err(err) => return Err(err),
         }
+    }
+    if recovery == RolloutRecovery::Disabled {
+        return reader::open_once(path).await;
     }
     let recovery_path = plain_rollout_path(path);
     tokio::task::spawn_blocking(move || {
@@ -64,12 +87,17 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
     reader::open_once(path).await
 }
 
-/// Opens a seekable read-only representation of a rollout.
+/// Opens a seekable rollout representation without restoring missing recovery backups.
 ///
-/// Plain rollouts are opened directly. Compressed rollouts are streamed into an unnamed
-/// same-directory temporary file so reverse readers stay bounded without changing the canonical
-/// parent rollout representation.
-pub async fn open_rollout_seekable_reader(path: &Path) -> io::Result<File> {
+/// This is for callers that must treat the source directory as immutable.
+pub async fn open_rollout_seekable_reader_without_recovery(path: &Path) -> io::Result<File> {
+    open_rollout_seekable_reader_with_recovery(path, RolloutRecovery::Disabled).await
+}
+
+async fn open_rollout_seekable_reader_with_recovery(
+    path: &Path,
+    recovery: RolloutRecovery,
+) -> io::Result<File> {
     for _ in 0..MAX_NOT_FOUND_RETRIES {
         let Some(existing_path) = path::existing_rollout_path(path).await else {
             tokio::time::sleep(OPEN_ROLLOUT_LINE_READER_RETRY_DELAY).await;
@@ -87,6 +115,19 @@ pub async fn open_rollout_seekable_reader(path: &Path) -> io::Result<File> {
             }
             Err(err) => return Err(err),
         }
+    }
+    if recovery == RolloutRecovery::Disabled {
+        let existing_path = path::existing_rollout_path(path).await.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("rollout does not exist: {}", path.display()),
+            )
+        })?;
+        return tokio::task::spawn_blocking(move || {
+            open_seekable_rollout_path(existing_path.as_path())
+        })
+        .await
+        .map_err(io::Error::other)?;
     }
     let recovery_path = plain_rollout_path(path);
     tokio::task::spawn_blocking({
@@ -114,13 +155,9 @@ fn open_seekable_rollout_path(path: &Path) -> io::Result<File> {
     if !path::is_compressed_rollout_path(path) {
         return File::open(path);
     }
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
     let input = File::open(path)?;
     let mut decoder = zstd::stream::read::Decoder::new(input)?;
-    let mut output = tempfile::tempfile_in(parent)?;
+    let mut output = tempfile::tempfile()?;
     io::copy(&mut decoder, &mut output)?;
     output.seek(SeekFrom::Start(0))?;
     Ok(output)
@@ -290,6 +327,13 @@ enum RolloutLineReaderInner {
 }
 
 impl RolloutLineReader {
+    pub(crate) fn from_seekable_prefix(file: File, byte_limit: u64) -> Self {
+        let reader: Box<dyn Read + Send> = Box::new(file.take(byte_limit));
+        Self {
+            inner: RolloutLineReaderInner::Blocking(Some(std::io::BufReader::new(reader).lines())),
+        }
+    }
+
     /// Reads the next JSONL record from the rollout.
     pub async fn next_line(&mut self) -> io::Result<Option<String>> {
         match &mut self.inner {

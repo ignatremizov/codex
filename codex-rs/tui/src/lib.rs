@@ -64,8 +64,8 @@ use codex_protocol::config_types::SandboxMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_rollout::StateDbHandle;
-use codex_rollout::find_archived_thread_path_by_id_str;
-use codex_rollout::find_thread_path_by_id_str;
+use codex_rollout::find_archived_thread_path_by_id_str_without_recovery;
+use codex_rollout::find_thread_path_by_id_str_without_recovery;
 use codex_rollout::state_db;
 use codex_state::log_db;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -811,21 +811,16 @@ async fn lookup_fork_target_in_source_home(
         ));
     }
 
-    let path =
-        match find_thread_path_by_id_str(source_home.as_path(), id_str, /*state_db_ctx*/ None)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to search fork source home {}",
-                    source_home.display()
-                )
-            })? {
-            Some(path) => Some(path),
-            None => find_archived_thread_path_by_id_str(
-                source_home.as_path(),
-                id_str,
-                /*state_db_ctx*/ None,
+    let path = match find_thread_path_by_id_str_without_recovery(source_home.as_path(), id_str)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "failed to search fork source home {}",
+                source_home.display()
             )
+        })? {
+        Some(path) => Some(path),
+        None => find_archived_thread_path_by_id_str_without_recovery(source_home.as_path(), id_str)
             .await
             .wrap_err_with(|| {
                 format!(
@@ -833,7 +828,7 @@ async fn lookup_fork_target_in_source_home(
                     source_home.display()
                 )
             })?,
-        };
+    };
 
     match path {
         Some(path) => fork_target_from_rollout_path(path.as_path(), Some(id_str)).await,

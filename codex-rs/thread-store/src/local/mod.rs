@@ -2,6 +2,7 @@ mod archive_thread;
 mod completion_artifacts;
 mod create_thread;
 mod delete_thread;
+mod fork_copy;
 mod helpers;
 mod list_threads;
 mod live_writer;
@@ -12,10 +13,8 @@ mod pending_thread_metadata;
 mod projects;
 mod read_thread;
 mod revert_thread;
-mod rollout_migration;
-// This lands before the reader PRs that consume the shared lineage resolver.
-#[allow(dead_code)]
 mod rollout_lineage;
+mod rollout_migration;
 mod search_threads;
 mod thread_history;
 mod thread_history_materialization;
@@ -65,6 +64,7 @@ use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTimelineParams;
 use crate::ListTurnsParams;
+use crate::LoadForkSourceByRolloutPathParams;
 use crate::LoadSubAgentCompletionContextItemParams;
 use crate::LoadSubAgentCompletionPresentationParams;
 use crate::LoadThreadHistoryParams;
@@ -81,6 +81,7 @@ use crate::ResumeThreadParams;
 use crate::RevertThreadParams;
 use crate::SearchThreadOccurrencesParams;
 use crate::SearchThreadsParams;
+use crate::StoredForkSource;
 use crate::StoredModelContext;
 use crate::StoredProject;
 use crate::StoredProjectsPage;
@@ -97,8 +98,8 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
-use crate::TimelinePage;
 use crate::ThreadWriterReservation;
+use crate::TimelinePage;
 use crate::TurnPage;
 use crate::UpdateProjectParams;
 use crate::UpdateThreadMetadataParams;
@@ -564,6 +565,13 @@ impl ThreadStore for LocalThreadStore {
 
     fn prepare_fork(&self, params: PrepareForkParams) -> ThreadStoreFuture<'_, PreparedFork> {
         Box::pin(async move { paginated_fork::prepare(self, params).await })
+    }
+
+    fn load_fork_source_by_rollout_path(
+        &self,
+        params: LoadForkSourceByRolloutPathParams,
+    ) -> ThreadStoreFuture<'_, StoredForkSource> {
+        Box::pin(async move { fork_copy::load(self, params).await })
     }
 
     fn revert_thread(&self, params: RevertThreadParams) -> ThreadStoreFuture<'_, ()> {

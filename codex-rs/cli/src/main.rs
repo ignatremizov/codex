@@ -423,7 +423,8 @@ struct ForkCommand {
 
     /// Read-only Codex home to search when resolving SESSION_ID.
     ///
-    /// The fork is still created in the active CODEX_HOME.
+    /// The fork is still created in the active CODEX_HOME. Paginated lineage outside that home is
+    /// copied into the fork so the new session remains independent of the source home.
     #[arg(
         long = "source-home",
         value_name = "CODEX_HOME",
@@ -435,7 +436,9 @@ struct ForkCommand {
 
     /// Explicit rollout JSONL path to fork from.
     ///
-    /// The fork is still created in the active CODEX_HOME.
+    /// The fork is still created in the active CODEX_HOME. An external paginated rollout with
+    /// inherited history must live under its source home's `sessions` or `archived_sessions`
+    /// directory.
     #[arg(
         long = "from-rollout",
         value_name = "ROLLOUT",

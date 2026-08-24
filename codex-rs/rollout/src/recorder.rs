@@ -1061,11 +1061,29 @@ impl RolloutRecorder {
     pub async fn load_rollout_items(
         path: &Path,
     ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
+        let reader = compression::open_rollout_line_reader(path).await?;
+        Self::load_rollout_items_from_reader(path, reader).await
+    }
+
+    /// Loads rollout items from one fixed seekable prefix.
+    pub async fn load_rollout_items_from_seekable_prefix(
+        path: &Path,
+        mut file: File,
+        byte_limit: u64,
+    ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
+        file.seek(SeekFrom::Start(0))?;
+        let reader = compression::RolloutLineReader::from_seekable_prefix(file, byte_limit);
+        Self::load_rollout_items_from_reader(path, reader).await
+    }
+
+    async fn load_rollout_items_from_reader(
+        path: &Path,
+        mut reader: compression::RolloutLineReader,
+    ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
         trace!("Resuming rollout from {path:?}");
         let mut items: Vec<RolloutItem> = Vec::new();
         let mut thread_id: Option<ThreadId> = None;
         let mut parse_errors = 0usize;
-        let mut reader = compression::open_rollout_line_reader(path).await?;
         let mut saw_non_empty_line = false;
         while let Some(line) = reader.next_line().await? {
             if line.trim().is_empty() {

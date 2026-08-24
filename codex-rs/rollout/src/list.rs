@@ -2,8 +2,12 @@
 
 use codex_utils_path as path_utils;
 use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::fs::File;
 use std::io;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::num::NonZero;
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -1293,7 +1297,35 @@ fn event_msg_preview(event: &EventMsg) -> Option<String> {
 /// Read the SessionMetaLine from the head of a rollout file for reuse by
 /// callers that need the session metadata (e.g. to derive a cwd for config).
 pub async fn read_session_meta_line(path: &Path) -> io::Result<SessionMetaLine> {
-    let mut lines = compression::open_rollout_line_reader(path).await?;
+    let lines = compression::open_rollout_line_reader(path).await?;
+    read_session_meta_line_from_reader(path, lines).await
+}
+
+/// Reads the first session metadata record without restoring a missing rollout backup.
+pub async fn read_session_meta_line_without_recovery(path: &Path) -> io::Result<SessionMetaLine> {
+    let lines = compression::open_rollout_line_reader_without_recovery(path).await?;
+    read_session_meta_line_from_reader(path, lines).await
+}
+
+/// Reads session metadata from a fixed seekable prefix and returns the rewound file.
+pub async fn read_session_meta_line_from_seekable_prefix(
+    path: &Path,
+    mut file: File,
+    byte_limit: u64,
+) -> io::Result<(SessionMetaLine, File)> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut reader_file = file.try_clone()?;
+    reader_file.seek(SeekFrom::Start(0))?;
+    let lines = compression::RolloutLineReader::from_seekable_prefix(reader_file, byte_limit);
+    let session_meta = read_session_meta_line_from_reader(path, lines).await?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok((session_meta, file))
+}
+
+async fn read_session_meta_line_from_reader(
+    path: &Path,
+    mut lines: compression::RolloutLineReader,
+) -> io::Result<SessionMetaLine> {
     while let Some(line) = lines.next_line().await? {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1350,6 +1382,7 @@ async fn find_thread_path_by_id_str_in_subdir(
     subdir: &str,
     id_str: &str,
     state_db_ctx: Option<&codex_state::StateRuntime>,
+    backup_handling: MissingRolloutBackupHandling,
 ) -> io::Result<Option<PathBuf>> {
     // Validate UUID format early.
     if Uuid::parse_str(id_str).is_err() {
@@ -1437,6 +1470,7 @@ async fn find_thread_path_by_id_str_in_subdir(
     let (filename_match, filename_scan_error) = match find_thread_path_by_id_from_filenames(
         root.as_path(),
         id_str,
+        backup_handling,
     )
     .await
     {
@@ -1512,12 +1546,13 @@ async fn find_thread_path_by_id_str_in_subdir(
 async fn find_thread_path_by_id_from_filenames(
     root: &Path,
     id_str: &str,
+    backup_handling: MissingRolloutBackupHandling,
 ) -> io::Result<Option<PathBuf>> {
     let Ok(target) = ThreadId::from_string(id_str) else {
         return Ok(None);
     };
     let mut newest = None;
-    visit_rollout_filenames::<()>(root, |file_name, path| {
+    visit_rollout_filenames::<()>(root, backup_handling, |file_name, path| {
         if file_name.thread_id() != target {
             return ControlFlow::Continue(());
         }
@@ -1526,8 +1561,8 @@ async fn find_thread_path_by_id_from_filenames(
             return ControlFlow::Continue(());
         };
         // Rollout filenames only encode timestamps to second precision, so use the UUIDv7
-        // rollout ID as a deterministic tie-breaker when multiple files are created in the same
-        // second.
+        // rollout ID as a deterministic tie-breaker when multiple files are created in the
+        // same second.
         let candidate = (file_name.timestamp(), rollout_id, path);
         if newest.as_ref().is_none_or(|(timestamp, id, _)| {
             candidate.0 > *timestamp || (candidate.0 == *timestamp && candidate.1 > *id)
@@ -1542,9 +1577,11 @@ async fn find_thread_path_by_id_from_filenames(
 
 async fn visit_rollout_filenames<T>(
     root: &Path,
+    backup_handling: MissingRolloutBackupHandling,
     mut visitor: impl FnMut(RolloutFileName, PathBuf) -> ControlFlow<T>,
 ) -> io::Result<Option<T>> {
     let mut stack = vec![root.to_path_buf()];
+    let mut read_only_backups_seen = HashSet::new();
     while let Some(dir) = stack.pop() {
         let mut read_dir = match tokio::fs::read_dir(dir.as_path()).await {
             Ok(read_dir) => read_dir,
@@ -1563,14 +1600,15 @@ async fn visit_rollout_filenames<T>(
             }
             let entry_file_name = entry.file_name();
             // A committed vacuum can leave its validated backup as the only representation if
-            // replacement is interrupted. Recover it during filename discovery so lifecycle
-            // operations can still find, archive, or hard-delete the thread.
+            // replacement is interrupted. Normal lifecycle discovery restores it; read-only
+            // discovery returns the validated backup path without mutating the source.
             if let Some(backup_rollout_file_name) = entry_file_name
                 .to_str()
                 .and_then(crate::media_vacuum::compacted_media_backup_rollout_file_name)
                 && let Some(plain_rollout_file_name) =
                     compression::parse_rollout_file_name(backup_rollout_file_name)
             {
+                let backup_rollout_file_name = backup_rollout_file_name.to_string();
                 let canonical_path = path.with_file_name(plain_rollout_file_name);
                 if compression::existing_rollout_path(canonical_path.as_path())
                     .await
@@ -1578,20 +1616,50 @@ async fn visit_rollout_filenames<T>(
                 {
                     continue;
                 }
-                let recovery_path = canonical_path.clone();
-                tokio::task::spawn_blocking(move || {
-                    crate::media_vacuum::recover_compacted_media_backup_if_needed(
-                        recovery_path.as_path(),
-                    )
-                })
-                .await
-                .map_err(io::Error::other)??;
-                if let Some(recovered_path) =
-                    compression::existing_rollout_path(canonical_path.as_path()).await
+                if matches!(backup_handling, MissingRolloutBackupHandling::ReadOnly)
+                    && !read_only_backups_seen.insert(canonical_path.clone())
                 {
-                    path = recovered_path;
-                } else {
                     continue;
+                }
+                match backup_handling {
+                    MissingRolloutBackupHandling::Recover => {
+                        let recovery_path = canonical_path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            crate::media_vacuum::recover_compacted_media_backup_if_needed(
+                                recovery_path.as_path(),
+                            )
+                        })
+                        .await
+                        .map_err(io::Error::other)??;
+                        if let Some(recovered_path) =
+                            compression::existing_rollout_path(canonical_path.as_path()).await
+                        {
+                            path = recovered_path;
+                        } else {
+                            continue;
+                        }
+                    }
+                    MissingRolloutBackupHandling::ReadOnly => {
+                        let lookup_path = canonical_path.clone();
+                        let backup_path = tokio::task::spawn_blocking(move || {
+                            crate::media_vacuum::find_valid_compacted_media_backup(
+                                lookup_path.as_path(),
+                            )
+                        })
+                        .await
+                        .map_err(io::Error::other)??;
+                        let Some(backup_path) = backup_path else {
+                            continue;
+                        };
+                        let Some(file_name) = RolloutFileName::parse(&backup_rollout_file_name)
+                        else {
+                            continue;
+                        };
+                        if let ControlFlow::Break(found) = visitor(file_name, backup_path) {
+                            return Ok(Some(found));
+                        }
+                        continue;
+                    }
                 }
             }
             let Some(rollout_file) = compression::RolloutFile::from_path(path) else {
@@ -1608,11 +1676,18 @@ async fn visit_rollout_filenames<T>(
     Ok(None)
 }
 
+#[derive(Clone, Copy)]
+enum MissingRolloutBackupHandling {
+    Recover,
+    ReadOnly,
+}
+
 async fn find_rollout_path_by_rollout_id_from_filenames(
     root: &Path,
     rollout_id: RolloutId,
+    backup_handling: MissingRolloutBackupHandling,
 ) -> io::Result<Option<PathBuf>> {
-    visit_rollout_filenames(root, |file_name, path| {
+    visit_rollout_filenames(root, backup_handling, |file_name, path| {
         if file_name.rollout_id() == rollout_id {
             ControlFlow::Break(path)
         } else {
@@ -1636,7 +1711,29 @@ pub async fn find_thread_path_by_id_str(
     id_str: &str,
     state_db_ctx: Option<&codex_state::StateRuntime>,
 ) -> io::Result<Option<PathBuf>> {
-    find_thread_path_by_id_str_in_subdir(codex_home, SESSIONS_SUBDIR, id_str, state_db_ctx).await
+    find_thread_path_by_id_str_in_subdir(
+        codex_home,
+        SESSIONS_SUBDIR,
+        id_str,
+        state_db_ctx,
+        MissingRolloutBackupHandling::Recover,
+    )
+    .await
+}
+
+/// Locates the newest rollout owned by a thread ID without restoring missing recovery backups.
+pub async fn find_thread_path_by_id_str_without_recovery(
+    codex_home: &Path,
+    id_str: &str,
+) -> io::Result<Option<PathBuf>> {
+    find_thread_path_by_id_str_in_subdir(
+        codex_home,
+        SESSIONS_SUBDIR,
+        id_str,
+        /*state_db_ctx*/ None,
+        MissingRolloutBackupHandling::ReadOnly,
+    )
+    .await
 }
 
 /// Locate the newest archived rollout file owned by a thread ID.
@@ -1645,8 +1742,29 @@ pub async fn find_archived_thread_path_by_id_str(
     id_str: &str,
     state_db_ctx: Option<&codex_state::StateRuntime>,
 ) -> io::Result<Option<PathBuf>> {
-    find_thread_path_by_id_str_in_subdir(codex_home, ARCHIVED_SESSIONS_SUBDIR, id_str, state_db_ctx)
-        .await
+    find_thread_path_by_id_str_in_subdir(
+        codex_home,
+        ARCHIVED_SESSIONS_SUBDIR,
+        id_str,
+        state_db_ctx,
+        MissingRolloutBackupHandling::Recover,
+    )
+    .await
+}
+
+/// Locates the newest archived rollout owned by a thread ID without restoring recovery backups.
+pub async fn find_archived_thread_path_by_id_str_without_recovery(
+    codex_home: &Path,
+    id_str: &str,
+) -> io::Result<Option<PathBuf>> {
+    find_thread_path_by_id_str_in_subdir(
+        codex_home,
+        ARCHIVED_SESSIONS_SUBDIR,
+        id_str,
+        /*state_db_ctx*/ None,
+        MissingRolloutBackupHandling::ReadOnly,
+    )
+    .await
 }
 
 /// Locate one immutable rollout file by its rollout ID across unarchived and archived storage.
@@ -1657,10 +1775,37 @@ pub async fn find_rollout_path_by_rollout_id(
     codex_home: &Path,
     rollout_id: RolloutId,
 ) -> io::Result<Option<PathBuf>> {
+    find_rollout_path_by_rollout_id_with_backup_handling(
+        codex_home,
+        rollout_id,
+        MissingRolloutBackupHandling::Recover,
+    )
+    .await
+}
+
+/// Locates one immutable rollout by rollout ID without restoring missing recovery backups.
+pub async fn find_rollout_path_by_rollout_id_without_recovery(
+    codex_home: &Path,
+    rollout_id: RolloutId,
+) -> io::Result<Option<PathBuf>> {
+    find_rollout_path_by_rollout_id_with_backup_handling(
+        codex_home,
+        rollout_id,
+        MissingRolloutBackupHandling::ReadOnly,
+    )
+    .await
+}
+
+async fn find_rollout_path_by_rollout_id_with_backup_handling(
+    codex_home: &Path,
+    rollout_id: RolloutId,
+    backup_handling: MissingRolloutBackupHandling,
+) -> io::Result<Option<PathBuf>> {
     for subdir in [SESSIONS_SUBDIR, ARCHIVED_SESSIONS_SUBDIR] {
         let path = find_rollout_path_by_rollout_id_from_filenames(
             codex_home.join(subdir).as_path(),
             rollout_id,
+            backup_handling,
         )
         .await?;
         if path.is_some() {
