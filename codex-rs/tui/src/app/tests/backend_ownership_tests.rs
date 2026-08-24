@@ -32,6 +32,7 @@ async fn foreign_backend_selection_cannot_resume_same_id_or_unarchive() -> Resul
         backend_id: origin.backend_id(),
         thread_id,
         path: None,
+        source_rollout_path: None,
         cwd: Some(test_path_buf("/wrong-backend")),
         history_mode: Some(ThreadHistoryMode::Legacy),
     };
@@ -120,6 +121,7 @@ async fn startup_fallback_requires_no_established_backend() -> Result<()> {
         backend_id: BackendId::new(),
         thread_id: ThreadId::new(),
         path: None,
+        source_rollout_path: None,
         cwd: None,
         history_mode: None,
     };
@@ -237,6 +239,7 @@ async fn startup_rejects_foreign_resume_and_fork_before_requests() -> Result<()>
         backend_id: BackendId::new(),
         thread_id: ThreadId::new(),
         path: None,
+        source_rollout_path: None,
         cwd: None,
         history_mode: None,
     };

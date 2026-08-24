@@ -2,7 +2,6 @@
 //! Consumers may stop early; canceled reads do not contribute an EOF, failure, or duration.
 
 use std::io;
-use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -13,7 +12,6 @@ use std::time::Instant;
 use super::BlockingLineReader;
 use super::ReadFailureSource;
 use super::ReadMetrics;
-use super::RolloutLineReaderInner;
 use super::open_rollout_line_reader;
 
 /// Opens a fresh reader and processes its lines on the shared blocking worker.
@@ -22,19 +20,7 @@ where
     T: Send + 'static,
     F: FnOnce(&mut dyn Iterator<Item = io::Result<String>>) -> io::Result<T> + Send + 'static,
 {
-    let reader = open_rollout_line_reader(path).await?;
-    let lines: BlockingLineReader = match reader.inner {
-        RolloutLineReaderInner::Plain(lines) => {
-            // The fresh reader has no buffered data to preserve when converting the file.
-            let file = lines.into_inner().into_inner().into_std().await;
-            io::BufReader::new(Box::new(file) as Box<dyn io::Read + Send>).lines()
-        }
-        RolloutLineReaderInner::Blocking(Some(lines)) => lines,
-        RolloutLineReaderInner::Blocking(None) => {
-            return Err(io::Error::other("compressed rollout reader is busy"));
-        }
-    };
-    scan_lines(lines, reader.metrics, read).await
+    open_rollout_line_reader(path).await?.read_lines(read).await
 }
 
 /// Runs a consumer over measured lines, retaining metrics if the caller drops the future.
