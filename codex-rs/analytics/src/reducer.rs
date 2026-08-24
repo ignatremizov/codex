@@ -2068,6 +2068,12 @@ impl AnalyticsReducer {
                 }));
             }
             ServerNotification::ItemStarted(notification) => {
+                if is_detached_user_shell_activity(
+                    &notification.turn_id,
+                    &notification.item.payload,
+                ) {
+                    return;
+                }
                 let Some(item_id) = tracked_tool_item_id(&notification.item.payload) else {
                     return;
                 };
@@ -2161,6 +2167,12 @@ impl AnalyticsReducer {
                 ));
             }
             ServerNotification::ItemCompleted(notification) => {
+                if is_detached_user_shell_activity(
+                    &notification.turn_id,
+                    &notification.item.payload,
+                ) {
+                    return;
+                }
                 if matches!(
                     notification.item.payload,
                     ThreadItemPayload::SubAgentActivity { .. }
@@ -2970,6 +2982,14 @@ fn cua_mcp_tool_identity(
         plugin_id.as_deref(),
         connector_id,
     ))
+}
+
+fn is_detached_user_shell_activity(turn_id: &str, item: &ThreadItemPayload) -> bool {
+    matches!(
+        item,
+        ThreadItemPayload::CommandExecution { id, source, .. }
+            if id == turn_id && *source == CommandExecutionSource::UserShell
+    )
 }
 
 fn tool_event_base_mut(event: &mut TrackEventRequest) -> Option<&mut CodexToolItemEventBase> {

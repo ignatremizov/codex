@@ -1,5 +1,6 @@
 ---
 source: tui/src/history_cell/tests.rs
+assertion_line: 1020
 expression: rendered
 ---
 /ps
@@ -10,3 +11,4 @@ Background terminals
     ﾊﾟｶﾞﾊﾟ
     ↳ output ｶﾞﾊﾟｶﾞﾊﾟｶﾞ
       ﾊﾟｶﾞﾊﾟｶﾞﾊﾟ
+    id 1000
