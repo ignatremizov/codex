@@ -1,5 +1,6 @@
 ---
-source: tui/src/history_cell.rs
+source: tui/src/history_cell/tests.rs
+assertion_line: 1081
 expression: rendered
 ---
 /ps
@@ -10,3 +11,4 @@ Background terminals
     ↳ alpha beta gamma delta
       epsilon zeta eta theta
       iota kappa lambda omega
+    id 1000

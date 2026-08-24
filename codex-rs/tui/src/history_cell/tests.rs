@@ -909,18 +909,22 @@ async fn session_info_hides_tooltips_when_disabled() {
 fn ps_output_multiline_snapshot() {
     let cell = new_unified_exec_processes_output(vec![
         UnifiedExecProcessDetails {
+            process_id: "1000".to_string(),
             command_display: "echo hello\nand then some extra text".to_string(),
             recent_chunks: process_output("hello\ndone"),
         },
         UnifiedExecProcessDetails {
+            process_id: "1001".to_string(),
             command_display: "(\n  sleep 120\n)".to_string(),
             recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
         },
         UnifiedExecProcessDetails {
+            process_id: "1002".to_string(),
             command_display: "sleep 1\r\nsleep 120".to_string(),
             recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
         },
         UnifiedExecProcessDetails {
+            process_id: "1003".to_string(),
             command_display: "rg \"foo\" src".to_string(),
             recent_chunks: process_output("src/main.rs:12:foo"),
         },
@@ -932,6 +936,7 @@ fn ps_output_multiline_snapshot() {
 #[test]
 fn ps_output_multiline_long_command_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: format!("(\n  {}\n)", "x".repeat(100)),
         recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
     }]);
@@ -985,6 +990,7 @@ fn cyber_policy_error_event_narrow_snapshot() {
 #[test]
 fn ps_output_long_command_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: String::from(
             "rg \"foo\" src --glob '**/*.rs' --max-count 1000 --no-ignore --hidden --follow --glob '!target/**'",
         ),
@@ -997,6 +1003,7 @@ fn ps_output_long_command_snapshot() {
 #[test]
 fn ps_output_halfwidth_sound_marks_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: "echo ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string(),
         recent_chunks: process_output("output ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ"),
     }]);
@@ -1014,6 +1021,7 @@ fn ps_output_preserves_full_multiline_command_snapshot() {
         .collect::<Vec<_>>()
         .join("\n");
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display,
         recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
     }]);
@@ -1026,6 +1034,7 @@ fn ps_output_many_sessions_snapshot() {
     let cell = new_unified_exec_processes_output(
         (0..20)
             .map(|idx| UnifiedExecProcessDetails {
+                process_id: (1000 + idx).to_string(),
                 command_display: format!("command {idx}"),
                 recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
             })
@@ -1038,6 +1047,7 @@ fn ps_output_many_sessions_snapshot() {
 #[test]
 fn ps_output_chunk_leading_whitespace_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: "just fix".to_string(),
         recent_chunks: process_output("  indented first\n    more indented"),
     }]);
@@ -1048,6 +1058,7 @@ fn ps_output_chunk_leading_whitespace_snapshot() {
 #[test]
 fn ps_output_wraps_recent_chunks_without_inline_truncation_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: "tail -f app.log".to_string(),
         recent_chunks: process_output(
             "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega",
@@ -1067,6 +1078,7 @@ fn ps_output_caps_only_display_rows_and_keeps_complete_transcript() {
     for limit in [0, 1, 2, 5, 8] {
         let cell = new_unified_exec_processes_output_with_limit(
             vec![UnifiedExecProcessDetails {
+                process_id: "1000".to_string(),
                 command_display: "tail -f app.log".to_string(),
                 recent_chunks: process_output(&output),
             }],

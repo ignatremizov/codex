@@ -250,6 +250,10 @@ fn persisted_item_completed_event<'a>(
                     if item.kind == SubAgentActivityKind::Completed
             ) || matches!(
                 &event.item,
+                TurnItem::CommandExecution(item)
+                    if item.source == codex_protocol::protocol::ExecCommandSource::UserShell
+            ) || matches!(
+                &event.item,
                 TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
                     || item.is_attributed_agent_input_presentation()
             ))
