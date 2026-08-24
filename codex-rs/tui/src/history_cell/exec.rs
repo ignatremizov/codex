@@ -157,6 +157,7 @@ struct UnifiedExecProcessesCell {
 
 #[derive(Debug, Clone)]
 pub(crate) struct UnifiedExecProcessDetails {
+    pub(crate) process_id: String,
     pub(crate) command_display: String,
     pub(crate) recent_chunks: crate::exec_cell::LiveCommandOutput,
 }
@@ -204,6 +205,7 @@ impl UnifiedExecProcessesCell {
                 "    ↳ ".dim(),
                 "      ".into(),
             ));
+            out.push(vec!["    id ".dim(), process.process_id.clone().green()].into());
         }
         let remaining = self.processes.len().saturating_sub(/*rhs*/ 16);
         if remaining > 0 {
