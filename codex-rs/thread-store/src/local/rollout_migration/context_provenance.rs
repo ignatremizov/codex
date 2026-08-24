@@ -8,10 +8,10 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::models::ResponseItem;
 use codex_rollout::RolloutItem;
 
-pub(super) type ContextProofs = HashMap<ResponseItemId, ResponseItemEnvelope>;
+pub(in crate::local) type ContextProofs = HashMap<ResponseItemId, ResponseItemEnvelope>;
 
 #[derive(Default)]
-pub(super) struct ContextProvenance {
+pub(in crate::local) struct ContextProvenance {
     tasks: codex_history::UserAgentTaskContextCollector,
     seen: ContextProofs,
     conflicting: HashSet<ResponseItemId>,
@@ -21,13 +21,13 @@ pub(super) struct ContextProvenance {
 }
 
 impl ContextProvenance {
-    pub(super) fn break_adjacency(&mut self) {
+    pub(in crate::local) fn break_adjacency(&mut self) {
         self.tasks.break_adjacency();
         self.pending = None;
         self.previous_metadata = false;
     }
 
-    pub(super) fn observe(&mut self, item: &RolloutItem) {
+    pub(in crate::local) fn observe(&mut self, item: &RolloutItem) {
         self.tasks.observe(item);
         let envelopes = match item {
             RolloutItem::ResponseItem(item) => std::slice::from_ref(item),
@@ -83,7 +83,7 @@ impl ContextProvenance {
             matches!(item, RolloutItem::InterAgentCommunicationMetadata { .. });
     }
 
-    pub(super) fn finish(mut self) -> ContextProofs {
+    pub(in crate::local) fn finish(mut self) -> ContextProofs {
         self.observed.retain(|id, _| !self.conflicting.contains(id));
         self.observed.extend(
             self.tasks

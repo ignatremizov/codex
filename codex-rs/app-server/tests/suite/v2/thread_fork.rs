@@ -1330,6 +1330,42 @@ async fn thread_fork_can_load_source_by_path_from_another_home() -> Result<()> {
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
+    let before = list_threads(&mut mcp).await?.data;
+    let rejected = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            path: Some(source_path.clone()),
+            attach_to_source: true,
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(rejected)),
+    )
+    .await??;
+    assert!(
+        error.error.message.contains("active Codex home"),
+        "{}",
+        error.error.message
+    );
+    assert_eq!(
+        list_threads(&mut mcp)
+            .await?
+            .data
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>(),
+        before
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(std::fs::read_to_string(&source_path)?, source_contents);
+    assert_eq!(
+        std::fs::read_to_string(&active_path)?,
+        source_contents.replace(preview, "Active-home collision")
+    );
+
     let fork_id = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: "not-a-valid-thread-id".to_string(),
@@ -1366,16 +1402,18 @@ async fn thread_fork_can_load_source_by_path_from_another_home() -> Result<()> {
     Ok(())
 }
 
-#[test_case(false, false, false; "id_cold")]
-#[test_case(true, false, false; "same_path_cold")]
-#[test_case(false, false, true; "id_loaded")]
-#[test_case(true, false, true; "same_path_loaded")]
-#[test_case(true, true, true; "external_same_id_loaded")]
+#[test_case(false, false, false, false; "id_cold")]
+#[test_case(true, false, false, false; "same_path_cold")]
+#[test_case(false, false, true, false; "id_loaded")]
+#[test_case(true, false, true, false; "same_path_loaded")]
+#[test_case(true, true, true, false; "external_same_id_loaded")]
+#[test_case(true, false, true, true; "managed_different_path_same_id_loaded")]
 #[tokio::test]
 async fn thread_fork_borrows_runtime_and_goals_only_from_the_actual_source(
     explicit_path: bool,
     external_source: bool,
     keep_parent_loaded: bool,
+    managed_different_path: bool,
 ) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let source_home = TempDir::new()?;
@@ -1484,9 +1522,17 @@ async fn thread_fork_borrows_runtime_and_goals_only_from_the_actual_source(
             .build_initialized()
             .await?;
     }
+    let source_path = if managed_different_path {
+        let path = rollout_path(active_home.path(), "2025-01-05T12-00-01", &conversation_id);
+        std::fs::write(&path, &source_contents)?;
+        path
+    } else {
+        source_path
+    };
+    let different_source = external_source || managed_different_path;
     let requested_path = if !explicit_path {
         None
-    } else if external_source {
+    } else if different_source {
         Some(source_path.clone())
     } else {
         Some(
@@ -1499,12 +1545,60 @@ async fn thread_fork_borrows_runtime_and_goals_only_from_the_actual_source(
     };
 
     for before_turn_id in [None, Some(unfinished_turn_id.to_string())] {
+        if external_source {
+            let before_ids = list_threads(&mut mcp)
+                .await?
+                .data
+                .into_iter()
+                .map(|thread| thread.id)
+                .collect::<Vec<_>>();
+            let rejected = mcp
+                .send_thread_fork_request(ThreadForkParams {
+                    thread_id: conversation_id.clone(),
+                    path: requested_path.clone(),
+                    before_turn_id: before_turn_id.clone(),
+                    defer_goal_continuation: true,
+                    ..Default::default()
+                })
+                .await?;
+            let error = timeout(
+                DEFAULT_READ_TIMEOUT,
+                mcp.read_stream_until_error_message(RequestId::Integer(rejected)),
+            )
+            .await??;
+            assert!(
+                error
+                    .error
+                    .message
+                    .contains("an external rollout does not authorize local goal-state lookup"),
+                "{}",
+                error.error.message
+            );
+            assert_eq!(
+                list_threads(&mut mcp)
+                    .await?
+                    .data
+                    .into_iter()
+                    .map(|thread| thread.id)
+                    .collect::<Vec<_>>(),
+                before_ids,
+                "rejected external goal inheritance must not create a fork"
+            );
+            assert_eq!(
+                state_db
+                    .thread_goals()
+                    .get_thread_goal(source_thread_id)
+                    .await?,
+                Some(active_goal.clone()),
+                "rejected external goal inheritance must not mutate the active source goal"
+            );
+        }
         let fork_id = mcp
             .send_thread_fork_request(ThreadForkParams {
                 thread_id: conversation_id.clone(),
                 path: requested_path.clone(),
                 before_turn_id,
-                defer_goal_continuation: true,
+                defer_goal_continuation: !external_source,
                 ..Default::default()
             })
             .await?;
@@ -1516,7 +1610,7 @@ async fn thread_fork_borrows_runtime_and_goals_only_from_the_actual_source(
         assert_eq!(child.forked_from_id, Some(conversation_id.clone()));
         assert_eq!(
             child.preview,
-            if external_source {
+            if different_source {
                 source_preview
             } else {
                 active_preview
@@ -1527,7 +1621,7 @@ async fn thread_fork_borrows_runtime_and_goals_only_from_the_actual_source(
                 .await?
                 .meta
                 .multi_agent_version,
-            Some(if external_source {
+            Some(if different_source {
                 MultiAgentVersion::V1
             } else {
                 MultiAgentVersion::V2
@@ -1535,7 +1629,7 @@ async fn thread_fork_borrows_runtime_and_goals_only_from_the_actual_source(
             "a colliding live runtime must not supply the imported source's version"
         );
         let child_thread_id = ThreadId::from_string(&child.id)?;
-        let expected_goal = if external_source {
+        let expected_goal = if different_source {
             None
         } else {
             let mut goal = active_goal.clone();
@@ -1972,6 +2066,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
         .send_thread_fork_request(ThreadForkParams {
             thread_id: conversation_id.clone(),
             config: Some([("thread_unload_delay_secs".into(), json!(0))].into()),
+            path: Some(source_path.clone()),
             ..Default::default()
         })
         .await?;

@@ -48,7 +48,7 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
 mod canonicalizer;
-mod context_provenance;
+pub(super) mod context_provenance;
 mod exact_rollback;
 mod legacy_event;
 mod line_parser;

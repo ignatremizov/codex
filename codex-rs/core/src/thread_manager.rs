@@ -143,7 +143,9 @@ use tokio::sync::broadcast;
 use tracing::instrument;
 use tracing::warn;
 
+mod external_fork;
 mod v2_spawn_resume;
+use external_fork::ForkSourceScope;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 
@@ -276,6 +278,7 @@ struct ForkHistory {
     snapshot: ForkSnapshot,
     initial_history: InitialHistory,
     persistence: ForkPersistence,
+    source_scope: ForkSourceScope,
 }
 
 /// Preserve legacy `fork_legacy_thread(usize, ...)` callsites by mapping them to the
@@ -478,6 +481,7 @@ struct ThreadSpawnRequest {
     // Lineage alone does not identify an explicitly selected rollout's live source.
     fork_source_rollout_path: Option<PathBuf>,
     fork_persistence: ForkPersistence,
+    fork_source_scope: ForkSourceScope,
     inherited_environments: Option<TurnEnvironmentSnapshot>,
     inherited_instructions: Option<SessionInstructions>,
     inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
@@ -503,6 +507,7 @@ impl ThreadSpawnRequest {
             forked_from_thread_id: None,
             fork_source_rollout_path: None,
             fork_persistence: ForkPersistence::Copied,
+            fork_source_scope: ForkSourceScope::CurrentHome,
             inherited_environments: None,
             inherited_instructions: None,
             inherited_exec_policy: None,
@@ -1480,11 +1485,12 @@ impl ThreadManager {
             .await
     }
 
-    /// Resume a legacy thread by reading its full rollout history.
+    /// Resume a thread by reading the full, explicitly selected rollout source.
     ///
-    /// Paginated sources are rejected. Load their context with
-    /// [`ThreadStore::load_latest_model_context`] and pass it to
-    /// [`Self::resume_thread_with_history`] instead.
+    /// The legacy API name is retained for upstream compatibility. This fork also accepts
+    /// paginated sources by loading complete lineage from the requested path. Ordinary
+    /// ID-based paginated resumes should load [`ThreadStore::load_latest_model_context`]
+    /// and pass it to [`Self::resume_thread_with_history`] instead.
     pub async fn resume_legacy_thread_from_rollout(
         &self,
         config: Config,
@@ -1712,8 +1718,9 @@ impl ThreadManager {
     /// Fork history replaces `options.initial_history`; hosts can supply the new
     /// task's instruction provider through the same options as thread creation.
     ///
-    /// Paginated sources are rejected. Use [`ThreadStore::prepare_fork`] and
-    /// [`Self::fork_prepared_thread`] for paginated thread forks.
+    /// This fork also accepts complete, path-selected paginated sources. Use
+    /// [`ThreadStore::prepare_fork`] and [`Self::fork_prepared_thread`] to retain
+    /// reference-backed inheritance for ordinary in-home paginated forks.
     pub async fn fork_legacy_thread<S>(
         &self,
         snapshot: S,
@@ -1763,6 +1770,7 @@ impl ThreadManager {
                 snapshot: snapshot.into(),
                 initial_history: history,
                 persistence: ForkPersistence::Copied,
+                source_scope: ForkSourceScope::CurrentHome,
             },
         )
         .await
@@ -1791,6 +1799,7 @@ impl ThreadManager {
                     snapshot: ForkSnapshot::Interrupted,
                     initial_history: history,
                     persistence: fork_persistence,
+                    source_scope: ForkSourceScope::CurrentHome,
                 },
             )
             .await;
@@ -1807,6 +1816,7 @@ impl ThreadManager {
             snapshot,
             initial_history: history,
             persistence: fork_persistence,
+            source_scope,
         } = fork_history;
         // `forked_from_id()` describes this history's existing lineage. When
         // forking a resumed thread, the child copies the resumed thread itself.
@@ -1819,6 +1829,7 @@ impl ThreadManager {
             InitialHistory::Resumed(resumed) => resumed.rollout_path.clone(),
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
+        let runtime_source_thread_id = source_scope.runtime_source(source_thread_id);
         // Capture the live source before later startup work can unload it. Keep
         // the fork's own providers, not the source's task-bound callback.
         let instructions = self
@@ -1829,7 +1840,7 @@ impl ThreadManager {
                     .as_ref()
                     .unwrap_or(&self.state.session_source),
                 /*parent_thread_id*/ None,
-                source_thread_id,
+                runtime_source_thread_id,
                 source_rollout_path.as_deref(),
                 options.thread_instructions_provider.clone(),
             )
@@ -1838,17 +1849,24 @@ impl ThreadManager {
             if let Some(version) = options.config.multi_agent_version_override() {
                 version
             } else {
-                self.state
-                    .multi_agent_version_for_spawn(
-                        &history,
-                        /*session_source*/ None,
-                        /*parent_thread_id*/ None,
-                        source_thread_id,
-                        source_rollout_path.as_deref(),
-                        &options.config,
-                    )
-                    .await
-                    .unwrap_or_else(|| options.config.multi_agent_version_from_features())
+                match source_scope {
+                    ForkSourceScope::CurrentHome => {
+                        self.state
+                            .multi_agent_version_for_spawn(
+                                &history,
+                                /*session_source*/ None,
+                                /*parent_thread_id*/ None,
+                                runtime_source_thread_id,
+                                source_rollout_path.as_deref(),
+                                &options.config,
+                            )
+                            .await
+                    }
+                    ForkSourceScope::ExternalHome => resolve_multi_agent_version(
+                        &history, /*inherited_multi_agent_version*/ None,
+                    ),
+                }
+                .unwrap_or_else(|| options.config.multi_agent_version_from_features())
             };
         let interrupted_marker = InterruptedTurnHistoryMarker::from_config_and_version(
             &options.config,
@@ -1861,6 +1879,7 @@ impl ThreadManager {
         request.forked_from_thread_id = source_thread_id;
         request.fork_source_rollout_path = source_rollout_path;
         request.fork_persistence = fork_persistence;
+        request.fork_source_scope = source_scope;
         request.inherited_instructions = Some(instructions);
         Box::pin(self.state.spawn_thread(request))
             .await
@@ -2481,21 +2500,25 @@ impl ThreadManagerState {
             forked_from_thread_id,
             fork_source_rollout_path,
             fork_persistence,
+            fork_source_scope,
             inherited_environments,
             inherited_instructions,
             inherited_exec_policy,
             user_shell_override,
         } = request;
+        // A foreign history ID is audit lineage, never a lookup capability in this manager.
+        let runtime_fork_source = fork_source_scope.runtime_source(forked_from_thread_id);
         let history_initialization = if let Some(child) = &prepared_child {
             child.history_initialization
         } else if matches!(
             &options.initial_history,
             InitialHistory::New | InitialHistory::Forked(_)
-        ) && let Some(source_thread_id) = forked_from_thread_id
+        ) && forked_from_thread_id.is_some()
         {
-            if let Some(source) = self
-                .thread_for_fork_source(source_thread_id, fork_source_rollout_path.as_deref())
-                .await
+            if let Some(source_thread_id) = runtime_fork_source
+                && let Some(source) = self
+                    .thread_for_fork_source(source_thread_id, fork_source_rollout_path.as_deref())
+                    .await
                 && source.agent_status().await != AgentStatus::Shutdown
             {
                 HistoryInitialization::WarmFork
@@ -2688,7 +2711,7 @@ impl ThreadManagerState {
                 self.instructions_for_spawn(
                     &session_source,
                     parent_thread_id,
-                    forked_from_thread_id,
+                    runtime_fork_source,
                     fork_source_rollout_path.as_deref(),
                     thread_instructions_provider,
                 )
@@ -2714,7 +2737,7 @@ impl ThreadManagerState {
                     &initial_history,
                     Some(&session_source),
                     parent_thread_id,
-                    forked_from_thread_id,
+                    runtime_fork_source,
                     fork_source_rollout_path.as_deref(),
                     &config,
                 )
@@ -2729,12 +2752,12 @@ impl ThreadManagerState {
                     metrics_service_name.as_deref(),
                     &session_source,
                     parent_thread_id,
-                    forked_from_thread_id,
+                    runtime_fork_source,
                     fork_source_rollout_path.as_deref(),
                     parent_originator,
                 )
                 .await,
-                forked_from_thread_id
+                runtime_fork_source
                     .filter(|_| matches!(&initial_history, InitialHistory::Forked(_))),
             ),
         };
