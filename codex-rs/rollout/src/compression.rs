@@ -295,6 +295,16 @@ enum RolloutLineReaderInner {
 }
 
 impl RolloutLineReader {
+    pub(crate) fn from_seekable_prefix(file: File, byte_limit: u64) -> Self {
+        use std::io::BufRead;
+
+        let reader: Box<dyn Read + Send> = Box::new(file.take(byte_limit));
+        Self {
+            inner: RolloutLineReaderInner::Blocking(Some(std::io::BufReader::new(reader).lines())),
+            metrics: ReadMetrics::default(),
+        }
+    }
+
     /// Reads the next JSONL record from the rollout.
     pub async fn next_line(&mut self) -> io::Result<Option<String>> {
         let started_at = Instant::now();

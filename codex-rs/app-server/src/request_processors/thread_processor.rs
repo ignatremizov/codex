@@ -4843,19 +4843,110 @@ impl ThreadRequestProcessor {
                 "`permissions` cannot be combined with `sandbox`",
             ));
         }
-        let source_thread = self
-            .read_stored_thread_for_resume(
+        let archived_policy = if path.is_some() {
+            ArchivedThreadReadPolicy::Allow
+        } else {
+            ArchivedThreadReadPolicy::Reject
+        };
+        let explicit_path_is_external = if let Some(path) = path.as_ref() {
+            let requested_path = if path.is_relative() {
+                self.config.codex_home.join(path).to_path_buf()
+            } else {
+                path.clone()
+            };
+            let path = codex_rollout::existing_rollout_path(requested_path.as_path())
+                .await
+                .unwrap_or(requested_path);
+            let normalized_path = match path_utils::normalize_for_path_comparison(path.as_path()) {
+                Ok(path) => path,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let parent = path.parent().ok_or_else(|| {
+                        internal_error(format!(
+                            "fork source path {} has no parent directory",
+                            path.display()
+                        ))
+                    })?;
+                    let name = path.file_name().ok_or_else(|| {
+                        internal_error(format!(
+                            "fork source path {} has no file name",
+                            path.display()
+                        ))
+                    })?;
+                    path_utils::normalize_for_path_comparison(parent)
+                        .map_err(|error| {
+                            internal_error(format!(
+                                "failed to resolve fork source parent {}: {error}",
+                                parent.display()
+                            ))
+                        })?
+                        .join(name)
+                }
+                Err(error) => {
+                    return Err(internal_error(format!(
+                        "failed to resolve fork source path {}: {error}",
+                        path.display()
+                    )));
+                }
+            };
+            let mut path_is_managed = false;
+            for root in [
+                self.config.codex_home.join(codex_rollout::SESSIONS_SUBDIR),
+                self.config
+                    .codex_home
+                    .join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR),
+            ] {
+                let normalized_root =
+                    match path_utils::normalize_for_path_comparison(root.as_path()) {
+                        Ok(root) => root,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => {
+                            return Err(internal_error(format!(
+                                "failed to resolve fork source root {}: {error}",
+                                root.display()
+                            )));
+                        }
+                    };
+                if normalized_path.starts_with(normalized_root) {
+                    path_is_managed = true;
+                    break;
+                }
+            }
+            !path_is_managed
+        } else {
+            false
+        };
+        let mut copied_source = if explicit_path_is_external {
+            let source_rollout_path = path.as_ref().ok_or_else(|| {
+                internal_error("external fork source is missing its rollout path")
+            })?;
+            Some(
+                self.thread_store
+                    .load_fork_source_by_rollout_path(StoreLoadForkSourceByRolloutPathParams {
+                        rollout_path: source_rollout_path.clone(),
+                    })
+                    .await
+                    .map_err(thread_store_resume_read_error)?,
+            )
+        } else {
+            None
+        };
+        let mut source_thread = if let Some(copied_source) = copied_source.as_ref() {
+            copied_source.thread.clone()
+        } else {
+            self.read_stored_thread_for_resume(
                 &thread_id,
                 path.as_ref(),
                 /*include_history*/ false,
-                if path.is_some() {
-                    ArchivedThreadReadPolicy::Allow
-                } else {
-                    ArchivedThreadReadPolicy::Reject
-                },
+                archived_policy,
             )
-            .await?;
+            .await?
+        };
         let paginated_source = matches!(source_thread.history_mode, ThreadHistoryMode::Paginated);
+        // An external path belongs to another Codex home. Copy its logical lineage into the
+        // destination fork instead of persisting history_base pointers that the active store
+        // cannot resolve. Explicit paths managed by this store retain normal coordinated,
+        // reference-backed fork behavior.
+        let copied_paginated_source = paginated_source && explicit_path_is_external;
         if last_turn_id.is_some() && before_turn_id.is_some() {
             return Err(invalid_request(
                 "`beforeTurnId` cannot be combined with `lastTurnId`",
@@ -4883,7 +4974,7 @@ impl ThreadRequestProcessor {
             .name
             .as_deref()
             .and_then(codex_core::util::normalize_thread_name);
-        let mut prepared_fork = if paginated_source {
+        let mut prepared_fork = if paginated_source && !copied_paginated_source {
             let boundary = match (last_turn_id.as_deref(), before_turn_id.as_deref()) {
                 (Some(turn_id), None) => {
                     codex_thread_store::ForkBoundary::ThroughTurn(turn_id.to_string())
@@ -4915,7 +5006,15 @@ impl ThreadRequestProcessor {
         } else {
             None
         };
-        let source_history_items = if let Some(prepared_fork) = prepared_fork.as_ref() {
+        let source_history_items = if let Some(copied_source) = copied_source.take() {
+            if copied_source.history.thread_id != source_thread_id {
+                return Err(invalid_request(format!(
+                    "fork source history belongs to thread {}, not {source_thread_id}",
+                    copied_source.history.thread_id
+                )));
+            }
+            Arc::new(copied_source.history.items)
+        } else if let Some(prepared_fork) = prepared_fork.as_ref() {
             Arc::clone(&prepared_fork.model_context)
         } else {
             let mut source_thread = self
@@ -4945,6 +5044,12 @@ impl ThreadRequestProcessor {
         let source_history_items = Arc::new(rollout_without_exact_rollback_ranges(
             source_history_items.as_ref(),
         ));
+        if explicit_path_is_external {
+            let copied_preview = preview_from_rollout_items(source_history_items.as_ref());
+            if !copied_preview.is_empty() {
+                source_thread.preview = copied_preview;
+            }
+        }
         let history_cwd = Some(source_thread.cwd.clone());
 
         // Persist Windows sandbox mode.
@@ -4993,8 +5098,12 @@ impl ThreadRequestProcessor {
             !has_permission_override(request_overrides.as_ref(), &typesafe_overrides);
         let needs_latest_settings =
             restore_approval_policy || restore_approvals_reviewer || restore_permission_profile;
-        let loaded_parent = self.thread_manager.get_thread(source_thread_id).await.ok();
-        let loaded_parent_settings = if paginated_source && needs_latest_settings {
+        let loaded_parent = if !explicit_path_is_external {
+            self.thread_manager.get_thread(source_thread_id).await.ok()
+        } else {
+            None
+        };
+        let loaded_parent_settings = if prepared_fork.is_some() && needs_latest_settings {
             if let Some(parent) = loaded_parent.as_ref() {
                 let snapshot = parent.thread_settings_snapshot().await;
                 Some(PersistedResumeSettings {
@@ -5008,7 +5117,7 @@ impl ThreadRequestProcessor {
         } else {
             None
         };
-        let latest_context = if paginated_source
+        let latest_context = if prepared_fork.is_some()
             && needs_latest_settings
             && loaded_parent.is_none()
             && (last_turn_id.is_some() || before_turn_id.is_some())

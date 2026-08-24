@@ -1649,18 +1649,21 @@ impl Session {
         &self,
         conversation_history: InitialHistory,
     ) -> anyhow::Result<()> {
-        let (is_subagent, is_paginated_subagent) = {
+        let (is_subagent, is_paginated_subagent, is_paginated_history) = {
             let state = self.state.lock().await;
             let session_configuration = &state.session_configuration;
+            let is_paginated_history = matches!(
+                session_configuration.history_mode,
+                ThreadHistoryMode::Paginated
+            );
             (
                 session_configuration.session_source.is_non_root_agent(),
-                matches!(
-                    session_configuration.history_mode,
-                    ThreadHistoryMode::Paginated
-                ) && matches!(
-                    session_configuration.thread_source.as_ref(),
-                    Some(ThreadSource::Subagent | ThreadSource::GuardianReview)
-                ),
+                is_paginated_history
+                    && matches!(
+                        session_configuration.thread_source.as_ref(),
+                        Some(ThreadSource::Subagent | ThreadSource::GuardianReview)
+                    ),
+                is_paginated_history,
             )
         };
         let has_prior_user_turns = initial_history_has_prior_user_turns(&conversation_history);
@@ -1774,6 +1777,14 @@ impl Session {
                         // Paginated subagents already persist inherited context when their live
                         // thread is created.
                         rollout_items.clear();
+                        rollout_items.push(thread_settings_applied);
+                    }
+                    ForkPersistence::Copied if is_paginated_history => {
+                        // Source SessionMeta participates in fork configuration, but the
+                        // destination already owns one canonical SessionMeta. Persisting inherited
+                        // metadata behind it would stop reverse history scans before older copied
+                        // records.
+                        rollout_items.retain(|item| !matches!(item, RolloutItem::SessionMeta(_)));
                         rollout_items.push(thread_settings_applied);
                     }
                     ForkPersistence::Copied => {

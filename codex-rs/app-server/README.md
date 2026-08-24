@@ -387,6 +387,10 @@ Read the selection from `threadSettings.disabledPluginIds` in
 across resume. Forks restore the selection from the history retained at the
 requested fork boundary.
 
+# Cross-home paginated forks
+
+Experimental clients may identify a local rollout with `path`. Paginated paths outside the active Codex home are copied with their inherited lineage into one standalone destination rollout, so the fork never depends on source-home files after creation. Source files are read-only; paths managed by the active store retain coordinated reference-backed fork behavior.
+
 # Deprecated thread personality setting
 
 `thread/start`, `thread/resume`, `thread/settings/update`, and `turn/start` still

@@ -4,7 +4,10 @@ use codex_utils_path as path_utils;
 use std::cmp::Reverse;
 use std::ffi::OsStr;
 use std::fmt;
+use std::fs::File;
 use std::io;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::num::NonZero;
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -1333,7 +1336,28 @@ impl std::error::Error for MetadataReadError {
 /// Read the SessionMetaLine from the head of a rollout file for reuse by
 /// callers that need the session metadata (e.g. to derive a cwd for config).
 pub async fn read_session_meta_line(path: &Path) -> io::Result<SessionMetaLine> {
-    let mut lines = compression::open_rollout_line_reader(path).await?;
+    let lines = compression::open_rollout_line_reader(path).await?;
+    read_session_meta_line_from_reader(path, lines).await
+}
+
+/// Reads metadata from the same frozen file prefix used to copy a source's history.
+pub async fn read_session_meta_line_from_seekable_prefix(
+    path: &Path,
+    mut file: File,
+    byte_limit: u64,
+) -> io::Result<(SessionMetaLine, File)> {
+    file.seek(SeekFrom::Start(0))?;
+    let reader_file = file.try_clone()?;
+    let lines = compression::RolloutLineReader::from_seekable_prefix(reader_file, byte_limit);
+    let session_meta = read_session_meta_line_from_reader(path, lines).await?;
+    file.seek(SeekFrom::Start(0))?;
+    Ok((session_meta, file))
+}
+
+async fn read_session_meta_line_from_reader(
+    path: &Path,
+    mut lines: compression::RolloutLineReader,
+) -> io::Result<SessionMetaLine> {
     while let Some(line) = lines.next_line().await? {
         let trimmed = line.trim();
         if trimmed.is_empty() {

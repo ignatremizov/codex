@@ -1,7 +1,7 @@
 use crate::resume_picker::SessionTarget;
 use codex_protocol::ThreadId;
-use codex_rollout::find_archived_thread_path_by_id_str;
-use codex_rollout::find_thread_path_by_id_str;
+use codex_rollout::find_archived_thread_path_by_id_str_without_recovery;
+use codex_rollout::find_thread_path_by_id_str_without_recovery;
 use codex_rollout::read_session_meta_line;
 use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
 use color_eyre::eyre::Result;
@@ -26,17 +26,11 @@ pub(crate) async fn lookup_in_source_home(
         ));
     }
     let path =
-        match find_thread_path_by_id_str(source_home.as_path(), id_str, /*state_db_ctx*/ None)
-            .await?
-        {
+        match find_thread_path_by_id_str_without_recovery(source_home.as_path(), id_str).await? {
             Some(path) => Some(path),
             None => {
-                find_archived_thread_path_by_id_str(
-                    source_home.as_path(),
-                    id_str,
-                    /*state_db_ctx*/ None,
-                )
-                .await?
+                find_archived_thread_path_by_id_str_without_recovery(source_home.as_path(), id_str)
+                    .await?
             }
         };
     match path {
@@ -49,13 +43,46 @@ pub(crate) async fn from_rollout_path(
     path: &Path,
     expected_id: Option<&str>,
 ) -> Result<Option<SessionTarget>> {
-    let path = canonicalize_existing_preserving_symlinks(path)
-        .wrap_err_with(|| format!("failed to resolve fork source rollout {}", path.display()))?;
-    if !path.is_file() {
-        return Err(color_eyre::eyre::eyre!(
-            "fork source rollout is not a file: {}",
-            path.display()
-        ));
+    let path = codex_rollout::existing_rollout_path(path)
+        .await
+        .unwrap_or_else(|| path.to_path_buf());
+    let path = match canonicalize_existing_preserving_symlinks(path.as_path()) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| {
+                color_eyre::eyre::eyre!("fork source rollout has no parent directory")
+            })?;
+            let parent = canonicalize_existing_preserving_symlinks(parent).wrap_err_with(|| {
+                format!(
+                    "failed to resolve fork source rollout parent {}",
+                    parent.display()
+                )
+            })?;
+            let file_name = path
+                .file_name()
+                .ok_or_else(|| color_eyre::eyre::eyre!("fork source rollout has no file name"))?;
+            parent.join(file_name)
+        }
+        Err(error) => {
+            return Err(error).wrap_err_with(|| {
+                format!("failed to resolve fork source rollout {}", path.display())
+            });
+        }
+    };
+    match tokio::fs::metadata(path.as_path()).await {
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(color_eyre::eyre::eyre!(
+                "fork source rollout is not a file: {}",
+                path.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).wrap_err_with(|| {
+                format!("failed to inspect fork source rollout {}", path.display())
+            });
+        }
     }
     let metadata = read_session_meta_line(path.as_path()).await.ok();
     let Some(metadata) = metadata else {
