@@ -1754,6 +1754,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
         .send_thread_fork_request(ThreadForkParams {
             thread_id: conversation_id.clone(),
             config: Some([("thread_unload_delay_secs".into(), json!(0))].into()),
+            path: Some(source_path.clone()),
             ..Default::default()
         })
         .await?;
