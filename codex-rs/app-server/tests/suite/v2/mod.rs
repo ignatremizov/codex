@@ -129,6 +129,7 @@ mod thread_attachments;
 mod thread_delete;
 mod thread_environments;
 mod thread_fork;
+mod thread_fork_cross_home;
 #[path = "thread_fork_multi_agent_tests.rs"]
 mod thread_fork_multi_agent;
 mod thread_goal_empty_responses;

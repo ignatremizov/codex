@@ -6,7 +6,9 @@ use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::RolloutRecorder;
+use codex_rollout::SESSIONS_SUBDIR;
 use codex_rollout::find_thread_name_by_id;
 use codex_rollout::read_session_meta_line;
 use codex_rollout::read_thread_item_from_rollout;
@@ -154,7 +156,15 @@ pub(super) async fn read_thread_by_rollout_path(
             message: format!("thread {} is archived", thread.thread_id),
         });
     }
-    if let Some(mut metadata) = read_sqlite_metadata(store, thread.thread_id).await {
+    let path_is_managed = [
+        store.config.codex_home.join(SESSIONS_SUBDIR),
+        store.config.codex_home.join(ARCHIVED_SESSIONS_SUBDIR),
+    ]
+    .into_iter()
+    .any(|root| super::helpers::scoped_rollout_path(root, path.as_path(), "Codex home").is_ok());
+    if path_is_managed
+        && let Some(mut metadata) = read_sqlite_metadata(store, thread.thread_id).await
+    {
         let metadata_matches_path =
             resolve_requested_rollout_path(store, metadata.rollout_path.clone())
                 .await
@@ -503,7 +513,7 @@ async fn read_required_session_meta_line(
         })
 }
 
-fn stored_thread_from_meta_line(
+pub(super) fn stored_thread_from_meta_line(
     store: &LocalThreadStore,
     meta_line: SessionMetaLine,
     path: std::path::PathBuf,
