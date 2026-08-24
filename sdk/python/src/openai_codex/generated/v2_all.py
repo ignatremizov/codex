@@ -6511,7 +6511,7 @@ class ThreadShellCommandParams(BaseModel):
         int | None,
         Field(
             alias="timeoutMs",
-            description="Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
+            description="Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
         ),
     ] = None
 
@@ -7730,17 +7730,6 @@ class ThreadCompactStartRequest(BaseModel):
         Literal["thread/compact/start"], Field(title="Thread/compact/startRequestMethod")
     ]
     params: ThreadCompactStartParams
-
-
-class ThreadShellCommandRequest(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    id: RequestId
-    method: Annotated[
-        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
-    ]
-    params: ThreadShellCommandParams
 
 
 class ThreadApproveGuardianDeniedActionRequest(BaseModel):
@@ -11486,6 +11475,17 @@ class ThreadGoalClearRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/goal/clear"], Field(title="Thread/goal/clearRequestMethod")]
     params: ThreadGoalClearParams
+
+
+class ThreadShellCommandRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
+    ]
+    params: ThreadShellCommandParams
 
 
 class ThreadListRequest(BaseModel):

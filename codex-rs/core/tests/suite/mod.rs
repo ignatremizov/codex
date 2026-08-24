@@ -262,6 +262,7 @@ mod unified_exec_stdin_review_size;
 mod unstable_features_warning;
 mod user_notification;
 mod user_shell_cmd;
+mod user_shell_processes;
 mod view_image;
 mod wake_reservation;
 mod web_search;
