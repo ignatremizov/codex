@@ -70,6 +70,14 @@ Composed V2 role guidance reports the configured history-fork default and recomm
 
 Role-local MCP server registrations merge with the parent's server configuration through the existing constrained configuration and catalog. Managed server identity requirements remain authoritative and can disable an incompatible role registration. This capability does not let a role replace the parent provider, permissions, or notification authority. Cold restoration keeps the captured executor, working directory, workspace roots, and non-permission settings; a remote read-only reduction is accepted only when it is provably within the current owner's authority using the executor's path convention.
 
+## Cross-home fork sources
+
+A fork from an explicit rollout outside the active Codex home copies the source's complete logical history and inherited paginated prefixes into the destination. Readers retain opened source snapshots and original byte/ordinal cutoffs; compression and authorized recovery backups remain read-only sources. Ordinary in-home forks retain their coordinated reference-backed behavior.
+
+An external source thread UUID does not identify a live parent in the destination home. A coincident local UUID cannot supply its thread instructions, runtime policy, attachment membership, or goal state. Destination configuration and explicitly supplied providers remain authoritative. Goal deferral is supported only for sources in the active home.
+
+Flattening must not invent canonical context evidence by joining records that were separated by source metadata, rollback records, or lineage boundaries. An unsafe copy is rejected without rewriting its source. Existing valid context evidence remains inert history: copied audit records never recreate live queues, reply grants, or pending delivery receipts.
+
 ## Unified exec yield windows
 
 The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:
