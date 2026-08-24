@@ -152,6 +152,7 @@ impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
 #[derive(Default)]
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
+    user_shell_commands: HashMap<i32, UserShellCommandEntry>,
     reserved_process_ids: HashSet<i32>,
 }
 
@@ -197,6 +198,14 @@ struct ProcessEntry {
     network_approval: Option<DeferredNetworkApproval>,
     session: Weak<Session>,
     last_used: tokio::time::Instant,
+}
+
+struct UserShellCommandEntry {
+    call_id: String,
+    process_id: i32,
+    command: String,
+    cwd: PathUri,
+    cancellation_token: CancellationToken,
 }
 
 type SharedPluginMetricsSidecar = Arc<std::sync::Mutex<Option<PluginMetricsSidecar>>>;

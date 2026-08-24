@@ -233,6 +233,7 @@ use super::chat_composer_history::ChatComposerHistory;
 use super::chat_composer_history::HistoryEntry;
 use super::chat_composer_history::HistoryEntryResponse;
 use super::chat_composer_history::HistorySearchResult;
+use super::command_popup::BackgroundTerminalCompletion;
 use super::command_popup::CommandItem;
 use super::effort_ignition::EffortIgnition;
 use super::effort_ignition::EffortTier;
@@ -475,6 +476,7 @@ pub(crate) struct ChatComposer {
     task_mentions: Option<Vec<crate::task_mentions::TaskMention>>,
     agent_prompt_targets: Vec<AgentPromptTarget>,
     mcp_server_names: Vec<String>,
+    background_terminals: Vec<BackgroundTerminalCompletion>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
     collaboration_modes_enabled: bool,
     config: ChatComposerConfig,
@@ -656,6 +658,7 @@ impl ChatComposer {
             task_mentions: None,
             agent_prompt_targets: Vec::new(),
             mcp_server_names: Vec::new(),
+            background_terminals: Vec::new(),
             connectors_snapshot: None,
             collaboration_modes_enabled: false,
             config,
@@ -825,6 +828,17 @@ impl ChatComposer {
         server_names.sort();
         server_names.dedup();
         self.mcp_server_names = server_names;
+        self.sync_popups();
+    }
+
+    pub(crate) fn set_background_terminals(
+        &mut self,
+        background_terminals: Vec<BackgroundTerminalCompletion>,
+    ) {
+        if self.background_terminals == background_terminals {
+            return;
+        }
+        self.background_terminals = background_terminals;
         self.sync_popups();
     }
 
@@ -3432,6 +3446,9 @@ impl ChatComposer {
             CommandItem::ServiceTier(command) => format!("/{}", command.name),
             CommandItem::McpSubcommand(subcommand) => format!("/mcp {subcommand}"),
             CommandItem::McpServer(server_name) => format!("/mcp use {server_name}"),
+            CommandItem::BackgroundTerminal(terminal) => {
+                format!("/stop {}", terminal.process_id)
+            }
         };
         self.stage_slash_command_history_text(text);
     }
@@ -4080,6 +4097,9 @@ impl ChatComposer {
             caret_on_first_line && slash_input.is_editing_command_name(first_line, cursor);
         let is_editing_mcp_args =
             caret_on_first_line && slash_input.is_editing_mcp_args(first_line, cursor);
+        let is_editing_stop_args =
+            caret_on_first_line && slash_input.is_editing_stop_args(first_line, cursor);
+        let is_editing_command_args = is_editing_mcp_args || is_editing_stop_args;
         let agent_target = caret_on_first_line
             .then(|| agent_target_completion(first_line, cursor))
             .flatten();
@@ -4155,8 +4175,9 @@ impl ChatComposer {
 
         match &mut self.popups.active {
             ActivePopup::Command(popup) => {
-                if is_editing_mcp_args {
+                if is_editing_command_args {
                     popup.set_mcp_server_names(self.mcp_server_names.clone());
+                    popup.set_background_terminals(self.background_terminals.clone());
                     popup.on_composer_text_change(first_line.to_string());
                 } else if is_editing_slash_command_name {
                     if let Some(command_filter_text) = command_filter_text.as_deref() {
@@ -4167,9 +4188,10 @@ impl ChatComposer {
                 }
             }
             _ => {
-                if is_editing_mcp_args {
+                if is_editing_command_args {
                     let mut command_popup = self.slash_input().command_popup(first_line);
                     command_popup.set_mcp_server_names(self.mcp_server_names.clone());
+                    command_popup.set_background_terminals(self.background_terminals.clone());
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.popups.active = ActivePopup::Command(command_popup);
                 } else if is_editing_slash_command_name
@@ -9618,6 +9640,50 @@ mod tests {
     }
 
     #[test]
+    fn slash_stop_completes_a_live_background_terminal_id() {
+        use super::super::command_popup::CommandItem;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_background_terminals(vec![
+            BackgroundTerminalCompletion {
+                process_id: "95306".to_string(),
+                command_display: "sleep 600".to_string(),
+            },
+            BackgroundTerminalCompletion {
+                process_id: "87742".to_string(),
+                command_display: "sleep 3900".to_string(),
+            },
+        ]);
+        type_chars_humanlike(&mut composer, &['/', 's', 't', 'o', 'p', ' ', '9']);
+
+        match &composer.popups.active {
+            ActivePopup::Command(popup) => assert_eq!(
+                popup.selected_item(),
+                Some(CommandItem::BackgroundTerminal(
+                    BackgroundTerminalCompletion {
+                        process_id: "95306".to_string(),
+                        command_display: "sleep 600".to_string(),
+                    }
+                ))
+            ),
+            _ => panic!("background terminal popup not active after typing '/stop 9'"),
+        }
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(result, InputResult::None);
+        assert_eq!(composer.current_text(), "/stop 95306");
+    }
+
+    #[test]
     fn slash_popup_resume_for_res_ui() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -9753,6 +9819,9 @@ mod tests {
                 Some(CommandItem::McpServer(server)) => {
                     panic!("expected pets command, got MCP server {server:?}")
                 }
+                Some(CommandItem::BackgroundTerminal(terminal)) => {
+                    panic!("expected pets command, got background terminal {terminal:?}")
+                }
                 None => panic!("no selected command for '/pet'"),
             },
             _ => panic!("slash popup not active after typing '/pet'"),
@@ -9813,6 +9882,9 @@ mod tests {
                 Some(CommandItem::McpServer(server)) => {
                     panic!("expected btw command, got MCP server {server:?}")
                 }
+                Some(CommandItem::BackgroundTerminal(terminal)) => {
+                    panic!("expected btw command, got background terminal {terminal:?}")
+                }
                 None => panic!("no selected command for '/bt'"),
             },
             _ => panic!("slash popup not active after typing '/bt'"),
@@ -9872,6 +9944,9 @@ mod tests {
                 }
                 Some(CommandItem::McpServer(server)) => {
                     panic!("expected side command, got MCP server {server:?}")
+                }
+                Some(CommandItem::BackgroundTerminal(terminal)) => {
+                    panic!("expected side command, got background terminal {terminal:?}")
                 }
                 None => panic!("no selected command for '/si'"),
             },

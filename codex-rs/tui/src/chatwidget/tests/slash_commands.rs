@@ -941,7 +941,7 @@ async fn queued_bang_shell_dispatches_after_active_turn() {
     complete_turn_with_message(&mut chat, "turn-1", Some("done"));
 
     match op_rx.try_recv() {
-        Ok(Op::RunUserShellCommand { command }) => assert_eq!(command, "echo hi"),
+        Ok(Op::RunUserShellCommand { command, .. }) => assert_eq!(command, "echo hi"),
         other => panic!("expected queued shell command op, got {other:?}"),
     }
     assert_eq!(next_add_to_history_event(&mut rx), "!echo hi");
@@ -986,7 +986,7 @@ async fn queued_empty_bang_shell_reports_help_when_dequeued_and_drains_next_inpu
 }
 
 #[tokio::test]
-async fn queued_bang_shell_waits_for_user_shell_completion_before_next_input() {
+async fn queued_bang_shell_does_not_block_the_next_input() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
@@ -997,21 +997,10 @@ async fn queued_bang_shell_waits_for_user_shell_completion_before_next_input() {
     complete_turn_with_message(&mut chat, "turn-1", Some("done"));
 
     match op_rx.try_recv() {
-        Ok(Op::RunUserShellCommand { command }) => assert_eq!(command, "echo hi"),
+        Ok(Op::RunUserShellCommand { command, .. }) => assert_eq!(command, "echo hi"),
         other => panic!("expected queued shell command op, got {other:?}"),
     }
     assert_eq!(next_add_to_history_event(&mut rx), "!echo hi");
-    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
-
-    handle_turn_started(&mut chat, "turn-2");
-    let begin = begin_exec_with_source(
-        &mut chat,
-        "user-shell-echo",
-        "echo hi",
-        ExecCommandSource::UserShell,
-    );
-    end_exec(&mut chat, begin, "hi\n", "", /*exit_code*/ 0);
-    handle_turn_completed(&mut chat, "turn-2", /*duration_ms*/ None);
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn { items, .. } => assert_eq!(
@@ -1021,7 +1010,7 @@ async fn queued_bang_shell_waits_for_user_shell_completion_before_next_input() {
                 text_elements: Vec::new(),
             }]
         ),
-        other => panic!("expected queued message after shell completion, got {other:?}"),
+        other => panic!("expected queued message immediately after shell dispatch, got {other:?}"),
     }
     assert!(chat.input_queue.queued_user_messages.is_empty());
 }
@@ -3238,6 +3227,33 @@ async fn slash_stop_submits_background_terminal_cleanup() {
     assert!(
         rendered.contains("Stopping all background terminals."),
         "expected cleanup confirmation, got {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn slash_stop_with_process_id_submits_targeted_termination() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::Stop, "4242".to_string(), Vec::new());
+
+    assert_matches!(
+        op_rx.try_recv(),
+        Ok(Op::TerminateBackgroundTerminal { process_id: 4242 })
+    );
+}
+
+#[tokio::test]
+async fn slash_stop_rejects_invalid_process_id() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command_with_args(SlashCommand::Stop, "not-an-id".to_string(), Vec::new());
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert!(
+        lines_to_single_string(&cells[0]).contains("Usage: /stop <process-id>"),
+        "expected targeted stop usage"
     );
 }
 

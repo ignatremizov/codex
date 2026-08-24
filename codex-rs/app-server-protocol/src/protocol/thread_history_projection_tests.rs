@@ -2,6 +2,8 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::CommandExecutionItem;
+use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserAgentControlAction;
 use codex_protocol::items::UserAgentControlItem;
@@ -14,6 +16,7 @@ use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -24,8 +27,11 @@ use codex_protocol::user_input::UserInput;
 use codex_rollout::CompactedItem;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
+use codex_utils_absolute_path::test_support::PathBufExt;
+use codex_utils_absolute_path::test_support::test_path_buf;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use super::*;
 use crate::build_turns_from_rollout_items;
@@ -241,6 +247,75 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
             changed_items: vec![ThreadHistoryItemChange {
                 turn_id: "control-1".to_string(),
                 item: ThreadItem::from(item),
+                started_at_ms: Some(100),
+                completed_at_ms: Some(123),
+            }],
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn projects_detached_user_shell_as_a_completed_standalone_turn() {
+    let item = TurnItem::CommandExecution(CommandExecutionItem {
+        id: "shell-turn".to_string(),
+        plugin_id: None,
+        script_path: None,
+        process_id: Some("12345".to_string()),
+        command: vec!["sleep".to_string(), "60".to_string()],
+        cwd: test_path_buf("/tmp").abs().into(),
+        parsed_cmd: Vec::new(),
+        source: ExecCommandSource::UserShell,
+        interaction_input: None,
+        status: CommandExecutionStatus::Completed,
+        stdout: Some(String::new()),
+        stderr: Some(String::new()),
+        aggregated_output: Some(String::new()),
+        exit_code: Some(0),
+        duration: Some(Duration::from_secs(1)),
+        formatted_output: Some(String::new()),
+    });
+
+    assert_eq!(
+        project(item_completed(
+            ThreadId::default(),
+            "shell-turn",
+            item.clone()
+        )),
+        ThreadHistoryChangeSet {
+            changed_turns: vec![ThreadHistoryTurnChange {
+                turn_id: "shell-turn".to_string(),
+                status: TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }],
+            changed_items: vec![ThreadHistoryItemChange {
+                turn_id: "shell-turn".to_string(),
+                item: ThreadItem::from(item.clone()),
+                started_at_ms: Some(100),
+                completed_at_ms: Some(123),
+            }],
+            ..Default::default()
+        }
+    );
+
+    let mut active_turn_item = item;
+    let TurnItem::CommandExecution(command) = &mut active_turn_item else {
+        unreachable!();
+    };
+    command.id = "shell-call".to_string();
+    assert_eq!(
+        project(item_completed(
+            ThreadId::default(),
+            "active-turn",
+            active_turn_item.clone()
+        )),
+        ThreadHistoryChangeSet {
+            changed_items: vec![ThreadHistoryItemChange {
+                turn_id: "active-turn".to_string(),
+                item: ThreadItem::from(active_turn_item),
                 started_at_ms: Some(100),
                 completed_at_ms: Some(123),
             }],

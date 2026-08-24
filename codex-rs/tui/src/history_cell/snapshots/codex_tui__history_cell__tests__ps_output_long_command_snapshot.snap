@@ -10,4 +10,5 @@ Background terminals
     --max-count 1000 --no-ignore
     --hidden --follow --glob '!
     target/**'
+    id 1000
     ↳ searching...

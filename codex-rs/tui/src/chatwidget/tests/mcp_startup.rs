@@ -283,8 +283,8 @@ async fn pending_mcp_startup_does_not_unblock_external_review() {
 }
 
 #[tokio::test]
-async fn pending_mcp_startup_does_not_unblock_foreground_shell() {
-    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+async fn background_shell_does_not_block_followup_during_mcp_startup() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_mcp_startup_expected_servers(["slow".to_string()]);
     notify_mcp_status(&mut chat, "slow", McpServerStartupState::Starting);
     chat.thread_id = Some(ThreadId::new());
@@ -295,21 +295,22 @@ async fn pending_mcp_startup_does_not_unblock_foreground_shell() {
         Vec::new(),
     );
 
-    assert_matches!(op_rx.try_recv(), Ok(Op::RunUserShellCommand { command }) if command == "echo hi");
+    assert_matches!(op_rx.try_recv(), Ok(Op::RunUserShellCommand { command, .. }) if command == "echo hi");
     chat.bottom_pane
         .set_composer_text("queued follow-up".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
-    assert_no_submit_op(&mut op_rx);
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+    assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { items, .. } if items == vec![
+        UserInput::Text {
+            text: "queued follow-up".to_string(),
+            text_elements: Vec::new(),
+        }
+    ]);
 
     chat.finish_mcp_startup(Vec::new(), Vec::new());
     assert!(chat.bottom_pane.is_task_running());
-    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert!(chat.input_queue.queued_user_messages.is_empty());
     assert_no_submit_op(&mut op_rx);
-
-    while rx.try_recv().is_ok() {}
-    chat.dispatch_command(crate::slash_command::SlashCommand::Fork);
-    assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_)));
 }
 
 #[tokio::test]

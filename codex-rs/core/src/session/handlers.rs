@@ -25,14 +25,12 @@ use crate::context::NodeReplReviewEvidence;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
-use crate::tasks::UserShellCommandMode;
-use crate::tasks::UserShellCommandTask;
+use crate::tasks::UserShellCommandPlacement;
 use crate::tasks::execute_user_shell_command;
 use codex_app_server_protocol::materialized_rollback_start;
 use codex_history::RolloutItem;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
@@ -196,33 +194,19 @@ pub async fn run_user_shell_command(
     command: String,
     timeout_ms: Option<u64>,
 ) {
-    if let Some((turn_context, cancellation_token)) =
-        sess.active_turn_context_and_cancellation_token().await
-    {
-        let session = Arc::clone(sess);
-        tokio::spawn(async move {
-            execute_user_shell_command(
-                session,
-                turn_context,
-                command,
-                timeout_ms,
-                cancellation_token,
-                UserShellCommandMode::ActiveTurnAuxiliary,
-            )
-            .await;
-        });
-        return;
-    }
-
-    let turn_context = sess
-        .new_turn_with_default_settings(sub_id, Default::default())
-        .await;
-    sess.spawn_task(
-        turn_context,
-        Vec::new(),
-        UserShellCommandTask::new(command, timeout_ms),
-    )
-    .await;
+    let (turn_context, placement) = match sess.active_turn_context_and_cancellation_token().await {
+        Some((turn_context, _cancellation_token)) => {
+            (turn_context, UserShellCommandPlacement::ActiveTurn)
+        }
+        None => (
+            sess.new_default_turn_with_sub_id(sub_id).await,
+            UserShellCommandPlacement::Detached,
+        ),
+    };
+    let session = Arc::clone(sess);
+    tokio::spawn(async move {
+        execute_user_shell_command(session, turn_context, command, timeout_ms, placement).await;
+    });
 }
 
 pub async fn resolve_elicitation(

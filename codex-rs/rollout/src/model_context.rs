@@ -103,6 +103,13 @@ impl ModelContextScan {
                 // duplicating rollback survival semantics in this bounded selector.
                 self.must_scan_to_start = true;
             }
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if matches!(
+                    &event.item,
+                    TurnItem::CommandExecution(command)
+                        if command.source
+                            == codex_protocol::protocol::ExecCommandSource::UserShell
+                ) => {}
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
                 if self.active_segment.turn_id.is_none() {
                     self.active_segment.turn_id = Some(event.turn_id.clone());

@@ -790,6 +790,17 @@ impl ChatWidget {
             SlashCommand::Pwd => {
                 self.add_error_message("Usage: /pwd".to_string());
             }
+            SlashCommand::Ps => {
+                self.add_error_message("Usage: /ps".to_string());
+            }
+            SlashCommand::Stop => match trimmed.parse::<i32>() {
+                Ok(process_id) if process_id > 0 => {
+                    self.submit_op(AppCommand::terminate_background_terminal(process_id));
+                }
+                _ => {
+                    self.add_error_message("Usage: /stop <process-id>".to_string());
+                }
+            },
             SlashCommand::Usage => {
                 if self.ensure_usage_command_available() {
                     match tokens::TokenActivityView::parse(trimmed) {

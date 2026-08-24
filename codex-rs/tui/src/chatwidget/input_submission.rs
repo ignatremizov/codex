@@ -202,7 +202,10 @@ impl ChatWidget {
         match user_message.text.strip_prefix('!') {
             Some(command) => {
                 let history_text = user_message.text.clone();
-                self.submit_shell_command_with_history(command, &history_text)
+                let _ = self.submit_shell_command_with_history(command, &history_text);
+                // User shell commands are detached background work, so a
+                // queued command must not hold later queued model input.
+                QueueDrain::Continue
             }
             None => {
                 self.submit_user_message(user_message);

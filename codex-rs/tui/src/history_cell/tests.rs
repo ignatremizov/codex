@@ -811,10 +811,12 @@ async fn session_info_hides_tooltips_when_disabled() {
 fn ps_output_multiline_snapshot() {
     let cell = new_unified_exec_processes_output(vec![
         UnifiedExecProcessDetails {
+            process_id: "1000".to_string(),
             command_display: "echo hello\nand then some extra text".to_string(),
             recent_chunks: vec!["hello".to_string(), "done".to_string()],
         },
         UnifiedExecProcessDetails {
+            process_id: "1001".to_string(),
             command_display: "rg \"foo\" src".to_string(),
             recent_chunks: vec!["src/main.rs:12:foo".to_string()],
         },
@@ -854,6 +856,7 @@ fn cyber_policy_error_event_narrow_snapshot() {
 #[test]
 fn ps_output_long_command_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: String::from(
             "rg \"foo\" src --glob '**/*.rs' --max-count 1000 --no-ignore --hidden --follow --glob '!target/**'",
         ),
@@ -866,6 +869,7 @@ fn ps_output_long_command_snapshot() {
 #[test]
 fn ps_output_halfwidth_sound_marks_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: "echo ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string(),
         recent_chunks: vec!["output ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string()],
     }]);
@@ -883,6 +887,7 @@ fn ps_output_preserves_full_multiline_command_snapshot() {
         .collect::<Vec<_>>()
         .join("\n");
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display,
         recent_chunks: Vec::new(),
     }]);
@@ -895,6 +900,7 @@ fn ps_output_many_sessions_snapshot() {
     let cell = new_unified_exec_processes_output(
         (0..20)
             .map(|idx| UnifiedExecProcessDetails {
+                process_id: (1000 + idx).to_string(),
                 command_display: format!("command {idx}"),
                 recent_chunks: Vec::new(),
             })
@@ -907,6 +913,7 @@ fn ps_output_many_sessions_snapshot() {
 #[test]
 fn ps_output_chunk_leading_whitespace_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: "just fix".to_string(),
         recent_chunks: vec![
             "  indented first".to_string(),
@@ -920,6 +927,7 @@ fn ps_output_chunk_leading_whitespace_snapshot() {
 #[test]
 fn ps_output_wraps_recent_chunks_without_inline_truncation_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
+        process_id: "1000".to_string(),
         command_display: "tail -f app.log".to_string(),
         recent_chunks: vec![
             "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega".to_string(),
@@ -937,6 +945,7 @@ fn ps_output_caps_wrapped_recent_chunk_rows() {
         .join(" ");
     let cell = new_unified_exec_processes_output_with_limit(
         vec![UnifiedExecProcessDetails {
+            process_id: "1000".to_string(),
             command_display: "tail -f generated.json".to_string(),
             recent_chunks: vec![chunk],
         }],

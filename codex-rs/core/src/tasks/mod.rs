@@ -67,8 +67,7 @@ pub(crate) use review::ReviewTask;
 use startup::TaskStartupCompletionGuard;
 pub(crate) use startup::TaskStartupState;
 use startup::wait_for_task_completion_with_grace;
-pub(crate) use user_shell::UserShellCommandMode;
-pub(crate) use user_shell::UserShellCommandTask;
+pub(crate) use user_shell::UserShellCommandPlacement;
 pub(crate) use user_shell::execute_user_shell_command;
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;

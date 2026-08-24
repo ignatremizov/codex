@@ -126,6 +126,7 @@ pub(crate) mod slash_commands;
 pub(crate) use agent_target_popup::AGENT_TARGET_ACTION_CHOICES;
 pub(crate) use agent_target_popup::AgentPromptTarget;
 pub(crate) use agent_target_popup::is_agent_target_action;
+pub(crate) use command_popup::BackgroundTerminalCompletion;
 pub(crate) use footer::CollaborationModeIndicator;
 pub(crate) use footer::GoalStatusIndicator;
 #[cfg(test)]
@@ -1460,11 +1461,25 @@ impl BottomPane {
     ///
     /// The summary may be displayed inline in the status row or as a dedicated
     /// footer row depending on whether a status indicator is currently visible.
-    pub(crate) fn set_unified_exec_processes(&mut self, processes: Vec<String>) {
-        if self.unified_exec_footer.set_processes(processes) {
+    pub(crate) fn set_unified_exec_processes(
+        &mut self,
+        processes: Vec<BackgroundTerminalCompletion>,
+    ) {
+        self.composer.set_background_terminals(
+            processes
+                .iter()
+                .filter(|process| process.process_id.parse::<i32>().is_ok())
+                .cloned()
+                .collect(),
+        );
+        let process_labels = processes
+            .into_iter()
+            .map(|process| process.command_display)
+            .collect();
+        if self.unified_exec_footer.set_processes(process_labels) {
             self.sync_status_inline_message();
-            self.request_redraw();
         }
+        self.request_redraw();
     }
 
     /// Update hook activity after the lifecycle reveal delay, even outside a turn.
@@ -2902,7 +2917,10 @@ mod tests {
         let width = 120;
         let before = pane.desired_height(width);
 
-        pane.set_unified_exec_processes(vec!["sleep 5".to_string()]);
+        pane.set_unified_exec_processes(vec![BackgroundTerminalCompletion {
+            process_id: "12345".to_string(),
+            command_display: "sleep 5".to_string(),
+        }]);
         let after = pane.desired_height(width);
 
         assert_eq!(after, before);

@@ -6038,12 +6038,6 @@
       "description": "Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.",
       "type": "boolean"
     },
-    "exec_command_timeout_ms": {
-      "description": "Default timeout for shell commands in milliseconds when no per-call timeout is provided.",
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
-    },
     "experimental_compact_prompt_file": {
       "$ref": "#/definitions/AbsolutePathBuf"
     },

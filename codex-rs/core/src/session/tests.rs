@@ -84,6 +84,7 @@ use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::request_permissions::PermissionGrantScope;
@@ -104,7 +105,7 @@ use crate::state::ActiveTurn;
 use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskResult;
-use crate::tasks::UserShellCommandMode;
+use crate::tasks::UserShellCommandPlacement;
 use crate::tasks::execute_user_shell_command;
 use crate::tools::ToolRouter;
 use crate::tools::context::ToolInvocation;
@@ -1622,8 +1623,7 @@ async fn user_shell_commands_do_not_inherit_managed_network_proxy() -> anyhow::R
         turn_context,
         command,
         /*timeout_ms*/ None,
-        CancellationToken::new(),
-        UserShellCommandMode::StandaloneTurn,
+        UserShellCommandPlacement::Detached,
     )
     .await;
 
@@ -1657,8 +1657,7 @@ async fn user_shell_commands_remain_login_shells_when_model_login_shells_are_dis
         turn_context,
         command,
         /*timeout_ms*/ None,
-        CancellationToken::new(),
-        UserShellCommandMode::StandaloneTurn,
+        UserShellCommandPlacement::Detached,
     )
     .await;
 
@@ -13033,14 +13032,18 @@ async fn run_user_shell_command_does_not_set_reference_context_item() {
             .await
             .expect("timeout waiting for event")
             .expect("event");
-        if matches!(evt.msg, EventMsg::TurnComplete(_)) {
+        if matches!(
+            evt.msg,
+            EventMsg::ExecCommandEnd(ref event)
+                if event.source == ExecCommandSource::UserShell
+        ) {
             break;
         }
     }
 
     assert!(
         session.reference_context_item().await.is_none(),
-        "standalone shell tasks should not mutate previous context"
+        "detached shell commands should not mutate previous context"
     );
 }
 
