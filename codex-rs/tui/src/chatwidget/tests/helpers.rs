@@ -969,6 +969,16 @@ pub(super) fn begin_exec_with_source(
     raw_cmd: &str,
     source: ExecCommandSource,
 ) -> AppServerThreadItemPayload {
+    begin_exec_with_source_and_process_id(chat, call_id, raw_cmd, source, /*process_id*/ None)
+}
+
+pub(super) fn begin_exec_with_source_and_process_id(
+    chat: &mut ChatWidget,
+    call_id: &str,
+    raw_cmd: &str,
+    source: ExecCommandSource,
+    process_id: Option<&str>,
+) -> AppServerThreadItemPayload {
     // Build the full command vec and parse it using core's parser,
     // then convert to protocol variants for the event payload.
     let command = vec!["bash".to_string(), "-lc".to_string(), raw_cmd.to_string()];
@@ -982,7 +992,7 @@ pub(super) fn begin_exec_with_source(
         id: call_id.to_string(),
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone().into(),
-        process_id: None,
+        process_id: process_id.map(str::to_string),
         plugin_id: None,
         script_path: None,
         source,

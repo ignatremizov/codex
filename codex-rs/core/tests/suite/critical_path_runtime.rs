@@ -12,6 +12,9 @@ use codex_extension_api::ToolContributor;
 use codex_features::Feature;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnEnvironmentRequests;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
 use codex_tools::JsonToolOutput;
 use codex_tools::ToolCall;
@@ -20,9 +23,13 @@ use codex_tools::ToolExecutorFuture;
 use codex_tools::ToolName;
 use codex_tools::ToolOutput;
 use codex_tools::ToolSpec;
+use core_test_support::PathExt;
 use core_test_support::responses;
+use core_test_support::submit_thread_settings;
+use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
@@ -215,7 +222,7 @@ async fn critical_path_follows_runtime_admission(
 }
 
 #[tokio::test]
-async fn standalone_user_shell_omits_uncaptured_path() -> anyhow::Result<()> {
+async fn detached_user_shell_does_not_create_a_turn_timing_path() -> anyhow::Result<()> {
     core_test_support::skip_if_target_windows!(Ok(()), "Unix shell workload");
     let server = responses::start_mock_server().await;
     let test = test_codex()
@@ -225,27 +232,81 @@ async fn standalone_user_shell_omits_uncaptured_path() -> anyhow::Result<()> {
                 .enable(Feature::CriticalPathTiming)
                 .expect("critical-path capture is configurable");
         })
-        .build_with_auto_env(&server)
+        .build_with_remote_and_local_env(&server)
         .await?;
+    let local_cwd = test.cwd_path().abs();
+    let mut environments = vec![local(local_cwd.clone())];
+    if test.executor_environment().environment().is_remote() {
+        environments.insert(0, test.executor_environment().selection().clone());
+    }
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            environments: Some(TurnEnvironmentRequests::new(
+                local_cwd,
+                environments
+                    .into_iter()
+                    .map(TurnEnvironmentSelection::into_request)
+                    .collect(),
+            )),
+            ..Default::default()
+        },
+    )
+    .await?;
     test.codex
         .submit(Op::RunUserShellCommand {
             command: "sleep 30".to_string(),
             timeout_ms: None,
         })
         .await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::ExecCommandBegin(_))
+    let begin = wait_for_event_match(&test.codex, |event| {
+        assert!(
+            !matches!(
+                event,
+                EventMsg::TurnStarted(_) | EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+            ),
+            "detached shell activity must not create a model-turn lifecycle"
+        );
+        match event {
+            EventMsg::ExecCommandBegin(begin) => Some(begin.clone()),
+            _ => None,
+        }
     })
     .await;
-    let observe = codex_core::test_support::observe_turn_timing(&test.codex)
-        .await
-        .expect("active turn");
-    test.codex.submit(Op::Interrupt).await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnAborted(_))
+    assert!(
+        codex_core::test_support::observe_turn_timing(&test.codex)
+            .await
+            .is_none(),
+        "detached shell activity has no active model-turn timing path"
+    );
+    let processes = test.codex.list_background_terminals().await;
+    assert_eq!(processes.len(), 1);
+    assert_eq!(processes[0].item_id, begin.call_id);
+    assert_eq!(Some(&processes[0].process_id), begin.process_id.as_ref());
+    assert!(
+        test.codex
+            .terminate_background_terminal(processes[0].process_id.parse::<i32>()?)
+            .await
+    );
+    let end = wait_for_event_match(&test.codex, |event| {
+        assert!(
+            !matches!(
+                event,
+                EventMsg::TurnStarted(_) | EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+            ),
+            "stopping a detached shell must not terminate a model turn"
+        );
+        match event {
+            EventMsg::ExecCommandEnd(end) if end.call_id == begin.call_id => Some(end.clone()),
+            _ => None,
+        }
     })
     .await;
-    let now = Instant::now();
-    assert_eq!(observe(now, now), None);
+    assert_eq!(end.process_id, begin.process_id);
+    assert!(
+        codex_core::test_support::observe_turn_timing(&test.codex)
+            .await
+            .is_none()
+    );
     Ok(())
 }

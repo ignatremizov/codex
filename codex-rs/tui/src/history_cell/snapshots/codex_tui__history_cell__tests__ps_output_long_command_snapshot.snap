@@ -1,5 +1,6 @@
 ---
-source: tui/src/history_cell.rs
+source: tui/src/history_cell/tests.rs
+assertion_line: 1008
 expression: rendered
 ---
 /ps
@@ -11,3 +12,4 @@ Background terminals
     --hidden --follow --glob '!
     target/**'
     ↳ searching...
+    id 1000

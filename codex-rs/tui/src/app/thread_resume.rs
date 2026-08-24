@@ -22,6 +22,7 @@ impl App {
             | AppCommand::RunUserShellCommand { .. }
             | AppCommand::ActivateMcpServer { .. }
             | AppCommand::CleanBackgroundTerminals
+            | AppCommand::TerminateBackgroundTerminal { .. }
             | AppCommand::OverrideTurnContext { .. }
             | AppCommand::ApproveGuardianDeniedAction { .. }
             | AppCommand::Interrupt => true,
