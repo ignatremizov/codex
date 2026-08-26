@@ -111,14 +111,24 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
 
     while let Some(error) = source {
         let message = error.to_string().to_ascii_lowercase();
-        if [
+        // Certificate trust failures veto fallback even if another source reports a protocol
+        // alert. Keep this decision separate from transport failure classification.
+        if matches!(
+            error.downcast_ref::<rustls::Error>(),
+            Some(rustls::Error::InvalidCertificate(_))
+        ) || [
             "certificate",
             "unknown issuer",
+            "unknownissuer",
             "unknown ca",
             "untrusted",
             "self signed",
             "self-signed",
             "hostname",
+            "not valid for name",
+            "notvalidforname",
+            "not valid yet",
+            "notvalidyet",
             "expired",
             "revoked",
         ]
@@ -132,6 +142,9 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
         let is_macos_protocol_version_error = message.contains("bad protocol version");
         // Linux OpenSSL reports the peer's "tlsv1 alert protocol version".
         let is_linux_protocol_version_error = message.contains("tlsv1 alert protocol version");
+        // Rustls exposes the same peer alert as "received fatal alert: protocol version".
+        let is_rustls_protocol_version_error =
+            message.contains("protocol version") || message.contains("protocolversion");
         // Windows Schannel may expose the protocol alert as a raw or formatted OS error.
         let is_schannel_protocol_version_error = error
             .downcast_ref::<std::io::Error>()
@@ -141,6 +154,7 @@ fn has_retryable_tls_error(error: &(dyn Error + 'static)) -> bool {
             || message.contains("0x80090302");
         if is_macos_protocol_version_error
             || is_linux_protocol_version_error
+            || is_rustls_protocol_version_error
             || is_schannel_protocol_version_error
         {
             recognized_negotiation_failure = true;
