@@ -20,6 +20,92 @@ use tracing_subscriber::layer::SubscriberExt;
 use super::*;
 use crate::OutboundProxyPolicy;
 
+/// Models a connector whose public message does not repeat its certificate error.
+#[derive(Debug, thiserror::Error)]
+#[error("connector failed")]
+struct ConnectorError {
+    #[source]
+    source: io::Error,
+}
+
+#[test]
+fn request_failures_classify_nested_certificate_messages() {
+    for (message, expected) in [
+        ("invalid peer certificate", RouteFailureClass::TlsError),
+        ("UnknownIssuer", RouteFailureClass::TlsError),
+        ("unknown issuer", RouteFailureClass::TlsError),
+        ("CERTIFICATE VERIFY FAILED", RouteFailureClass::TlsError),
+        ("certificate validation failed", RouteFailureClass::TlsError),
+        (
+            "tunnel error: proxy authorization required",
+            RouteFailureClass::ProxyAuthenticationRequired,
+        ),
+        (
+            "connection refused",
+            RouteFailureClass::ProxyResolutionUnavailable,
+        ),
+    ] {
+        let error = RouteAwareRequestError::Route(RouteAwareClientPoolError::Resolve(
+            io::Error::other(ConnectorError {
+                source: io::Error::other(message),
+            }),
+        ));
+        assert_eq!(error.failure_class(), Some(expected), "{message}");
+    }
+}
+
+#[test]
+fn request_failures_preserve_typed_certificate_and_timeout_classification() {
+    for certificate_error in [
+        rustls::CertificateError::UnknownIssuer,
+        rustls::CertificateError::NotValidForName,
+        rustls::CertificateError::NotValidYet,
+    ] {
+        let error = RouteAwareRequestError::Route(RouteAwareClientPoolError::Resolve(
+            io::Error::other(rustls::Error::InvalidCertificate(certificate_error)),
+        ));
+        assert_eq!(error.failure_class(), Some(RouteFailureClass::TlsError));
+    }
+    assert_eq!(
+        RouteAwareRequestError::Timeout.failure_class(),
+        Some(RouteFailureClass::ConnectTimeout)
+    );
+}
+
+#[tokio::test]
+async fn request_url_certificate_markers_do_not_override_status_classification() {
+    let (address, server) = spawn_response_server(vec![
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_string(),
+        "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_string(),
+    ]);
+    let client = HttpClientBuilder::new()
+        .build_direct()
+        .expect("direct client should build");
+    for expected in [None, Some(RouteFailureClass::ProxyAuthenticationRequired)] {
+        let error = client
+            .get(format!(
+                "http://{address}/unknownissuer/invalid-certificate"
+            ))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+            .expect("fixture should respond")
+            .error_for_status()
+            .expect_err("fixture status should fail");
+        assert!(error.to_string().contains("unknownissuer"));
+        assert_eq!(
+            RouteAwareRequestError::Request(error).failure_class(),
+            expected
+        );
+    }
+    assert_eq!(
+        server.join().expect("status fixture should finish").len(),
+        2
+    );
+}
+
 #[tokio::test]
 async fn request_failures_classify_real_untrusted_certificate_handshakes() {
     codex_utils_rustls_provider::ensure_rustls_crypto_provider();
@@ -50,7 +136,8 @@ async fn request_failures_classify_real_untrusted_certificate_handshakes() {
     let pool = RouteAwareClientPool::new_without_request_logging(
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         ClientRouteClass::Api,
-    );
+    )
+    .with_tls_backend_fallback();
 
     let request = pool
         .get(format!("https://localhost:{}/", address.port()))
