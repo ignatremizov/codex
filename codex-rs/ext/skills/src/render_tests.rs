@@ -213,8 +213,70 @@ fn catalog_budget_uses_context_percentage_or_character_fallback() {
     );
     assert_eq!(
         skill_metadata_budget(/*context_window*/ None, NonZeroUsize::new(50_000)),
-        SkillMetadataBudget::Tokens(10_000)
+        SkillMetadataBudget::Tokens(50_000)
     );
+}
+
+#[test]
+fn explicit_large_budget_preserves_the_complete_rendered_catalog() {
+    let requested_tokens = 50_000;
+    let skill_count = 64;
+    let description = "é".repeat(MAX_CATALOG_SKILL_DESCRIPTION_CHARS);
+    let catalog = SkillCatalog {
+        entries: (0..skill_count)
+            .map(|index| {
+                entry(
+                    &format!("large-skill-{index:02}"),
+                    &description,
+                    /*short_description*/ None,
+                )
+            })
+            .collect(),
+        warnings: Vec::new(),
+    };
+    let expected_lines = (0..skill_count)
+        .map(|index| {
+            format!(
+                "- large-skill-{index:02}: {description} (file: /skills/large-skill-{index:02}/SKILL.md)"
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected_body =
+        render_available_skills_body(SkillPromptKind::Unaliased, &[], &expected_lines);
+    let expected_report = SkillRenderReport {
+        total_count: skill_count,
+        included_count: skill_count,
+        omitted_count: 0,
+        truncated_description_chars: 0,
+        truncated_description_count: 0,
+    };
+    let metadata_cost = expected_lines
+        .iter()
+        .map(|line| metadata_line_cost(SkillMetadataBudget::Tokens(requested_tokens), line))
+        .sum::<usize>();
+    assert!(metadata_cost > 10_000 && metadata_cost <= requested_tokens);
+
+    for policy in [
+        SkillCatalogRenderPolicy::CoreCompatible,
+        SkillCatalogRenderPolicy::ExtensionCompatible,
+    ] {
+        for context_window in [None, Some(100_000)] {
+            let budget = skill_metadata_budget(context_window, NonZeroUsize::new(requested_tokens));
+            let render = render_available_skills(
+                &catalog, policy, budget, /*include_skills_usage_instructions*/ false,
+            )
+            .expect("explicit budget should retain the catalog");
+            assert_eq!(render.report, expected_report);
+            assert_eq!(render.skill_lines, expected_lines);
+            let body = render
+                .into_fragment(/*include_skills_usage_instructions*/ false)
+                .expect("complete catalog should produce a fragment")
+                .body();
+            assert_eq!(body, expected_body);
+            let rendered_tokens = approx_token_count(&body);
+            assert!(rendered_tokens > 10_000 && rendered_tokens <= requested_tokens);
+        }
+    }
 }
 
 #[test]
