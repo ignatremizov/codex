@@ -14,6 +14,8 @@ fn recognizes_platform_specific_tls_protocol_negotiation_failures() {
     let errors = [
         ("client error (Connect): bad protocol version", true),
         ("BAD PROTOCOL VERSION", true),
+        ("received fatal alert: protocol version", true),
+        ("AlertReceived(ProtocolVersion)", true),
         (
             "error:0A00042E:SSL routines:ssl3_read_bytes:tlsv1 alert protocol version",
             true,
