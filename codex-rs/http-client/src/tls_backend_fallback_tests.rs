@@ -9,11 +9,22 @@ use super::has_retryable_tls_error;
 use crate::HttpClientBuilder;
 use crate::OutboundProxyRoute;
 
+/// Keeps this layer's display independent from its underlying cause.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+struct ErrorLayer {
+    message: &'static str,
+    #[source]
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
 #[test]
 fn recognizes_platform_specific_tls_protocol_negotiation_failures() {
     let errors = [
         ("client error (Connect): bad protocol version", true),
         ("BAD PROTOCOL VERSION", true),
+        ("received fatal alert: protocol version", true),
+        ("AlertReceived(ProtocolVersion)", true),
         (
             "error:0A00042E:SSL routines:ssl3_read_bytes:tlsv1 alert protocol version",
             true,
@@ -90,6 +101,81 @@ fn certificate_errors_in_an_error_source_never_enable_fallback() {
 
         assert!(!has_retryable_tls_error(&error), "{message}");
     }
+}
+
+#[test]
+fn trust_failures_veto_protocol_fallback_in_either_source_order() {
+    for trust_failure in [
+        "certificate validation failed",
+        "UnknownIssuer",
+        "NotValidForName",
+        "NotValidYet",
+        "not valid for name",
+        "not valid yet",
+        "hostname mismatch",
+        "certificate expired",
+        "certificate revoked",
+    ] {
+        for protocol_failure in [
+            "bad protocol version",
+            "tlsv1 alert protocol version",
+            "AlertReceived(ProtocolVersion)",
+            "Schannel protocol error 0x80090302",
+        ] {
+            for (outer, inner) in [
+                (protocol_failure, trust_failure),
+                (trust_failure, protocol_failure),
+            ] {
+                let error = ErrorLayer {
+                    message: outer,
+                    source: Box::new(io::Error::other(inner)),
+                };
+                assert_eq!(error.to_string(), outer);
+                assert!(
+                    !has_retryable_tls_error(&error),
+                    "{outer} with source {inner}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_certificate_failures_veto_an_outer_protocol_alert() {
+    for certificate_error in [
+        rustls::CertificateError::UnknownIssuer,
+        rustls::CertificateError::NotValidForName,
+        rustls::CertificateError::NotValidYet,
+        rustls::CertificateError::Expired,
+        rustls::CertificateError::Revoked,
+    ] {
+        let error = ErrorLayer {
+            message: "received fatal alert: protocol version",
+            source: Box::new(rustls::Error::InvalidCertificate(certificate_error)),
+        };
+        assert!(!has_retryable_tls_error(&error), "{error:?}");
+    }
+}
+
+#[test]
+fn nontrust_wrappers_preserve_protocol_fallback_in_either_source_order() {
+    let protocol_error = rustls::Error::AlertReceived(rustls::AlertDescription::ProtocolVersion);
+    assert!(has_retryable_tls_error(&protocol_error));
+    let nested_protocol = ErrorLayer {
+        message: "TLS connector failed",
+        source: Box::new(protocol_error),
+    };
+    let outer_protocol = ErrorLayer {
+        message: "AlertReceived(ProtocolVersion)",
+        source: Box::new(io::Error::other("TLS connector failed")),
+    };
+    assert_eq!(
+        (
+            has_retryable_tls_error(&nested_protocol),
+            has_retryable_tls_error(&outer_protocol),
+        ),
+        (true, true)
+    );
 }
 
 #[test]
