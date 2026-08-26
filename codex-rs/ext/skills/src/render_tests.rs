@@ -213,7 +213,7 @@ fn catalog_budget_uses_context_percentage_or_character_fallback() {
     );
     assert_eq!(
         skill_metadata_budget(/*context_window*/ None, NonZeroUsize::new(50_000)),
-        SkillMetadataBudget::Tokens(10_000)
+        SkillMetadataBudget::Tokens(50_000)
     );
 }
 
