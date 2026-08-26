@@ -4136,7 +4136,7 @@
           "type": "boolean"
         },
         "max_context_tokens": {
-          "description": "Maximum tokens used by the available-skills catalog. Defaults to 2% of the model context window and is capped at 10,000 tokens when set.",
+          "description": "Maximum tokens used by the available-skills catalog. Defaults to 2% of the model context window. An explicit value is used as configured.",
           "format": "uint",
           "minimum": 1.0,
           "type": "integer"
