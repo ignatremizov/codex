@@ -41,7 +41,7 @@ use crate::tui;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::CODEX_CLI_VERSION_FOR_DISPLAY;
 
 const STARTUP_EVENT_BATCH_SIZE: usize = 64;
 const STARTUP_PASTE_NEWLINE_TIMEOUT: Duration = Duration::from_millis(120);
@@ -473,7 +473,7 @@ fn startup_session_header(cwd: Option<&Path>) -> Box<dyn HistoryCell> {
         "loading".to_string(),
         /*reasoning_effort*/ None,
         cwd.map_or_else(|| PathBuf::from("loading"), Path::to_path_buf),
-        CODEX_CLI_VERSION,
+        CODEX_CLI_VERSION_FOR_DISPLAY,
     ))
 }
 
