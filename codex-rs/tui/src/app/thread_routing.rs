@@ -1772,6 +1772,15 @@ impl App {
         response: &ThreadRollbackResponse,
     ) {
         let is_active = self.active_thread_id == Some(thread_id);
+        let rollout_path = response.thread.path.clone();
+        if is_active {
+            self.chat_widget.update_rollout_path(rollout_path.clone());
+        }
+        if self.primary_thread_id == Some(thread_id)
+            && let Some(session) = self.primary_session_configured.as_mut()
+        {
+            session.rollout_path = rollout_path.clone();
+        }
         let old_receiver = if is_active {
             self.active_thread_rx.take()
         } else {
@@ -1798,6 +1807,9 @@ impl App {
             .map(|channel| Arc::clone(&channel.store));
         if let Some(store) = store {
             let mut store = store.lock().await;
+            if let Some(session) = store.session.as_mut() {
+                session.rollout_path = rollout_path;
+            }
             store.apply_thread_rollback(response);
         }
 

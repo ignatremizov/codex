@@ -20,11 +20,20 @@ use crate::keymap::RuntimeKeymapFeatures;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::session_resume::cwds_differ;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadRollbackResponse;
 #[cfg(target_os = "windows")]
 use codex_config::types::WindowsSandboxModeToml;
 
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
+
+enum BacktrackHistoryMutation {
+    Refreshed(Box<ThreadRollbackResponse>),
+    CommittedRefreshRequired {
+        fallback_response: Box<ThreadRollbackResponse>,
+    },
+    OutcomeUnknownRefreshRequired,
+}
 
 impl App {
     pub(super) async fn handle_event(
@@ -482,8 +491,21 @@ impl App {
                         source.as_ref(),
                         &mut prompt,
                     ) {
-                        Ok(target) => {
-                            match crate::app_backtrack::truncate_turns_for_rollback_fallback(
+                        Ok(target) => match thread.history_mode {
+                            ThreadHistoryMode::Paginated => {
+                                let response = app_server
+                                    .thread_revert_for_backtrack(
+                                        &self.config,
+                                        thread_id,
+                                        target.expected_start_turn_id,
+                                    )
+                                    .await;
+                                response.map(|response| {
+                                    BacktrackHistoryMutation::Refreshed(Box::new(response))
+                                })
+                            }
+                            ThreadHistoryMode::Legacy => {
+                                match crate::app_backtrack::truncate_turns_for_rollback_fallback(
                                 &mut thread.turns,
                                 &target,
                             ) {
@@ -497,22 +519,39 @@ impl App {
                                             target.expected_turn_count,
                                         )
                                         .await;
-                                    rollback.map(|outcome| (outcome, fallback_response))
+                                    rollback.map(|outcome| match outcome {
+                                        ThreadRollbackOutcome::Refreshed(response) => {
+                                            BacktrackHistoryMutation::Refreshed(response)
+                                        }
+                                        ThreadRollbackOutcome::CommittedRefreshRequired => {
+                                            BacktrackHistoryMutation::CommittedRefreshRequired {
+                                                fallback_response: Box::new(fallback_response),
+                                            }
+                                        }
+                                        ThreadRollbackOutcome::OutcomeUnknownRefreshRequired => {
+                                            BacktrackHistoryMutation::OutcomeUnknownRefreshRequired
+                                        }
+                                    })
                                 }
                                 Err(err) => Err(err),
                             }
-                        }
+                            }
+                        },
                         Err(err) => Err(err),
                     },
                     Err(err) => Err(err),
                 };
                 match rollback {
-                    Ok((ThreadRollbackOutcome::Refreshed(response), _)) => {
+                    Ok(BacktrackHistoryMutation::Refreshed(response)) => {
                         self.chat_widget.restore_user_message_to_composer(prompt);
+                        self.scrollback_has_older_history =
+                            app_server.has_older_history(thread_id);
                         self.handle_backtrack_thread_rollback_response(thread_id, &response)
                             .await;
                     }
-                    Ok((ThreadRollbackOutcome::CommittedRefreshRequired, fallback_response)) => {
+                    Ok(BacktrackHistoryMutation::CommittedRefreshRequired {
+                        fallback_response,
+                    }) => {
                         self.chat_widget.restore_user_message_to_composer(prompt);
                         self.handle_backtrack_thread_rollback_response(
                             thread_id,
@@ -520,7 +559,7 @@ impl App {
                         )
                         .await;
                     }
-                    Ok((ThreadRollbackOutcome::OutcomeUnknownRefreshRequired, _)) => {
+                    Ok(BacktrackHistoryMutation::OutcomeUnknownRefreshRequired) => {
                         self.restore_backtrack_prompt_after_unknown_rollback(prompt);
                     }
                     Err(err) => {

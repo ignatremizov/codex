@@ -62,7 +62,9 @@ use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
+use crate::history_cell::UserMessageSource;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
@@ -7264,6 +7266,40 @@ fn test_thread_rollback_response(
     }
 }
 
+fn test_session_info_cell(app: &App, is_first_event: bool) -> Arc<dyn HistoryCell> {
+    let session = ThreadSessionState {
+        thread_id: ThreadId::new(),
+        forked_from_id: None,
+        fork_parent_title: None,
+        thread_name: None,
+        model: "gpt-test".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+        permission_profile: PermissionProfile::read_only(),
+        active_permission_profile: None,
+        cwd: test_path_buf("/home/user/project").abs(),
+        runtime_workspace_roots: Vec::new(),
+        instruction_source_paths: Vec::new(),
+        reasoning_effort: None,
+        collaboration_mode: None,
+        personality: None,
+        message_history: None,
+        network_proxy: None,
+        rollout_path: Some(PathBuf::new()),
+    };
+    Arc::new(new_session_info(
+        app.chat_widget.config_ref(),
+        app.chat_widget.current_model(),
+        &session,
+        is_first_event,
+        /*tooltip_override*/ None,
+        /*auth_plan*/ None,
+        /*show_fast_status*/ false,
+    ))
+}
+
 fn turn_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
     ServerNotification::TurnStarted(TurnStartedNotification {
         thread_id: thread_id.to_string(),
@@ -7748,40 +7784,6 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
         )) as Arc<dyn HistoryCell>
     };
 
-    let make_header = |is_first| {
-        let session = ThreadSessionState {
-            thread_id: ThreadId::new(),
-            forked_from_id: None,
-            fork_parent_title: None,
-            thread_name: None,
-            model: "gpt-test".to_string(),
-            model_provider_id: "test-provider".to_string(),
-            service_tier: None,
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: ApprovalsReviewer::User,
-            permission_profile: PermissionProfile::read_only(),
-            active_permission_profile: None,
-            cwd: test_path_buf("/home/user/project").abs(),
-            runtime_workspace_roots: Vec::new(),
-            instruction_source_paths: Vec::new(),
-            reasoning_effort: None,
-            collaboration_mode: None,
-            personality: None,
-            message_history: None,
-            network_proxy: None,
-            rollout_path: Some(PathBuf::new()),
-        };
-        Arc::new(new_session_info(
-            app.chat_widget.config_ref(),
-            app.chat_widget.current_model(),
-            &session,
-            is_first,
-            /*tooltip_override*/ None,
-            /*auth_plan*/ None,
-            /*show_fast_status*/ false,
-        )) as Arc<dyn HistoryCell>
-    };
-
     let placeholder = "[Image #1]";
     let edited_text = format!("follow-up (edited) {placeholder}");
     let edited_range = edited_text.len().saturating_sub(placeholder.len())..edited_text.len();
@@ -7794,12 +7796,12 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
     // Simulate a transcript with duplicated history (e.g., from prior backtracks)
     // and an edited turn appended after a session header boundary.
     app.transcript_cells = vec![
-        make_header(true),
+        test_session_info_cell(&app, /*is_first_event*/ true),
         user_cell("first question", Vec::new(), Vec::new(), Vec::new()),
         agent_cell("answer first"),
         user_cell("follow-up", Vec::new(), Vec::new(), Vec::new()),
         agent_cell("answer follow-up"),
-        make_header(false),
+        test_session_info_cell(&app, /*is_first_event*/ false),
         user_cell("first question", Vec::new(), Vec::new(), Vec::new()),
         agent_cell("answer first"),
         user_cell(
@@ -7899,9 +7901,58 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch_when_
 }
 
 #[tokio::test]
+async fn backtrack_keeps_canonical_full_history_fork_prompt_editable() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget.handle_thread_session(test_thread_session(
+        thread_id,
+        test_path_buf("/tmp/project"),
+    ));
+    while app_event_rx.try_recv().is_ok() {}
+    let source = UserMessageSource {
+        item_id: "inherited-user-item".to_string(),
+        turn_id: "inherited-turn".to_string(),
+    };
+    app.transcript_cells = vec![
+        Arc::new(UserHistoryCell {
+            message: "inherited prompt".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+            source: Some(source.clone()),
+        }) as Arc<dyn HistoryCell>,
+        test_session_info_cell(&app, /*is_first_event*/ false),
+    ];
+    app.backtrack.base_id = Some(thread_id);
+    app.backtrack.primed = true;
+    app.backtrack.nth_user_message = 0;
+
+    assert_eq!(user_count(&app.transcript_cells), 1);
+    let selection = app
+        .confirm_backtrack_from_main()
+        .expect("inherited prompt should remain editable");
+    assert_eq!(selection.source, Some(source));
+
+    app.apply_backtrack_selection(selection);
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::RollbackSessionForPromptEdit { thread_id: selected_thread_id, .. })
+            if selected_thread_id == thread_id
+    );
+    app.handle_backtrack_rollback_succeeded();
+    assert_eq!(app.transcript_cells.len(), 1);
+    assert!(app.transcript_cells[0].as_any().is::<SessionInfoCell>());
+}
+
+#[tokio::test]
 async fn backtrack_rollback_response_rebases_store_and_replaces_event_transport() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.primary_session_configured = Some(test_thread_session(
+        thread_id,
+        test_path_buf("/tmp/project"),
+    ));
     let retained_turn = test_turn("turn-1", TurnStatus::Completed, Vec::new());
     let removed_turn = test_turn("turn-2", TurnStatus::Completed, Vec::new());
     app.thread_event_channels.insert(
@@ -7926,12 +7977,13 @@ async fn backtrack_rollback_response_rebases_store_and_replaces_event_transport(
     )
     .await
     .expect("stale event should enqueue");
+    let replacement_rollout_path = PathBuf::from("/tmp/reverted-rollout.jsonl");
+    let mut rollback_response =
+        test_thread_rollback_response(thread_id, vec![retained_turn.clone()]);
+    rollback_response.thread.path = Some(replacement_rollout_path.clone());
 
-    app.handle_backtrack_thread_rollback_response(
-        thread_id,
-        &test_thread_rollback_response(thread_id, vec![retained_turn.clone()]),
-    )
-    .await;
+    app.handle_backtrack_thread_rollback_response(thread_id, &rollback_response)
+        .await;
 
     let rx = app
         .active_thread_rx
@@ -7956,6 +8008,23 @@ async fn backtrack_rollback_response_rebases_store_and_replaces_event_transport(
         .await
         .snapshot();
     assert_eq!(snapshot.turns, vec![retained_turn]);
+    assert_eq!(
+        snapshot
+            .session
+            .as_ref()
+            .and_then(|session| session.rollout_path.as_ref()),
+        Some(&replacement_rollout_path)
+    );
+    assert_eq!(
+        app.primary_session_configured
+            .as_ref()
+            .and_then(|session| session.rollout_path.as_ref()),
+        Some(&replacement_rollout_path)
+    );
+    assert_eq!(
+        app.chat_widget.rollout_path().as_ref(),
+        Some(&replacement_rollout_path)
+    );
     assert_matches!(
         snapshot.events.as_slice(),
         [ThreadBufferedEvent::HistoryEntryResponse(HistoryLookupResponse::Entry {
