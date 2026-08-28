@@ -199,7 +199,7 @@ pub(crate) fn new_session_info(
         model_display_name.to_string(),
         session.reasoning_effort.clone(),
         config.cwd.to_path_buf(),
-        CODEX_CLI_VERSION,
+        crate::version::CODEX_CLI_VERSION_FOR_DISPLAY,
     )
     .with_yolo_mode(has_yolo_permissions(
         session.approval_policy,
