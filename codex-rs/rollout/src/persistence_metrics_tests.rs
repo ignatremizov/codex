@@ -330,6 +330,7 @@ fn projected_items_report_post_projection_bytes() {
                 cmd: "echo".to_string(),
             }],
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             interaction_input: None,
             status: CommandExecutionStatus::Completed,
             aggregated_output: Some(original_output),

@@ -55,6 +55,10 @@ pub enum TurnInput {
     // Preserve the existing serialized format while carrying injection API metadata
     // through the in-memory queue.
     ResponseItem(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
+    /// Local continuation signal for a shell result already canonically published and installed.
+    /// It carries no content or authority and must never be submitted through serialized input.
+    #[serde(skip)]
+    UserShellContextReady,
     InterAgentCommunication(InterAgentCommunication),
 }
 
@@ -324,6 +328,7 @@ impl InputQueue {
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::AgentInput { .. }
+                    | TurnInput::UserShellContextReady
                     | TurnInput::ResponseItem(_) => None,
                 })
                 .collect()
@@ -390,6 +395,7 @@ impl InputQueue {
                 TurnInput::ResponseItem(_) => !super::mcp_prompt::is_mcp_use_input(input),
                 TurnInput::UserInput { .. }
                 | TurnInput::AgentInput { .. }
+                | TurnInput::UserShellContextReady
                 | TurnInput::FunctionCallOutput(_) => true,
             })
     }
@@ -710,6 +716,7 @@ impl InputQueue {
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::AgentInput { .. }
                     | TurnInput::ResponseItem(_)
+                    | TurnInput::UserShellContextReady
                     | TurnInput::InterAgentCommunication(_) => None,
                 })
                 .collect::<Vec<_>>()
@@ -939,6 +946,7 @@ impl TurnInputQueue {
                 input,
                 TurnInput::UserInput { .. }
                     | TurnInput::AgentInput { .. }
+                    | TurnInput::UserShellContextReady
                     | TurnInput::FunctionCallOutput(_)
             )
         }) {

@@ -36,6 +36,7 @@ import type { McpToolCallStatus } from "./McpToolCallStatus";
 import type { MemoryCitation } from "./MemoryCitation";
 import type { PatchApplyStatus } from "./PatchApplyStatus";
 import type { SubAgentActivityKind } from "./SubAgentActivityKind";
+import type { ThreadShellCommandResponseHandling } from "./ThreadShellCommandResponseHandling";
 import type { UserInput } from "./UserInput";
 
 export type ThreadItem = { "type": "userMessage", id: string, clientId: string | null, content: Array<UserInput>, } | { "type": "hookPrompt", id: string, fragments: Array<HookPromptFragment>, } | { "type": "agentMessage", id: string, text: string, interAgentSource: InterAgentMessageSource | null, phase: MessagePhase | null, memoryCitation: MemoryCitation | null, delivery: AgentMessageDelivery | null, questions: Array<AsyncUserInputQuestion> | null, } | { "type": "functionCallOutput", id: string, name: string, namespace: string | null, output: FunctionCallOutputBody, } | { "type": "plan", id: string, text: string, } | { "type": "reasoning", id: string, summary: Array<string>, content: Array<string>, } | { "type": "commandExecution", id: string,
@@ -58,7 +59,12 @@ cwd: LegacyAppPathString,
 /**
  * Identifier for the underlying PTY process (when available).
  */
-processId: string | null, source: CommandExecutionSource, status: CommandExecutionStatus,
+processId: string | null, source: CommandExecutionSource,
+/**
+ * Completion delivery policy for a user-authored shell command.
+ * `None` for model-authored and unified-exec commands.
+ */
+userShellResponseHandling: ThreadShellCommandResponseHandling | null, status: CommandExecutionStatus,
 /**
  * A best-effort parsing of the command to understand the action(s) it will perform.
  * This returns a list of CommandAction objects because a single shell command may

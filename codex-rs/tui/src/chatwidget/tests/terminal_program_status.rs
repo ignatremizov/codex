@@ -47,6 +47,7 @@ async fn session_status_follows_existing_lifecycle_state() {
         key: "background-process".to_string(),
         call_id: "background-call".to_string(),
         command_display: "sleep 5".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
     });
     states.push(chat.desired_program_status());

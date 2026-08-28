@@ -259,6 +259,7 @@ fn full_queue_drops_only_the_failed_approval_envelope() {
         .try_send(QueuedSubmission {
             submission: submission("before", Op::Compact),
             approval: None,
+            user_shell_completion: None,
         })
         .expect("fill submission queue");
     let admission = Arc::new(SubmissionAdmission::default());
@@ -280,6 +281,7 @@ fn full_queue_drops_only_the_failed_approval_envelope() {
             QueuedSubmission {
                 submission: rejected,
                 approval: Some(claim),
+                user_shell_completion: None,
             },
         )
         .expect_err("full queue should reject before acceptance");
@@ -322,6 +324,7 @@ fn closed_queue_drops_the_failed_approval_envelope() {
             QueuedSubmission {
                 submission: approval_submission("rejected"),
                 approval: Some(claim),
+                user_shell_completion: None,
             },
         )
         .expect_err("closed queue should reject before acceptance");
@@ -339,6 +342,7 @@ async fn cancelling_a_blocked_approval_envelope_releases_its_claim() {
         .send(QueuedSubmission {
             submission: submission("before", Op::Compact),
             approval: None,
+            user_shell_completion: None,
         })
         .await
         .expect("fill submission queue");
@@ -359,6 +363,7 @@ async fn cancelling_a_blocked_approval_envelope_releases_its_claim() {
         QueuedSubmission {
             submission: blocked,
             approval: Some(claim),
+            user_shell_completion: None,
         },
     ));
     assert!(enqueue.as_mut().now_or_never().is_none());
@@ -406,6 +411,7 @@ fn failed_envelope_does_not_clear_reload_quarantine() {
                 QueuedSubmission {
                     submission: approval_submission("rejected"),
                     approval: Some(claim),
+                    user_shell_completion: None,
                 },
             )
             .is_err()

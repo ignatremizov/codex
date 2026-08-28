@@ -266,6 +266,7 @@ fn thread_background_terminals_list_response_round_trips_foreign_paths() {
                 cwd: PathUri::parse(uri)
                     .expect("cross-platform path URI should parse")
                     .into(),
+                user_shell_response_handling: None,
                 os_pid: None,
                 cpu_percent: None,
                 rss_kb: None,
@@ -278,6 +279,7 @@ fn thread_background_terminals_list_response_round_trips_foreign_paths() {
                 "processId": "42",
                 "command": "run server",
                 "cwd": expected_cwd,
+                "userShellResponseHandling": null,
                 "osPid": null,
                 "cpuPercent": null,
                 "rssKb": null,
@@ -1580,6 +1582,10 @@ fn thread_shell_command_params_round_trip() {
             thread_id: "thr_123".to_string(),
             command: "printf 'hello world\\n'".to_string(),
             timeout_ms,
+            response_handling: Some(ThreadShellCommandResponseHandling {
+                final_delivery: ThreadShellCommandFinalDelivery::Wake,
+                queue_command: true,
+            }),
         };
 
         let value = serde_json::to_value(&params).expect("serialize thread/shellCommand params");
@@ -1589,6 +1595,10 @@ fn thread_shell_command_params_round_trip() {
                 "threadId": "thr_123",
                 "command": "printf 'hello world\\n'",
                 "timeoutMs": timeout_ms,
+                "responseHandling": {
+                    "finalDelivery": "wake",
+                    "queueCommand": true,
+                },
             })
         );
 
@@ -1611,6 +1621,7 @@ fn thread_shell_command_params_without_timeout_remain_valid() {
             thread_id: "thr_123".to_string(),
             command: "echo hello".to_string(),
             timeout_ms: None,
+            response_handling: None,
         }
     );
 }
@@ -3528,6 +3539,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 .to_string(),
         }],
         source: CoreExecCommandSource::Agent,
+        user_shell_response_handling: None,
         interaction_input: None,
         status: CoreCommandExecutionStatus::Completed,
         aggregated_output: Some("done\n".to_string()),
@@ -3549,6 +3561,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             cwd: LegacyAppPathString::from_abs_path(&test_path_buf("/tmp").abs()),
             process_id: Some("pid-1".to_string()),
             source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::Completed,
             command_actions: vec![CommandAction::Unknown {
                 command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' -c http.extraHeader=X-Trace:example push"

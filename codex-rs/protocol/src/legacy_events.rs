@@ -204,6 +204,7 @@ impl CommandExecutionItem {
             cwd: self.cwd.clone(),
             parsed_cmd: self.parsed_cmd.clone(),
             source: self.source,
+            user_shell_response_handling: self.user_shell_response_handling,
             interaction_input: self.interaction_input.clone(),
         })
     }
@@ -230,6 +231,7 @@ impl CommandExecutionItem {
             cwd: self.cwd.clone(),
             parsed_cmd: self.parsed_cmd.clone(),
             source: self.source,
+            user_shell_response_handling: self.user_shell_response_handling,
             interaction_input: self.interaction_input.clone(),
             aggregated_output: self.aggregated_output.clone().unwrap_or_default(),
             exit_code: self.exit_code.unwrap_or_default(),

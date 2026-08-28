@@ -108,7 +108,7 @@ impl SubmissionAdmission {
         sender: &Sender<QueuedSubmission>,
         submission: impl Into<QueuedSubmission>,
     ) -> CodexResult<()> {
-        let submission = submission.into();
+        let mut submission = submission.into();
         let _order = self.send_lock.lock().await;
         // A closed receiver is a dead actor, not a live actor still draining shutdown.
         // Preserve that distinction for exact-runtime cleanup without reopening admission.
@@ -120,6 +120,7 @@ impl SubmissionAdmission {
             &submission.submission,
         );
         let mut reservation = self.reserve(&submission.submission)?;
+        submission.accept_user_shell_completion(self)?;
         sender
             .send(submission)
             .await
@@ -138,7 +139,7 @@ impl SubmissionAdmission {
         sender: &Sender<QueuedSubmission>,
         submission: impl Into<QueuedSubmission>,
     ) -> CodexResult<()> {
-        let submission = submission.into();
+        let mut submission = submission.into();
         let _order = self.send_lock.try_lock().map_err(|_| {
             CodexErr::InvalidRequest(
                 "thread submission admission is busy; retry when idle".to_string(),
@@ -152,6 +153,7 @@ impl SubmissionAdmission {
             &submission.submission,
         );
         let mut reservation = self.reserve(&submission.submission)?;
+        submission.accept_user_shell_completion(self)?;
         sender.try_send(submission).map_err(|error| match error {
             async_channel::TrySendError::Full(_) => CodexErr::InvalidRequest(
                 "thread submission queue is full; retry when idle".to_string(),
