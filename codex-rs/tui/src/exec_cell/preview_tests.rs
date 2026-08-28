@@ -13,11 +13,14 @@ fn empty_poll_completion_stays_hidden_without_hiding_failures_or_details() {
 
     for exit_code in [0, 1] {
         let mut cell = new_active_exec_command(
-            "poll".to_owned(),
-            vec!["echo".to_owned(), "waiting".to_owned()],
-            Vec::new(),
-            CommandExecutionSource::UnifiedExecInteraction,
-            /*interaction_input*/ None,
+            crate::exec_cell::ActiveExecCall {
+                call_id: "poll".to_owned(),
+                command: vec!["echo".to_owned(), "waiting".to_owned()],
+                parsed: Vec::new(),
+                source: CommandExecutionSource::UnifiedExecInteraction,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         );
         assert!(!cell.compact_hyperlink_lines(/*width*/ 80).is_empty());

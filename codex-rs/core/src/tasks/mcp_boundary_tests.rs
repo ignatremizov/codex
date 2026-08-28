@@ -24,10 +24,21 @@ async fn finish_continues_only_for_input_before_mcp_boundary(earlier_user: bool)
         .spawn_task(Arc::clone(&turn), Vec::new(), PendingTask)
         .await;
     while receiver.try_recv().is_ok() {}
-    let state = {
+    let (state, accepting) = {
         let active = session.active_turn.lock().await;
-        Arc::clone(&active.as_ref().expect("pending task registered").turn_state)
+        let active = active.as_ref().expect("pending task registered");
+        (
+            Arc::clone(&active.turn_state),
+            Arc::clone(
+                &active
+                    .task
+                    .as_ref()
+                    .expect("running task")
+                    .accepting_pending_input,
+            ),
+        )
     };
+    accepting.store(false, std::sync::atomic::Ordering::Release);
     let boundary =
         TurnInput::ResponseItem(ResponseItemEnvelope::new(ContextualUserFragment::into(
             McpServerUseInstructions::new("docs".to_string(), "[]".to_string()),
@@ -73,6 +84,10 @@ async fn finish_continues_only_for_input_before_mcp_boundary(earlier_user: bool)
     .await
     .expect("finishing must not wait on a context-only boundary");
     assert_eq!(continuation.is_some(), earlier_user);
+    assert_eq!(
+        accepting.load(std::sync::atomic::Ordering::Acquire),
+        earlier_user
+    );
     if earlier_user {
         assert!(session.active_turn.lock().await.is_some());
         assert_eq!(

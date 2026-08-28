@@ -62,6 +62,10 @@ pub enum TurnInput {
     // Preserve the existing serialized format while carrying injection API metadata
     // through the in-memory queue.
     ResponseItem(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
+    /// Local continuation signal for a shell result already canonically published and installed.
+    /// It carries no content or authority and must never be submitted through serialized input.
+    #[serde(skip)]
+    UserShellContextReady,
     InterAgentCommunication(crate::PendingAgentMessage),
 }
 
@@ -98,6 +102,19 @@ mod turn_input_response_item {
 }
 
 impl TurnInput {
+    pub(crate) fn triggers_turn(&self) -> bool {
+        match self {
+            Self::InterAgentCommunication(mail) => mail.trigger_turn,
+            Self::ResponseItem(_) => {
+                !self.is_queue_only_mail() && !super::mcp_prompt::is_mcp_use_input(self)
+            }
+            Self::UserInput { .. }
+            | Self::AgentInput { .. }
+            | Self::UserShellContextReady
+            | Self::FunctionCallOutput(_) => true,
+        }
+    }
+
     pub(crate) fn is_prompt(&self) -> bool {
         matches!(self, Self::UserInput { .. } | Self::AgentInput { .. })
     }
@@ -132,6 +149,7 @@ impl TurnInput {
             }) => true,
             Self::UserInput { .. }
             | Self::AgentInput { .. }
+            | Self::UserShellContextReady
             | Self::FunctionCallOutput(_)
             | Self::ResponseItem(_) => false,
         }
@@ -146,6 +164,7 @@ impl TurnInput {
             }) => InputQueueActivity::Mailbox,
             Self::UserInput { .. }
             | Self::AgentInput { .. }
+            | Self::UserShellContextReady
             | Self::FunctionCallOutput(_)
             | Self::ResponseItem(_) => InputQueueActivity::Steer,
         }
@@ -360,6 +379,7 @@ impl InputQueue {
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::AgentInput { .. }
+                    | TurnInput::UserShellContextReady
                     | TurnInput::ResponseItem(_) => None,
                 })
                 .collect()
@@ -421,15 +441,7 @@ impl InputQueue {
             .items
             .iter()
             .chain(&queued.deferred)
-            .any(|input| match input {
-                TurnInput::InterAgentCommunication(mail) => mail.trigger_turn,
-                TurnInput::ResponseItem(_) => {
-                    !input.is_queue_only_mail() && !super::mcp_prompt::is_mcp_use_input(input)
-                }
-                TurnInput::UserInput { .. }
-                | TurnInput::AgentInput { .. }
-                | TurnInput::FunctionCallOutput(_) => true,
-            })
+            .any(TurnInput::triggers_turn)
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
@@ -749,6 +761,7 @@ impl InputQueue {
                 | TurnInput::FunctionCallOutput(_)
                 | TurnInput::AgentInput { .. }
                 | TurnInput::ResponseItem(_)
+                | TurnInput::UserShellContextReady
                 | TurnInput::InterAgentCommunication(_) => None,
             })
             .collect::<Vec<_>>();
@@ -1266,6 +1279,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shell_completion_signal_wakes_steering_and_clears_after_consumption() {
+        let input_queue = InputQueue::new();
+        let turn_state = Mutex::new(TurnState::default());
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+        assert_eq!(pending_activity, None);
+
+        input_queue
+            .extend_pending_input_and_notify_for_turn_state(
+                &turn_state,
+                vec![TurnInput::UserShellContextReady],
+            )
+            .await;
+        activity_rx
+            .changed()
+            .await
+            .expect("shell result continuation");
+        assert_eq!(*activity_rx.borrow_and_update(), InputQueueActivity::Steer);
+        assert_eq!(
+            input_queue.subscribe_activity(Some(&turn_state)).await.1,
+            Some(InputQueueActivity::Steer)
+        );
+        assert_eq!(
+            input_queue
+                .take_pending_input_for_turn_state(&turn_state)
+                .await,
+            vec![TurnInput::UserShellContextReady]
+        );
+        assert_eq!(
+            input_queue.subscribe_activity(Some(&turn_state)).await.1,
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn input_queue_drains_mailbox_in_delivery_order() {
         let input_queue = InputQueue::new();
         let mail_one = make_mail(
@@ -1639,6 +1687,42 @@ mod tests {
                 TurnStartOptions::default(),
             )
         );
+    }
+
+    #[tokio::test]
+    async fn shell_completion_can_wake_without_promoting_passive_agent_mail() {
+        let input_queue = InputQueue::new();
+        let passive =
+            TurnInput::ResponseItem(ResponseItemEnvelope::new(ResponseItem::AgentMessage {
+                id: None,
+                author: "/root/worker".to_string(),
+                recipient: "/root".to_string(),
+                content: vec![
+                    codex_protocol::models::AgentMessageInputContent::InputText {
+                        text: "passive result".to_string(),
+                    },
+                ],
+                internal_chat_message_metadata_passthrough: None,
+            }));
+        input_queue
+            .queue_turn_inputs_for_next_turn(vec![passive.clone()], Default::default())
+            .await;
+        assert!(!input_queue.has_queued_turn_trigger().await);
+        input_queue
+            .queue_turn_inputs_for_next_turn(
+                vec![TurnInput::UserShellContextReady],
+                Default::default(),
+            )
+            .await;
+        assert!(input_queue.has_queued_turn_trigger().await);
+        assert_eq!(
+            input_queue.take_queued_items_for_next_turn().await,
+            (
+                vec![passive, TurnInput::UserShellContextReady],
+                TurnStartOptions::default()
+            ),
+        );
+        assert!(!input_queue.has_queued_turn_trigger().await);
     }
 
     #[tokio::test]

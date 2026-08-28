@@ -548,6 +548,7 @@ fn accepted_find_pins_an_expanded_match_before_select_mode_exits() {
                 /*exit_code*/ 0, output,
             )),
             source: codex_app_server_protocol::CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,

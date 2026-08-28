@@ -33,6 +33,7 @@ impl ChatWidget {
             command,
             process_id,
             source,
+            user_shell_response_handling,
             command_actions,
             ..
         } = &item
@@ -56,11 +57,21 @@ impl ChatWidget {
             && process_id.is_some()
             && !render_source.is_replay()
         {
-            self.track_unified_exec_process_begin(id, process_id.as_deref(), command);
+            self.track_unified_exec_process_begin(
+                id,
+                process_id.as_deref(),
+                command,
+                *user_shell_response_handling,
+            );
         }
         if is_unified_exec_source(*source) {
             if *source == ExecCommandSource::UnifiedExecStartup && !render_source.is_replay() {
-                self.track_unified_exec_process_begin(id, process_id.as_deref(), command);
+                self.track_unified_exec_process_begin(
+                    id,
+                    process_id.as_deref(),
+                    command,
+                    /*user_shell_response_handling*/ None,
+                );
             }
             if !self.bottom_pane.is_task_running() {
                 return;
@@ -309,6 +320,9 @@ impl ChatWidget {
         call_id: &str,
         process_id: Option<&str>,
         command: &str,
+        user_shell_response_handling: Option<
+            codex_app_server_protocol::ThreadShellCommandResponseHandling,
+        >,
     ) {
         let key = process_id.unwrap_or(call_id).to_string();
         self.completed_unified_exec_processes
@@ -323,12 +337,14 @@ impl ChatWidget {
             existing.call_id = call_id.to_string();
             existing.command_display = command_display;
             existing.recent_chunks = crate::exec_cell::LiveCommandOutput::default();
+            existing.user_shell_response_handling = user_shell_response_handling;
         } else {
             self.unified_exec_processes.push(UnifiedExecProcessSummary {
                 key,
                 call_id: call_id.to_string(),
                 command_display,
                 recent_chunks: crate::exec_cell::LiveCommandOutput::default(),
+                user_shell_response_handling,
             });
         }
         self.sync_unified_exec_footer();
@@ -366,6 +382,7 @@ impl ChatWidget {
                     .any(|process| process.key == terminal.process_id)
             {
                 self.unified_exec_processes.push(UnifiedExecProcessSummary {
+                    user_shell_response_handling: terminal.user_shell_response_handling,
                     key: terminal.process_id,
                     call_id: terminal.item_id,
                     command_display: terminal.command,
@@ -409,6 +426,7 @@ impl ChatWidget {
             command,
             source,
             command_actions,
+            user_shell_response_handling,
             ..
         } = item
         else {
@@ -431,6 +449,7 @@ impl ChatWidget {
                 command: command.clone(),
                 parsed_cmd: parsed_cmd.clone(),
                 source,
+                user_shell_response_handling,
             },
         );
         let is_wait_interaction = matches!(source, ExecCommandSource::UnifiedExecInteraction);
@@ -459,6 +478,7 @@ impl ChatWidget {
                 command.clone(),
                 parsed_cmd.clone(),
                 source,
+                user_shell_response_handling,
                 /*interaction_input*/ None,
             )
         {
@@ -468,11 +488,14 @@ impl ChatWidget {
 
             self.transcript.active_cell = Some(Box::new(
                 new_active_exec_command(
-                    id,
-                    command,
-                    parsed_cmd,
-                    source,
-                    /*interaction_input*/ None,
+                    crate::exec_cell::ActiveExecCall {
+                        call_id: id,
+                        command,
+                        parsed: parsed_cmd,
+                        source,
+                        user_shell_response_handling,
+                        interaction_input: None,
+                    },
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 )
                 .with_output_preview_line_limits(OutputPreviewLineLimits {
@@ -510,6 +533,7 @@ impl ChatWidget {
             command,
             process_id: _,
             source,
+            user_shell_response_handling,
             status,
             command_actions,
             aggregated_output,
@@ -530,9 +554,19 @@ impl ChatWidget {
         if self.suppressed_exec_calls.remove(&id) {
             return;
         }
-        let (command, parsed, source) = match running {
-            Some(rc) => (rc.command, rc.parsed_cmd, rc.source),
-            None => (event_command, event_parsed, source),
+        let (command, parsed, source, user_shell_response_handling) = match running {
+            Some(rc) => (
+                rc.command,
+                rc.parsed_cmd,
+                rc.source,
+                rc.user_shell_response_handling,
+            ),
+            None => (
+                event_command,
+                event_parsed,
+                source,
+                user_shell_response_handling,
+            ),
         };
         let parsed = self.annotate_skill_reads_in_parsed_cmd(parsed);
         let is_user_shell = source == ExecCommandSource::UserShell;
@@ -552,6 +586,7 @@ impl ChatWidget {
                 command.clone(),
                 parsed.clone(),
                 source,
+                user_shell_response_handling,
                 /*interaction_input*/ None,
             );
         }
@@ -580,6 +615,10 @@ impl ChatWidget {
 
         match end_target {
             ExecEndTarget::ActiveTracked => {
+                let has_active_hook = self
+                    .active_hook_cell
+                    .as_ref()
+                    .is_some_and(HookCell::has_visible_running_run);
                 if let Some(cell) = self
                     .transcript
                     .active_cell
@@ -588,7 +627,7 @@ impl ChatWidget {
                 {
                     let completed = cell.complete_call(&id, output, duration);
                     debug_assert!(completed, "active exec cell should contain {id}");
-                    if cell.should_flush() {
+                    if cell.should_flush() || (has_active_hook && !cell.is_active()) {
                         self.flush_active_cell();
                     } else {
                         self.bump_active_cell_revision();
@@ -598,11 +637,14 @@ impl ChatWidget {
             }
             ExecEndTarget::OrphanHistoryWhileActiveExec => {
                 let mut orphan = new_active_exec_command(
-                    id.clone(),
-                    command,
-                    parsed,
-                    source,
-                    /*interaction_input*/ None,
+                    crate::exec_cell::ActiveExecCall {
+                        call_id: id.clone(),
+                        command,
+                        parsed,
+                        source,
+                        user_shell_response_handling,
+                        interaction_input: None,
+                    },
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 )
                 .with_output_preview_line_limits(OutputPreviewLineLimits {
@@ -617,11 +659,14 @@ impl ChatWidget {
             }
             ExecEndTarget::NewCell => {
                 let mut cell = new_active_exec_command(
-                    id.clone(),
-                    command,
-                    parsed,
-                    source,
-                    /*interaction_input*/ None,
+                    crate::exec_cell::ActiveExecCall {
+                        call_id: id.clone(),
+                        command,
+                        parsed,
+                        source,
+                        user_shell_response_handling,
+                        interaction_input: None,
+                    },
                     self.local_settings.tui.animations && self.local_settings.tui.effects.progress,
                 )
                 .with_output_preview_line_limits(OutputPreviewLineLimits {

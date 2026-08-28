@@ -346,6 +346,7 @@ async fn thread_read_reconstructs_legacy_exec_and_later_poll_without_loading_thr
             cwd: LegacyAppPathString::from_string("/tmp"),
             process_id: Some("42".to_string()),
             source: CommandExecutionSource::UnifiedExecStartup,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::Completed,
             command_actions: vec![CommandAction::Unknown {
                 command: "run".to_string()
@@ -2037,6 +2038,7 @@ async fn thread_items_list_defers_requested_outputs() -> Result<()> {
             thread_id,
             "turn",
             CoreTurnItem::CommandExecution(CommandExecutionItem {
+                user_shell_response_handling: None,
                 id: id.to_string(),
                 deadline_at_ms: None,
                 command: vec!["ls".to_string()],

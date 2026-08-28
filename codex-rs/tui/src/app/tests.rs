@@ -6154,6 +6154,7 @@ async fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()
     let turn = "command-turn";
     let cwd = app.config.cwd.clone();
     let command = |status| ThreadItemPayload::CommandExecution {
+        user_shell_response_handling: None,
         id: "cmd".into(),
         command: "echo sidebar-check".into(),
         cwd: cwd.clone().into(),

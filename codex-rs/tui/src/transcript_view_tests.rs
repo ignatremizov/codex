@@ -262,11 +262,14 @@ fn terminal_output_disclosure_follows_live_history_and_keymap() {
     use codex_app_server_protocol::CommandExecutionSource;
 
     let mut cell = new_active_exec_command(
-        "output-test".into(),
-        vec!["echo".into()],
-        Vec::new(),
-        CommandExecutionSource::Agent,
-        /*interaction_input*/ None,
+        crate::exec_cell::ActiveExecCall {
+            call_id: "output-test".into(),
+            command: vec!["echo".into()],
+            parsed: Vec::new(),
+            source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
+            interaction_input: None,
+        },
         /*animations_enabled*/ false,
     )
     .with_output_preview_line_limits(OutputPreviewLineLimits {
@@ -381,11 +384,14 @@ fn terminal_output_disclosure_counts_only_revealable_lines() {
         ),
     ] {
         let mut cell = new_active_exec_command(
-            "output-test".into(),
-            vec!["sh".into(), "-c".into(), command.into()],
-            Vec::new(),
-            CommandExecutionSource::Agent,
-            /*interaction_input*/ None,
+            crate::exec_cell::ActiveExecCall {
+                call_id: "output-test".into(),
+                command: vec!["sh".into(), "-c".into(), command.into()],
+                parsed: Vec::new(),
+                source: CommandExecutionSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         )
         .with_output_preview_line_limits(OutputPreviewLineLimits {
@@ -1460,11 +1466,14 @@ fn tool_groups_expand_independently_inside_a_completed_turn() {
     ];
     for id in ["hello", "world"] {
         let mut command = new_active_exec_command(
-            id.into(),
-            vec!["echo".into(), id.into()],
-            Vec::new(),
-            CommandExecutionSource::Agent,
-            /*interaction_input*/ None,
+            crate::exec_cell::ActiveExecCall {
+                call_id: id.into(),
+                command: vec!["echo".into(), id.into()],
+                parsed: Vec::new(),
+                source: CommandExecutionSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         );
         command.complete_call(
@@ -1656,11 +1665,14 @@ fn live_search_group_keeps_its_summary_in_the_parked_pane() {
     let first_call = search("TODO");
     let second_call = search("FIXME");
     let mut command = crate::exec_cell::new_active_exec_command(
-        "first".into(),
-        first_call.clone(),
-        parse_command(&first_call),
-        CommandExecutionSource::Agent,
-        /*interaction_input*/ None,
+        crate::exec_cell::ActiveExecCall {
+            call_id: "first".into(),
+            command: first_call.clone(),
+            parsed: parse_command(&first_call),
+            source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
+            interaction_input: None,
+        },
         /*animations_enabled*/ false,
     );
     command.append_output("first", "private output");

@@ -35,6 +35,7 @@ async fn primary_attachment_distinguishes_active_observed_and_normalized_cold_hi
                     cwd: test_path_buf("/tmp/project").abs().into(),
                     process_id: Some("123".to_string()),
                     source: CommandExecutionSource::UnifiedExecStartup,
+                    user_shell_response_handling: None,
                     status: CommandExecutionStatus::InProgress,
                     command_actions: vec![CommandAction::Unknown {
                         command: "sleep 20".to_string(),
@@ -75,6 +76,7 @@ async fn primary_attachment_distinguishes_active_observed_and_normalized_cold_hi
             app.chat_widget.restore_background_terminals(
                 request_id,
                 vec![codex_app_server_protocol::ThreadBackgroundTerminal {
+                    user_shell_response_handling: None,
                     item_id: "exec-1".into(),
                     process_id: "123".into(),
                     command: "sleep 20".into(),
@@ -139,6 +141,7 @@ async fn buffered_terminal_starts_follow_attachment_intent_not_queue_autosend() 
                                     cwd: test_path_buf("/tmp/project").abs().into(),
                                     process_id: Some("123".to_string()),
                                     source: CommandExecutionSource::UnifiedExecStartup,
+                                    user_shell_response_handling: None,
                                     status: CommandExecutionStatus::InProgress,
                                     command_actions: Vec::new(),
                                     aggregated_output: None,
@@ -318,6 +321,7 @@ async fn replay_only_snapshot_keeps_command_history_without_restoring_background
                     cwd: test_path_buf("/tmp/project").abs().into(),
                     process_id: Some("123".to_string()),
                     source: CommandExecutionSource::UnifiedExecStartup,
+                    user_shell_response_handling: None,
                     status: CommandExecutionStatus::InProgress,
                     command_actions: vec![CommandAction::Unknown {
                         command: "sleep 20".to_string(),

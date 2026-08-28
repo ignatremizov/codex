@@ -1696,6 +1696,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 plugin_id: None,
                 script_path: None,
                 source: AppServerCommandExecutionSource::UserShell,
+                user_shell_response_handling: None,
                 status: AppServerCommandExecutionStatus::InProgress,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: script.to_string(),
@@ -1722,6 +1723,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 plugin_id: None,
                 script_path: None,
                 source: AppServerCommandExecutionSource::UserShell,
+                user_shell_response_handling: None,
                 status: AppServerCommandExecutionStatus::Completed,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: script.to_string(),

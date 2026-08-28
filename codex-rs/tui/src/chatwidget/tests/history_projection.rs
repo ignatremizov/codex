@@ -23,6 +23,7 @@ async fn older_tool_projection_matches_initial_replay() {
         cwd: chat.config.cwd.clone().into(),
         process_id: None,
         source: ExecCommandSource::Agent,
+        user_shell_response_handling: None,
         status: AppServerCommandExecutionStatus::Completed,
         command_actions: vec![AppServerCommandAction::Unknown {
             command: command.to_string(),
@@ -49,6 +50,7 @@ async fn older_tool_projection_matches_initial_replay() {
             cwd: chat.config.cwd.clone().into(),
             process_id: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             status: AppServerCommandExecutionStatus::Completed,
             command_actions: vec![AppServerCommandAction::Read {
                 command,
