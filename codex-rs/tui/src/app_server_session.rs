@@ -1430,7 +1430,9 @@ impl AppServerSession {
         storage: SideChatStorage,
     ) -> Result<AppServerStartedThread> {
         storage.configure_fork(&mut config);
-        self.fork_thread_at_with_presentation(
+        // A side transition also refreshes config and switches widgets. Boxing
+        // only the outer transition leaves this large request future inline.
+        Box::pin(self.fork_thread_at_with_presentation(
             local_settings,
             config,
             thread_id,
@@ -1442,7 +1444,7 @@ impl AppServerSession {
             selected_profile,
             ForkPermissionMode::InheritSaved,
             ForkConfigSource::Session,
-        )
+        ))
         .await
     }
 
