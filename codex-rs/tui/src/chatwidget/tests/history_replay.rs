@@ -118,7 +118,7 @@ async fn resumed_initial_messages_render_history() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n")
-        .replace(CODEX_CLI_VERSION, "<VERSION>")
+        .replace(crate::version::CODEX_CLI_VERSION_FOR_DISPLAY, "<VERSION>")
         .replace(
             &test_path_display("/home/user/project"),
             "/home/user/project",
