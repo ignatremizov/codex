@@ -369,14 +369,19 @@ impl App {
     }
 
     pub(super) fn clear_ui_header_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.clear_ui_header_lines_with_version(width, CODEX_CLI_VERSION)
+        self.clear_ui_header_lines_with_version(
+            width,
+            crate::version::CODEX_CLI_VERSION_FOR_DISPLAY,
+        )
     }
 
     pub(super) fn start_cleared_display(&mut self, tui: &mut tui::Tui) {
         self.reset_terminal_display_state();
         self.transcript_cells
             .retain(|cell| !cell.as_any().is::<history_cell::ClearScreenHeader>());
-        let header = history_cell::ClearScreenHeader(self.clear_ui_header_cell(CODEX_CLI_VERSION));
+        let header = history_cell::ClearScreenHeader(
+            self.clear_ui_header_cell(crate::version::CODEX_CLI_VERSION_FOR_DISPLAY),
+        );
         self.insert_history_cell(tui, Box::new(header));
     }
 
@@ -386,8 +391,9 @@ impl App {
                 cell.as_any().is::<history_cell::SessionInfoCell>()
                     || cell.as_any().is::<history_cell::SessionHeaderHistoryCell>()
             }) {
-                let header: Arc<dyn HistoryCell> =
-                    Arc::new(self.clear_ui_header_cell(CODEX_CLI_VERSION));
+                let header: Arc<dyn HistoryCell> = Arc::new(
+                    self.clear_ui_header_cell(crate::version::CODEX_CLI_VERSION_FOR_DISPLAY),
+                );
                 self.transcript_cells.insert(/*index*/ 0, header);
             }
             tui.frame_requester().schedule_frame();
