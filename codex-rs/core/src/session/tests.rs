@@ -191,6 +191,7 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_protocol::protocol::UserShellCommandFinalDelivery;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
@@ -1779,6 +1780,11 @@ async fn user_shell_commands_do_not_inherit_managed_network_proxy() -> anyhow::R
     let command = r#"$val = $env:HTTP_PROXY; if ([string]::IsNullOrEmpty($val)) { $val = 'not-set' } ; [System.Console]::Write($val)"#.to_string();
     #[cfg(not(windows))]
     let command = r#"sh -c "printf '%s' \"${HTTP_PROXY:-not-set}\"""#.to_string();
+    let submission_id = session
+        .services
+        .unified_exec_manager
+        .reserve_user_shell_submission(UserShellCommandFinalDelivery::Passive)
+        .await;
 
     execute_user_shell_command(
         Arc::clone(&session),
@@ -1786,6 +1792,8 @@ async fn user_shell_commands_do_not_inherit_managed_network_proxy() -> anyhow::R
         command,
         /*timeout_ms*/ None,
         UserShellCommandPlacement::Detached,
+        Default::default(),
+        submission_id,
     )
     .await;
 
@@ -1813,6 +1821,11 @@ async fn user_shell_commands_remain_login_shells_when_model_login_shells_are_dis
     let expected_command = session
         .user_shell()
         .derive_exec_args(&command, /*use_login_shell*/ true);
+    let submission_id = session
+        .services
+        .unified_exec_manager
+        .reserve_user_shell_submission(UserShellCommandFinalDelivery::Passive)
+        .await;
 
     execute_user_shell_command(
         Arc::clone(&session),
@@ -1820,6 +1833,8 @@ async fn user_shell_commands_remain_login_shells_when_model_login_shells_are_dis
         command,
         /*timeout_ms*/ None,
         UserShellCommandPlacement::Detached,
+        Default::default(),
+        submission_id,
     )
     .await;
 
@@ -11455,6 +11470,7 @@ async fn run_user_shell_command_does_not_set_reference_context_item() {
         "sub-id".to_string(),
         "echo shell".to_string(),
         /*timeout_ms*/ None,
+        Default::default(),
     )
     .await;
 
@@ -12527,7 +12543,7 @@ async fn task_finish_emits_thread_idle_lifecycle_after_active_turn_clears() {
 }
 
 #[tokio::test]
-async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
+async fn thread_idle_lifecycle_waits_for_pending_automatic_work() {
     struct ThreadIdleRecorder {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -12569,6 +12585,49 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
         .await;
 
     assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
+
+    let _ = session.input_queue.drain_mailbox_input_items().await;
+    let submission_id = session
+        .services
+        .unified_exec_manager
+        .reserve_user_shell_submission(UserShellCommandFinalDelivery::Wake)
+        .await;
+    session
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .await;
+    assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
+    session
+        .services
+        .unified_exec_manager
+        .release_user_shell_submission(submission_id)
+        .await;
+    session
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .await;
+    assert_eq!(1, calls.load(std::sync::atomic::Ordering::SeqCst));
+
+    session
+        .input_queue
+        .queue_turn_inputs_for_next_turn(
+            vec![TurnInput::ResponseItem(
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "queued automatic work".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            )],
+            codex_protocol::turn_input::TurnStartOptions::default(),
+        )
+        .await;
+    session
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .await;
+    assert_eq!(1, calls.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[tokio::test]

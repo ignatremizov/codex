@@ -798,12 +798,34 @@ pub enum Op {
     /// `ExecCommand*` events while the detached command remains independently
     /// controllable and does not own the model turn lifecycle.
     RunUserShellCommand {
-        /// The raw command string after '!'
+        /// The raw shell command after any `!` response options.
         command: String,
         /// Explicit maximum execution time in milliseconds. Omission uses the
         /// configured user-shell default; an explicit zero requests an immediate timeout.
         timeout_ms: Option<u64>,
+        /// How the completed command result is exposed to the model.
+        response_handling: UserShellCommandResponseHandling,
     },
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum UserShellCommandFinalDelivery {
+    /// Add the result to model context without starting a new turn.
+    #[default]
+    Passive,
+    /// Add the result to model context and wake the thread when it is idle.
+    Wake,
+    /// Publish the result to clients without adding it to model context.
+    PresentationOnly,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+pub struct UserShellCommandResponseHandling {
+    pub final_delivery: UserShellCommandFinalDelivery,
+    /// Wait for earlier user-shell commands before starting this command.
+    pub queue_command: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
@@ -3782,6 +3804,10 @@ pub struct ExecCommandBeginEvent {
     /// Where the command originated. Defaults to Agent for backward compatibility.
     #[serde(default)]
     pub source: ExecCommandSource,
+    /// Completion delivery policy for a user-authored shell command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub user_shell_response_handling: Option<UserShellCommandResponseHandling>,
     /// Raw input sent to a unified exec session (if this is an interaction event).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -3816,6 +3842,10 @@ pub struct ExecCommandEndEvent {
     /// Where the command originated. Defaults to Agent for backward compatibility.
     #[serde(default)]
     pub source: ExecCommandSource,
+    /// Completion delivery policy for a user-authored shell command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub user_shell_response_handling: Option<UserShellCommandResponseHandling>,
     /// Raw input sent to a unified exec session (if this is an interaction event).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -5819,6 +5849,7 @@ mod tests {
                     cmd: "echo done".into(),
                 }],
                 source: ExecCommandSource::Agent,
+                user_shell_response_handling: None,
                 interaction_input: None,
                 status: CommandExecutionStatus::InProgress,
                 stdout: None,
@@ -5847,6 +5878,7 @@ mod tests {
                     cmd: "echo done".into(),
                 }],
                 source: ExecCommandSource::Agent,
+                user_shell_response_handling: None,
                 interaction_input: None,
                 status: CommandExecutionStatus::Completed,
                 stdout: Some("done\n".into()),

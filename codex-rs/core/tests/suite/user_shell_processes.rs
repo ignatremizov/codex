@@ -7,6 +7,8 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::protocol::UserShellCommandFinalDelivery;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 use codex_protocol::user_input::UserInput;
 use core_test_support::PathExt;
 use core_test_support::responses::ev_assistant_message;
@@ -25,7 +27,7 @@ use pretty_assertions::assert_eq;
 use tokio::time::Duration;
 use tokio::time::timeout;
 
-async fn select_local_user_shell_environment(test: &TestCodex) -> anyhow::Result<()> {
+pub(super) async fn select_local_user_shell_environment(test: &TestCodex) -> anyhow::Result<()> {
     let local_cwd = test.cwd_path().abs();
     let mut environments = vec![local(local_cwd.clone())];
     if test.executor_environment().environment().is_remote() {
@@ -76,6 +78,7 @@ async fn active_model_interruption_does_not_cancel_user_shell() -> anyhow::Resul
         .submit(Op::RunUserShellCommand {
             command: command.to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
     wait_for_event_match(&test.codex, |event| match event {
@@ -136,6 +139,7 @@ async fn default_user_shell_outlives_old_deadline_and_model_interrupt() -> anyho
         .submit(Op::RunUserShellCommand {
             command: command.to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
     wait_for_event_match(&test.codex, |event| match event {
@@ -207,6 +211,7 @@ async fn explicit_positive_timeout_overrides_configured_limit() -> anyhow::Resul
         .submit(Op::RunUserShellCommand {
             command: command.to_string(),
             timeout_ms: Some(120_000),
+            response_handling: Default::default(),
         })
         .await?;
     wait_for_event_match(&test.codex, |event| match event {
@@ -256,6 +261,7 @@ async fn explicit_zero_user_shell_timeout_is_immediate() -> anyhow::Result<()> {
         .submit(Op::RunUserShellCommand {
             command: command.to_string(),
             timeout_ms: Some(0),
+            response_handling: Default::default(),
         })
         .await?;
     let end = timeout(
@@ -274,11 +280,23 @@ async fn explicit_zero_user_shell_timeout_is_immediate() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyhow::Result<()> {
+async fn user_shell_wake_is_listed_and_targeted_stop_suppresses_its_wake() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex();
     let test = builder.build_with_remote_and_local_env(&server).await?;
     select_local_user_shell_environment(&test).await?;
+    let unexpected_wake = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("unexpected-shell-wake"),
+            ev_completed("unexpected-shell-wake"),
+        ]),
+    )
+    .await;
+    let response_handling = UserShellCommandResponseHandling {
+        final_delivery: UserShellCommandFinalDelivery::Wake,
+        queue_command: false,
+    };
 
     #[cfg(windows)]
     let command = "Start-Sleep -Seconds 60".to_string();
@@ -289,6 +307,7 @@ async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyh
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling,
         })
         .await?;
 
@@ -310,6 +329,7 @@ async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyh
             process_id: process_id.clone(),
             command,
             cwd: begin.cwd,
+            user_shell_response_handling: Some(response_handling),
         }]
     );
 
@@ -341,6 +361,16 @@ async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyh
     })
     .await
     .context("stopped user shell command remained in background terminal list")?;
+    assert!(
+        timeout(Duration::from_millis(200), async {
+            while unexpected_wake.requests().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_err(),
+        "targeted stop must suppress a user-shell completion wake"
+    );
 
     Ok(())
 }
@@ -361,6 +391,7 @@ async fn idle_user_shell_command_does_not_block_a_model_turn() -> anyhow::Result
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
     let begin = wait_for_event_match(&test.codex, |event| match event {
@@ -404,6 +435,7 @@ async fn idle_user_shell_command_does_not_block_a_model_turn() -> anyhow::Result
             process_id: process_id.clone(),
             command,
             cwd: begin.cwd.clone(),
+            user_shell_response_handling: Some(Default::default()),
         }]
     );
 

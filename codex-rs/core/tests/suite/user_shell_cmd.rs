@@ -73,6 +73,7 @@ async fn user_shell_cmd_ls_and_cat_in_temp_dir() {
         .submit(Op::RunUserShellCommand {
             command: list_cmd,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await
         .unwrap();
@@ -95,6 +96,7 @@ async fn user_shell_cmd_ls_and_cat_in_temp_dir() {
         .submit(Op::RunUserShellCommand {
             command: cat_cmd,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await
         .unwrap();
@@ -136,6 +138,7 @@ async fn user_shell_command_without_local_environment_emits_error() -> anyhow::R
         .submit(Op::RunUserShellCommand {
             command: "echo shell".to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -185,6 +188,7 @@ async fn user_shell_command_uses_configured_timeout() -> anyhow::Result<()> {
         .submit(Op::RunUserShellCommand {
             command: slow_user_shell_command().to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -291,6 +295,7 @@ async fn zero_user_shell_command_timeout_remains_explicitly_stoppable() -> anyho
         .submit(Op::RunUserShellCommand {
             command: slow_user_shell_command().to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -407,6 +412,7 @@ async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()>
         .submit(Op::RunUserShellCommand {
             command: user_shell_command,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
     let user_shell_begin = wait_for_event_match(&fixture.codex, |event| match event {
@@ -491,6 +497,7 @@ async fn user_shell_command_history_is_persisted_and_shared_with_model() -> anyh
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -577,6 +584,7 @@ async fn user_shell_command_does_not_set_network_sandbox_env_var() -> anyhow::Re
         .submit(Op::RunUserShellCommand {
             command,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -621,6 +629,7 @@ async fn user_shell_command_output_is_truncated_in_history() -> anyhow::Result<(
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 

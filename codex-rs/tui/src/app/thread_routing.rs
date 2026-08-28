@@ -1079,9 +1079,12 @@ impl App {
                 self.chat_widget.accept_realtime_speech(*delivery_id);
                 Ok(true)
             }
-            AppCommand::RunUserShellCommand { command } => {
+            AppCommand::RunUserShellCommand {
+                command,
+                response_handling,
+            } => {
                 app_server
-                    .thread_shell_command(thread_id, command.to_string())
+                    .thread_shell_command(thread_id, command.to_string(), Some(*response_handling))
                     .await?;
                 Ok(true)
             }

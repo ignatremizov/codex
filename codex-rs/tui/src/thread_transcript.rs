@@ -133,7 +133,6 @@ pub(crate) fn thread_to_transcript_cells(
     }
     cells
 }
-
 pub(crate) fn thread_items_to_transcript_cells(
     thread_id: Option<ThreadId>,
     cwd: &AbsolutePathBuf,

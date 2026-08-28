@@ -6,11 +6,13 @@ expression: rendered
 
 Background terminals
 
-  • echo hello
+  • echo hello (wake)
     and then some extra text
     id 1000
     ↳ hello
       done
-  • rg "foo" src
+  • rg "foo" src (presentation only · queued)
     id 1001
     ↳ src/main.rs:12:foo
+  • sleep 10 (passive)
+    id 1002

@@ -7,6 +7,9 @@ use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
+use codex_app_server_protocol::ThreadRealtimeAudioChunk;
+use codex_app_server_protocol::ThreadRealtimeStartTransport;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::UserVerificationProof;
@@ -121,6 +124,7 @@ pub(crate) enum AppCommand {
     },
     RunUserShellCommand {
         command: String,
+        response_handling: ThreadShellCommandResponseHandling,
     },
     UserTurn {
         client_user_message_id: String,
@@ -236,8 +240,14 @@ impl AppCommand {
         Self::RealtimeConversationClose
     }
 
-    pub(crate) fn run_user_shell_command(command: String) -> Self {
-        Self::RunUserShellCommand { command }
+    pub(crate) fn run_user_shell_command(
+        command: String,
+        response_handling: ThreadShellCommandResponseHandling,
+    ) -> Self {
+        Self::RunUserShellCommand {
+            command,
+            response_handling,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

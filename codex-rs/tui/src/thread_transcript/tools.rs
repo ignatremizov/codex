@@ -20,6 +20,7 @@ use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::parse_command::ParsedCommand;
 use ratatui::style::Stylize as _;
@@ -126,6 +127,7 @@ pub(crate) struct CommandHistory {
     pub(crate) aggregated_output: String,
     pub(crate) exit_code: i32,
     pub(crate) duration: Duration,
+    pub(crate) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
 }
 
 impl CommandHistory {
@@ -139,7 +141,7 @@ impl CommandHistory {
             aggregated_output,
             exit_code,
             duration_ms,
-            ..
+            user_shell_response_handling,
         } = item
         else {
             return None;
@@ -166,17 +168,21 @@ impl CommandHistory {
             aggregated_output: aggregated_output.unwrap_or_default(),
             exit_code,
             duration: Duration::from_millis(duration_ms.unwrap_or_default().max(/*other*/ 0) as u64),
+            user_shell_response_handling,
         })
     }
 
     pub(crate) fn into_cell(self, output_preview_line_limits: OutputPreviewLineLimits) -> ExecCell {
         let output = CommandOutput::new(self.exit_code, self.aggregated_output);
         let mut cell = new_active_exec_command(
-            self.id.clone(),
-            self.command,
-            self.parsed,
-            self.source,
-            /*interaction_input*/ None,
+            crate::exec_cell::ActiveExecCall {
+                call_id: self.id.clone(),
+                command: self.command,
+                parsed: self.parsed,
+                source: self.source,
+                user_shell_response_handling: self.user_shell_response_handling,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         )
         .with_output_preview_line_limits(output_preview_line_limits);

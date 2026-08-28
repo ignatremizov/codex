@@ -94,6 +94,7 @@ fn running_command() -> ThreadItem {
         cwd: LegacyAppPathString::from_string("/tmp"),
         process_id: Some("42".to_string()),
         source: CommandExecutionSource::UnifiedExecStartup,
+        user_shell_response_handling: None,
         status: CommandExecutionStatus::InProgress,
         command_actions: vec![CommandAction::Unknown {
             command: "run".to_string(),

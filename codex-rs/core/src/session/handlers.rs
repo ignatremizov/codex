@@ -38,6 +38,7 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
@@ -119,6 +120,7 @@ pub async fn run_user_shell_command(
     sub_id: String,
     command: String,
     timeout_ms: Option<u64>,
+    response_handling: UserShellCommandResponseHandling,
 ) {
     let (turn_context, placement) = match sess.active_turn_context_and_cancellation_token().await {
         Some((turn_context, _cancellation_token)) => {
@@ -130,9 +132,23 @@ pub async fn run_user_shell_command(
             UserShellCommandPlacement::Detached,
         ),
     };
+    let submission_id = sess
+        .services
+        .unified_exec_manager
+        .reserve_user_shell_submission(response_handling.final_delivery)
+        .await;
     let session = Arc::clone(sess);
     tokio::spawn(async move {
-        execute_user_shell_command(session, turn_context, command, timeout_ms, placement).await;
+        execute_user_shell_command(
+            session,
+            turn_context,
+            command,
+            timeout_ms,
+            placement,
+            response_handling,
+            submission_id,
+        )
+        .await;
     });
 }
 
@@ -658,8 +674,16 @@ pub(super) async fn submission_loop(
                 Op::RunUserShellCommand {
                     command,
                     timeout_ms,
+                    response_handling,
                 } => {
-                    run_user_shell_command(&sess, sub.id.clone(), command, timeout_ms).await;
+                    run_user_shell_command(
+                        &sess,
+                        sub.id.clone(),
+                        command,
+                        timeout_ms,
+                        response_handling,
+                    )
+                    .await;
                     false
                 }
                 Op::ResolveElicitation {

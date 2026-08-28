@@ -293,6 +293,7 @@ impl NonPaginatedExecHistory {
                 cwd: command.cwd.clone().into(),
                 process_id: command.process_id.clone(),
                 source: CommandExecutionSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: command.status.clone(),
                 command_actions: presentation.command_actions,
                 aggregated_output: (!command.output.is_empty()).then(|| command.output.clone()),

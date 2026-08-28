@@ -1,4 +1,6 @@
 use super::*;
+use codex_app_server_protocol::ThreadShellCommandFinalDelivery;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
@@ -18,6 +20,7 @@ async fn cold_buffered_completion_retains_output_without_a_running_task() {
                 cwd: chat.config.cwd.clone().into(),
                 process_id: Some("123".to_string()),
                 source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: AppServerCommandExecutionStatus::Completed,
                 command_actions: Vec::new(),
                 aggregated_output: Some("hello\n".to_string()),
@@ -52,7 +55,12 @@ async fn cold_buffered_completion_retains_output_without_a_running_task() {
 async fn completed_terminal_checks_require_original_identity_and_preserve_other_countdown() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     handle_turn_started(&mut chat, "turn-1");
-    chat.track_unified_exec_process_begin("exec-old", Some("123"), "sleep 20");
+    chat.track_unified_exec_process_begin(
+        "exec-old",
+        Some("123"),
+        "sleep 20",
+        /*user_shell_response_handling*/ None,
+    );
     chat.track_unified_exec_process_end("exec-old", Some("123"));
     let other_owner = StatusCountdownOwner::CollabWait {
         turn_id: "turn-1".to_string(),
@@ -74,7 +82,12 @@ async fn completed_terminal_checks_require_original_identity_and_preserve_other_
     insta::assert_snapshot!(rendered, @"• Checked background terminal output · sleep 20");
     assert_eq!(chat.status_state.countdown_owner, Some(other_owner));
 
-    chat.track_unified_exec_process_begin("exec-new", Some("123"), "cat");
+    chat.track_unified_exec_process_begin(
+        "exec-new",
+        Some("123"),
+        "cat",
+        /*user_shell_response_handling*/ None,
+    );
     let new_owner = StatusCountdownOwner::UnifiedExec {
         turn_id: "turn-1".to_string(),
         item_id: "exec-new".to_string(),
@@ -108,7 +121,12 @@ async fn completed_terminal_cache_is_bounded_and_cold_replay_discards_runtime_ca
     handle_turn_started(&mut chat, "turn-1");
     for index in 0..17 {
         let id = format!("exec-{index}");
-        chat.track_unified_exec_process_begin(&id, Some(&id), "cat");
+        chat.track_unified_exec_process_begin(
+            &id,
+            Some(&id),
+            "cat",
+            /*user_shell_response_handling*/ None,
+        );
         chat.track_unified_exec_process_end(&id, Some(&id));
     }
     assert_eq!(chat.completed_unified_exec_processes.len(), 16);
@@ -135,7 +153,11 @@ async fn replayed_command_execution_is_visible_in_transcript() {
                 command: "sleep 20".to_string(),
                 cwd: test_path_buf("/home/user/project").abs().into(),
                 process_id: None,
-                source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                source: AppServerCommandExecutionSource::UserShell,
+                user_shell_response_handling: Some(ThreadShellCommandResponseHandling {
+                    final_delivery: ThreadShellCommandFinalDelivery::Wake,
+                    queue_command: false,
+                }),
                 status: AppServerCommandExecutionStatus::Completed,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: "sleep 20".to_string(),
@@ -159,7 +181,7 @@ async fn replayed_command_execution_is_visible_in_transcript() {
         .map(|lines| lines_to_single_string(&lines))
         .collect::<String>();
     insta::assert_snapshot!(rendered, @"
-    $ sleep 20
+    $ sleep 20 (wake)
     ✓ • 20.00s
     ");
 }
@@ -183,6 +205,7 @@ async fn resumed_history_keeps_command_without_restoring_background_terminal() {
                     cwd: test_path_buf("/home/user/project").abs().into(),
                     process_id: Some("123".to_string()),
                     source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                    user_shell_response_handling: None,
                     status: AppServerCommandExecutionStatus::InProgress,
                     command_actions: vec![AppServerCommandAction::Unknown {
                         command: "sleep 20".to_string(),
@@ -249,6 +272,7 @@ async fn terminal_ownership_is_independent_of_initial_resume_task_lifecycle() {
                     cwd: test_path_buf("/home/user/project").abs().into(),
                     process_id: Some("123".to_string()),
                     source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                    user_shell_response_handling: None,
                     status: AppServerCommandExecutionStatus::InProgress,
                     command_actions: vec![AppServerCommandAction::Unknown {
                         command: "sleep 20".to_string(),

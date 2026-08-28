@@ -14,6 +14,7 @@ use std::time::Instant;
 use super::live_output::LiveCommandOutput;
 use crate::history_cell::ActivityGroup;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_protocol::parse_command::ParsedCommand;
 use itertools::Either;
 
@@ -64,12 +65,23 @@ impl CommandOutput {
 }
 
 #[derive(Debug)]
+pub(crate) struct ActiveExecCall {
+    pub(crate) call_id: String,
+    pub(crate) command: Vec<String>,
+    pub(crate) parsed: Vec<ParsedCommand>,
+    pub(crate) source: ExecCommandSource,
+    pub(crate) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
+    pub(crate) interaction_input: Option<String>,
+}
+
+#[derive(Debug)]
 pub(crate) struct ExecCall {
     pub(crate) call_id: String,
     pub(crate) command: Vec<String>,
     pub(crate) parsed: Vec<ParsedCommand>,
     pub(crate) output: Option<CommandOutput>,
     pub(crate) source: ExecCommandSource,
+    pub(crate) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
     pub(crate) start_time: Option<Instant>,
     pub(crate) duration: Option<Duration>,
     pub(crate) interaction_input: Option<String>,
@@ -124,6 +136,7 @@ impl ExecCell {
         command: Vec<String>,
         parsed: Vec<ParsedCommand>,
         source: ExecCommandSource,
+        user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
         interaction_input: Option<String>,
     ) -> bool {
         let call = ExecCall {
@@ -132,6 +145,7 @@ impl ExecCell {
             parsed,
             output: None,
             source,
+            user_shell_response_handling,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input,

@@ -312,9 +312,17 @@ The experimental `agentQueue/list` and `agentQueue/delete` methods expose and ca
 
 `thread/shellCommand` runs a user-authored command with full access, independently of the thread's model-turn lifecycle. Its immediate acknowledgement does not mean the process has exited. Omitted or null `timeoutMs` uses `user_shell_command_timeout_ms`, which defaults to no deadline; a positive value sets a deadline and an explicit request value of `0` requests an immediate timeout.
 
-Commands emit `item/started`, optional `item/commandExecution/outputDelta` notifications, and `item/completed` with the same `commandExecution` item ID and `source: "userShell"`. An idle-thread command uses a standalone activity ID without emitting `turn/started` or `turn/completed`; later model turns can start while it runs. An active-thread command uses that turn's presentation identity without inheriting its cancellation. Completed output remains available to model context and reconstructible thread history.
+Optional `responseHandling` selects `finalDelivery` (`passive`, `wake`, or `presentationOnly`) and `queueCommand`. Omission keeps passive, concurrent execution. With `queueCommand: true`, execution waits for earlier user-shell submissions in the same thread; later requests without queuing can still run concurrently. This execution queue is separate from agent input queues.
 
-`thread/backgroundTerminals/list` includes the command's process ID. Use `thread/backgroundTerminals/terminate` to stop one process or `thread/backgroundTerminals/clean` to stop all; a model-turn interrupt does not stop these commands. Thread shutdown requests cancellation, but a cancellation request alone is not confirmation of process exit or durable output teardown.
+Commands emit `item/started`, optional `item/commandExecution/outputDelta` notifications, and `item/completed` with the same `commandExecution` item ID and `source: "userShell"`. An idle-thread command uses a standalone activity ID; later model turns can start while it runs. An active-thread command uses that turn's presentation identity without inheriting its cancellation. Command items expose the resolved policy as `userShellResponseHandling`.
+
+Passive and wake results enter a continuable active turn's message stream. Otherwise passive delivery records the result without starting a turn, while wake delivery requests a model turn through ordinary admission after publishing the completed activity. Presentation-only results remain visible in thread history without entering model context or starting a turn. Stopping a wake-enabled command downgrades its result delivery to passive.
+
+```json
+{ "method": "thread/shellCommand", "id": 26, "params": { "threadId": "thr_b", "command": "git status --short", "responseHandling": { "finalDelivery": "wake", "queueCommand": true } } }
+```
+
+`thread/backgroundTerminals/list` includes the command's process ID and `userShellResponseHandling`. Use `thread/backgroundTerminals/terminate` to stop one process or `thread/backgroundTerminals/clean` to stop all; a model-turn interrupt does not stop these commands. Thread shutdown requests cancellation, but a cancellation request alone is not confirmation of process exit or durable output teardown.
 
 ## Stored thread attachments
 

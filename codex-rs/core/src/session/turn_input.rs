@@ -521,11 +521,28 @@ async fn start_if_idle_with_lease(
     } else {
         None
     };
+    let shell_wake_reservation = if kind == TurnStartKind::Automatic {
+        Some(
+            session
+                .services
+                .unified_exec_manager
+                .acquire_user_shell_wake_reservation_permit()
+                .await,
+        )
+    } else {
+        None
+    };
     if kind == TurnStartKind::Automatic
-        && session
+        && (session
             .services
             .agent_control
             .has_bound_final_response_wake(session.presentation_id())
+            || session
+                .services
+                .unified_exec_manager
+                .has_pending_user_shell_completion_wake()
+                .await
+            || session.input_queue.has_queued_turn_trigger().await)
     {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PendingTriggerTurn,
@@ -548,6 +565,7 @@ async fn start_if_idle_with_lease(
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
         Arc::clone(&active_turn.turn_state)
     };
+    drop(shell_wake_reservation);
     drop(observation);
     // The reserved turn now owns admission. Lifecycle callbacks may reacquire the goal lease.
     drop(lease);
