@@ -204,6 +204,7 @@ mod tests {
             plugin_id: None,
             script_path: None,
             source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::InProgress,
             command_actions: Vec::new(),
             aggregated_output: None,

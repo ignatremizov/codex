@@ -228,6 +228,7 @@ pub(super) fn completed_item(
                 cwd: event.cwd.clone(),
                 parsed_cmd: event.parsed_cmd.clone(),
                 source: event.source,
+                user_shell_response_handling: event.user_shell_response_handling,
                 interaction_input: event.interaction_input.clone(),
                 status: event.status.clone().into(),
                 stdout: (!event.stdout.is_empty()).then(|| event.stdout.clone()),

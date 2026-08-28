@@ -7621,13 +7621,6 @@
       "AgentPath": {
         "type": "string"
       },
-      "AllowDenyRequirement": {
-        "enum": [
-          "allow",
-          "deny"
-        ],
-        "type": "string"
-      },
       "AgentQueueEntry": {
         "description": "Structured input waiting to start a distinct target turn.",
         "properties": {
@@ -7727,6 +7720,13 @@
           "targetMessages"
         ],
         "type": "object"
+      },
+      "AllowDenyRequirement": {
+        "enum": [
+          "allow",
+          "deny"
+        ],
+        "type": "string"
       },
       "AnalyticsConfig": {
         "additionalProperties": true,
@@ -22114,6 +22114,17 @@
                 ],
                 "title": "CommandExecutionThreadItemType",
                 "type": "string"
+              },
+              "userShellResponseHandling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ThreadShellCommandResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Completion delivery policy for a user-authored shell command. `None` for model-authored and unified-exec commands."
               }
             },
             "required": [
@@ -24558,6 +24569,31 @@
         "title": "ThreadSettingsUpdatedNotification",
         "type": "object"
       },
+      "ThreadShellCommandFinalDelivery": {
+        "oneOf": [
+          {
+            "description": "Add the result to model context without starting a turn.",
+            "enum": [
+              "passive"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Add the result to model context and wake the thread when it is idle.",
+            "enum": [
+              "wake"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Publish the result without adding it to model context.",
+            "enum": [
+              "presentationOnly"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "ThreadShellCommandParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -24565,11 +24601,22 @@
             "description": "Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy.",
             "type": "string"
           },
+          "responseHandling": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadShellCommandResponseHandling"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional completion delivery policy. Omission preserves passive model delivery."
+          },
           "threadId": {
             "type": "string"
           },
           "timeoutMs": {
-            "description": "Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
+            "description": "Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
             "format": "int64",
             "type": [
               "integer",
@@ -24587,6 +24634,27 @@
       "ThreadShellCommandResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadShellCommandResponse",
+        "type": "object"
+      },
+      "ThreadShellCommandResponseHandling": {
+        "properties": {
+          "finalDelivery": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadShellCommandFinalDelivery"
+              }
+            ],
+            "description": "Whether the completed result is delivered passively, wakes the thread, or stays presentation-only."
+          },
+          "queueCommand": {
+            "description": "Whether execution waits for every earlier user-shell submission in this thread.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "finalDelivery",
+          "queueCommand"
+        ],
         "type": "object"
       },
       "ThreadSortKey": {

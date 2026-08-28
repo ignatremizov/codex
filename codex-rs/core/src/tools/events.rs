@@ -171,6 +171,7 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
                     cwd: exec_input.cwd.clone(),
                     parsed_cmd: exec_input.parsed_cmd.to_vec(),
                     source: exec_input.source,
+                    user_shell_response_handling: None,
                     interaction_input: exec_input.interaction_input.map(str::to_owned),
                 }),
             )
@@ -189,6 +190,7 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
                 cwd: exec_input.cwd.clone(),
                 parsed_cmd: exec_input.parsed_cmd.to_vec(),
                 source: exec_input.source,
+                user_shell_response_handling: None,
                 interaction_input: exec_input.interaction_input.map(str::to_owned),
                 status: CommandExecutionStatus::InProgress,
                 stdout: None,
@@ -614,6 +616,7 @@ async fn emit_exec_end(
                 cwd: exec_input.cwd.clone(),
                 parsed_cmd: exec_input.parsed_cmd.to_vec(),
                 source: exec_input.source,
+                user_shell_response_handling: None,
                 interaction_input: exec_input.interaction_input.map(str::to_owned),
                 status: exec_result.status.into(),
                 stdout: Some(exec_result.stdout),

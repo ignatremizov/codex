@@ -234,6 +234,7 @@ mod update_versions;
 mod updates;
 #[cfg(any(not(debug_assertions), test))]
 mod updates_cache;
+mod user_shell_command;
 mod version;
 mod vim_search;
 #[cfg(not(all(target_os = "linux", target_env = "musl")))]

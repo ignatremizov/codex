@@ -2287,11 +2287,14 @@ mod tests {
         cells.push(apply_end_cell);
 
         let mut exec_cell = crate::exec_cell::new_active_exec_command(
-            "exec-1".into(),
-            vec!["bash".into(), "-lc".into(), "ls".into()],
-            vec![ParsedCommand::Unknown { cmd: "ls".into() }],
-            ExecCommandSource::Agent,
-            /*interaction_input*/ None,
+            crate::exec_cell::ActiveExecCall {
+                call_id: "exec-1".into(),
+                command: vec!["bash".into(), "-lc".into(), "ls".into()],
+                parsed: vec![ParsedCommand::Unknown { cmd: "ls".into() }],
+                source: ExecCommandSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ true,
             crate::exec_cell::OutputPreviewLineLimits {
                 command: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,

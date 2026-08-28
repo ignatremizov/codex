@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use codex_extension_api::ThreadIdleCause;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio_util::sync::CancellationToken;
@@ -24,6 +25,7 @@ use crate::tools::runtimes::RuntimePathPrepends;
 use crate::tools::runtimes::apply_package_path_prepend;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
 use crate::tools::runtimes::strip_managed_proxy_env;
+use crate::unified_exec::UserShellCommandRetirement;
 use crate::user_shell_command::user_shell_command_record_item;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::SandboxErr;
@@ -35,6 +37,8 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::UserShellCommandFinalDelivery;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 use codex_sandboxing::SandboxType;
 use codex_shell_command::parse_command::parse_command;
 use codex_thread_store::PersistContext;
@@ -53,44 +57,90 @@ pub(crate) enum UserShellCommandPlacement {
 struct UserShellCommandRegistration {
     session: Arc<Session>,
     process_id: Option<i32>,
-    call_id: String,
+    call_id: Option<String>,
+    submission_id: Option<u64>,
 }
 
 impl UserShellCommandRegistration {
-    fn new(session: Arc<Session>, process_id: i32, call_id: String) -> Self {
+    fn new(session: Arc<Session>, submission_id: u64) -> Self {
         Self {
             session,
-            process_id: Some(process_id),
-            call_id,
+            process_id: None,
+            call_id: None,
+            submission_id: Some(submission_id),
         }
     }
 
     async fn unregister(&mut self) {
-        let Some(process_id) = self.process_id else {
+        if let (Some(process_id), Some(call_id)) = (self.process_id, self.call_id.clone()) {
+            self.session
+                .services
+                .unified_exec_manager
+                .unregister_user_shell_command(process_id, &call_id)
+                .await;
+            self.process_id = None;
+            self.call_id = None;
+        }
+        self.release_submission().await;
+    }
+
+    async fn retire_process_for_delivery(&mut self) -> UserShellCommandRetirement {
+        let (Some(process_id), Some(call_id)) = (self.process_id, self.call_id.as_deref()) else {
+            error!("user shell process registration disappeared before result delivery");
+            return UserShellCommandRetirement::Stopped;
+        };
+        let retirement = self
+            .session
+            .services
+            .unified_exec_manager
+            .retire_user_shell_command(process_id, call_id)
+            .await;
+        if retirement.is_some() {
+            self.process_id = None;
+            self.call_id = None;
+        }
+        retirement.unwrap_or_else(|| {
+            error!("user shell process registry rejected exact result-delivery retirement");
+            UserShellCommandRetirement::Stopped
+        })
+    }
+
+    async fn release_submission(&mut self) {
+        let Some(submission_id) = self.submission_id else {
             return;
         };
         self.session
             .services
             .unified_exec_manager
-            .unregister_user_shell_command(process_id, &self.call_id)
+            .release_user_shell_submission(submission_id)
             .await;
-        self.process_id = None;
+        self.submission_id = None;
     }
 }
 
 impl Drop for UserShellCommandRegistration {
     fn drop(&mut self) {
-        let Some(process_id) = self.process_id.take() else {
+        let process = self.process_id.take().zip(self.call_id.take());
+        let submission_id = self.submission_id.take();
+        if process.is_none() && submission_id.is_none() {
             return;
-        };
+        }
         let session = Arc::clone(&self.session);
-        let call_id = self.call_id.clone();
         self.session.services.runtime_handle.spawn(async move {
-            session
-                .services
-                .unified_exec_manager
-                .unregister_user_shell_command(process_id, &call_id)
-                .await;
+            if let Some((process_id, call_id)) = process {
+                session
+                    .services
+                    .unified_exec_manager
+                    .unregister_user_shell_command(process_id, &call_id)
+                    .await;
+            }
+            if let Some(submission_id) = submission_id {
+                session
+                    .services
+                    .unified_exec_manager
+                    .release_user_shell_submission(submission_id)
+                    .await;
+            }
         });
     }
 }
@@ -101,7 +151,10 @@ pub(crate) async fn execute_user_shell_command(
     command: String,
     timeout_ms: Option<u64>,
     placement: UserShellCommandPlacement,
+    response_handling: UserShellCommandResponseHandling,
+    submission_id: u64,
 ) {
+    let mut registration = UserShellCommandRegistration::new(Arc::clone(&session), submission_id);
     session
         .services
         .session_telemetry
@@ -118,6 +171,12 @@ pub(crate) async fn execute_user_shell_command(
             "shell is unavailable in this session",
         )
         .await;
+        registration.unregister().await;
+        if response_handling.final_delivery == UserShellCommandFinalDelivery::Wake {
+            session
+                .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Failed)
+                .await;
+        }
         return;
     };
 
@@ -135,6 +194,12 @@ pub(crate) async fn execute_user_shell_command(
             "shell working directory is not native to the Codex host",
         )
         .await;
+        registration.unregister().await;
+        if response_handling.final_delivery == UserShellCommandFinalDelivery::Wake {
+            session
+                .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Failed)
+                .await;
+        }
         return;
     };
     let shell_snapshot_location = turn_environment.shell_snapshot(&cwd);
@@ -164,13 +229,15 @@ pub(crate) async fn execute_user_shell_command(
         .unified_exec_manager
         .register_user_shell_command(
             call_id.clone(),
+            submission_id,
             raw_command.clone(),
             cwd.clone().into(),
+            response_handling,
             command_cancellation.clone(),
         )
         .await;
-    let mut registration =
-        UserShellCommandRegistration::new(Arc::clone(&session), process_id, call_id.clone());
+    registration.process_id = Some(process_id);
+    registration.call_id = Some(call_id.clone());
     let process_id_string = process_id.to_string();
 
     let parsed_cmd = parse_command(&display_command);
@@ -186,6 +253,7 @@ pub(crate) async fn execute_user_shell_command(
                 cwd: cwd.clone().into(),
                 parsed_cmd: parsed_cmd.clone(),
                 source: ExecCommandSource::UserShell,
+                user_shell_response_handling: Some(response_handling),
                 interaction_input: None,
                 status: CommandExecutionStatus::InProgress,
                 stdout: None,
@@ -245,7 +313,29 @@ pub(crate) async fn execute_user_shell_command(
         tx_event: session.get_tx_event(),
     });
 
-    let exec_result = execute_exec_request(exec_env, stdout_stream, /*after_spawn*/ None).await;
+    let launch_claimed = session
+        .services
+        .unified_exec_manager
+        .wait_for_user_shell_launch(
+            submission_id,
+            response_handling.queue_command,
+            &command_cancellation,
+        )
+        .await;
+    let launch_allowed = launch_claimed && !command_cancellation.is_cancelled();
+    let exec_result = if launch_allowed {
+        execute_exec_request(exec_env, stdout_stream, /*after_spawn*/ None).await
+    } else {
+        let message = "command stopped before it started".to_string();
+        Ok(ExecToolCallOutput {
+            exit_code: 130,
+            stdout: StreamOutput::new(String::new()),
+            stderr: StreamOutput::new(message.clone()),
+            aggregated_output: StreamOutput::new(message),
+            duration: Duration::ZERO,
+            timed_out: false,
+        })
+    };
 
     let output = match exec_result {
         Ok(output) => output,
@@ -263,48 +353,28 @@ pub(crate) async fn execute_user_shell_command(
         Err(err) => {
             error!("user shell command failed: {err:?}");
             let message = format!("execution error: {err:?}");
-            let exec_output = ExecToolCallOutput {
+            ExecToolCallOutput {
                 exit_code: -1,
                 stdout: StreamOutput::new(String::new()),
                 stderr: StreamOutput::new(message.clone()),
-                aggregated_output: StreamOutput::new(message.clone()),
+                aggregated_output: StreamOutput::new(message),
                 duration: Duration::ZERO,
                 timed_out: false,
-            };
-            persist_user_shell_output(&session, turn_context.as_ref(), &raw_command, &exec_output)
-                .await;
-            session
-                .emit_turn_item_completed(
-                    turn_context.as_ref(),
-                    TurnItem::CommandExecution(CommandExecutionItem {
-                        id: call_id,
-                        plugin_id: None,
-                        script_path: None,
-                        process_id: Some(process_id_string),
-                        command: display_command,
-                        cwd: cwd.into(),
-                        parsed_cmd,
-                        source: ExecCommandSource::UserShell,
-                        interaction_input: None,
-                        status: CommandExecutionStatus::Failed,
-                        stdout: Some(exec_output.stdout.text.clone()),
-                        stderr: Some(exec_output.stderr.text.clone()),
-                        aggregated_output: Some(exec_output.aggregated_output.text.clone()),
-                        exit_code: Some(exec_output.exit_code),
-                        duration: Some(exec_output.duration),
-                        formatted_output: Some(format_exec_output_str(
-                            &exec_output,
-                            turn_context.model_info().truncation_policy.into(),
-                        )),
-                    }),
-                )
-                .await;
-            registration.unregister().await;
-            return;
+            }
         }
     };
 
-    persist_user_shell_output(&session, turn_context.as_ref(), &raw_command, &output).await;
+    let retirement = registration.retire_process_for_delivery().await;
+    let command_was_stopped = !launch_allowed || retirement == UserShellCommandRetirement::Stopped;
+    let start_wake = deliver_user_shell_output(
+        &session,
+        turn_context.as_ref(),
+        &raw_command,
+        &output,
+        response_handling,
+        command_was_stopped,
+    )
+    .await;
     session
         .emit_turn_item_completed(
             turn_context.as_ref(),
@@ -315,6 +385,7 @@ pub(crate) async fn execute_user_shell_command(
                 cwd: cwd.into(),
                 parsed_cmd,
                 source: ExecCommandSource::UserShell,
+                user_shell_response_handling: Some(response_handling),
                 plugin_id: None,
                 script_path: None,
                 interaction_input: None,
@@ -335,6 +406,19 @@ pub(crate) async fn execute_user_shell_command(
             }),
         )
         .await;
+    // A user shell command can finish before the first ordinary model turn, so materialize its
+    // completed activity before scheduling an idle wake.
+    session
+        .ensure_rollout_materialized(PersistContext::Standard)
+        .await;
+    registration.release_submission().await;
+    if start_wake {
+        session.maybe_start_turn_for_pending_work().await;
+    } else if response_handling.final_delivery == UserShellCommandFinalDelivery::Wake {
+        session
+            .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+            .await;
+    }
 
     registration.unregister().await;
 }
@@ -414,21 +498,35 @@ fn prepare_user_shell_exec_command_with_path_prepend(
     )
 }
 
-async fn persist_user_shell_output(
-    session: &Session,
+async fn deliver_user_shell_output(
+    session: &Arc<Session>,
     turn_context: &TurnContext,
     raw_command: &str,
     exec_output: &ExecToolCallOutput,
-) {
+    response_handling: UserShellCommandResponseHandling,
+    stopped: bool,
+) -> bool {
     let output_item = user_shell_command_record_item(raw_command, exec_output, turn_context);
-    session
-        .inject_no_new_turn(vec![output_item], Some(turn_context))
-        .await;
-    // A user shell command can finish before the first ordinary model turn, so materialize its
-    // model-visible result without relying on later turn lifecycle plumbing.
-    session
-        .ensure_rollout_materialized(PersistContext::Standard)
-        .await;
+    let final_delivery =
+        if stopped && response_handling.final_delivery == UserShellCommandFinalDelivery::Wake {
+            UserShellCommandFinalDelivery::Passive
+        } else {
+            response_handling.final_delivery
+        };
+    match final_delivery {
+        UserShellCommandFinalDelivery::Passive => {
+            session
+                .inject_no_new_turn(vec![output_item], Some(turn_context))
+                .await;
+            false
+        }
+        UserShellCommandFinalDelivery::Wake => {
+            session
+                .inject_or_queue_response_item_for_wake(output_item, turn_context)
+                .await
+        }
+        UserShellCommandFinalDelivery::PresentationOnly => false,
+    }
 }
 
 #[cfg(all(test, unix))]

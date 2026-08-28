@@ -1,6 +1,7 @@
 //! User-message and shell-prompt submission behavior for `ChatWidget`.
 
 use super::*;
+use crate::user_shell_command::parse_user_shell_command;
 
 impl ChatWidget {
     pub(crate) fn set_task_mentions_enabled(&mut self, enabled: bool) {
@@ -170,32 +171,39 @@ impl ChatWidget {
         items
     }
 
-    fn submit_shell_command(&mut self, command: &str) -> QueueDrain {
-        let cmd = command.trim();
-        if cmd.is_empty() {
-            self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
-                history_cell::new_info_event(
-                    USER_SHELL_COMMAND_HELP_TITLE.to_string(),
-                    Some(USER_SHELL_COMMAND_HELP_HINT.to_string()),
-                ),
-            )));
-            QueueDrain::Continue
-        } else {
-            self.submit_op(AppCommand::run_user_shell_command(cmd.to_string()));
-            QueueDrain::Stop
+    fn submit_shell_command(&mut self, command: &str) -> Option<AppCommand> {
+        let parsed = match parse_user_shell_command(command) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                self.add_error_message(err);
+                return None;
+            }
+        };
+        if parsed.command.is_empty() {
+            self.add_to_history(history_cell::new_info_event(
+                USER_SHELL_COMMAND_HELP_TITLE.to_string(),
+                Some(USER_SHELL_COMMAND_HELP_HINT.to_string()),
+            ));
+            return None;
         }
+        let app_command = AppCommand::run_user_shell_command(
+            parsed.command.to_string(),
+            parsed.response_handling,
+        );
+        self.submit_op(app_command.clone());
+        Some(app_command)
     }
 
     fn submit_shell_command_with_history(
         &mut self,
         command: &str,
         history_text: &str,
-    ) -> QueueDrain {
-        let drain = self.submit_shell_command(command);
-        if drain == QueueDrain::Stop {
+    ) -> Option<AppCommand> {
+        let app_command = self.submit_shell_command(command);
+        if app_command.is_some() {
             self.append_message_history_entry(history_text.to_string());
         }
-        drain
+        app_command
     }
 
     pub(super) fn submit_queued_shell_prompt(&mut self, user_message: UserMessage) -> QueueDrain {
@@ -307,13 +315,7 @@ impl ChatWidget {
             && let Some(stripped) = user_message.text.strip_prefix('!')
         {
             let history_text = user_message.text.clone();
-            let app_command = match self.submit_shell_command_with_history(stripped, &history_text)
-            {
-                QueueDrain::Continue => None,
-                QueueDrain::Stop => Some(AppCommand::run_user_shell_command(
-                    stripped.trim().to_string(),
-                )),
-            };
+            let app_command = self.submit_shell_command_with_history(stripped, &history_text);
             return (app_command.is_some(), app_command);
         }
 

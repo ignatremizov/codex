@@ -227,6 +227,7 @@ impl NonPaginatedExecCommand {
                 cwd: self.cwd.clone(),
                 process_id: self.process_id.clone(),
                 source: CommandExecutionSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: self.status.clone(),
                 command_actions: vec![CommandAction::Unknown {
                     command: self.command.clone(),

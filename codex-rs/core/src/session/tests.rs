@@ -176,6 +176,7 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_protocol::protocol::UserShellCommandFinalDelivery;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
@@ -1617,6 +1618,11 @@ async fn user_shell_commands_do_not_inherit_managed_network_proxy() -> anyhow::R
     let command = r#"$val = $env:HTTP_PROXY; if ([string]::IsNullOrEmpty($val)) { $val = 'not-set' } ; [System.Console]::Write($val)"#.to_string();
     #[cfg(not(windows))]
     let command = r#"sh -c "printf '%s' \"${HTTP_PROXY:-not-set}\"""#.to_string();
+    let submission_id = session
+        .services
+        .unified_exec_manager
+        .reserve_user_shell_submission(UserShellCommandFinalDelivery::Passive)
+        .await;
 
     execute_user_shell_command(
         Arc::clone(&session),
@@ -1624,6 +1630,8 @@ async fn user_shell_commands_do_not_inherit_managed_network_proxy() -> anyhow::R
         command,
         /*timeout_ms*/ None,
         UserShellCommandPlacement::Detached,
+        Default::default(),
+        submission_id,
     )
     .await;
 
@@ -1651,6 +1659,11 @@ async fn user_shell_commands_remain_login_shells_when_model_login_shells_are_dis
     let expected_command = session
         .user_shell()
         .derive_exec_args(&command, /*use_login_shell*/ true);
+    let submission_id = session
+        .services
+        .unified_exec_manager
+        .reserve_user_shell_submission(UserShellCommandFinalDelivery::Passive)
+        .await;
 
     execute_user_shell_command(
         Arc::clone(&session),
@@ -1658,6 +1671,8 @@ async fn user_shell_commands_remain_login_shells_when_model_login_shells_are_dis
         command,
         /*timeout_ms*/ None,
         UserShellCommandPlacement::Detached,
+        Default::default(),
+        submission_id,
     )
     .await;
 
@@ -13021,6 +13036,7 @@ async fn run_user_shell_command_does_not_set_reference_context_item() {
         "sub-id".to_string(),
         "echo shell".to_string(),
         /*timeout_ms*/ None,
+        Default::default(),
     )
     .await;
 
@@ -14199,7 +14215,7 @@ async fn task_finish_emits_thread_idle_lifecycle_after_active_turn_clears() {
 }
 
 #[tokio::test]
-async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
+async fn thread_idle_lifecycle_waits_for_pending_automatic_work() {
     struct ThreadIdleRecorder {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -14241,6 +14257,93 @@ async fn thread_idle_lifecycle_waits_for_trigger_turn_mailbox_work() {
         .await;
 
     assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
+
+    let _ = session.input_queue.drain_mailbox_input_items().await;
+    let submission_id = session
+        .services
+        .unified_exec_manager
+        .reserve_user_shell_submission(UserShellCommandFinalDelivery::Wake)
+        .await;
+    session
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .await;
+    assert_eq!(0, calls.load(std::sync::atomic::Ordering::SeqCst));
+    session
+        .services
+        .unified_exec_manager
+        .release_user_shell_submission(submission_id)
+        .await;
+    session
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .await;
+    assert_eq!(1, calls.load(std::sync::atomic::Ordering::SeqCst));
+
+    session
+        .input_queue
+        .queue_response_items_for_next_turn(vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "queued automatic work".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }])
+        .await;
+    session
+        .emit_thread_idle_lifecycle_if_idle(codex_extension_api::ThreadIdleCause::Completed)
+        .await;
+    assert_eq!(1, calls.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "the test holds the serialization gate to order both competing reservations"
+)]
+async fn user_shell_wake_reservation_wins_over_concurrent_idle_turn() {
+    let (sess, _tc, _rx) = make_session_and_context_with_rx().await;
+    let wake_gate = sess
+        .services
+        .unified_exec_manager
+        .acquire_user_shell_wake_reservation_permit()
+        .await;
+    let reserve_wake = {
+        let sess = Arc::clone(&sess);
+        tokio::spawn(async move {
+            sess.services
+                .unified_exec_manager
+                .reserve_user_shell_submission(UserShellCommandFinalDelivery::Wake)
+                .await
+        })
+    };
+    tokio::task::yield_now().await;
+    let start_idle_turn = {
+        let sess = Arc::clone(&sess);
+        tokio::spawn(async move {
+            sess.try_start_turn_if_idle(vec![TurnInput::ResponseItem(
+                user_message("automatic goal continuation").into(),
+            )])
+            .await
+        })
+    };
+    tokio::task::yield_now().await;
+    drop(wake_gate);
+
+    let submission_id = reserve_wake.await.expect("wake reservation should join");
+    let rejection = start_idle_turn
+        .await
+        .expect("idle reservation should join")
+        .expect_err("pending shell wake should own the next automatic turn");
+    assert_eq!(
+        rejection.reason(),
+        crate::codex_thread::TryStartTurnIfIdleRejectionReason::PendingTriggerTurn
+    );
+    assert!(sess.active_turn.lock().await.is_none());
+    sess.services
+        .unified_exec_manager
+        .release_user_shell_submission(submission_id)
+        .await;
 }
 
 // Start-if-idle and steering behavior is covered by session/turn_input_tests.rs.
@@ -14339,6 +14442,105 @@ async fn queued_response_items_for_next_turn_move_into_next_active_turn() {
             None,
         )
     );
+}
+
+#[tokio::test]
+async fn wake_result_queues_after_active_task_stops_accepting_pending_input() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+    {
+        let active = sess.active_turn.lock().await;
+        active
+            .as_ref()
+            .and_then(|active_turn| active_turn.task.as_ref())
+            .expect("active task")
+            .accepting_pending_input
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+    let wake_item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "wake after task result".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    assert!(
+        sess.inject_or_queue_response_item_for_wake(wake_item.clone(), tc.as_ref())
+            .await
+    );
+    assert_eq!(
+        sess.input_queue.take_queued_items_for_next_turn().await,
+        vec![TurnInput::ResponseItem(wake_item.into())]
+    );
+    assert_eq!(
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
+        (Vec::new(), None, None)
+    );
+}
+
+#[tokio::test]
+async fn passive_result_records_directly_after_active_task_detaches() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+    let detached_task = {
+        let mut active = sess.active_turn.lock().await;
+        active
+            .as_mut()
+            .and_then(|active_turn| active_turn.task.take())
+            .expect("active task")
+    };
+    let passive_item = user_message("stopped shell result");
+
+    sess.inject_no_new_turn(vec![passive_item], Some(tc.as_ref()))
+        .await;
+
+    let turn_state = {
+        let active = sess.active_turn.lock().await;
+        Arc::clone(
+            &active
+                .as_ref()
+                .expect("taskless finalization state")
+                .turn_state,
+        )
+    };
+    assert_eq!(
+        sess.input_queue
+            .take_pending_input_for_turn_state(turn_state.as_ref())
+            .await,
+        Vec::new()
+    );
+    assert!(sess.clone_history().await.raw_items().any(|item| {
+        matches!(
+            item,
+            ResponseItem::Message { role, content, .. }
+                if role == "user"
+                    && content.iter().any(|content| matches!(
+                        content,
+                        ContentItem::InputText { text }
+                            if text == "stopped shell result"
+                    ))
+        )
+    }));
+    drop(detached_task);
 }
 
 #[tokio::test]

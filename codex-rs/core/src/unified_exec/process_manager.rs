@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::oneshot::Completion;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::exec_env::CODEX_PERMISSION_PROFILE_ENV_VAR;
@@ -53,6 +54,8 @@ use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::UserShellCommandEntry;
+use crate::unified_exec::UserShellCommandRetirement;
+use crate::unified_exec::UserShellSubmissionPhase;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
@@ -474,8 +477,10 @@ impl UnifiedExecProcessManager {
     pub(crate) async fn register_user_shell_command(
         &self,
         call_id: String,
+        submission_id: u64,
         command: String,
         cwd: PathUri,
+        response_handling: UserShellCommandResponseHandling,
         cancellation_token: CancellationToken,
     ) -> i32 {
         let mut store = self.process_store.lock().await;
@@ -485,8 +490,10 @@ impl UnifiedExecProcessManager {
             UserShellCommandEntry {
                 call_id,
                 process_id,
+                submission_id,
                 command,
                 cwd,
+                response_handling,
                 cancellation_token,
             },
         );
@@ -504,6 +511,26 @@ impl UnifiedExecProcessManager {
         }
         store.user_shell_commands.remove(&process_id);
         store.reserved_process_ids.remove(&process_id);
+    }
+
+    pub(crate) async fn retire_user_shell_command(
+        &self,
+        process_id: i32,
+        call_id: &str,
+    ) -> Option<UserShellCommandRetirement> {
+        let mut store = self.process_store.lock().await;
+        let entry = store
+            .user_shell_commands
+            .get(&process_id)
+            .filter(|entry| entry.call_id == call_id)?;
+        let retirement = if entry.cancellation_token.is_cancelled() {
+            UserShellCommandRetirement::Stopped
+        } else {
+            UserShellCommandRetirement::Completed
+        };
+        store.user_shell_commands.remove(&process_id);
+        store.reserved_process_ids.remove(&process_id);
+        Some(retirement)
     }
 
     pub(crate) async fn release_process_id(&self, process_id: i32) {
@@ -1814,29 +1841,26 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_all_processes(&self) {
-        let (entries, user_shell_cancellations): (Vec<ProcessEntry>, Vec<CancellationToken>) = {
+        let entries: Vec<ProcessEntry> = {
             let mut processes = self.process_store.lock().await;
             let entries: Vec<ProcessEntry> = processes
                 .processes
                 .drain()
                 .map(|(_, entry)| entry)
                 .collect();
-            let user_shell_cancellations = processes
-                .user_shell_commands
-                .values()
-                .map(|entry| entry.cancellation_token.clone())
-                .collect();
+            for entry in processes.user_shell_commands.values() {
+                entry.cancellation_token.cancel();
+            }
+            processes.pending_user_shell_submissions.clear();
             processes.reserved_process_ids =
                 processes.user_shell_commands.keys().copied().collect();
-            (entries, user_shell_cancellations)
+            entries
         };
+        self.user_shell_submission_changed.notify_waiters();
 
         for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
             entry.process.terminate();
-        }
-        for cancellation_token in user_shell_cancellations {
-            cancellation_token.cancel();
         }
     }
 
@@ -1854,6 +1878,7 @@ impl UnifiedExecProcessManager {
                         process_id: entry.process_id.to_string(),
                         command: entry.hook_command.clone(),
                         cwd: entry.cwd.clone(),
+                        user_shell_response_handling: None,
                     },
                 )
             })
@@ -1865,6 +1890,7 @@ impl UnifiedExecProcessManager {
                         process_id: entry.process_id.to_string(),
                         command: entry.command.clone(),
                         cwd: entry.cwd.clone(),
+                        user_shell_response_handling: Some(entry.response_handling),
                     },
                 )
             }))
@@ -1874,15 +1900,30 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {
-        let user_shell_cancellation = {
-            let store = self.process_store.lock().await;
-            store
+        let stopped_pending_user_shell = {
+            let mut store = self.process_store.lock().await;
+            let user_shell = store
                 .user_shell_commands
                 .get(&process_id)
-                .map(|entry| entry.cancellation_token.clone())
+                .map(|entry| (entry.cancellation_token.clone(), entry.submission_id));
+            user_shell.map(|(cancellation_token, submission_id)| {
+                let stopped_pending = store
+                    .pending_user_shell_submissions
+                    .get(&submission_id)
+                    .is_some_and(|submission| {
+                        submission.phase == UserShellSubmissionPhase::Pending
+                    });
+                if stopped_pending {
+                    store.pending_user_shell_submissions.remove(&submission_id);
+                }
+                cancellation_token.cancel();
+                stopped_pending
+            })
         };
-        if let Some(cancellation_token) = user_shell_cancellation {
-            cancellation_token.cancel();
+        if let Some(stopped_pending_user_shell) = stopped_pending_user_shell {
+            if stopped_pending_user_shell {
+                self.user_shell_submission_changed.notify_waiters();
+            }
             return true;
         }
 

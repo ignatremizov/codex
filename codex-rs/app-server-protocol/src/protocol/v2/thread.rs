@@ -35,6 +35,8 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
+use codex_protocol::protocol::UserShellCommandFinalDelivery as CoreUserShellCommandFinalDelivery;
+use codex_protocol::protocol::UserShellCommandResponseHandling as CoreUserShellCommandResponseHandling;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
@@ -1119,6 +1121,55 @@ pub struct ThreadCompactStartParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartResponse {}
 
+v2_enum_from_core! {
+    pub enum ThreadShellCommandFinalDelivery from CoreUserShellCommandFinalDelivery {
+        /// Add the result to model context without starting a turn.
+        Passive,
+        /// Add the result to model context and wake the thread when it is idle.
+        Wake,
+        /// Publish the result without adding it to model context.
+        PresentationOnly,
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadShellCommandResponseHandling {
+    /// Whether the completed result is delivered passively, wakes the thread, or stays
+    /// presentation-only.
+    pub final_delivery: ThreadShellCommandFinalDelivery,
+    /// Whether execution waits for every earlier user-shell submission in this thread.
+    pub queue_command: bool,
+}
+
+impl Default for ThreadShellCommandResponseHandling {
+    fn default() -> Self {
+        Self {
+            final_delivery: ThreadShellCommandFinalDelivery::Passive,
+            queue_command: false,
+        }
+    }
+}
+
+impl ThreadShellCommandResponseHandling {
+    pub fn to_core(self) -> CoreUserShellCommandResponseHandling {
+        CoreUserShellCommandResponseHandling {
+            final_delivery: self.final_delivery.to_core(),
+            queue_command: self.queue_command,
+        }
+    }
+}
+
+impl From<CoreUserShellCommandResponseHandling> for ThreadShellCommandResponseHandling {
+    fn from(value: CoreUserShellCommandResponseHandling) -> Self {
+        Self {
+            final_delivery: value.final_delivery.into(),
+            queue_command: value.queue_command,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1136,6 +1187,9 @@ pub struct ThreadShellCommandParams {
     #[ts(type = "number | null")]
     #[ts(optional = nullable)]
     pub timeout_ms: Option<i64>,
+    /// Optional completion delivery policy. Omission preserves passive model delivery.
+    #[ts(optional = nullable)]
+    pub response_handling: Option<ThreadShellCommandResponseHandling>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1190,6 +1244,8 @@ pub struct ThreadBackgroundTerminal {
     pub process_id: String,
     pub command: String,
     pub cwd: LegacyAppPathString,
+    /// Completion delivery policy for a user-authored shell command.
+    pub user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
     pub os_pid: Option<u32>,
     pub cpu_percent: Option<f64>,
     pub rss_kb: Option<u64>,

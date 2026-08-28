@@ -2,6 +2,8 @@ use super::*;
 use crate::app_event::HistoryLookupResponse;
 use codex_app_server_protocol::NetworkAccess;
 use codex_app_server_protocol::SandboxPolicy;
+use codex_app_server_protocol::ThreadShellCommandFinalDelivery;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::permissions::FileSystemAccessMode;
@@ -89,7 +91,11 @@ async fn replayed_command_execution_is_visible_in_transcript() {
                 command: "sleep 20".to_string(),
                 cwd: test_path_buf("/home/user/project").abs().into(),
                 process_id: None,
-                source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                source: AppServerCommandExecutionSource::UserShell,
+                user_shell_response_handling: Some(ThreadShellCommandResponseHandling {
+                    final_delivery: ThreadShellCommandFinalDelivery::Wake,
+                    queue_command: false,
+                }),
                 status: AppServerCommandExecutionStatus::Completed,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: "sleep 20".to_string(),
@@ -112,7 +118,7 @@ async fn replayed_command_execution_is_visible_in_transcript() {
         .into_iter()
         .map(|lines| lines_to_single_string(&lines))
         .collect::<String>();
-    insta::assert_snapshot!(rendered, @"• Ran sleep 20\n  └ (no output)\n");
+    insta::assert_snapshot!(rendered, @"• You ran sleep 20 (wake)\n  └ (no output)\n");
 }
 
 #[tokio::test]
@@ -129,6 +135,7 @@ async fn resumed_history_keeps_command_without_restoring_background_terminal() {
                 cwd: test_path_buf("/home/user/project").abs().into(),
                 process_id: Some("123".to_string()),
                 source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: AppServerCommandExecutionStatus::InProgress,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: "sleep 20".to_string(),
@@ -185,6 +192,7 @@ async fn thread_snapshot_does_not_restore_terminal_from_completed_turn() {
                 cwd: test_path_buf("/home/user/project").abs().into(),
                 process_id: Some("123".to_string()),
                 source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: AppServerCommandExecutionStatus::InProgress,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: "sleep 20".to_string(),
@@ -232,6 +240,7 @@ async fn thread_snapshot_keeps_live_background_terminals() {
                 cwd: test_path_buf("/home/user/project").abs().into(),
                 process_id: Some("123".to_string()),
                 source: AppServerCommandExecutionSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: AppServerCommandExecutionStatus::InProgress,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: "sleep 20".to_string(),

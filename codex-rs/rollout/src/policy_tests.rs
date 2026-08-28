@@ -57,6 +57,7 @@ fn user_shell_completion_is_persisted_in_every_history_mode() {
             cwd: test_path_buf("/tmp").abs().into(),
             parsed_cmd: Vec::new(),
             source: ExecCommandSource::UserShell,
+            user_shell_response_handling: None,
             interaction_input: None,
             status: CommandExecutionStatus::Completed,
             stdout: Some(String::new()),

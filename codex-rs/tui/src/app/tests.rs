@@ -1634,6 +1634,7 @@ async fn idle_thread_snapshot_keeps_command_history_without_restoring_background
                     cwd: test_path_buf("/tmp/project").abs().into(),
                     process_id: Some("123".to_string()),
                     source: CommandExecutionSource::UnifiedExecStartup,
+                    user_shell_response_handling: None,
                     status: CommandExecutionStatus::InProgress,
                     command_actions: vec![CommandAction::Unknown {
                         command: "sleep 20".to_string(),

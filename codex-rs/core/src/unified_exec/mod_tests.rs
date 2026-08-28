@@ -362,6 +362,7 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
             process_id: process_id.to_string(),
             command: "bash -i".to_string(),
             cwd: cwd.into(),
+            user_shell_response_handling: None,
         }]
     );
 

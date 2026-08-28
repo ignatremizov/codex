@@ -17,9 +17,10 @@ use codex_protocol::protocol::ExecOutputStream;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::protocol::UserShellCommandFinalDelivery;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
-use core_test_support::PathExt;
 use core_test_support::assert_regex_match;
 use core_test_support::responses;
 use core_test_support::responses::ev_assistant_message;
@@ -72,6 +73,7 @@ async fn user_shell_cmd_ls_and_cat_in_temp_dir() {
         .submit(Op::RunUserShellCommand {
             command: list_cmd,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await
         .unwrap();
@@ -94,6 +96,7 @@ async fn user_shell_cmd_ls_and_cat_in_temp_dir() {
         .submit(Op::RunUserShellCommand {
             command: cat_cmd,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await
         .unwrap();
@@ -135,6 +138,7 @@ async fn user_shell_command_without_local_environment_emits_error() -> anyhow::R
         .submit(Op::RunUserShellCommand {
             command: "echo shell".to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -173,6 +177,7 @@ async fn user_shell_command_uses_configured_timeout() -> anyhow::Result<()> {
         .submit(Op::RunUserShellCommand {
             command,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -239,6 +244,7 @@ async fn user_shell_command_is_unbounded_by_default() -> anyhow::Result<()> {
         .submit(Op::RunUserShellCommand {
             command,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -256,11 +262,139 @@ async fn user_shell_command_is_unbounded_by_default() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_shell_command_wake_starts_an_idle_turn_with_the_result() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-shell-wake"),
+            ev_assistant_message("msg-shell-wake", "wake observed"),
+            ev_completed("resp-shell-wake"),
+        ]),
+    )
+    .await;
+
+    #[cfg(windows)]
+    let command = "Write-Output shell-wake-result".to_string();
+    #[cfg(not(windows))]
+    let command = "printf shell-wake-result".to_string();
+    test.codex
+        .submit(Op::RunUserShellCommand {
+            command,
+            timeout_ms: None,
+            response_handling: UserShellCommandResponseHandling {
+                final_delivery: UserShellCommandFinalDelivery::Wake,
+                queue_command: false,
+            },
+        })
+        .await?;
+
+    let end = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandEnd(event) if event.source == ExecCommandSource::UserShell => {
+            Some(event.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(end.exit_code, 0);
+    let completed = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) => Some(event.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        completed.last_agent_message.as_deref(),
+        Some("wake observed")
+    );
+
+    let request = mock.single_request();
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        request
+            .header("x-codex-turn-metadata")
+            .as_deref()
+            .expect("wake request should include turn metadata"),
+    )?;
+    assert_eq!(
+        turn_metadata["turn_trigger"].as_str(),
+        Some("user_shell_wake")
+    );
+    assert!(
+        request
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains("<user_shell_command>")
+                && text.contains("shell-wake-result")),
+        "wake request should contain the completed user-shell result"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presentation_only_user_shell_result_stays_out_of_model_context() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+
+    #[cfg(windows)]
+    let command = "Write-Output private-shell-result".to_string();
+    #[cfg(not(windows))]
+    let command = "printf private-shell-result".to_string();
+    test.codex
+        .submit(Op::RunUserShellCommand {
+            command,
+            timeout_ms: None,
+            response_handling: UserShellCommandResponseHandling {
+                final_delivery: UserShellCommandFinalDelivery::PresentationOnly,
+                queue_command: false,
+            },
+        })
+        .await?;
+    let _ = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandEnd(event) if event.source == ExecCommandSource::UserShell => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-after-private-shell"),
+            ev_assistant_message("msg-after-private-shell", "done"),
+            ev_completed("resp-after-private-shell"),
+        ]),
+    )
+    .await;
+    test.submit_turn("continue after private shell").await?;
+
+    assert!(
+        mock.single_request()
+            .message_input_texts("user")
+            .iter()
+            .all(|text| !text.contains("private-shell-result")),
+        "presentation-only shell output must not enter model context"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex();
     let test = builder.build(&server).await?;
+    let unexpected_wake = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-stopped-shell"),
+            ev_assistant_message("msg-stopped-shell", "unexpected wake"),
+            ev_completed("resp-stopped-shell"),
+        ]),
+    )
+    .await;
 
     #[cfg(windows)]
     let command = "Start-Sleep -Seconds 60".to_string();
@@ -271,6 +405,10 @@ async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyh
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling: UserShellCommandResponseHandling {
+                final_delivery: UserShellCommandFinalDelivery::Wake,
+                queue_command: false,
+            },
         })
         .await?;
 
@@ -292,6 +430,10 @@ async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyh
             process_id: process_id.clone(),
             command,
             cwd: begin.cwd,
+            user_shell_response_handling: Some(UserShellCommandResponseHandling {
+                final_delivery: UserShellCommandFinalDelivery::Wake,
+                queue_command: false,
+            }),
         }]
     );
 
@@ -323,6 +465,179 @@ async fn user_shell_command_is_listed_and_can_be_stopped_by_process_id() -> anyh
     })
     .await
     .context("stopped user shell command remained in background terminal list")?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        unexpected_wake.requests().is_empty(),
+        "stopping a user-shell command must cancel its completion wake"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_user_shell_command_waits_for_earlier_submissions() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+    let temp = TempDir::new()?;
+    let started_path = temp.path().join("first-started");
+    let release_path = temp.path().join("release-first");
+    let second_started_path = temp.path().join("second-started");
+    let cancelled_started_path = temp.path().join("cancelled-started");
+    let order_path = temp.path().join("order");
+
+    #[cfg(windows)]
+    let (first_command, second_command, cancelled_command) = {
+        let quote = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
+        (
+            format!(
+                "Set-Content -LiteralPath '{}' -Value started; while (-not (Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 10 }}; Add-Content -LiteralPath '{}' -Value first",
+                quote(&started_path),
+                quote(&release_path),
+                quote(&order_path),
+            ),
+            format!(
+                "Set-Content -LiteralPath '{}' -Value started; Add-Content -LiteralPath '{}' -Value second",
+                quote(&second_started_path),
+                quote(&order_path),
+            ),
+            format!(
+                "Set-Content -LiteralPath '{}' -Value started",
+                quote(&cancelled_started_path),
+            ),
+        )
+    };
+    #[cfg(not(windows))]
+    let (first_command, second_command, cancelled_command) = {
+        let quote = |path: &std::path::Path| {
+            format!("'{}'", path.display().to_string().replace('\'', "'\"'\"'"))
+        };
+        (
+            format!(
+                "printf started > {}; while [ ! -f {} ]; do sleep 0.01; done; printf 'first\\n' >> {}",
+                quote(&started_path),
+                quote(&release_path),
+                quote(&order_path),
+            ),
+            format!(
+                "printf started > {}; printf 'second\\n' >> {}",
+                quote(&second_started_path),
+                quote(&order_path),
+            ),
+            format!("printf started > {}", quote(&cancelled_started_path)),
+        )
+    };
+
+    test.codex
+        .submit(Op::RunUserShellCommand {
+            command: first_command,
+            timeout_ms: None,
+            response_handling: Default::default(),
+        })
+        .await?;
+    let _ = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandBegin(event) if event.source == ExecCommandSource::UserShell => {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    timeout(Duration::from_secs(5), async {
+        while !started_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("first user-shell command did not start")?;
+
+    test.codex
+        .submit(Op::RunUserShellCommand {
+            command: second_command,
+            timeout_ms: None,
+            response_handling: UserShellCommandResponseHandling {
+                final_delivery: UserShellCommandFinalDelivery::Passive,
+                queue_command: true,
+            },
+        })
+        .await?;
+    let _ = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandBegin(event) if event.source == ExecCommandSource::UserShell => {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+
+    test.codex
+        .submit(Op::RunUserShellCommand {
+            command: cancelled_command,
+            timeout_ms: None,
+            response_handling: UserShellCommandResponseHandling {
+                final_delivery: UserShellCommandFinalDelivery::Passive,
+                queue_command: true,
+            },
+        })
+        .await?;
+    let cancelled_begin = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandBegin(event) if event.source == ExecCommandSource::UserShell => {
+            Some(event.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        test.codex.list_background_terminals().await.len(),
+        3,
+        "queued user-shell command should remain discoverable before launch"
+    );
+    let cancelled_process_id = cancelled_begin
+        .process_id
+        .as_deref()
+        .context("queued user-shell command should expose a process id")?
+        .parse::<i32>()
+        .context("queued user-shell process id should be numeric")?;
+    assert!(
+        test.codex
+            .terminate_background_terminal(cancelled_process_id)
+            .await
+    );
+    let _ = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecCommandEnd(event)
+            if event.source == ExecCommandSource::UserShell
+                && event.call_id == cancelled_begin.call_id =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    assert!(
+        !cancelled_started_path.exists(),
+        "stopped queued command started before it was cancelled"
+    );
+    assert!(
+        timeout(Duration::from_millis(200), async {
+            while !second_started_path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_err(),
+        "queued command started before the earlier user-shell command finished"
+    );
+
+    tokio::fs::write(&release_path, "release").await?;
+    for _ in 0..2 {
+        let _ = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::ExecCommandEnd(event) if event.source == ExecCommandSource::UserShell => {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+    }
+    let order = tokio::fs::read_to_string(order_path).await?;
+    assert_eq!(order.replace("\r\n", "\n"), "first\nsecond\n");
 
     Ok(())
 }
@@ -342,6 +657,7 @@ async fn idle_user_shell_command_does_not_block_a_model_turn() -> anyhow::Result
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
     let begin = wait_for_event_match(&test.codex, |event| match event {
@@ -385,6 +701,7 @@ async fn idle_user_shell_command_does_not_block_a_model_turn() -> anyhow::Result
             process_id: process_id.clone(),
             command,
             cwd: begin.cwd.clone(),
+            user_shell_response_handling: Some(UserShellCommandResponseHandling::default()),
         }]
     );
 
@@ -402,7 +719,7 @@ async fn idle_user_shell_command_does_not_block_a_model_turn() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()> {
+async fn user_shell_command_wake_steers_without_replacing_active_turn() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let mut builder = test_codex().with_model("gpt-5.4");
     let fixture = builder.build(&server).await?;
@@ -470,34 +787,27 @@ async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()>
     .await;
 
     #[cfg(windows)]
-    let user_shell_command = "Start-Sleep -Seconds 60".to_string();
+    let user_shell_command = "Write-Output active-user-shell-result".to_string();
     #[cfg(not(windows))]
-    let user_shell_command = "sleep 60".to_string();
+    let user_shell_command = "printf active-user-shell-result".to_string();
     fixture
         .codex
         .submit(Op::RunUserShellCommand {
             command: user_shell_command,
             timeout_ms: None,
+            response_handling: UserShellCommandResponseHandling {
+                final_delivery: UserShellCommandFinalDelivery::Wake,
+                queue_command: false,
+            },
         })
         .await?;
-    let user_shell_begin = wait_for_event_match(&fixture.codex, |event| match event {
+    let _ = wait_for_event_match(&fixture.codex, |event| match event {
         EventMsg::ExecCommandBegin(event) if event.source == ExecCommandSource::UserShell => {
             Some(event.clone())
         }
         _ => None,
     })
     .await;
-    let user_shell_process_id = user_shell_begin
-        .process_id
-        .context("active-turn user shell command should expose a process id")?
-        .parse::<i32>()
-        .context("active-turn user shell process id should be numeric")?;
-    assert!(
-        fixture
-            .codex
-            .terminate_background_terminal(user_shell_process_id)
-            .await
-    );
 
     let mut saw_replaced_abort = false;
     let mut saw_user_shell_end = false;
@@ -532,10 +842,18 @@ async fn user_shell_command_does_not_replace_active_turn() -> anyhow::Result<()>
         "user shell command should not replace the active turn"
     );
 
+    let requests = mock.requests();
     assert_eq!(
-        mock.requests().len(),
+        requests.len(),
         2,
         "active turn should continue and issue the follow-up model request"
+    );
+    assert!(
+        requests[1]
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains("active-user-shell-result")),
+        "wake result should steer the active turn"
     );
 
     Ok(())
@@ -562,6 +880,7 @@ async fn user_shell_command_history_is_persisted_and_shared_with_model() -> anyh
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -648,6 +967,7 @@ async fn user_shell_command_does_not_set_network_sandbox_env_var() -> anyhow::Re
         .submit(Op::RunUserShellCommand {
             command,
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 
@@ -692,6 +1012,7 @@ async fn user_shell_command_output_is_truncated_in_history() -> anyhow::Result<(
         .submit(Op::RunUserShellCommand {
             command: command.clone(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
 

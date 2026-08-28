@@ -30,6 +30,7 @@ import type { McpToolCallStatus } from "./McpToolCallStatus";
 import type { MemoryCitation } from "./MemoryCitation";
 import type { PatchApplyStatus } from "./PatchApplyStatus";
 import type { SubAgentActivityKind } from "./SubAgentActivityKind";
+import type { ThreadShellCommandResponseHandling } from "./ThreadShellCommandResponseHandling";
 import type { UserAgentControlAction } from "./UserAgentControlAction";
 import type { UserAgentControlStatus } from "./UserAgentControlStatus";
 import type { UserAgentForkMode } from "./UserAgentForkMode";
@@ -55,7 +56,12 @@ cwd: LegacyAppPathString,
 /**
  * Identifier for the underlying PTY process (when available).
  */
-processId: string | null, source: CommandExecutionSource, status: CommandExecutionStatus,
+processId: string | null, source: CommandExecutionSource,
+/**
+ * Completion delivery policy for a user-authored shell command.
+ * `None` for model-authored and unified-exec commands.
+ */
+userShellResponseHandling: ThreadShellCommandResponseHandling | null, status: CommandExecutionStatus,
 /**
  * A best-effort parsing of the command to understand the action(s) it will perform.
  * This returns a list of CommandAction objects because a single shell command may

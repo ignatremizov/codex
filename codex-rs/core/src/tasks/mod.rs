@@ -6,6 +6,8 @@ mod startup;
 mod user_shell;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use codex_diagnostics::Gauge;
@@ -495,6 +497,8 @@ impl Session {
         let ctx = Arc::clone(&turn_context);
         let task_for_run = Arc::clone(&task);
         let task_cancellation_token = cancellation_token.child_token();
+        let accepting_pending_input = Arc::new(AtomicBool::new(true));
+        let accepting_pending_input_for_run = Arc::clone(&accepting_pending_input);
         // Task-owned turn spans keep a core-owned span open for the
         // full task lifecycle after the submission dispatch span ends.
         let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
@@ -542,6 +546,7 @@ impl Session {
                     }
                     TaskStartupOutcome::Finish => Ok(None),
                 };
+                accepting_pending_input_for_run.store(false, Ordering::Release);
                 let sess = Arc::clone(&session);
                 let mut last_agent_message = None;
                 loop {
@@ -584,6 +589,7 @@ impl Session {
                                     "session_task.run_pending_input_continuation"
                                 ))
                                 .await;
+                            accepting_pending_input_for_run.store(false, Ordering::Release);
                         }
                     }
                 }
@@ -601,6 +607,7 @@ impl Session {
             handle: AbortOnDropHandle::new(handle),
             kind: task_kind,
             task,
+            accepting_pending_input,
             cancellation_token,
             turn_context: Arc::clone(&turn_context),
             input_persisted,
@@ -916,6 +923,7 @@ impl Session {
                     )
                 };
             if should_continue {
+                task.accepting_pending_input.store(true, Ordering::Release);
                 return TaskFinishAction::Continue;
             }
             let Some(mut task) = active_turn.task.take() else {

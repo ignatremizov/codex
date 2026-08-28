@@ -7,6 +7,7 @@ use super::NetworkApprovalContext;
 use super::NetworkApprovalProtocol;
 use super::NetworkPolicyAmendment;
 use super::RequestPermissionProfile;
+use super::ThreadShellCommandResponseHandling;
 use super::UserInput;
 use super::shared::v2_enum_from_core;
 use crate::JsonSchema;
@@ -374,6 +375,9 @@ pub enum ThreadItem {
         process_id: Option<String>,
         #[serde(default)]
         source: CommandExecutionSource,
+        /// Completion delivery policy for a user-authored shell command.
+        /// `None` for model-authored and unified-exec commands.
+        user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
         status: CommandExecutionStatus,
         /// A best-effort parsing of the command to understand the action(s) it will perform.
         /// This returns a list of CommandAction objects because a single shell command may
@@ -1103,6 +1107,9 @@ impl From<CoreTurnItem> for ThreadItem {
                     cwd: command.cwd.clone().into(),
                     process_id: command.process_id,
                     source: command.source.into(),
+                    user_shell_response_handling: command
+                        .user_shell_response_handling
+                        .map(Into::into),
                     status: command.status.into(),
                     command_actions: presentation.command_actions,
                     aggregated_output: command

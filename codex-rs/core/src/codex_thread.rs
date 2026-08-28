@@ -49,6 +49,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
@@ -112,8 +113,8 @@ pub struct ThreadConfigSnapshot {
 /// idle turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TryStartTurnIfIdleRejectionReason {
-    /// User/client-triggered mailbox work or a subscribed agent wake is already
-    /// pending and must take priority over extension-initiated idle work.
+    /// User/client-triggered mailbox work, a subscribed agent wake, or a user-shell completion
+    /// wake is already pending and must take priority over extension-initiated idle work.
     PendingTriggerTurn,
     /// The thread is in Plan mode, where idle work without user input must not
     /// start a new model turn.
@@ -252,6 +253,7 @@ pub struct BackgroundTerminalInfo {
     pub process_id: String,
     pub command: String,
     pub cwd: PathUri,
+    pub user_shell_response_handling: Option<UserShellCommandResponseHandling>,
 }
 
 /// Conduit for the bidirectional stream of messages that compose a thread

@@ -295,7 +295,14 @@ async fn background_shell_does_not_block_followup_during_mcp_startup() {
         Vec::new(),
     );
 
-    assert_matches!(op_rx.try_recv(), Ok(Op::RunUserShellCommand { command, .. }) if command == "echo hi");
+    assert_matches!(
+        op_rx.try_recv(),
+        Ok(Op::RunUserShellCommand {
+            command,
+            response_handling,
+            ..
+        }) if command == "echo hi" && response_handling == Default::default()
+    );
     chat.bottom_pane
         .set_composer_text("queued follow-up".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

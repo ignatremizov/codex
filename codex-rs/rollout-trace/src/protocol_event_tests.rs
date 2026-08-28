@@ -83,6 +83,7 @@ fn exec_command_trace_payloads_use_inferred_native_cwd() -> anyhow::Result<()> {
         cwd: "file:///C:/windows".parse()?,
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::Agent,
+        user_shell_response_handling: None,
         interaction_input: None,
     });
     let end = EventMsg::ExecCommandEnd(ExecCommandEndEvent {
@@ -96,6 +97,7 @@ fn exec_command_trace_payloads_use_inferred_native_cwd() -> anyhow::Result<()> {
         cwd: "file:///workspace/project".parse()?,
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::UnifiedExecInteraction,
+        user_shell_response_handling: None,
         interaction_input: Some("input".to_string()),
         stdout: "output".to_string(),
         stderr: String::new(),

@@ -52,7 +52,14 @@ impl Session {
                 cause
             }
         };
-        if self.input_queue.has_trigger_turn_mailbox_items().await {
+        if self.input_queue.has_trigger_turn_mailbox_items().await
+            || self.input_queue.has_queued_turn_inputs().await
+            || self
+                .services
+                .unified_exec_manager
+                .has_pending_user_shell_completion_wake()
+                .await
+        {
             return;
         }
 

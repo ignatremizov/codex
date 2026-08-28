@@ -945,6 +945,7 @@ fn sample_command_execution_item_with_id(
         cwd: test_path_buf("/tmp").abs().into(),
         process_id: Some("pid-1".to_string()),
         source: CommandExecutionSource::Agent,
+        user_shell_response_handling: None,
         status,
         command_actions: Vec::new(),
         aggregated_output: None,

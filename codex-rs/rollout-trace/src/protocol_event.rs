@@ -184,6 +184,7 @@ impl<'a> From<&'a ExecCommandBeginEvent> for ExecCommandBeginTracePayload<'a> {
             cwd,
             parsed_cmd,
             source,
+            user_shell_response_handling: _,
             interaction_input,
         } = event;
         Self {
@@ -246,6 +247,7 @@ impl<'a> From<&'a ExecCommandEndEvent> for ExecCommandEndTracePayload<'a> {
             cwd,
             parsed_cmd,
             source,
+            user_shell_response_handling: _,
             interaction_input,
             stdout,
             stderr,

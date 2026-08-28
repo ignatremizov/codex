@@ -29,6 +29,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+use codex_app_server_protocol::ThreadShellCommandFinalDelivery;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::Tool;
 use rmcp::model::ContentBlock;
@@ -813,15 +815,32 @@ fn ps_output_multiline_snapshot() {
         UnifiedExecProcessDetails {
             process_id: "1000".to_string(),
             command_display: "echo hello\nand then some extra text".to_string(),
+            user_shell_response_handling: Some(ThreadShellCommandResponseHandling {
+                final_delivery: ThreadShellCommandFinalDelivery::Wake,
+                queue_command: false,
+            }),
             recent_chunks: vec!["hello".to_string(), "done".to_string()],
         },
         UnifiedExecProcessDetails {
             process_id: "1001".to_string(),
             command_display: "rg \"foo\" src".to_string(),
+            user_shell_response_handling: Some(ThreadShellCommandResponseHandling {
+                final_delivery: ThreadShellCommandFinalDelivery::PresentationOnly,
+                queue_command: true,
+            }),
             recent_chunks: vec!["src/main.rs:12:foo".to_string()],
         },
+        UnifiedExecProcessDetails {
+            process_id: "1002".to_string(),
+            command_display: "sleep 10".to_string(),
+            user_shell_response_handling: Some(ThreadShellCommandResponseHandling {
+                final_delivery: ThreadShellCommandFinalDelivery::Passive,
+                queue_command: false,
+            }),
+            recent_chunks: Vec::new(),
+        },
     ]);
-    let rendered = render_lines(&cell.display_lines(/*width*/ 40)).join("\n");
+    let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");
     insta::assert_snapshot!(rendered);
 }
 
@@ -860,6 +879,7 @@ fn ps_output_long_command_snapshot() {
         command_display: String::from(
             "rg \"foo\" src --glob '**/*.rs' --max-count 1000 --no-ignore --hidden --follow --glob '!target/**'",
         ),
+        user_shell_response_handling: None,
         recent_chunks: vec!["searching...".to_string()],
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 36)).join("\n");
@@ -871,6 +891,7 @@ fn ps_output_halfwidth_sound_marks_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
         process_id: "1000".to_string(),
         command_display: "echo ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: vec!["output ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ".to_string()],
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 24)).join("\n");
@@ -889,6 +910,7 @@ fn ps_output_preserves_full_multiline_command_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
         process_id: "1000".to_string(),
         command_display,
+        user_shell_response_handling: None,
         recent_chunks: Vec::new(),
     }]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
@@ -902,6 +924,7 @@ fn ps_output_many_sessions_snapshot() {
             .map(|idx| UnifiedExecProcessDetails {
                 process_id: (1000 + idx).to_string(),
                 command_display: format!("command {idx}"),
+                user_shell_response_handling: None,
                 recent_chunks: Vec::new(),
             })
             .collect(),
@@ -915,6 +938,7 @@ fn ps_output_chunk_leading_whitespace_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
         process_id: "1000".to_string(),
         command_display: "just fix".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: vec![
             "  indented first".to_string(),
             "    more indented".to_string(),
@@ -929,6 +953,7 @@ fn ps_output_wraps_recent_chunks_without_inline_truncation_snapshot() {
     let cell = new_unified_exec_processes_output(vec![UnifiedExecProcessDetails {
         process_id: "1000".to_string(),
         command_display: "tail -f app.log".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: vec![
             "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega".to_string(),
         ],
@@ -947,6 +972,7 @@ fn ps_output_caps_wrapped_recent_chunk_rows() {
         vec![UnifiedExecProcessDetails {
             process_id: "1000".to_string(),
             command_display: "tail -f generated.json".to_string(),
+            user_shell_response_handling: None,
             recent_chunks: vec![chunk],
         }],
         /*output_preview_lines*/ 5,
@@ -2022,6 +2048,7 @@ fn coalesces_sequential_reads_within_one_call() {
             ],
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2049,6 +2076,7 @@ fn coalesces_reads_across_multiple_calls() {
             }],
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2067,6 +2095,7 @@ fn coalesces_reads_across_multiple_calls() {
             path: "shimmer.rs".into(),
         }],
         ExecCommandSource::Agent,
+        /*user_shell_response_handling*/ None,
         /*interaction_input*/ None,
     ));
     cell.complete_call("c2", CommandOutput::default(), Duration::from_millis(1));
@@ -2080,6 +2109,7 @@ fn coalesces_reads_across_multiple_calls() {
             path: "status_indicator_widget.rs".into(),
         }],
         ExecCommandSource::Agent,
+        /*user_shell_response_handling*/ None,
         /*interaction_input*/ None,
     ));
     cell.complete_call("c3", CommandOutput::default(), Duration::from_millis(1));
@@ -2114,6 +2144,7 @@ fn coalesced_reads_dedupe_names() {
             ],
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2138,6 +2169,7 @@ fn multiline_command_wraps_with_extra_indent_on_subsequent_lines() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2164,6 +2196,7 @@ fn single_line_command_compact_when_fits() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2188,6 +2221,7 @@ fn single_line_command_wraps_with_four_space_continuation() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2221,6 +2255,7 @@ fn single_line_command_over_highlight_limit_uses_plain_text_fallback() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2244,6 +2279,7 @@ fn multiline_command_without_wrap_uses_branch_then_eight_spaces() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2268,6 +2304,7 @@ fn multiline_command_both_lines_wrap_with_correct_prefixes() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2292,6 +2329,7 @@ fn stderr_tail_more_than_five_lines_snapshot() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2332,6 +2370,7 @@ fn command_output_preview_lines_controls_inline_history_rows() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -2385,6 +2424,7 @@ fn ran_cell_multiline_with_stderr_snapshot() {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,

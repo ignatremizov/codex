@@ -19,6 +19,7 @@ fn agent_status_uses_bounded_buffered_activity() {
                 plugin_id: None,
                 script_path: None,
                 source: CommandExecutionSource::Agent,
+                user_shell_response_handling: None,
                 status: CommandExecutionStatus::Completed,
                 command_actions: Vec::new(),
                 aggregated_output: Some("unbounded output\n".repeat(10_000)),
