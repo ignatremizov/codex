@@ -55,6 +55,10 @@ pub enum TurnInput {
     // Preserve the existing serialized format while carrying injection API metadata
     // through the in-memory queue.
     ResponseItem(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
+    /// Local continuation signal for a shell result already canonically published and installed.
+    /// It carries no content or authority and must never be submitted through serialized input.
+    #[serde(skip)]
+    UserShellContextReady,
     InterAgentCommunication(crate::PendingAgentMessage),
 }
 
@@ -91,6 +95,17 @@ mod turn_input_response_item {
 }
 
 impl TurnInput {
+    pub(crate) fn triggers_turn(&self) -> bool {
+        match self {
+            Self::InterAgentCommunication(mail) => mail.trigger_turn,
+            Self::ResponseItem(_) => !super::mcp_prompt::is_mcp_use_input(self),
+            Self::UserInput { .. }
+            | Self::AgentInput { .. }
+            | Self::UserShellContextReady
+            | Self::FunctionCallOutput(_) => true,
+        }
+    }
+
     pub(crate) fn is_prompt(&self) -> bool {
         matches!(self, Self::UserInput { .. } | Self::AgentInput { .. })
     }
@@ -327,6 +342,7 @@ impl InputQueue {
                     TurnInput::UserInput { .. }
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::AgentInput { .. }
+                    | TurnInput::UserShellContextReady
                     | TurnInput::ResponseItem(_) => None,
                 })
                 .collect()
@@ -388,13 +404,7 @@ impl InputQueue {
             .items
             .iter()
             .chain(&queued.deferred)
-            .any(|input| match input {
-                TurnInput::InterAgentCommunication(mail) => mail.trigger_turn,
-                TurnInput::ResponseItem(_) => !super::mcp_prompt::is_mcp_use_input(input),
-                TurnInput::UserInput { .. }
-                | TurnInput::AgentInput { .. }
-                | TurnInput::FunctionCallOutput(_) => true,
-            })
+            .any(TurnInput::triggers_turn)
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
@@ -712,6 +722,7 @@ impl InputQueue {
                     | TurnInput::FunctionCallOutput(_)
                     | TurnInput::AgentInput { .. }
                     | TurnInput::ResponseItem(_)
+                    | TurnInput::UserShellContextReady
                     | TurnInput::InterAgentCommunication(_) => None,
                 })
                 .collect::<Vec<_>>();
@@ -958,6 +969,7 @@ impl TurnInputQueue {
                     input,
                     TurnInput::UserInput { .. }
                         | TurnInput::AgentInput { .. }
+                        | TurnInput::UserShellContextReady
                         | TurnInput::FunctionCallOutput(_)
                 )
             })

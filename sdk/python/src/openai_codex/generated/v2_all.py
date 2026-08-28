@@ -6349,30 +6349,36 @@ class ThreadSetNameResponse(BaseModel):
     )
 
 
-class ThreadShellCommandParams(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    command: Annotated[
-        str,
-        Field(
-            description="Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy."
-        ),
-    ]
-    thread_id: Annotated[str, Field(alias="threadId")]
-    timeout_ms: Annotated[
-        int | None,
-        Field(
-            alias="timeoutMs",
-            description="Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
-        ),
-    ] = None
+class ThreadShellCommandFinalDelivery(Enum):
+    passive = "passive"
+    wake = "wake"
+    presentation_only = "presentationOnly"
 
 
 class ThreadShellCommandResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+
+
+class ThreadShellCommandResponseHandling(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    final_delivery: Annotated[
+        ThreadShellCommandFinalDelivery,
+        Field(
+            alias="finalDelivery",
+            description="Whether the completed result is delivered passively, wakes the thread, or stays presentation-only.",
+        ),
+    ]
+    queue_command: Annotated[
+        bool,
+        Field(
+            alias="queueCommand",
+            description="Whether execution waits for every earlier user-shell submission in this thread.",
+        ),
+    ]
 
 
 class ThreadSortKey(Enum):
@@ -10587,7 +10593,13 @@ class CommandExecutionThreadItem(BaseModel):
     source: CommandExecutionSource | None = "agent"
     status: CommandExecutionStatus
     type: Annotated[Literal["commandExecution"], Field(title="CommandExecutionThreadItemType")]
-
+    user_shell_response_handling: Annotated[
+        ThreadShellCommandResponseHandling | None,
+        Field(
+            alias="userShellResponseHandling",
+            description="Completion delivery policy for a user-authored shell command. `None` for model-authored and unified-exec commands.",
+        ),
+    ] = None
 
 class FileChangeThreadItem(BaseModel):
     model_config = ConfigDict(
@@ -10989,6 +11001,33 @@ class ThreadSettingsUpdatedNotification(BaseModel):
     )
     thread_id: Annotated[str, Field(alias="threadId")]
     thread_settings: Annotated[ThreadSettings, Field(alias="threadSettings")]
+
+
+class ThreadShellCommandParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    command: Annotated[
+        str,
+        Field(
+            description="Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy."
+        ),
+    ]
+    response_handling: Annotated[
+        ThreadShellCommandResponseHandling | None,
+        Field(
+            alias="responseHandling",
+            description="Optional completion delivery policy. Omission preserves passive model delivery.",
+        ),
+    ] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+    timeout_ms: Annotated[
+        int | None,
+        Field(
+            alias="timeoutMs",
+            description="Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
+        ),
+    ] = None
 
 
 class ThreadStartParams(BaseModel):
