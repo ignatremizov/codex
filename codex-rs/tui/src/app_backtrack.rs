@@ -24,12 +24,18 @@
 mod browsing;
 mod legacy_input;
 mod prompt_navigation;
+mod prompt_projection;
 mod prompt_target;
 mod user_identity;
 
+pub(crate) use prompt_projection::nth_user_position;
+pub(crate) use prompt_projection::truncate_before_prompt;
+pub(crate) use prompt_projection::user_count;
+pub(crate) use prompt_projection::user_positions_iter;
 pub(crate) use prompt_target::LegacyRollbackTarget;
 pub(crate) use prompt_target::selected_prompt_turn_index;
 
+#[cfg(test)]
 use std::any::TypeId;
 use std::sync::Arc;
 
@@ -42,6 +48,7 @@ use crate::chatwidget::UserMessage;
 use crate::chatwidget::mention_bindings_from_user_inputs;
 #[cfg(test)]
 use crate::history_cell::AgentMessageCell;
+#[cfg(test)]
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::sanitize_user_text;
@@ -75,8 +82,8 @@ pub(crate) struct BacktrackState {
     pub(crate) base_id: Option<ThreadId>,
     /// Index of the currently highlighted user message.
     ///
-    /// This is an index into the filtered "user messages since the last session start" view,
-    /// not an index into `transcript_cells`. `usize::MAX` indicates "no selection".
+    /// This is an index into the editable user-message projection, not an index into
+    /// `transcript_cells`. `usize::MAX` indicates "no selection".
     pub(crate) nth_user_message: usize,
     /// True when the transcript overlay is showing a backtrack preview.
     pub(crate) overlay_preview_active: bool,
@@ -87,7 +94,7 @@ pub(crate) struct BacktrackState {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BacktrackSelection {
     pub(crate) thread_id: ThreadId,
-    /// The selected user message, counted from the most recent session start.
+    /// The selected user message, counted in the editable user-message projection.
     pub(crate) nth_user_message: usize,
     pub(crate) prompt: UserMessage,
 }
@@ -651,42 +658,8 @@ pub(crate) fn is_hidden_nested_review_turn(previous: &Turn, turn: &Turn) -> bool
     )
 }
 
-pub(crate) fn user_count(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) -> usize {
-    user_positions_iter(cells).count()
-}
-
 fn has_backtrack_target(cells: &[Arc<dyn crate::history_cell::HistoryCell>]) -> bool {
     user_count(cells) > 0
-}
-
-pub(crate) fn nth_user_position(
-    cells: &[Arc<dyn crate::history_cell::HistoryCell>],
-    nth: usize,
-) -> Option<usize> {
-    user_positions_iter(cells)
-        .enumerate()
-        .find_map(|(i, idx)| (i == nth).then_some(idx))
-}
-
-fn user_positions_iter(
-    cells: &[Arc<dyn crate::history_cell::HistoryCell>],
-) -> impl Iterator<Item = usize> + '_ {
-    let session_start_type = TypeId::of::<SessionInfoCell>();
-    let type_of = |cell: &Arc<dyn crate::history_cell::HistoryCell>| cell.as_any().type_id();
-
-    let start = cells
-        .iter()
-        .rposition(|cell| type_of(cell) == session_start_type)
-        .map_or(0, |idx| idx + 1);
-
-    cells
-        .iter()
-        .enumerate()
-        .skip(start)
-        .filter_map(|(idx, cell)| {
-            let user = cell.as_any().downcast_ref::<UserHistoryCell>()?;
-            user.has_visible_content().then_some(idx)
-        })
 }
 
 #[cfg(test)]

@@ -19,6 +19,9 @@ const SELECTED: &str = "use $skill @sample $google-calendar";
 #[path = "legacy_prompt_edit_tests.rs"]
 mod legacy;
 
+#[path = "forked_prompt_edit_tests.rs"]
+mod forked;
+
 #[derive(Clone, Copy)]
 enum PromptImages {
     Remote,

@@ -597,12 +597,12 @@ impl App {
                     tui.frame_requester().schedule_frame();
                     return Ok(AppRunControl::Continue);
                 }
-                let Some(index) = self.transcript_cells.iter().position(|cell| Arc::ptr_eq(cell, &selected_cell)) else {
+                let Some(nth_user_message) = crate::app_backtrack::user_positions_iter(&self.transcript_cells)
+                    .position(|index| Arc::ptr_eq(&self.transcript_cells[index], &selected_cell)) else {
                     self.restore_backtrack_prompt_after_revert_error(prompt, "the selected prompt is no longer visible");
                     tui.frame_requester().schedule_frame();
                     return Ok(AppRunControl::Continue);
                 };
-                let nth_user_message = crate::app_backtrack::user_count(&self.transcript_cells[..index]);
                 let thread = match app_server.thread_read(thread_id, /*include_turns*/ false).await {
                     Ok(thread) => thread,
                     Err(err) => {
@@ -781,9 +781,8 @@ impl App {
                     if let Some(cells) = canonical_cells {
                         self.transcript_cells = cells;
                         self.native_history.retain(&self.transcript_cells);
-                    } else if let Some(index) = crate::app_backtrack::nth_user_position(&self.transcript_cells, nth_user_message) {
-                        self.transcript_cells.truncate(index);
-                self.native_history.retain(&self.transcript_cells);
+                    } else if crate::app_backtrack::truncate_before_prompt(&mut self.transcript_cells, nth_user_message) {
+                        self.native_history.retain(&self.transcript_cells);
                     }
                     self.transcript_view = Default::default();
                     self.scrollback_has_older_history = app_server.has_older_history(thread_id);
