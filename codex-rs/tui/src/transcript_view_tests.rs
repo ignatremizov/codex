@@ -72,11 +72,14 @@ fn terminal_output_disclosure_follows_live_history_and_keymap() {
     use codex_app_server_protocol::CommandExecutionSource;
 
     let mut cell = new_active_exec_command(
-        "output-test".into(),
-        vec!["echo".into()],
-        Vec::new(),
-        CommandExecutionSource::Agent,
-        /*interaction_input*/ None,
+        crate::exec_cell::ActiveExecCall {
+            call_id: "output-test".into(),
+            command: vec!["echo".into()],
+            parsed: Vec::new(),
+            source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
+            interaction_input: None,
+        },
         /*animations_enabled*/ false,
     )
     .with_output_preview_line_limits(OutputPreviewLineLimits {
@@ -191,11 +194,14 @@ fn terminal_output_disclosure_counts_only_revealable_lines() {
         ),
     ] {
         let mut cell = new_active_exec_command(
-            "output-test".into(),
-            vec!["sh".into(), "-c".into(), command.into()],
-            Vec::new(),
-            CommandExecutionSource::Agent,
-            /*interaction_input*/ None,
+            crate::exec_cell::ActiveExecCall {
+                call_id: "output-test".into(),
+                command: vec!["sh".into(), "-c".into(), command.into()],
+                parsed: Vec::new(),
+                source: CommandExecutionSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         )
         .with_output_preview_line_limits(OutputPreviewLineLimits {

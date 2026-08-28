@@ -7,6 +7,8 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::new_reasoning_summary_block;
 use crate::history_cell::new_unified_exec_interaction;
 use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::ThreadShellCommandFinalDelivery;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::sync::Arc;
@@ -22,12 +24,56 @@ fn completed_read(name: &str, output: &str) -> ExecCell {
             parsed,
             output: Some(CommandOutput::new(/*exit_code*/ 0, output.to_owned())),
             source: CommandExecutionSource::UnifiedExecStartup,
+            user_shell_response_handling: None,
             start_time: None,
             duration: Some(Duration::from_millis(/*millis*/ 5)),
             interaction_input: None,
         },
         /*animations_enabled*/ false,
     )
+}
+
+#[test]
+fn transcript_renders_user_shell_response_policy_in_rich_and_raw_views() {
+    let command = vec!["bash".to_owned(), "-lc".to_owned(), "sleep 20".to_owned()];
+    let cell = ExecCell::new(
+        ExecCall {
+            call_id: "user-shell".to_owned(),
+            command,
+            parsed: Vec::new(),
+            output: Some(CommandOutput::new(0, String::new())),
+            source: CommandExecutionSource::UserShell,
+            user_shell_response_handling: Some(ThreadShellCommandResponseHandling {
+                final_delivery: ThreadShellCommandFinalDelivery::Wake,
+                queue_command: false,
+            }),
+            start_time: None,
+            duration: Some(Duration::from_millis(20)),
+            interaction_input: None,
+        },
+        /*animations_enabled*/ false,
+    );
+    let rich = cell
+        .transcript_lines(/*width*/ 80)
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let raw = cell
+        .raw_lines()
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(format!("Rich\n{rich}\n\nRaw\n{raw}"), @r"
+Rich
+$ sleep 20 (wake)
+✓ • 20ms
+
+Raw
+$ sleep 20 (wake)
+✓ • 20ms
+");
 }
 
 #[test]

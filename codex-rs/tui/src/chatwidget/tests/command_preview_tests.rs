@@ -9,6 +9,7 @@ async fn ps_retention_is_independent_of_local_display_limit_and_chunk_boundaries
         "call",
         Some("process"),
         "printf output",
+        /*user_shell_response_handling*/ None,
     );
     for chunk in ["first", " line\r", "\nsecond\n", "third\nfourth\nfifth\n"] {
         chat.track_unified_exec_output_chunk("call", chunk.as_bytes());
@@ -103,6 +104,7 @@ async fn ps_zero_limit_remains_bounded_and_exposes_storage_omissions() {
         "call",
         Some("process"),
         "printf output",
+        /*user_shell_response_handling*/ None,
     );
     for n in 0..100_000 {
         chat.track_unified_exec_output_chunk("call", format!("output line {n}\n").as_bytes());

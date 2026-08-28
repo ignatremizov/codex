@@ -11,14 +11,18 @@ async fn concurrent_shell_registration_and_exec_reservation_have_distinct_ids() 
     let (first, second, exec) = tokio::join!(
         manager.register_user_shell_command(
             "first".to_string(),
+            /*submission_id*/ 0,
             "first command".to_string(),
             cwd.clone(),
+            Default::default(),
             first_cancel.clone(),
         ),
         manager.register_user_shell_command(
             "second".to_string(),
+            /*submission_id*/ 1,
             "second command".to_string(),
             cwd.clone(),
+            Default::default(),
             second_cancel.clone(),
         ),
         manager.allocate_process_id(),
@@ -32,12 +36,14 @@ async fn concurrent_shell_registration_and_exec_reservation_have_distinct_ids() 
             process_id: first.to_string(),
             command: "first command".to_string(),
             cwd: cwd.clone(),
+            user_shell_response_handling: Some(Default::default()),
         },
         BackgroundTerminalInfo {
             item_id: "second".to_string(),
             process_id: second.to_string(),
             command: "second command".to_string(),
             cwd,
+            user_shell_response_handling: Some(Default::default()),
         },
     ];
     expected.sort_by_key(|entry| entry.process_id.parse::<i32>().expect("numeric process id"));
@@ -70,8 +76,10 @@ async fn shutdown_cancels_registered_and_late_preparing_shell_commands() {
     manager
         .register_user_shell_command(
             "running".to_string(),
+            /*submission_id*/ 0,
             "running command".to_string(),
             cwd.clone(),
+            Default::default(),
             running.clone(),
         )
         .await;
@@ -81,8 +89,10 @@ async fn shutdown_cancels_registered_and_late_preparing_shell_commands() {
     manager
         .register_user_shell_command(
             "late".to_string(),
+            /*submission_id*/ 1,
             "late command".to_string(),
             cwd,
+            Default::default(),
             late.clone(),
         )
         .await;
@@ -99,8 +109,8 @@ async fn shutdown_drain_waits_for_the_accepted_producer_not_just_its_cancel_requ
     manager.spawn_user_shell_command(async move {
         let token = CancellationToken::new();
         let id = worker_manager.register_user_shell_command(
-            "drained-command".to_string(), "pending command".to_string(),
-            PathUri::parse("file:///tmp").expect("cwd"), token.clone(),
+            "drained-command".to_string(), /*submission_id*/ 0, "pending command".to_string(),
+            PathUri::parse("file:///tmp").expect("cwd"), Default::default(), token.clone(),
         ).await;
         registered.send(id).expect("registration receipt");
         token.cancelled().await;

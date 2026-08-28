@@ -2675,6 +2675,7 @@ mod tests {
                         cwd: completion_item.cwd.clone(),
                         process_id: None,
                         source: CommandExecutionSource::Agent,
+                        user_shell_response_handling: None,
                         status: CommandExecutionStatus::InProgress,
                         command_actions: completion_item.command_actions.clone(),
                         aggregated_output: None,

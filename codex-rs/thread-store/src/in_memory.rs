@@ -523,6 +523,10 @@ pub struct InMemoryThreadStoreCalls {
 /// Operation that the in-memory store should fail once for recovery-path tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InMemoryThreadStoreFailure {
+    /// Reject the next ordinary canonical append before its payload is stored.
+    HistoryAppend,
+    /// Lose the acknowledgment of the next ordinary append-and-flush after storing its payload.
+    HistoryFlush,
     SubAgentCompletionAppend,
     SubAgentCompletionPrefix,
     SubAgentCompletionPresentationFlush,
@@ -538,6 +542,8 @@ pub enum InMemoryThreadStoreFailure {
 impl InMemoryThreadStoreFailure {
     fn operation(self) -> &'static str {
         match self {
+            Self::HistoryAppend => "history append",
+            Self::HistoryFlush => "history flush acknowledgment",
             Self::SubAgentCompletionAppend => "subagent completion append",
             Self::SubAgentCompletionPrefix => "subagent completion prefix",
             Self::SubAgentCompletionPresentationFlush => "subagent completion presentation flush",
@@ -727,6 +733,21 @@ impl InMemoryThreadStore {
             .iter()
             .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_))));
         let fail_after_commit = match state.fail_next_operation {
+            Some(InMemoryThreadStoreFailure::HistoryAppend) => {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::HistoryAppend.operation()
+                    ),
+                });
+            }
+            Some(InMemoryThreadStoreFailure::HistoryFlush)
+                if matches!(durability, InMemoryAppendDurability::Flushed) =>
+            {
+                state.fail_next_operation = None;
+                Some(InMemoryThreadStoreFailure::HistoryFlush)
+            }
             Some(InMemoryThreadStoreFailure::CompactedMediaRepairAppend)
                 if appends_compacted_media_repair =>
             {
@@ -794,7 +815,8 @@ impl InMemoryThreadStore {
                 None
             }
             Some(
-                InMemoryThreadStoreFailure::SubAgentCompletionAppend
+                InMemoryThreadStoreFailure::HistoryFlush
+                | InMemoryThreadStoreFailure::SubAgentCompletionAppend
                 | InMemoryThreadStoreFailure::SubAgentCompletionPrefix
                 | InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush
                 | InMemoryThreadStoreFailure::ThreadMetadataUpdate

@@ -2467,6 +2467,7 @@ impl ThreadRequestProcessor {
                 process_id: terminal.process_id,
                 command: terminal.command,
                 cwd: terminal.cwd.into(),
+                user_shell_response_handling: terminal.user_shell_response_handling.map(Into::into),
                 os_pid: None,
                 cpu_percent: None,
                 rss_kb: None,
@@ -2504,6 +2505,7 @@ impl ThreadRequestProcessor {
             thread_id,
             command,
             timeout_ms,
+            response_handling,
         } = params;
         let command = command.trim().to_string();
         if command.is_empty() {
@@ -2539,6 +2541,7 @@ impl ThreadRequestProcessor {
             Op::RunUserShellCommand {
                 command,
                 timeout_ms,
+                response_handling: response_handling.unwrap_or_default().to_core(),
             },
         )
         .await

@@ -8,6 +8,7 @@ use crate::render::highlight::highlight_bash_to_lines;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
+use crate::user_shell_command::user_shell_response_handling_label;
 use crate::wrapping::RtOptions;
 use codex_ansi_escape::ansi_escape_line;
 use codex_utils_elapsed::format_duration;
@@ -25,7 +26,19 @@ impl ExecCell {
                 lines.push("".into());
             }
             let script = strip_bash_lc_and_escape(&call.command);
-            let highlighted_script = highlight_bash_to_lines(&script);
+            let mut highlighted_script = highlight_bash_to_lines(&script);
+            if let Some(response_handling) = call.user_shell_response_handling
+                && let Some(first) = highlighted_script.first_mut()
+            {
+                first.spans.push(" ".into());
+                first.spans.push(
+                    format!(
+                        "({})",
+                        user_shell_response_handling_label(response_handling)
+                    )
+                    .dim(),
+                );
+            }
             let cmd_display = adaptive_wrap_hyperlink_lines(
                 &plain_hyperlink_lines(highlighted_script),
                 RtOptions::new(width as usize)
