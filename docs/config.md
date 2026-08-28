@@ -202,6 +202,8 @@ fork_prompt_edits = true
 
 The branch retains history before the selected turn. Creating it does not submit the draft or automatically continue a goal, and it does not undo filesystem changes. This option also works when editing an existing Legacy session; it does not change that session's stored history mode.
 
+Inherited canonical prompts remain editable even when the fork's session header appears after them. Replayed copies are matched by turn and item identity, not prompt text, so identical text in different prompts remains independently selectable. Source-less optimistic prompts still belong to their current session. Trimming a confirmed edit preserves the latest session header without reviving an older copy of a removed prompt.
+
 In-place editing also follows the session's actual stored history mode: Paginated sessions use `thread/revert`, and Legacy sessions use guarded `thread/rollback`. Selection is tied to canonical user-message identity; an incomplete or ambiguous old transcript must be refreshed before editing. The draft is not automatically submitted. If a Legacy mutation or its refresh has an uncertain outcome, the TUI preserves the draft and keeps that conversation read-only for the current TUI process, including after switching away and back. Navigation, copying, other conversations, and quitting remain available. Save the draft before quitting, then reopen the conversation in a new Codex process for canonical recovery. The TUI never repeats the mutation automatically.
 
 ## Notify

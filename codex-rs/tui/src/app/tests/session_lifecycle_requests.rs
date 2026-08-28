@@ -370,7 +370,12 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                     let Some(event) = event else { break };
                     if let codex_app_server_client::InProcessServerEvent::ServerNotification(notification) = event
                         && (history_capabilities == HistoryCapabilities::CurrentWithLiveNotifications
-                            || matches!(*notification, ServerNotification::ThreadSettingsUpdated(_)))
+                            || matches!(
+                                *notification,
+                                ServerNotification::ThreadSettingsUpdated(_)
+                                    | ServerNotification::ThreadStarted(_)
+                                    | ServerNotification::ThreadReverted(_)
+                            ))
                     {
                         websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await?;
                     }
