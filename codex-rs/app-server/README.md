@@ -212,10 +212,10 @@ Example with notification opt-out:
 - `thread/name/set` — set or update a thread’s user-facing name for either a loaded thread or a persisted rollout; returns `{}` on success and emits `thread/name/updated` to initialized, opted-in clients. Thread names are not required to be unique; name lookups resolve to the most recently updated thread.
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
 - `thread/compact/start` — trigger conversation history compaction for a thread; returns `{}` immediately while progress streams through standard turn/item notifications.
-- `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Returns `{}` immediately while progress streams through standard turn/item notifications and any active turn receives the formatted output in its message stream.
+- `thread/shellCommand` — run a user-initiated `!` shell command against a thread; this runs unsandboxed with full access rather than inheriting the thread sandbox policy. Returns `{}` immediately while progress streams through standard turn/item notifications. Optional `responseHandling` controls passive, wake, or presentation-only result delivery and whether execution waits for earlier user-shell submissions. User-shell `commandExecution` items expose the resolved policy as `userShellResponseHandling`.
 - `thread/approveGuardianDeniedAction` — manually approve a previously denied Guardian action. Replies to pending server-issued approval requests are unaffected.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
-- `thread/backgroundTerminals/list` — list running background terminals for a loaded thread (experimental; requires `capabilities.experimentalApi`); returns `data` with the running terminal ids.
+- `thread/backgroundTerminals/list` — list running background terminals for a loaded thread (experimental; requires `capabilities.experimentalApi`); returns `data` with the running terminal ids and `userShellResponseHandling` for user-authored shell commands.
 - `thread/backgroundTerminals/terminate` — terminate one running background terminal by app-server `processId` (experimental; requires `capabilities.experimentalApi`); returns whether a process was terminated.
 - `agentAlias/list` — list durable root-scoped agent refs, nicknames, and lifecycle states in stable ref order (experimental; requires `capabilities.experimentalApi`); accepts `rootThreadId` naming the root or any member of its session tree, plus optional `cursor` and `limit`.
 - `agent/control` — perform a user-authored multi-agent operation relative to `sourceThreadId` (experimental; requires `capabilities.experimentalApi`). `spawn` creates a default or configured-role child, optionally admits its first structured user input, and accepts `none`, `all`, or last-N history forking. `prompt` accepts a controlled target by ref, nickname, or UUID, automatically reopens a known same-root closed target, and preserves structured `UserInput`; the reserved nickname `Main` resolves the source root case-insensitively. `reservedPrompt` admits input using the next-turn response policy reserved by a prompt-less spawn or resume and returns the exact admitted `turnId`. `queuedPrompt` appends complete structured input to the process-lifetime, target-owned FIFO; it never steers an active turn, and an idle target starts the entry immediately. Its final response is queued for the source's next turn instead of steering active source work. `resume` reopens a controlled closed target or explicitly adopts a stored UUID; a live target or descendant owned by another root must be closed before adoption. Successful spawn and resume responses return the committed root-scoped `ref` and nickname when durable aliases are available, so clients need not wait for an alias-list refresh before presenting the identity. `interrupt` optionally admits a follow-up after cancellation. `close` ends a controlled runtime and can replay a completed response absent from effective source context passively, wake for it, queue it, or keep it presentation-only. `observe` authoritatively replaces passive, wake, or presentation-only final-response handling for a target's active, pending, or not-yet-delivered turn. Spawn, prompt, queued prompt, resume, interrupt follow-up, and close actions can independently select applicable response handling. Scoped reply routes currently require a target using the V1 adapter; unsupported targets reject `m` before input or queue mutation. Every accepted or rejected operation appends a durable `userAgentControl` item to the source thread with the authored selector, canonical target when resolved, response policy, and outcome; a successful prompt sets `resumedTarget` when it reopened the target, and successful adoption also records the previous and new owner session IDs. When target input was admitted but its response policy could not be persisted, the committed outcome includes `postAdmissionWarning`; clients must retain the admitted action, clear any optimistic observation state, and must not retry it. If an exclusive adoption commits but subsequent resume setup fails, the `resumed` outcome includes `postCommitWarning`; ownership remains exclusive and the client may retry resume without repeating the transfer. Every committed operation returns its typed `outcome`; if the source audit write fails, the response also includes `auditWarning`, and clients must apply the outcome without retrying the operation.
@@ -972,17 +972,25 @@ default is unlimited. Positive values above one hour are supported; an explicit
 `0` requests an immediate timeout. Invalid values are rejected before execution.
 The deadline does not change the immediate RPC acknowledgement.
 
+`responseHandling` is optional. `finalDelivery` accepts `passive`, `wake`, or
+`presentationOnly`; `queueCommand: true` delays execution until every earlier user-shell
+submission in the same thread has finished or been stopped. Later requests with
+`queueCommand: false` remain concurrent. Stopping a wake-enabled command cancels its wake and
+retains its final result passively; other delivery policies are unchanged.
+
 User shell commands are detached background processes and never own or block the thread's model
-turn lifecycle. If the thread already has an active turn, progress is emitted as standard `item/*`
-notifications on that turn and the formatted output is injected into the turn's message stream:
+turn lifecycle. If the thread already has a continuable active turn, progress is emitted as
+standard `item/*` notifications on that turn. Passive and wake results are injected into the
+turn's message stream; presentation-only results are not:
 
 - `item/started` with `item: { "type": "commandExecution", "source": "userShell", ... }`
 - zero or more `item/commandExecution/outputDelta`
 - `item/completed` with the same `commandExecution` item id
 
-If the thread is idle, the command uses a standalone activity id but does not emit `turn/started`
-or `turn/completed`. A later user turn can begin while the command is still running. Clients should
-expect only:
+If the thread is idle, the command uses a standalone activity id. Passive and presentation-only
+results do not emit `turn/started` or `turn/completed`; wake delivery starts a model turn after the
+completed command activity is durable. A later user turn can begin while the command is still
+running. For the command itself, clients should expect:
 
 - `item/started` with `item: { "type": "commandExecution", "source": "userShell", ... }`
 - zero or more `item/commandExecution/outputDelta`
@@ -991,7 +999,7 @@ expect only:
 The completed command remains reconstructible as a completed activity in thread history.
 
 ```json
-{ "method": "thread/shellCommand", "id": 26, "params": { "threadId": "thr_b", "command": "git status --short" } }
+{ "method": "thread/shellCommand", "id": 26, "params": { "threadId": "thr_b", "command": "git status --short", "responseHandling": { "finalDelivery": "wake", "queueCommand": true } } }
 { "id": 26, "result": {} }
 ```
 

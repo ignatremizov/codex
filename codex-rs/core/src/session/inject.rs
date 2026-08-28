@@ -75,11 +75,10 @@ impl Session {
     /// Starts a regular turn with the provided input only if automatic idle work
     /// is allowed for the current session state.
     ///
-    /// This is the shared gate for extension-initiated idle work. It refuses to
-    /// start a turn when user/client-triggered work or a subscribed agent wake
-    /// is pending, any task is still active, or the session is currently in
-    /// Plan mode. Active Review tasks are covered by the active-task check
-    /// because Review turns are not steerable.
+    /// This is the shared gate for extension-initiated idle work. It refuses to start a turn when
+    /// user/client-triggered work, a subscribed agent wake, or a user-shell completion wake is
+    /// pending, any task is still active, or the session is currently in Plan mode. Active Review
+    /// tasks are covered by the active-task check because Review turns are not steerable.
     pub(crate) async fn try_start_turn_if_idle(
         self: &Arc<Self>,
         input: Vec<TurnInput>,
@@ -87,6 +86,10 @@ impl Session {
         self.try_start_turn_if_idle_with_lease(input, ()).await
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "idle-turn reservation must remain atomic with shell wake publication"
+    )]
     pub(crate) async fn try_start_turn_if_idle_with_lease(
         self: &Arc<Self>,
         input: Vec<TurnInput>,
@@ -102,7 +105,13 @@ impl Session {
                     if !content.is_empty()
             )
         });
-        if self.input_queue.has_trigger_turn_mailbox_items().await {
+        if self.input_queue.has_trigger_turn_mailbox_items().await
+            || self
+                .services
+                .unified_exec_manager
+                .has_pending_user_shell_completion_wake()
+                .await
+        {
             return Err(TryStartTurnIfIdleError::new(
                 TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
                 input,
@@ -136,11 +145,21 @@ impl Session {
             .agent_control
             .acquire_response_observation_transaction(self.presentation_id())
             .await;
+        let _user_shell_wake_reservation_permit = self
+            .services
+            .unified_exec_manager
+            .acquire_user_shell_wake_reservation_permit()
+            .await;
         if self.input_queue.has_trigger_turn_mailbox_items().await
             || self
                 .services
                 .agent_control
                 .has_bound_final_response_wake(self.presentation_id())
+            || self
+                .services
+                .unified_exec_manager
+                .has_pending_user_shell_completion_wake()
+                .await
         {
             return Err(TryStartTurnIfIdleError::new(
                 TryStartTurnIfIdleRejectionReason::PendingTriggerTurn,
@@ -159,6 +178,7 @@ impl Session {
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
             Arc::clone(&active_turn.turn_state)
         };
+        drop(_user_shell_wake_reservation_permit);
         drop(_response_observation_transaction);
         drop(_mailbox_submission_permit);
         // The active-turn placeholder now prevents another turn from starting. Release any
@@ -344,13 +364,36 @@ impl Session {
     }
 
     /// Injects items into active work, or records them without starting a turn.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "task finalization and passive delivery must agree whether an active task exists"
+    )]
     pub(crate) async fn inject_no_new_turn(
         &self,
         items: Vec<ResponseItem>,
         current_turn_context: Option<&TurnContext>,
     ) {
-        let Err(items) = self.inject_if_running(items).await else {
-            return;
+        let items = {
+            let mut active = self.active_turn.lock().await;
+            match active
+                .as_mut()
+                .filter(|active_turn| active_turn.task.is_some())
+            {
+                Some(active_turn) => {
+                    self.input_queue
+                        .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                            active_turn.turn_state.as_ref(),
+                            items
+                                .into_iter()
+                                .map(ResponseItemEnvelope::new)
+                                .map(TurnInput::ResponseItem)
+                                .collect(),
+                        )
+                        .await;
+                    return;
+                }
+                None => items,
+            }
         };
         let default_turn_context;
         let turn_context = match current_turn_context {
@@ -373,5 +416,61 @@ impl Session {
         } else {
             self.record_conversation_items(turn_context, &items).await;
         }
+    }
+
+    /// Delivers one completed asynchronous result to an active regular turn or queues a new turn.
+    ///
+    /// The active-turn lock linearizes delivery with task finalization. A task that can continue
+    /// receives the item as a steer; every other state queues it for the next turn so completion
+    /// cannot disappear into the taskless finalization interval.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "delivery and task finalization must remain atomic with active-turn steering"
+    )]
+    pub(crate) async fn inject_or_queue_response_item_for_wake(
+        self: &Arc<Self>,
+        item: ResponseItem,
+        current_turn_context: &TurnContext,
+    ) -> bool {
+        let is_one_shot_exec = self
+            .app_server_client_metadata()
+            .await
+            .client_name
+            .as_deref()
+            == Some("codex_exec");
+        let active = self.active_turn.lock().await;
+        if let Some(turn_state) = active.as_ref().and_then(|active_turn| {
+            active_turn
+                .task
+                .as_ref()
+                .filter(|task| {
+                    task.task.supports_pending_input_continuation()
+                        && task
+                            .accepting_pending_input
+                            .load(std::sync::atomic::Ordering::Acquire)
+                })
+                .map(|_| Arc::clone(&active_turn.turn_state))
+        }) {
+            self.input_queue
+                .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                    turn_state.as_ref(),
+                    vec![TurnInput::ResponseItem(ResponseItemEnvelope::new(item))],
+                )
+                .await;
+            return false;
+        }
+        if is_one_shot_exec {
+            drop(active);
+            self.record_conversation_items(current_turn_context, &[item])
+                .await;
+            return false;
+        }
+        self.input_queue
+            .queue_turn_inputs_for_next_turn(vec![TurnInput::ResponseItem(
+                ResponseItemEnvelope::new(item),
+            )])
+            .await;
+        drop(active);
+        true
     }
 }

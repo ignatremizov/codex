@@ -139,6 +139,7 @@ mod background_terminal_pagination_tests {
             process_id: process_id.to_string(),
             command: format!("command-{process_id}"),
             cwd: LegacyAppPathString::from_string(cwd),
+            user_shell_response_handling: None,
             os_pid: None,
             cpu_percent: None,
             rss_kb: None,

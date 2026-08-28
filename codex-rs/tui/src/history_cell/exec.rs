@@ -1,7 +1,9 @@
 //! Background terminal interaction and process-summary history cells.
 
 use super::*;
+use crate::user_shell_command::user_shell_response_handling_label;
 use crate::width::display_width;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use textwrap::WordSplitter;
 
 #[derive(Debug)]
@@ -176,16 +178,26 @@ impl UnifiedExecProcessesCell {
             if shown >= max_processes {
                 break;
             }
-            let command_lines = process
+            let mut command_lines = process
                 .command_display
                 .lines()
                 .map(|line| Line::from(line.to_string().cyan()))
                 .collect::<Vec<_>>();
-            let command_lines = if command_lines.is_empty() {
-                vec![Line::from("")]
-            } else {
-                command_lines
-            };
+            if command_lines.is_empty() {
+                command_lines.push(Line::from(""));
+            }
+            if let Some(response_handling) = process.user_shell_response_handling
+                && let Some(first) = command_lines.first_mut()
+            {
+                first.spans.push(" ".into());
+                first.spans.push(
+                    format!(
+                        "({})",
+                        user_shell_response_handling_label(response_handling)
+                    )
+                    .dim(),
+                );
+            }
             let wrapped_command = adaptive_wrap_lines(
                 command_lines,
                 RtOptions::new(wrap_width)
@@ -252,6 +264,7 @@ impl UnifiedExecProcessesCell {
 pub(crate) struct UnifiedExecProcessDetails {
     pub(crate) process_id: String,
     pub(crate) command_display: String,
+    pub(crate) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
     pub(crate) recent_chunks: Vec<String>,
 }
 

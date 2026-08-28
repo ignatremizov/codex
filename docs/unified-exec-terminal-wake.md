@@ -6,6 +6,10 @@ Implementation should begin only after the `/agent <uuid> <prompt>` TUI work lan
 
 Related implementation: [Multi-agent v1 response observation](multi-agent-v1-response-observation.md)
 
+The user-authored `![w:...]` shell path is a separate implemented surface: it can order user-shell
+commands with `q` and wake the TUI thread with `f`. This proposal remains limited to model-authored
+`exec_command` and `write_stdin` calls.
+
 ## Summary
 
 Unified exec should support a one-shot process-exit observation that can wake an idle model turn.

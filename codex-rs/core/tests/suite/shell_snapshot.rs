@@ -846,6 +846,7 @@ async fn shell_snapshot_v2_preserves_legacy_snapshots_for_user_shell() -> Result
         .submit(Op::RunUserShellCommand {
             command: "printf legacy".to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
     let end = wait_for_event_match(codex, |event| match event {

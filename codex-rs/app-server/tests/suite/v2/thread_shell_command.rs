@@ -23,8 +23,10 @@ use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadShellCommandFinalDelivery;
 use codex_app_server_protocol::ThreadShellCommandParams;
 use codex_app_server_protocol::ThreadShellCommandResponse;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
@@ -39,6 +41,7 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::shell::default_user_shell;
 use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
+use core_test_support::responses::body_contains;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
@@ -81,19 +84,28 @@ async fn detached_thread_shell_command_is_persisted_in_history() -> Result<()> {
                 thread_id: thread.id.clone(),
                 command: shell_command,
                 timeout_ms: None,
+                response_handling: None,
             },
         })
         .await?;
 
     let started = wait_for_command_execution_started(&mut mcp, /*expected_id*/ None).await?;
     let ThreadItem::CommandExecution {
-        id, source, status, ..
+        id,
+        source,
+        user_shell_response_handling,
+        status,
+        ..
     } = &started.item
     else {
         unreachable!("helper returns command execution item");
     };
     let command_id = id.clone();
     assert_eq!(source, &CommandExecutionSource::UserShell);
+    assert_eq!(
+        *user_shell_response_handling,
+        Some(ThreadShellCommandResponseHandling::default())
+    );
     assert_eq!(status, &CommandExecutionStatus::InProgress);
 
     let delta = wait_for_command_execution_output_delta(&mut mcp, &command_id).await?;
@@ -106,6 +118,7 @@ async fn detached_thread_shell_command_is_persisted_in_history() -> Result<()> {
     let ThreadItem::CommandExecution {
         id,
         source,
+        user_shell_response_handling,
         status,
         aggregated_output,
         exit_code,
@@ -117,6 +130,10 @@ async fn detached_thread_shell_command_is_persisted_in_history() -> Result<()> {
     assert_eq!(id, &command_id);
     assert_eq!(completed.turn_id, command_id);
     assert_eq!(source, &CommandExecutionSource::UserShell);
+    assert_eq!(
+        *user_shell_response_handling,
+        Some(ThreadShellCommandResponseHandling::default())
+    );
     assert_eq!(status, &CommandExecutionStatus::Completed);
     assert_eq!(aggregated_output.as_deref(), Some(expected_output.as_str()));
     assert_eq!(*exit_code, Some(0));
@@ -179,6 +196,99 @@ async fn detached_thread_shell_command_is_persisted_in_history() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_shell_command_wake_policy_starts_a_model_turn() -> Result<()> {
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+    let server =
+        create_mock_responses_server_sequence(vec![create_final_assistant_message_sse_response(
+            "wake observed",
+        )?])
+        .await;
+    MockResponsesConfig::new(&server.uri()).write(&codex_home)?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.as_path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .request(|request_id| ClientRequest::ThreadStart {
+            request_id,
+            params: ThreadStartParams::default(),
+        })
+        .await?;
+    let (shell_command, _) = current_shell_output_command("api-wake-result")?;
+
+    let _: ThreadShellCommandResponse = mcp
+        .request(|request_id| ClientRequest::ThreadShellCommand {
+            request_id,
+            params: ThreadShellCommandParams {
+                thread_id: thread.id,
+                command: shell_command,
+                timeout_ms: None,
+                response_handling: Some(ThreadShellCommandResponseHandling {
+                    final_delivery: ThreadShellCommandFinalDelivery::Wake,
+                    queue_command: false,
+                }),
+            },
+        })
+        .await?;
+    let started = wait_for_command_execution_started(&mut mcp, /*expected_id*/ None).await?;
+    let expected_response_handling = ThreadShellCommandResponseHandling {
+        final_delivery: ThreadShellCommandFinalDelivery::Wake,
+        queue_command: false,
+    };
+    let command_id = match started.item {
+        ThreadItem::CommandExecution {
+            id,
+            user_shell_response_handling,
+            ..
+        } => {
+            assert_eq!(
+                user_shell_response_handling,
+                Some(expected_response_handling)
+            );
+            id
+        }
+        _ => unreachable!("helper returns command execution item"),
+    };
+    let completed = wait_for_command_execution_completed(&mut mcp, Some(&command_id)).await?;
+    let ThreadItem::CommandExecution {
+        user_shell_response_handling,
+        ..
+    } = completed.item
+    else {
+        unreachable!("helper returns command execution item");
+    };
+    assert_eq!(
+        user_shell_response_handling,
+        Some(expected_response_handling)
+    );
+    let _: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should retain requests");
+    let response_requests = requests
+        .iter()
+        .filter(|request| request.url.path().ends_with("/responses"))
+        .collect::<Vec<_>>();
+    assert_eq!(response_requests.len(), 1);
+    assert!(
+        body_contains(response_requests[0], "api-wake-result"),
+        "wake request should include the completed shell result"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_shell_command_returns_error_when_local_environment_is_disabled() -> Result<()> {
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().join("codex_home");
@@ -204,6 +314,7 @@ async fn thread_shell_command_returns_error_when_local_environment_is_disabled()
             thread_id: thread.id,
             command: "pwd".to_string(),
             timeout_ms: None,
+            response_handling: None,
         })
         .await?;
     let error = mcp
@@ -317,6 +428,7 @@ async fn check_thread_shell_command_in_active_turn(timeout_ms: Option<i64>) -> R
                 thread_id: thread.id.clone(),
                 command: shell_command,
                 timeout_ms,
+                response_handling: None,
             },
         })
         .await?;
@@ -573,6 +685,7 @@ fn assert_user_shell_command(
     });
     let Some(ThreadItem::CommandExecution {
         source,
+        user_shell_response_handling,
         status,
         aggregated_output,
         exit_code,
@@ -582,6 +695,10 @@ fn assert_user_shell_command(
         panic!("{context} should include user shell command {expected_id}");
     };
     assert_eq!(source, &CommandExecutionSource::UserShell);
+    assert_eq!(
+        *user_shell_response_handling,
+        Some(ThreadShellCommandResponseHandling::default())
+    );
     assert_eq!(status, &CommandExecutionStatus::Completed);
     assert_eq!(aggregated_output.as_deref(), Some(expected_output));
     assert_eq!(*exit_code, Some(0));

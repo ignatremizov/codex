@@ -1257,6 +1257,17 @@
               ],
               "title": "CommandExecutionThreadItemType",
               "type": "string"
+            },
+            "userShellResponseHandling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ThreadShellCommandResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Completion delivery policy for a user-authored shell command. `None` for model-authored and unified-exec commands."
             }
           },
           "required": [
@@ -1987,6 +1998,52 @@
           "type": "object"
         }
       ]
+    },
+    "ThreadShellCommandFinalDelivery": {
+      "oneOf": [
+        {
+          "description": "Add the result to model context without starting a turn.",
+          "enum": [
+            "passive"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Add the result to model context and wake the thread when it is idle.",
+          "enum": [
+            "wake"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Publish the result without adding it to model context.",
+          "enum": [
+            "presentationOnly"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ThreadShellCommandResponseHandling": {
+      "properties": {
+        "finalDelivery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ThreadShellCommandFinalDelivery"
+            }
+          ],
+          "description": "Whether the completed result is delivered passively, wakes the thread, or stays presentation-only."
+        },
+        "queueCommand": {
+          "description": "Whether execution waits for every earlier user-shell submission in this thread.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "finalDelivery",
+        "queueCommand"
+      ],
+      "type": "object"
     },
     "Turn": {
       "properties": {

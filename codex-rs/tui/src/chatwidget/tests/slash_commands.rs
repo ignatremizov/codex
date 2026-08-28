@@ -941,7 +941,14 @@ async fn queued_bang_shell_dispatches_after_active_turn() {
     complete_turn_with_message(&mut chat, "turn-1", Some("done"));
 
     match op_rx.try_recv() {
-        Ok(Op::RunUserShellCommand { command, .. }) => assert_eq!(command, "echo hi"),
+        Ok(Op::RunUserShellCommand {
+            command,
+            response_handling,
+            ..
+        }) => {
+            assert_eq!(command, "echo hi");
+            assert_eq!(response_handling, Default::default());
+        }
         other => panic!("expected queued shell command op, got {other:?}"),
     }
     assert_eq!(next_add_to_history_event(&mut rx), "!echo hi");
@@ -997,7 +1004,14 @@ async fn queued_bang_shell_does_not_block_the_next_input() {
     complete_turn_with_message(&mut chat, "turn-1", Some("done"));
 
     match op_rx.try_recv() {
-        Ok(Op::RunUserShellCommand { command, .. }) => assert_eq!(command, "echo hi"),
+        Ok(Op::RunUserShellCommand {
+            command,
+            response_handling,
+            ..
+        }) => {
+            assert_eq!(command, "echo hi");
+            assert_eq!(response_handling, Default::default());
+        }
         other => panic!("expected queued shell command op, got {other:?}"),
     }
     assert_eq!(next_add_to_history_event(&mut rx), "!echo hi");
@@ -4052,7 +4066,12 @@ async fn slash_cd_rejects_pending_input_and_unsupported_session_ownership() {
             "steer" => chat.input_queue.pending_steers.push_back(steer),
             "side" => chat.set_side_conversation_active(/*active*/ true),
             "ephemeral" => chat.config.ephemeral = true,
-            "exec" => chat.track_unified_exec_process_begin("call", Some("process"), "sleep"),
+            "exec" => chat.track_unified_exec_process_begin(
+                "call",
+                Some("process"),
+                "sleep",
+                /*user_shell_response_handling*/ None,
+            ),
             "mcp" => {
                 let cell =
                     history_cell::new_mcp_inventory_loading(/*animations_enabled*/ false);

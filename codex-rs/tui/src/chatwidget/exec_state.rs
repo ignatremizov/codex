@@ -1,6 +1,7 @@
 //! Unified exec bookkeeping state and helpers for `ChatWidget`.
 
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_protocol::parse_command::ParsedCommand;
 
 use crate::exec_command::split_command_string;
@@ -9,12 +10,14 @@ pub(super) struct RunningCommand {
     pub(super) command: Vec<String>,
     pub(super) parsed_cmd: Vec<ParsedCommand>,
     pub(super) source: ExecCommandSource,
+    pub(super) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
 }
 
 pub(super) struct UnifiedExecProcessSummary {
     pub(super) key: String,
     pub(super) call_id: String,
     pub(super) command_display: String,
+    pub(super) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
     pub(super) recent_chunks: Vec<String>,
 }
 

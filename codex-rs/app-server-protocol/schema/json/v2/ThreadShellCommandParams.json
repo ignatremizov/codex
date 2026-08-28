@@ -1,15 +1,74 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadShellCommandFinalDelivery": {
+      "oneOf": [
+        {
+          "description": "Add the result to model context without starting a turn.",
+          "enum": [
+            "passive"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Add the result to model context and wake the thread when it is idle.",
+          "enum": [
+            "wake"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Publish the result without adding it to model context.",
+          "enum": [
+            "presentationOnly"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ThreadShellCommandResponseHandling": {
+      "properties": {
+        "finalDelivery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ThreadShellCommandFinalDelivery"
+            }
+          ],
+          "description": "Whether the completed result is delivered passively, wakes the thread, or stays presentation-only."
+        },
+        "queueCommand": {
+          "description": "Whether execution waits for every earlier user-shell submission in this thread.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "finalDelivery",
+        "queueCommand"
+      ],
+      "type": "object"
+    }
+  },
   "properties": {
     "command": {
       "description": "Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy.",
       "type": "string"
     },
+    "responseHandling": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadShellCommandResponseHandling"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional completion delivery policy. Omission preserves passive model delivery."
+    },
     "threadId": {
       "type": "string"
     },
     "timeoutMs": {
-      "description": "Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
+      "description": "Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
       "format": "int64",
       "type": [
         "integer",

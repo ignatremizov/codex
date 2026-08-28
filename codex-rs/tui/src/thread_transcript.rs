@@ -22,6 +22,7 @@ use crate::multi_agents::background_commentary_history_cell_from_agent_message;
 use crate::multi_agents::background_completion_history_cell_from_agent_message;
 use crate::multi_agents::parse_thread_id;
 use crate::multi_agents::sub_agent_activity_summary;
+use crate::user_shell_command::user_shell_response_handling_label;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
@@ -336,12 +337,23 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
         ThreadItem::CommandExecution {
             command,
             status,
+            user_shell_response_handling,
             aggregated_output,
             exit_code,
             ..
         } => {
-            let mut lines: Vec<Line<'static>> =
-                vec![vec!["$ ".dim(), command.clone().into()].into()];
+            let mut command_line = vec!["$ ".dim(), command.clone().into()];
+            if let Some(response_handling) = user_shell_response_handling {
+                command_line.push(" ".into());
+                command_line.push(
+                    format!(
+                        "({})",
+                        user_shell_response_handling_label(*response_handling)
+                    )
+                    .dim(),
+                );
+            }
+            let mut lines: Vec<Line<'static>> = vec![command_line.into()];
             lines.push(
                 format!(
                     "status: {status:?}{}",

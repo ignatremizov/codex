@@ -955,9 +955,12 @@ impl App {
                 app_server.thread_realtime_stop(thread_id).await?;
                 Ok(true)
             }
-            AppCommand::RunUserShellCommand { command } => {
+            AppCommand::RunUserShellCommand {
+                command,
+                response_handling,
+            } => {
                 app_server
-                    .thread_shell_command(thread_id, command.to_string())
+                    .thread_shell_command(thread_id, command.to_string(), Some(*response_handling))
                     .await?;
                 Ok(true)
             }

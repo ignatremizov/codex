@@ -48,7 +48,10 @@ async fn misalignment_policy_failure_stops_the_thread_and_renders_once() {
     chat.submit_user_message(UserMessage::from("direct follow-up"));
     chat.queue_user_message(UserMessage::from("queued follow-up"));
     assert!(!chat.submit_op(Op::Compact));
-    assert!(!chat.submit_op(Op::run_user_shell_command("echo unsafe".to_string())));
+    assert!(!chat.submit_op(Op::run_user_shell_command(
+        "echo unsafe".to_string(),
+        Default::default(),
+    )));
     assert!(!chat.maybe_send_next_queued_input());
     assert!(chat.queued_user_message_texts().is_empty());
     assert_no_submit_op(&mut op_rx);

@@ -5066,6 +5066,16 @@ impl ChatComposer {
                     .render_ref_masked(textarea_rect, buf, &mut state, mask_char);
             } else {
                 let mut highlights = self.plugin_at_mention_highlights();
+                if self.draft.is_bash_mode
+                    && let Some(end) = self
+                        .draft
+                        .textarea
+                        .text()
+                        .strip_prefix("[w:")
+                        .and_then(|options| options.find(']'))
+                {
+                    highlights.push((0..end + 4, Style::default().magenta()));
+                }
                 highlights.extend(
                     agent_command_highlights(
                         self.draft.textarea.text(),
@@ -5612,7 +5622,7 @@ mod tests {
                 composer.set_status_line(Some(Line::from(
                     "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
                 )));
-                composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
+                composer.set_text_content("![w:fq] git status".to_string(), Vec::new(), Vec::new());
             },
         );
 
@@ -5667,7 +5677,7 @@ mod tests {
         composer.set_status_line(Some(Line::from(
             "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
         )));
-        composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
+        composer.set_text_content("![w:fq] git status".to_string(), Vec::new(), Vec::new());
 
         let area = Rect::new(0, 0, 100, 9);
         let mut buf = Buffer::empty(area);
@@ -5676,6 +5686,9 @@ mod tests {
         let prompt_cell = &buf[(0, 1)];
         assert_eq!(prompt_cell.symbol(), "!");
         assert_eq!(prompt_cell.style().fg, Some(Color::LightRed));
+        let response_option_cell = &buf[(2, 1)];
+        assert_eq!(response_option_cell.symbol(), "[");
+        assert_eq!(response_option_cell.style().fg, Some(Color::Magenta));
 
         let footer_y = area.height - 1;
         let footer_text = (0..area.width)

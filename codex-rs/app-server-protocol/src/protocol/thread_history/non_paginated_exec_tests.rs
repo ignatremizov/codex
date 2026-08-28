@@ -106,6 +106,7 @@ fn non_paginated_exec_call_and_output_rebuild_completed_command_item() {
                 cwd: LegacyAppPathString::from_string("/home/user/project"),
                 process_id: None,
                 source: CommandExecutionSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
                     command: "sleep 20".to_string(),
@@ -165,6 +166,7 @@ fn non_paginated_write_stdin_output_updates_original_command_item() {
             cwd: LegacyAppPathString::from_string("/tmp"),
             process_id: Some("42".to_string()),
             source: CommandExecutionSource::UnifiedExecStartup,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::Completed,
             command_actions: vec![CommandAction::Unknown {
                 command: "printf first; sleep 1; printf second".to_string(),
@@ -197,6 +199,7 @@ fn canonical_paginated_item_replaces_reconstructed_non_paginated_item() {
                 cmd: "echo canonical".to_string(),
             }],
             source: codex_protocol::protocol::ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             interaction_input: None,
             status: codex_protocol::items::CommandExecutionStatus::Completed,
             stdout: Some("canonical\n".to_string()),
@@ -243,6 +246,7 @@ fn canonical_paginated_item_replaces_reconstructed_non_paginated_item() {
             cwd: LegacyAppPathString::from_string("/tmp"),
             process_id: None,
             source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::Completed,
             command_actions: vec![CommandAction::Unknown {
                 command: "echo canonical".to_string(),

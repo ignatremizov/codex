@@ -312,6 +312,7 @@ async fn replayed_commands_preserve_individual_output_and_failure_status() {
             plugin_id: None,
             script_path: None,
             source,
+            user_shell_response_handling: None,
             status: AppServerCommandExecutionStatus::Completed,
             command_actions: Vec::new(),
             aggregated_output: Some(format!("{output}\n")),
@@ -847,6 +848,7 @@ async fn exec_end_without_begin_uses_event_command() {
             plugin_id: None,
             script_path: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             status: AppServerCommandExecutionStatus::Completed,
             command_actions,
             aggregated_output: Some("done".to_string()),
@@ -1233,6 +1235,7 @@ async fn unified_exec_wait_status_header_updates_on_late_command_display() {
         key: "proc-1".to_string(),
         call_id: "call-1".to_string(),
         command_display: "sleep 5".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: Vec::new(),
     });
 
@@ -1259,6 +1262,7 @@ async fn unified_exec_wait_status_renders_countdown() {
         key: "proc-1".to_string(),
         call_id: "call-1".to_string(),
         command_display: "sleep 60".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: Vec::new(),
     });
     let deadline_at_ms = future_deadline_at_ms(60_000);
@@ -1306,6 +1310,7 @@ async fn unified_exec_initial_status_renders_countdown() {
                 cwd: chat.config.cwd.clone().into(),
                 process_id: Some("proc-1".to_string()),
                 source: ExecCommandSource::UnifiedExecStartup,
+                user_shell_response_handling: None,
                 status: AppServerCommandExecutionStatus::InProgress,
                 command_actions: Vec::new(),
                 aggregated_output: None,
@@ -1333,6 +1338,7 @@ async fn unified_exec_wait_countdown_survives_status_refresh() {
         key: "proc-1".to_string(),
         call_id: "call-1".to_string(),
         command_display: "sleep 60".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: Vec::new(),
     });
 
@@ -1406,6 +1412,7 @@ async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
             cwd: cwd.into(),
             process_id: Some("proc-other".to_string()),
             source: ExecCommandSource::UnifiedExecStartup,
+            user_shell_response_handling: None,
             status: AppServerCommandExecutionStatus::Completed,
             command_actions: Vec::new(),
             aggregated_output: None,
@@ -1447,6 +1454,7 @@ async fn ps_output_zero_preview_lines_retains_all_background_terminal_lines() {
         key: "proc-1".to_string(),
         call_id: "call-1".to_string(),
         command_display: "tail -f app.log".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: Vec::new(),
     });
 
@@ -1470,6 +1478,7 @@ async fn ps_output_retains_configured_background_terminal_preview_lines() {
         key: "proc-1".to_string(),
         call_id: "call-1".to_string(),
         command_display: "tail -f app.log".to_string(),
+        user_shell_response_handling: None,
         recent_chunks: Vec::new(),
     });
 
@@ -1768,7 +1777,7 @@ async fn user_shell_command_renders_output_not_exploring() {
 }
 
 #[tokio::test]
-async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
+async fn bang_shell_response_options_are_parsed_while_task_is_running() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
@@ -1800,17 +1809,30 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
     handle_turn_started(&mut chat, "turn-1");
 
     chat.bottom_pane
-        .set_composer_text("!echo hi".to_string(), Vec::new(), Vec::new());
+        .set_composer_text("![w:fq] echo hi".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     match op_rx.try_recv() {
-        Ok(Op::RunUserShellCommand { command, .. }) => assert_eq!(command, "echo hi"),
+        Ok(Op::RunUserShellCommand {
+            command,
+            response_handling,
+        }) => {
+            assert_eq!(command, "echo hi");
+            assert_eq!(
+                response_handling,
+                codex_app_server_protocol::ThreadShellCommandResponseHandling {
+                    final_delivery:
+                        codex_app_server_protocol::ThreadShellCommandFinalDelivery::Wake,
+                    queue_command: true,
+                }
+            );
+        }
         other => panic!("expected RunUserShellCommand op, got {other:?}"),
     }
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) if text == "!echo hi"
-    );
+    let Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) = rx.try_recv() else {
+        panic!("expected shell command history entry");
+    };
+    insta::assert_snapshot!(text, @"![w:fq] echo hi");
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 
@@ -1837,7 +1859,10 @@ async fn stop_command_completes_process_ids_from_live_exec_tracking() {
 async fn user_message_during_detached_user_shell_command_starts_a_turn() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.prepare_local_op_submission(&AppCommand::run_user_shell_command("sleep 10".to_string()));
+    chat.prepare_local_op_submission(&AppCommand::run_user_shell_command(
+        "sleep 10".to_string(),
+        Default::default(),
+    ));
     let begin = begin_exec_with_source(
         &mut chat,
         "user-shell-sleep",

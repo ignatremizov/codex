@@ -2,6 +2,7 @@ mod live_output;
 mod model;
 mod render;
 
+pub(crate) use model::ActiveExecCall;
 pub(crate) use model::CommandOutput;
 #[cfg(test)]
 pub(crate) use model::ExecCall;

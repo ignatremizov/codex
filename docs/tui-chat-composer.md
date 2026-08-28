@@ -109,6 +109,28 @@ the input starts with `!` (shell command). Submitted shell commands become backg
 do not block later composer input; `/ps` lists them and `/stop <process-id>` stops one, with live ids
 offered as composer completions.
 
+User shell commands accept an optional response policy immediately after `!`:
+
+```text
+![w:f] long-running-command
+![w:q] command-after-earlier-user-shell-work
+![w:fq] queued-command-that-wakes-on-completion
+![w:x] presentation-only-command
+```
+
+Omitting `w` preserves passive model delivery without a wake. `f` wakes the thread when the
+command finishes. `q` waits for every earlier user-shell submission in the thread before starting
+this command; later commands without `q` still start immediately. `x` keeps the result out of model
+context while preserving normal command presentation. Flags are unique and ordered as `fqx`;
+`f` and `x` together cancel to passive delivery, while `q` still controls execution order. `c` and
+`m` are agent-only flags and are rejected here. Stopping a wake-enabled command cancels its wake
+and retains the stopped result as passive context; other delivery policies are unchanged.
+Live command rows, replayed transcript entries, and `/ps` label the authored policy as `(passive)`,
+`(wake)`, or `(presentation only)`; a queued command also includes `· queued`.
+The unspaced `!w:` prefix is reserved for response policy. To run a command or Windows
+drive-relative path that literally begins with `w:`, put a space after `!`, for example
+`! w:f arg`.
+
 ### Normal submit/queue path
 
 `handle_submission` calls `prepare_submission_text` for both submit and queue. That method:

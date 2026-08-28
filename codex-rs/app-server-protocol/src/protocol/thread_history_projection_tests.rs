@@ -266,6 +266,7 @@ fn projects_detached_user_shell_as_a_completed_standalone_turn() {
         cwd: test_path_buf("/tmp").abs().into(),
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::UserShell,
+        user_shell_response_handling: None,
         interaction_input: None,
         status: CommandExecutionStatus::Completed,
         stdout: Some(String::new()),
