@@ -264,6 +264,7 @@ mod updates;
 #[cfg(any(not(debug_assertions), test))]
 mod updates_cache;
 mod user_prompt;
+mod user_shell_command;
 mod version;
 mod vim_search;
 mod width;
