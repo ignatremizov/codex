@@ -22,19 +22,25 @@
 //! - `process.rs`: PTY process lifecycle + output buffering.
 //! - `process_state.rs`: shared exit/failure state for local and remote processes.
 //! - `process_manager.rs`: orchestration (approvals, sandboxing, reuse) and request handling.
+//! - `user_shell_queue.rs`: per-thread ordering for user-submitted shell commands.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_network_proxy::NetworkProxy;
+use codex_protocol::protocol::UserShellCommandFinalDelivery;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use rand::Rng;
 use rand::rng;
 use tokio::sync::Mutex;
+use tokio::sync::MutexGuard;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::session::session::Session;
@@ -54,6 +60,7 @@ pub(crate) use process_manager::exec_env_policy_from_shell_policy;
 mod process_state;
 mod shell_snapshot;
 mod stdin_approval;
+mod user_shell_queue;
 mod user_shell_registry;
 
 pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
@@ -149,6 +156,8 @@ pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
     user_shell_commands: HashMap<i32, UserShellCommandEntry>,
     user_shell_shutdown: bool,
+    pending_user_shell_submissions: BTreeMap<u64, UserShellSubmission>,
+    next_user_shell_submission_id: u64,
     reserved_process_ids: HashSet<i32>,
 }
 
@@ -165,6 +174,8 @@ pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
     // Tracks result producers through final publication, separately from process cancellation.
     user_shell_tasks: tokio_util::task::TaskTracker,
+    user_shell_wake_reservation: Mutex<()>,
+    user_shell_submission_changed: Notify,
     max_write_stdin_yield_time_ms: Option<u64>,
 }
 
@@ -173,9 +184,15 @@ impl UnifiedExecProcessManager {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
             user_shell_tasks: tokio_util::task::TaskTracker::new(),
+            user_shell_wake_reservation: Mutex::new(()),
+            user_shell_submission_changed: Notify::new(),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .map(|timeout_ms| timeout_ms.max(MIN_EMPTY_YIELD_TIME_MS)),
         }
+    }
+
+    pub(crate) async fn acquire_user_shell_wake_reservation_permit(&self) -> MutexGuard<'_, ()> {
+        self.user_shell_wake_reservation.lock().await
     }
 }
 
@@ -204,9 +221,29 @@ struct ProcessEntry {
 struct UserShellCommandEntry {
     call_id: String,
     process_id: i32,
+    submission_id: u64,
     command: String,
     cwd: PathUri,
+    response_handling: UserShellCommandResponseHandling,
     cancellation_token: CancellationToken,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserShellSubmissionPhase {
+    Pending,
+    Launching,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct UserShellSubmission {
+    final_delivery: UserShellCommandFinalDelivery,
+    phase: UserShellSubmissionPhase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UserShellCommandRetirement {
+    Completed,
+    Stopped,
 }
 
 type SharedPluginMetricsSidecar = Arc<std::sync::Mutex<Option<PluginMetricsSidecar>>>;

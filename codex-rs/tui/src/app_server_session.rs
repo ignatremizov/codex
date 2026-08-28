@@ -136,6 +136,7 @@ use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadShellCommandParams;
 use codex_app_server_protocol::ThreadShellCommandResponse;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -1887,6 +1888,7 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         command: String,
+        response_handling: Option<ThreadShellCommandResponseHandling>,
     ) -> Result<()> {
         let request_id = self.next_request_id();
         let _: ThreadShellCommandResponse = self
@@ -1897,6 +1899,7 @@ impl AppServerSession {
                     thread_id: thread_id.to_string(),
                     command,
                     timeout_ms: None,
+                    response_handling,
                 },
             })
             .await

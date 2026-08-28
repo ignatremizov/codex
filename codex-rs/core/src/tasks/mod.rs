@@ -6,6 +6,8 @@ mod startup;
 mod user_shell;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use codex_diagnostics::Gauge;
@@ -473,6 +475,8 @@ impl Session {
         let ctx = Arc::clone(&turn_context);
         let task_for_run = Arc::clone(&task);
         let task_cancellation_token = cancellation_token.child_token();
+        let accepting_pending_input = Arc::new(AtomicBool::new(true));
+        let accepting_pending_input_for_run = Arc::clone(&accepting_pending_input);
         // Task-owned turn spans keep a core-owned span open for the
         // full task lifecycle after the submission dispatch span ends.
         let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
@@ -523,6 +527,7 @@ impl Session {
                     }
                     TaskStartupOutcome::Finish => Ok(None),
                 };
+                accepting_pending_input_for_run.store(false, Ordering::Release);
                 let sess = Arc::clone(&session);
                 let mut last_agent_message = None;
                 loop {
@@ -561,6 +566,7 @@ impl Session {
                                     Arc::clone(&ctx_for_finish),
                                     task_cancellation_token.child_token(),
                                 ).await;
+                            accepting_pending_input_for_run.store(false, Ordering::Release);
                         }
                     }
             }
@@ -578,6 +584,7 @@ impl Session {
             handle: AbortOnDropHandle::new(handle),
             kind: task_kind,
             task,
+            accepting_pending_input,
             cancellation_token,
             turn_context: Arc::clone(&turn_context),
             _agent_execution_guard: agent_execution_guard,
@@ -667,10 +674,8 @@ impl Session {
         };
         let (input, mut start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
-        if !input.iter().any(
-            |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
-        ) {
-            // Queue-only wakes retain the previous turn context without selecting a new task.
+        if !input.iter().any(TurnInput::triggers_turn) {
+            // Queue-only mail wakes durable sleep without selecting a new task's settings.
             start_options = previous_options;
             start_options.cyber_access_program = self
                 .reference_context_item()
@@ -947,6 +952,7 @@ impl Session {
                         .first()
                         .is_some_and(|input| !crate::session::is_mcp_use_input(input))
                 {
+                    task.accepting_pending_input.store(true, Ordering::Release);
                     return TaskFinishAction::Continue;
                 }
             }

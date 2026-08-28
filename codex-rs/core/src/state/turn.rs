@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::Mutex as SyncMutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -88,6 +89,8 @@ pub(crate) struct RunningTask {
     pub(crate) startup: Arc<TaskStartupState>,
     pub(crate) kind: TaskKind,
     pub(crate) task: Arc<dyn AnySessionTask>,
+    /// Whether this specific task invocation can still consume newly accepted pending input.
+    pub(crate) accepting_pending_input: Arc<AtomicBool>,
     pub(crate) cancellation_token: CancellationToken,
     pub(crate) handle: AbortOnDropHandle<()>,
     pub(crate) turn_context: Arc<TurnContext>,

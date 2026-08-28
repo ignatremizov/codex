@@ -10,6 +10,8 @@ use crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines;
 #[cfg(test)]
 #[path = "terminal_history_tests.rs"]
 mod tests;
+use crate::user_shell_command::user_shell_response_handling_label;
+use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 
 #[derive(Debug)]
 pub(crate) struct UnifiedExecInteractionCell {
@@ -159,6 +161,7 @@ struct UnifiedExecProcessesCell {
 pub(crate) struct UnifiedExecProcessDetails {
     pub(crate) process_id: String,
     pub(crate) command_display: String,
+    pub(crate) user_shell_response_handling: Option<ThreadShellCommandResponseHandling>,
     pub(crate) recent_chunks: crate::exec_cell::LiveCommandOutput,
 }
 
@@ -176,11 +179,23 @@ impl UnifiedExecProcessesCell {
             return out;
         }
         for process in self.processes.iter().take(/*n*/ 16) {
-            let command = process
+            let mut command: Vec<HyperlinkLine> = process
                 .command_display
                 .lines()
                 .map(|line| Line::from(line.to_owned().fg(accent_color())).into())
                 .collect::<Vec<_>>();
+            if let Some(response_handling) = process.user_shell_response_handling
+                && let Some(first) = command.first_mut()
+            {
+                first.line.spans.push(" ".into());
+                first.line.spans.push(
+                    format!(
+                        "({})",
+                        user_shell_response_handling_label(response_handling)
+                    )
+                    .dim(),
+                );
+            }
             out.extend(adaptive_wrap_hyperlink_lines(
                 &command,
                 RtOptions::new(usize::from(width))
@@ -205,7 +220,7 @@ impl UnifiedExecProcessesCell {
                 "    ↳ ".dim(),
                 "      ".into(),
             ));
-            out.push(vec!["    id ".dim(), process.process_id.clone().green()].into());
+            out.push(Line::from(vec!["    id ".dim(), process.process_id.clone().green()]).into());
         }
         let remaining = self.processes.len().saturating_sub(/*rhs*/ 16);
         if remaining > 0 {

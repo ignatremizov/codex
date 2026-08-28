@@ -70,6 +70,7 @@ impl SessionTask for ReviewTask {
                 | TurnInput::AgentInput { mut content, .. } => user_input.append(&mut content),
                 TurnInput::ResponseItem(_)
                 | TurnInput::FunctionCallOutput(_)
+                | TurnInput::UserShellContextReady
                 | TurnInput::InterAgentCommunication(_) => {}
             }
         }

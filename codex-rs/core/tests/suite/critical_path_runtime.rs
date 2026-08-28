@@ -257,6 +257,7 @@ async fn detached_user_shell_does_not_create_a_turn_timing_path() -> anyhow::Res
         .submit(Op::RunUserShellCommand {
             command: "sleep 30".to_string(),
             timeout_ms: None,
+            response_handling: Default::default(),
         })
         .await?;
     let begin = wait_for_event_match(&test.codex, |event| {

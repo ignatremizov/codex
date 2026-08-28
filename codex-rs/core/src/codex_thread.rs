@@ -59,6 +59,7 @@ use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_protocol::protocol::UserShellCommandResponseHandling;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
@@ -216,6 +217,7 @@ pub struct BackgroundTerminalInfo {
     pub process_id: String,
     pub command: String,
     pub cwd: PathUri,
+    pub user_shell_response_handling: Option<UserShellCommandResponseHandling>,
 }
 
 /// Conduit for the bidirectional stream of messages that compose a thread

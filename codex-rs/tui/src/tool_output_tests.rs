@@ -139,11 +139,14 @@ fn command_preview_matches_streamed_and_completed_output() {
     use std::time::Duration;
 
     let mut cell = new_active_exec_command(
-        "call-preview".into(),
-        vec!["bash".into(), "-lc".into(), "echo output".into()],
-        Vec::new(),
-        CommandExecutionSource::Agent,
-        /*interaction_input*/ None,
+        crate::exec_cell::ActiveExecCall {
+            call_id: "call-preview".into(),
+            command: vec!["bash".into(), "-lc".into(), "echo output".into()],
+            parsed: Vec::new(),
+            source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
+            interaction_input: None,
+        },
         /*animations_enabled*/ false,
     );
     let output = "first\nsecond\nthird\nfourth\nfifth\n";

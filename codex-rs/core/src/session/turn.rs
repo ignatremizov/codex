@@ -1203,6 +1203,7 @@ fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
             }
             TurnInput::ResponseItem(_)
             | TurnInput::FunctionCallOutput(_)
+            | TurnInput::UserShellContextReady
             | TurnInput::InterAgentCommunication(_) => None,
         })
         .flatten()
@@ -1583,6 +1584,7 @@ async fn track_turn_resolved_config_analytics(
                     | TurnInput::AgentInput { content, .. } => Some(content.as_slice()),
                     TurnInput::ResponseItem(_)
                     | TurnInput::FunctionCallOutput(_)
+                    | TurnInput::UserShellContextReady
                     | TurnInput::InterAgentCommunication(_) => None,
                 })
                 .flatten()
