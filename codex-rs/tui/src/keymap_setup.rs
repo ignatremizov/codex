@@ -841,7 +841,10 @@ mod tests {
         let params = build_keymap_picker_params_with_filter(
             &runtime,
             &TuiKeymap::default(),
-            fast_mode_action_filter(),
+            KeymapActionFilter {
+                fast_mode_enabled: true,
+                voice_transcription_enabled: true,
+            },
         );
         let all_tab = selection_tab(&params, KEYMAP_ALL_TAB_ID);
 

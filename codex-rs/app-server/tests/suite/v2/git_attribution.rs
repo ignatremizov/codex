@@ -188,9 +188,11 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 5);
+    // Rollback removes the disabled turn and restores its preceding world-state baseline.
+    // Switching back therefore retains one enabled fragment, with no stale disable or reinjection.
     for (request, expected) in requests
         .into_iter()
-        .zip([(0, 0), (1, 0), (1, 0), (1, 1), (2, 1)])
+        .zip([(0, 0), (1, 0), (1, 0), (1, 1), (1, 0)])
     {
         let developer_text = request.message_input_texts("developer").join("\n");
         assert_eq!(

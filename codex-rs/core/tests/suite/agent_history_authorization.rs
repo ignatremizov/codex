@@ -82,7 +82,7 @@ async fn wait_for_child_request(
     thread_id: ThreadId,
 ) -> Result<responses::ResponsesRequest> {
     let thread_id = thread_id.to_string();
-    Ok(timeout(Duration::from_secs(10), async {
+    timeout(Duration::from_secs(10), async {
         loop {
             if let Some(request) = log.requests().into_iter().find(|request| {
                 request.header("thread-id").as_deref() == Some(thread_id.as_str())
@@ -94,7 +94,7 @@ async fn wait_for_child_request(
         }
     })
     .await
-    .with_context(|| format!("waiting for child {thread_id} to receive {prompt:?}"))?)
+    .with_context(|| format!("waiting for child {thread_id} to receive {prompt:?}"))
 }
 
 #[test_case(Version::V1, History::Omitted, Authorization::Default, ThreadHistoryMode::Legacy; "v1 fresh legacy")]
@@ -194,7 +194,7 @@ async fn spawn_history_obeys_resolved_authorization(
     let mut created = test.thread_manager.subscribe_thread_created();
     let mut arguments = json!({"message": CHILD_PROMPT});
     if matches!(version, Version::V2) {
-        arguments["task_name"] = json!("history-worker");
+        arguments["task_name"] = json!("history_worker");
         arguments["task_message"] = json!(CHILD_PROMPT);
     }
     match (version, history) {
@@ -301,7 +301,7 @@ async fn spawn_history_obeys_resolved_authorization(
         .with_context(|| format!("expected successful child admission, received {output}"))?;
     match version {
         Version::V1 => assert!(spawned["agent_id"].as_str().is_some(), "{output}"),
-        Version::V2 => assert_eq!(spawned["task_name"], json!("/root/history-worker")),
+        Version::V2 => assert_eq!(spawned["task_name"], json!("/root/history_worker")),
     }
     let child_id = timeout(Duration::from_secs(10), created.recv())
         .await
@@ -421,6 +421,8 @@ async fn spawn_history_obeys_resolved_authorization(
             let parent_snapshot = test.codex.config_snapshot().await;
             let restored_snapshot = restored.config_snapshot().await;
             assert_eq!(restored_snapshot.cwd(), parent_snapshot.cwd());
+            // Restore the child's persisted routing while retaining the owner's live
+            // permission boundary; the role's defaults do not replace explicit settings.
             assert_eq!(
                 (
                     restored_snapshot.model,
@@ -433,9 +435,9 @@ async fn spawn_history_obeys_resolved_authorization(
                     restored_snapshot.service_tier,
                 ),
                 (
-                    parent_snapshot.model,
-                    parent_snapshot.reasoning_effort,
-                    parent_snapshot.reasoning_summary,
+                    snapshot.model,
+                    snapshot.reasoning_effort,
+                    snapshot.reasoning_summary,
                     parent_snapshot.model_provider_id,
                     parent_snapshot.permission_profile,
                     parent_snapshot.approval_policy,
@@ -537,7 +539,7 @@ async fn spawn_history_obeys_resolved_authorization(
             Version::V2 => {
                 assert_eq!(
                     spawned["task_name"],
-                    json!("/root/history-worker/grandchild")
+                    json!("/root/history_worker/grandchild")
                 );
             }
         }

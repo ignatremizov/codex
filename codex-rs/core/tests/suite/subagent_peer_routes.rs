@@ -415,7 +415,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
     }
     let root_history = test
         .thread_store
-        .load_history(LoadThreadHistoryParams {
+        .load_canonical_artifact_segments(LoadThreadHistoryParams {
             thread_id: test.session_configured.thread_id,
             include_archived: false,
         })
@@ -424,7 +424,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         .thread_store
         .load_mailbox_canonical_history(recipient_id)
         .await?;
-    let root_json = serde_json::to_string(&root_history.items)?;
+    let root_json = serde_json::to_string(&root_history.segments)?;
     assert!(!root_json.contains("peer-only contract revision"));
     let persisted_audits = recipient_history
         .iter()

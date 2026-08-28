@@ -2855,8 +2855,9 @@ async fn pathless_ephemeral_thread_rejects_codex_home_path_after_reload() -> Res
         app_server.read_stream_until_error_message(RequestId::Integer(fork_id)),
     )
     .await??;
+    assert_eq!(fork_err.error.code, -32600);
     assert!(
-        fork_err.error.message.contains("path is a directory"),
+        fork_err.error.message.contains("is not a regular file"),
         "unexpected fork error: {}",
         fork_err.error.message
     );

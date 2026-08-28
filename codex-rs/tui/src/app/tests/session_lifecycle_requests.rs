@@ -49,7 +49,6 @@ use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use std::sync::Mutex;
-use test_case::test_case;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -1248,19 +1247,27 @@ async fn promptless_resume_routes_next_child_input_through_reserved_control() ->
     Ok(())
 }
 
-#[test_case(
-    "active-observation",
-    AgentResponseObservationBinding::Bound,
-    AgentFinalResponseDisplay::Passive;
-    "active_turn"
-)]
-#[test_case(
-    "undelivered-observation",
-    AgentResponseObservationBinding::NextTurn,
-    AgentFinalResponseDisplay::Wake;
-    "undelivered_completion"
-)]
 #[tokio::test]
+async fn explicit_observe_updates_only_the_authoritative_binding_active_turn() -> Result<()> {
+    explicit_observe_updates_only_the_authoritative_binding(
+        "active-observation",
+        AgentResponseObservationBinding::Bound,
+        AgentFinalResponseDisplay::Passive,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn explicit_observe_updates_only_the_authoritative_binding_undelivered_completion()
+-> Result<()> {
+    explicit_observe_updates_only_the_authoritative_binding(
+        "undelivered-observation",
+        AgentResponseObservationBinding::NextTurn,
+        AgentFinalResponseDisplay::Wake,
+    )
+    .await
+}
+
 async fn explicit_observe_updates_only_the_authoritative_binding(
     authored: &str,
     expected_binding: AgentResponseObservationBinding,

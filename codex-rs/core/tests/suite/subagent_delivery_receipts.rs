@@ -209,14 +209,15 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
     child.flush_rollout().await?;
     let child_history = test
         .thread_store
-        .load_history(LoadThreadHistoryParams {
+        .load_canonical_artifact_segments(LoadThreadHistoryParams {
             thread_id: child_id,
             include_archived: false,
         })
         .await?;
     let child_presentations = child_history
-        .items
+        .segments
         .iter()
+        .flatten()
         .filter_map(|item| match item {
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
                 if event.item.id() == completion.id =>
@@ -234,12 +235,12 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
     test.codex.flush_rollout().await?;
     let root_history = test
         .thread_store
-        .load_history(LoadThreadHistoryParams {
+        .load_canonical_artifact_segments(LoadThreadHistoryParams {
             thread_id: test.session_configured.thread_id,
             include_archived: false,
         })
         .await?;
-    let root_json = serde_json::to_string(&root_history.items)?;
+    let root_json = serde_json::to_string(&root_history.segments)?;
     for receipt in &receipts {
         assert!(
             !root_json.contains(&receipt.id),
@@ -248,8 +249,9 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
     }
     let root_child_completion = root_child_completion.expect("ordinary child completion");
     let root_presentations = root_history
-        .items
+        .segments
         .iter()
+        .flatten()
         .filter_map(|item| match item {
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
                 if event.item.id() == root_child_completion.id =>

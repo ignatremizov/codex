@@ -1,5 +1,6 @@
 //! Direct-call metadata coverage, including malformed calls and request-budget pruning.
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
@@ -129,11 +130,24 @@ async fn direct_call_metadata_during_compaction_respects_provider_support(
             .any(|item| item["role"] == "user" && &item["content"] == user_content)
     );
     match remote_compaction {
-        RemoteCompactionSupport::Unsupported => assert!(compacted.iter().any(|item| {
-            item["role"] == "user"
-                && item["content"][0]["text"]
-                    == format!("{}\n{summary}", codex_core::compact::SUMMARY_PREFIX)
-        })),
+        RemoteCompactionSupport::Unsupported => {
+            let prefix = codex_core::compact::SUMMARY_PREFIX;
+            let thread_id = test.session_configured.thread_id;
+            let rollout_path = test.codex.rollout_path().context("local rollout path")?;
+            let expected_summary = format!(
+                "{prefix}\n{summary}\n\n\
+                 [SESSION_METADATA]\n\
+                 session_id: {thread_id}\n\
+                 rollout_path: {}\n\
+                 user_turn_count: 1\n\
+                 recent_turns_in_prompt: 1\n\
+                 [/SESSION_METADATA]",
+                rollout_path.display(),
+            );
+            assert!(compacted.iter().any(|item| {
+                item["role"] == "user" && item["content"][0]["text"] == expected_summary
+            }));
+        }
         RemoteCompactionSupport::V2 => {
             assert!(compacted.iter().any(|item| {
                 item["type"] == "compaction" && item["encrypted_content"] == summary

@@ -17,6 +17,7 @@
             "unauthorized",
             "badRequest",
             "threadRollbackFailed",
+            "threadRollbackCommitUnknown",
             "sandboxError",
             "other"
           ],

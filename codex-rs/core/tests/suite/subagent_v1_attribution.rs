@@ -294,8 +294,11 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
     }
     let reply = wait_for_request_containing_text(&child_done, REPLY_CALL).await?;
     let parent_continuation = wait_for_request_containing_text(&parent_done, DISPATCH_CALL).await?;
-    let output = reply.function_call_output(REPLY_CALL).to_string();
-    assert!(output.contains("has no message route"), "{output}");
+    // Presentation observation creates a relationship but does not grant a turn-scoped reply.
+    assert_eq!(
+        reply.function_call_output_text(REPLY_CALL).as_deref(),
+        Some("collab tool failed: no reply route for this target turn"),
+    );
     let child_id = match child_id {
         Some(child_id) => child_id,
         None => {

@@ -762,7 +762,6 @@ async fn summarize_context_three_requests_and_instructions(
                     serde_json::to_value(&summary_item.item).expect("serialize compacted summary");
                 let summary_text = summary_item["content"][0]["text"]
                     .as_str()
-                    .map(normalize_summary_message)
                     .expect("compacted summary should contain text");
                 assert_eq!(
                     json!({

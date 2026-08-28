@@ -17,6 +17,7 @@ from .v2_all import CommandExecOutputDeltaNotification
 from .v2_all import CommandExecutionOutputDeltaNotification
 from .v2_all import ConfigWarningNotification
 from .v2_all import ContextCompactedNotification
+from .v2_all import ContextCompactionStatusNotification
 from .v2_all import DeprecationNoticeNotification
 from .v2_all import EnvironmentConnectionNotification
 from .v2_all import ErrorNotification
@@ -99,6 +100,7 @@ KnownNotificationPayload: TypeAlias = (
     | CommandExecutionOutputDeltaNotification
     | ConfigWarningNotification
     | ContextCompactedNotification
+    | ContextCompactionStatusNotification
     | DeprecationNoticeNotification
     | EnvironmentConnectionNotification
     | ErrorNotification
@@ -195,6 +197,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "item/commandExecution/outputDelta": CommandExecutionOutputDeltaNotification,
     "item/commandExecution/terminalInteraction": TerminalInteractionNotification,
     "item/completed": ItemCompletedNotification,
+    "item/contextCompaction/status": ContextCompactionStatusNotification,
     "item/fileChange/outputDelta": FileChangeOutputDeltaNotification,
     "item/fileChange/patchUpdated": FileChangePatchUpdatedNotification,
     "item/mcpToolCall/progress": McpToolCallProgressNotification,
@@ -261,6 +264,7 @@ DIRECT_TURN_ID_NOTIFICATION_TYPES: tuple[type[BaseModel], ...] = (
     AuthRecoveryNotification,
     CommandExecutionOutputDeltaNotification,
     ContextCompactedNotification,
+    ContextCompactionStatusNotification,
     ErrorNotification,
     FileChangeOutputDeltaNotification,
     FileChangePatchUpdatedNotification,

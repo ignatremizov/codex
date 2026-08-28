@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Stop and unload the owning root and its loaded spawn descendants.",
+  "properties": {
+    "threadId": {
+      "description": "Any thread in the owning spawn subtree, including the root.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadUnloadParams",
+  "type": "object"
+}

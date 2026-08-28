@@ -1084,6 +1084,7 @@ mod tests {
                 "item": {
                     "type": "agentMessage", "id": "question", "text": "already in the snapshot",
                     "phase": null, "memoryCitation": null, "delivery": null,
+                    "interAgentSource": null, "attribution": null, "input": null,
                     "questions": [{"title": "Which way?", "options": null}]
                 }
             }

@@ -177,12 +177,9 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         .into_iter()
         .map(|params| params["threadId"].clone())
         .collect::<Vec<_>>();
-    // This fixture has no reasoning effort, so selection resumes once to attach and
-    // once to refresh incomplete snapshot metadata. Neither may target a skipped agent.
-    assert_eq!(
-        resumed,
-        vec![serde_json::json!(idle), serde_json::json!(idle)]
-    );
+    // The attachment supplies complete session metadata; an unset reasoning effort
+    // is valid and must not trigger another resume. No skipped agent is resumed.
+    assert_eq!(resumed, vec![serde_json::json!(idle)]);
     assert_eq!(
         app.agent_navigation.tracked_thread_ids(),
         vec![root, closed, missing, unloaded, foreign, idle]
@@ -204,10 +201,7 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         .into_iter()
         .map(|params| params["threadId"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(
-        resumed,
-        vec![serde_json::json!(root), serde_json::json!(root)]
-    );
+    assert_eq!(resumed, vec![serde_json::json!(root)]);
     server.shutdown().await?;
     proxy.await??;
     Ok(())

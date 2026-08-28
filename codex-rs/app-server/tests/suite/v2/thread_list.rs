@@ -1568,12 +1568,14 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
     let codex_home = TempDir::new()?;
     create_minimal_config(codex_home.path())?;
 
+    // The minimal config keeps the default openai provider. Ordinary discovery must stay
+    // scoped to it even though subagent discovery below spans providers.
     let cli_id = create_fake_rollout(
         codex_home.path(),
         "2025-02-01T10-00-00",
         "2025-02-01T10:00:00Z",
         "CLI",
-        Some("mock_provider"),
+        Some("openai"),
         /*git_info*/ None,
     )?;
     create_fake_rollout(
@@ -1628,7 +1630,7 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
         &mut mcp,
         /*cursor*/ None,
         Some(10),
-        Some(vec!["mock_provider".to_string()]),
+        Some(vec!["openai".to_string()]),
         Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
         /*archived*/ None,
     )

@@ -320,18 +320,7 @@ async fn every_paginated_read_upgrades_visible_ancestor_transcripts() {
                     .history_base
                     .expect("source prefix");
             let child = ThreadId::new();
-            create_paginated_subagent_thread(
-                &fixture.store,
-                child,
-                Some(base),
-                /*subagent_history_start_ordinal*/ None,
-            )
-            .await;
-            fixture
-                .store
-                .persist_thread(child, PersistContext::Standard)
-                .await
-                .expect("persist child");
+            create_indexed_paginated_thread(&fixture.store, child, Some(base)).await;
             fixture
                 .store
                 .shutdown_thread(child)

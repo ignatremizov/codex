@@ -108,6 +108,65 @@ class AdditionalNetworkPermissions(BaseModel):
     enabled: bool | None = None
 
 
+class AgentAliasState(Enum):
+    active = "active"
+    closed = "closed"
+    transferred = "transferred"
+
+
+class ClosedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    target_thread_id: str
+    type: Annotated[Literal["closed"], Field(title="ClosedAgentControlOutcomeType")]
+
+
+class AgentFinalResponseHandling(Enum):
+    none = "none"
+    passive = "passive"
+    wake = "wake"
+    presentation = "presentation"
+
+
+class NoneAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["none"], Field(title="NoneAgentForkModeType")]
+
+
+class AllAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["all"], Field(title="AllAgentForkModeType")]
+
+
+class LastNTurnsAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turns: Annotated[int, Field(ge=0)]
+    type: Annotated[Literal["lastNTurns"], Field(title="LastNTurnsAgentForkModeType")]
+
+
+class AgentForkMode(RootModel[NoneAgentForkMode | AllAgentForkMode | LastNTurnsAgentForkMode]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        NoneAgentForkMode | AllAgentForkMode | LastNTurnsAgentForkMode,
+        Field(description="Parent conversation history copied into a user-spawned child."),
+    ]
+
+
+class AgentInputOutcome(Enum):
+    admitted = "admitted"
+    queued = "queued"
+    unknown = "unknown"
+
+
 class AgentMessageDelivery(RootModel[Literal["async"]]):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -152,11 +211,74 @@ class AgentMessageInputContent(
     root: InputTextAgentMessageInputContent | EncryptedContentAgentMessageInputContent
 
 
+class AgentObservationBinding(Enum):
+    active_turn = "activeTurn"
+    next_turn = "nextTurn"
+    undelivered_completion = "undeliveredCompletion"
+
+
+class AgentObservationMode(Enum):
+    passive = "passive"
+    wake = "wake"
+    presentation = "presentation"
+
+
 class AgentPath(RootModel[str]):
     model_config = ConfigDict(
         populate_by_name=True,
     )
     root: str
+
+
+class AgentReplyRouteMode(Enum):
+    enabled = "enabled"
+    disabled = "disabled"
+
+
+class AgentResponseFinalDelivery(Enum):
+    none = "none"
+    presentation_only = "presentation_only"
+    passive = "passive"
+    wake = "wake"
+
+
+class AgentResponseHandling(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    commentary: Annotated[
+        bool, Field(description="Deliver the first complete commentary item from the target turn.")
+    ]
+    final_response: Annotated[
+        AgentFinalResponseHandling,
+        Field(
+            alias="finalResponse",
+            description="Select how the target turn's final response reaches the source.",
+        ),
+    ]
+    queue_input: Annotated[
+        bool,
+        Field(
+            alias="queueInput",
+            description="Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+        ),
+    ]
+    target_messages: Annotated[
+        bool,
+        Field(
+            alias="targetMessages",
+            description="Let the target turn send attributed input back to the source.",
+        ),
+    ]
+
+
+class AgentTaskPathMapping(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    previous_task_path: Annotated[str | None, Field(alias="previousTaskPath")] = None
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
 
 
 class AllowDenyRequirement(Enum):
@@ -550,6 +672,7 @@ class CodexErrorInfoValue(Enum):
     unauthorized = "unauthorized"
     bad_request = "badRequest"
     thread_rollback_failed = "threadRollbackFailed"
+    thread_rollback_commit_unknown = "threadRollbackCommitUnknown"
     sandbox_error = "sandboxError"
     other = "other"
 
@@ -624,6 +747,52 @@ class CodexResponseHandoffMode(Enum):
     thinking = "thinking"
     commentary = "commentary"
     bem_tags = "bemTags"
+
+
+class CollabAgentInputStatusValue(Enum):
+    submitted = "submitted"
+    queued = "queued"
+    mailbox_accepted = "mailboxAccepted"
+
+
+class CollabAgentInputStatus(RootModel[CollabAgentInputStatusValue | Literal["error"]]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: CollabAgentInputStatusValue | Literal["error"]
+
+
+class CollabAgentRef(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_nickname: Annotated[
+        str | None,
+        Field(
+            alias="agentNickname", description="Optional nickname assigned to the receiving agent."
+        ),
+    ] = None
+    agent_ref: Annotated[
+        str | None,
+        Field(
+            alias="agentRef",
+            description="Trusted root-scoped numeric reference, when available from the agent alias.",
+        ),
+    ] = None
+    agent_role: Annotated[
+        str | None,
+        Field(alias="agentRole", description="Optional role assigned to the receiving agent."),
+    ] = None
+    task_path: Annotated[
+        str | None,
+        Field(
+            alias="taskPath",
+            description="Trusted task assignment path, when available from the agent alias.",
+        ),
+    ] = None
+    thread_id: Annotated[
+        str, Field(alias="threadId", description="Thread ID of the receiving agent.")
+    ]
 
 
 class CollabAgentStatus(Enum):
@@ -1141,6 +1310,20 @@ class ContextCompactedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    available_skills: Annotated[list[str] | None, Field(alias="availableSkills")] = []
+    decode_error: Annotated[str | None, Field(alias="decodeError")] = None
+    message: str | None = None
+    summary: str | None = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+
+
+class ContextCompactionStatusNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    item_id: Annotated[str, Field(alias="itemId")]
+    message: str
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
 
@@ -2161,6 +2344,14 @@ class InstalledApp(BaseModel):
     ] = None
 
 
+class InterAgentMessageSource(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    author: str
+    recipient: str
+
+
 class InternalChatMessageMetadataPassthrough(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -2365,6 +2556,37 @@ class LogoutAccountResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+
+
+class AllMailboxReadSelector(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["all"], Field(title="AllMailboxReadSelectorType")]
+
+
+class UserMailboxReadSelector(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["user"], Field(title="UserMailboxReadSelectorType")]
+
+
+class AgentMailboxReadSelector(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+    type: Annotated[Literal["agent"], Field(title="AgentMailboxReadSelectorType")]
+
+
+class MailboxReadSelector(
+    RootModel[AllMailboxReadSelector | UserMailboxReadSelector | AgentMailboxReadSelector]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: AllMailboxReadSelector | UserMailboxReadSelector | AgentMailboxReadSelector
 
 
 class ManagedHooksRequirements(BaseModel):
@@ -4268,6 +4490,14 @@ class SendAddCreditsNudgeEmailResponse(BaseModel):
     status: AddCreditsNudgeEmailStatus
 
 
+class ServerAuthProfile(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    display_label: Annotated[str, Field(alias="displayLabel")]
+    profile_opaque_id: Annotated[str, Field(alias="profileOpaqueId")]
+
+
 class ServerDiagnosticsGauge(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -4336,6 +4566,24 @@ class ThreadEnvironmentDisconnectedServerNotification(BaseModel):
         Field(title="Thread/environment/disconnectedNotificationMethod"),
     ]
     params: EnvironmentConnectionNotification
+
+
+class ItemContextCompactionStatusServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/contextCompaction/status"],
+        Field(title="Item/contextCompaction/statusNotificationMethod"),
+    ]
+    params: ContextCompactionStatusNotification
 
 
 class ItemAgentMessageDeltaServerNotification(BaseModel):
@@ -4751,6 +4999,20 @@ class FuzzyFileSearchSessionCompletedServerNotification(BaseModel):
     params: FuzzyFileSearchSessionCompletedNotification
 
 
+class ServerReadParams(BaseModel):
+    pass
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+
+
+class ServerReadResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    auth_profile: Annotated[ServerAuthProfile, Field(alias="authProfile")]
+
+
 class ServerRequestResolvedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -4913,6 +5175,12 @@ class SkillsListParams(BaseModel):
     ] = None
 
 
+class SleepOutcome(Enum):
+    completed = "completed"
+    interrupted = "interrupted"
+    error = "error"
+
+
 class SortDirection(Enum):
     asc = "asc"
     desc = "desc"
@@ -4971,15 +5239,17 @@ class SubagentMigration(BaseModel):
     name: str
 
 
-class TerminalInteractionNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    item_id: Annotated[str, Field(alias="itemId")]
-    process_id: Annotated[str, Field(alias="processId")]
-    stdin: str
-    thread_id: Annotated[str, Field(alias="threadId")]
-    turn_id: Annotated[str, Field(alias="turnId")]
+class TerminalWaitCompletionReason(Enum):
+    exited = "exited"
+    timeout = "timeout"
+    input = "input"
+    cancelled = "cancelled"
+    failed = "failed"
+
+
+class TerminalWaitMode(Enum):
+    timed = "timed"
+    until_exit = "untilExit"
 
 
 class TextElement(BaseModel):
@@ -5359,6 +5629,17 @@ class DynamicToolCallThreadItem(BaseModel):
     type: Annotated[Literal["dynamicToolCall"], Field(title="DynamicToolCallThreadItemType")]
 
 
+class MailboxReadThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    consumed_count: Annotated[int, Field(alias="consumedCount", ge=0)]
+    id: str
+    rejected_count: Annotated[int, Field(alias="rejectedCount", ge=0)]
+    selector: MailboxReadSelector
+    type: Annotated[Literal["mailboxRead"], Field(title="MailboxReadThreadItemType")]
+
+
 class SubAgentActivityThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5367,6 +5648,7 @@ class SubAgentActivityThreadItem(BaseModel):
     agent_thread_id: Annotated[str, Field(alias="agentThreadId")]
     id: str
     kind: SubAgentActivityKind
+    prompt: str | None = None
     type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]
 
 
@@ -5384,7 +5666,9 @@ class SleepThreadItem(BaseModel):
         populate_by_name=True,
     )
     duration_ms: Annotated[int, Field(alias="durationMs", ge=0)]
+    elapsed_ms: Annotated[int | None, Field(alias="elapsedMs", ge=0)] = None
     id: str
+    outcome: SleepOutcome | None = None
     type: Annotated[Literal["sleep"], Field(title="SleepThreadItemType")]
 
 
@@ -5424,7 +5708,17 @@ class ContextCompactionThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    available_skills: Annotated[
+        list[str] | None,
+        Field(
+            alias="availableSkills",
+            description="Skill names in the model-visible inventory installed after this compaction.",
+        ),
+    ] = []
+    decode_error: Annotated[str | None, Field(alias="decodeError")] = None
     id: str
+    message: str | None = None
+    summary: str | None = None
     type: Annotated[Literal["contextCompaction"], Field(title="ContextCompactionThreadItemType")]
 
 
@@ -5489,6 +5783,63 @@ class ThreadLoadedListResponse(BaseModel):
             description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
         ),
     ] = None
+
+
+class ThreadMailboxMessageState(Enum):
+    pending = "pending"
+    claimed = "claimed"
+    consumed = "consumed"
+    rejected = "rejected"
+
+
+class UserThreadMailboxPendingSender(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    count: Annotated[int, Field(ge=0)]
+    type: Annotated[Literal["user"], Field(title="UserThreadMailboxPendingSenderType")]
+
+
+class AgentThreadMailboxPendingSender(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    count: Annotated[int, Field(ge=0)]
+    thread_id: Annotated[str, Field(alias="threadId")]
+    type: Annotated[Literal["agent"], Field(title="AgentThreadMailboxPendingSenderType")]
+
+
+class ThreadMailboxPendingSender(
+    RootModel[UserThreadMailboxPendingSender | AgentThreadMailboxPendingSender]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        UserThreadMailboxPendingSender | AgentThreadMailboxPendingSender,
+        Field(description="Pending counts grouped by the canonical mailbox sender identity."),
+    ]
+
+
+class ThreadMcpServerActivateOutcome(Enum):
+    activated = "activated"
+    already_activated = "alreadyActivated"
+    already_implicitly_available = "alreadyImplicitlyAvailable"
+
+
+class ThreadMcpServerActivateParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    server_name: Annotated[str, Field(alias="serverName")]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadMcpServerActivateResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    outcome: ThreadMcpServerActivateOutcome
 
 
 class ThreadMemoryMode(Enum):
@@ -5866,6 +6217,36 @@ class ThreadRevertedNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadRollbackParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    expected_start_turn_id: Annotated[
+        str | None,
+        Field(
+            alias="expectedStartTurnId",
+            description="Optional first turn expected in the selected rollback suffix.",
+        ),
+    ] = None
+    expected_turn_count: Annotated[
+        int | None,
+        Field(
+            alias="expectedTurnCount",
+            description="Optional materialized turn count observed when the rollback target was selected.",
+            ge=0,
+        ),
+    ] = None
+    num_turns: Annotated[
+        int,
+        Field(
+            alias="numTurns",
+            description="The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
+            ge=0,
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ThreadSearchSortKey(Enum):
     created_at = "created_at"
     updated_at = "updated_at"
@@ -5986,24 +6367,10 @@ class ThreadSetNameResponse(BaseModel):
     )
 
 
-class ThreadShellCommandParams(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    command: Annotated[
-        str,
-        Field(
-            description="Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy."
-        ),
-    ]
-    thread_id: Annotated[str, Field(alias="threadId")]
-    timeout_ms: Annotated[
-        int | None,
-        Field(
-            alias="timeoutMs",
-            description="Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
-        ),
-    ] = None
+class ThreadShellCommandFinalDelivery(Enum):
+    passive = "passive"
+    wake = "wake"
+    presentation_only = "presentationOnly"
 
 
 class ThreadShellCommandResponse(BaseModel):
@@ -6011,6 +6378,26 @@ class ThreadShellCommandResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+
+
+class ThreadShellCommandResponseHandling(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    final_delivery: Annotated[
+        ThreadShellCommandFinalDelivery,
+        Field(
+            alias="finalDelivery",
+            description="Whether the completed result is delivered passively, wakes the thread, or stays presentation-only.",
+        ),
+    ]
+    queue_command: Annotated[
+        bool,
+        Field(
+            alias="queueCommand",
+            description="Whether execution waits for every earlier user-shell submission in this thread.",
+        ),
+    ]
 
 
 class ThreadSortKey(Enum):
@@ -6123,6 +6510,27 @@ class ThreadUnarchivedNotification(BaseModel):
         populate_by_name=True,
     )
     thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadUnloadParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[
+        str,
+        Field(
+            alias="threadId",
+            description="Any thread in the owning spawn subtree, including the root.",
+        ),
+    ]
+
+
+class ThreadUnloadResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root_thread_id: Annotated[str, Field(alias="rootThreadId")]
+    unloaded_thread_ids: Annotated[list[str], Field(alias="unloadedThreadIds")]
 
 
 class ThreadUnsubscribeParams(BaseModel):
@@ -6257,6 +6665,51 @@ class TurnSteerResponse(BaseModel):
         populate_by_name=True,
     )
     turn_id: Annotated[str, Field(alias="turnId")]
+
+
+class UserAgentControlAction(Enum):
+    spawn = "spawn"
+    prompt = "prompt"
+    queued_prompt = "queued_prompt"
+    resume = "resume"
+    interrupt = "interrupt"
+    close = "close"
+    observe = "observe"
+    reply_route = "reply_route"
+    subtree_messaging = "subtree_messaging"
+
+
+class UserAgentControlStatus(Enum):
+    succeeded = "succeeded"
+    unknown = "unknown"
+    failed = "failed"
+
+
+class UserAgentForkModeValue(Enum):
+    none = "none"
+    all = "all"
+
+
+class LastNTurns(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turns: Annotated[int, Field(ge=0)]
+
+
+class LastNTurnsUserAgentForkMode(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    last_n_turns: LastNTurns
+
+
+class UserAgentForkMode(RootModel[UserAgentForkModeValue | LastNTurnsUserAgentForkMode]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: UserAgentForkModeValue | LastNTurnsUserAgentForkMode
 
 
 class TextUserInput(BaseModel):
@@ -6581,6 +7034,423 @@ class AdditionalContextEntry(BaseModel):
     value: str
 
 
+class AgentAlias(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    nickname: str | None = None
+    ref: str
+    state: AgentAliasState
+    task_path: Annotated[
+        str | None,
+        Field(
+            alias="taskPath",
+            description="Current root-scoped assignment label, independent of lifecycle ancestry.",
+        ),
+    ] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class SpawnAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    fork_mode: AgentForkMode
+    input: Annotated[
+        list[UserInput] | None,
+        Field(description="Omitted creates a real idle child without starting its first turn."),
+    ] = None
+    model: Annotated[
+        str | None,
+        Field(
+            description="Explicit model override. Takes precedence over role and configured defaults."
+        ),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            description="Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
+        ),
+    ] = None
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted uses passive final-response delivery."),
+    ] = None
+    role: Annotated[
+        str | None, Field(description="Omitted selects the default child configuration.")
+    ] = None
+    task: Annotated[
+        str | None,
+        Field(
+            description="Optional assignment label, resolved within the issuing agent's root namespace."
+        ),
+    ] = None
+    type: Annotated[Literal["spawn"], Field(title="SpawnAgentControlActionType")]
+
+
+class PromptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput]
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted uses passive final-response delivery."),
+    ] = None
+    target: Annotated[
+        str, Field(description="Root-scoped ref or nickname, or a canonical thread UUID.")
+    ]
+    type: Annotated[Literal["prompt"], Field(title="PromptAgentControlActionType")]
+
+
+class ReservedPromptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput]
+    target: Annotated[str, Field(description="Canonical target thread UUID.")]
+    type: Annotated[Literal["reservedPrompt"], Field(title="ReservedPromptAgentControlActionType")]
+
+
+class QueuedPromptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput]
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted uses passive final-response delivery."),
+    ] = None
+    target: Annotated[
+        str, Field(description="Root-scoped ref or nickname, or a canonical thread UUID.")
+    ]
+    type: Annotated[Literal["queuedPrompt"], Field(title="QueuedPromptAgentControlActionType")]
+
+
+class ResumeAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Omitted reserves passive delivery for the next admitted target turn."),
+    ] = None
+    target: Annotated[
+        str,
+        Field(
+            description="Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption."
+        ),
+    ]
+    task: Annotated[
+        str | None,
+        Field(
+            description="New assignment for cross-root adoption only; same-root resume cannot rename a task."
+        ),
+    ] = None
+    type: Annotated[Literal["resume"], Field(title="ResumeAgentControlActionType")]
+
+
+class InterruptAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input: list[UserInput] | None = None
+    response_handling: Annotated[
+        AgentResponseHandling | None, Field(description="Valid only when `input` is present.")
+    ] = None
+    target: str
+    type: Annotated[Literal["interrupt"], Field(title="InterruptAgentControlActionType")]
+
+
+class CloseAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(description="Controls replay of an undelivered completion after close."),
+    ] = None
+    target: str
+    type: Annotated[Literal["close"], Field(title="CloseAgentControlActionType")]
+
+
+class ObserveAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    authored_observer_selector: Annotated[
+        str | None,
+        Field(
+            description="Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint."
+        ),
+    ] = None
+    observer: Annotated[
+        str | None,
+        Field(description="Existing subscription owner. Omitted means the issuing source thread."),
+    ] = None
+    response_handling: AgentObservationMode
+    target: str
+    type: Annotated[Literal["observe"], Field(title="ObserveAgentControlActionType")]
+
+
+class ReplyRouteAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    recipient: Annotated[
+        str | None, Field(description="Omitted means the source thread issuing the user command.")
+    ] = None
+    target: str
+    type: Annotated[Literal["replyRoute"], Field(title="ReplyRouteAgentControlActionType")]
+
+
+class SubtreeMessagingAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    type: Annotated[
+        Literal["subtreeMessaging"], Field(title="SubtreeMessagingAgentControlActionType")
+    ]
+
+
+class AgentControlAction(
+    RootModel[
+        SpawnAgentControlAction
+        | PromptAgentControlAction
+        | ReservedPromptAgentControlAction
+        | QueuedPromptAgentControlAction
+        | ResumeAgentControlAction
+        | InterruptAgentControlAction
+        | CloseAgentControlAction
+        | ObserveAgentControlAction
+        | ReplyRouteAgentControlAction
+        | SubtreeMessagingAgentControlAction
+    ]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        SpawnAgentControlAction
+        | PromptAgentControlAction
+        | ReservedPromptAgentControlAction
+        | QueuedPromptAgentControlAction
+        | ResumeAgentControlAction
+        | InterruptAgentControlAction
+        | CloseAgentControlAction
+        | ObserveAgentControlAction
+        | ReplyRouteAgentControlAction
+        | SubtreeMessagingAgentControlAction,
+        Field(description="A user-authored multi-agent control operation."),
+    ]
+
+
+class SpawnedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome | None = None
+    nickname: str | None = None
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after child input admission or uncertain routing."
+        ),
+    ] = None
+    ref: str | None = None
+    target_thread_id: str
+    task_path: str | None = None
+    type: Annotated[Literal["spawned"], Field(title="SpawnedAgentControlOutcomeType")]
+
+
+class PromptedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after target input admission or uncertain routing."
+        ),
+    ] = None
+    submission_id: str
+    target_thread_id: str
+    type: Annotated[Literal["prompted"], Field(title="PromptedAgentControlOutcomeType")]
+
+
+class ReservedPromptedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after target input admission, including an indeterminate target turn after enqueue."
+        ),
+    ] = None
+    submission_id: str
+    target_thread_id: str
+    turn_id: Annotated[
+        str | None,
+        Field(
+            description="The admitted target turn when routing can prove it; null means the input outcome is indeterminate after enqueue and must not be retried automatically."
+        ),
+    ] = None
+    type: Annotated[
+        Literal["reservedPrompted"], Field(title="ReservedPromptedAgentControlOutcomeType")
+    ]
+
+
+class ResumedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    nickname: str | None = None
+    observation_binding: AgentObservationBinding | None = None
+    post_commit_warning: Annotated[
+        str | None,
+        Field(
+            description="Degradation that occurred after an exclusive ownership transfer committed."
+        ),
+    ] = None
+    ref: str | None = None
+    target_thread_id: str
+    task_path: str | None = None
+    task_path_mapping: list[AgentTaskPathMapping] | None = []
+    type: Annotated[Literal["resumed"], Field(title="ResumedAgentControlOutcomeType")]
+
+
+class InterruptedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    input_outcome: AgentInputOutcome | None = None
+    post_admission_warning: Annotated[
+        str | None,
+        Field(
+            description="Non-retryable degradation after follow-up input admission or uncertain routing."
+        ),
+    ] = None
+    submission_id: str | None = None
+    target_thread_id: str
+    type: Annotated[Literal["interrupted"], Field(title="InterruptedAgentControlOutcomeType")]
+
+
+class ObservedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    binding: AgentObservationBinding
+    observer_thread_id: str
+    previous_response_handling: AgentFinalResponseHandling
+    response_handling: AgentFinalResponseHandling
+    target_thread_id: str
+    type: Annotated[Literal["observed"], Field(title="ObservedAgentControlOutcomeType")]
+
+
+class ReplyRouteChangedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    previous_mode: AgentReplyRouteMode | None = None
+    recipient_thread_id: str
+    target_thread_id: str
+    type: Annotated[
+        Literal["replyRouteChanged"], Field(title="ReplyRouteChangedAgentControlOutcomeType")
+    ]
+
+
+class SubtreeMessagingChangedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    previous_mode: AgentReplyRouteMode | None = None
+    root_thread_id: str
+    type: Annotated[
+        Literal["subtreeMessagingChanged"],
+        Field(title="SubtreeMessagingChangedAgentControlOutcomeType"),
+    ]
+
+
+class AgentControlOutcome(
+    RootModel[
+        SpawnedAgentControlOutcome
+        | PromptedAgentControlOutcome
+        | ReservedPromptedAgentControlOutcome
+        | ResumedAgentControlOutcome
+        | InterruptedAgentControlOutcome
+        | ClosedAgentControlOutcome
+        | ObservedAgentControlOutcome
+        | ReplyRouteChangedAgentControlOutcome
+        | SubtreeMessagingChangedAgentControlOutcome
+    ]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        SpawnedAgentControlOutcome
+        | PromptedAgentControlOutcome
+        | ReservedPromptedAgentControlOutcome
+        | ResumedAgentControlOutcome
+        | InterruptedAgentControlOutcome
+        | ClosedAgentControlOutcome
+        | ObservedAgentControlOutcome
+        | ReplyRouteChangedAgentControlOutcome
+        | SubtreeMessagingChangedAgentControlOutcome,
+        Field(
+            description="Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue."
+        ),
+    ]
+
+
+class AgentInputIdentity(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_ref: Annotated[str | None, Field(alias="agentRef")] = None
+    model: str | None = None
+    nickname: str | None = None
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
+    role: str | None = None
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class AgentQueueEntry(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    authored_selector: Annotated[str | None, Field(alias="authoredSelector")] = None
+    id: str
+    input: list[UserInput]
+    prompt_preview: Annotated[str, Field(alias="promptPreview")]
+    response_handling: Annotated[AgentResponseHandling, Field(alias="responseHandling")]
+    source_thread_id: Annotated[str, Field(alias="sourceThreadId")]
+    target_thread_id: Annotated[str, Field(alias="targetThreadId")]
+
+
+class AgentQueueTurnMetadata(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    queue_id: Annotated[str, Field(alias="queueId")]
+    response_handling: Annotated[
+        AgentResponseHandling | None,
+        Field(
+            alias="responseHandling",
+            description="Committed queue-entry policy, including queued source delivery; `null` when source-side persistence degraded after admission.",
+        ),
+    ] = None
+    source_thread_id: Annotated[str, Field(alias="sourceThreadId")]
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6746,6 +7616,15 @@ class ThreadUnsubscribeRequest(BaseModel):
     params: ThreadUnsubscribeParams
 
 
+class ThreadUnloadRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/unload"], Field(title="Thread/unloadRequestMethod")]
+    params: ThreadUnloadParams
+
+
 class ThreadNameSetRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6753,6 +7632,17 @@ class ThreadNameSetRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/name/set"], Field(title="Thread/name/setRequestMethod")]
     params: ThreadSetNameParams
+
+
+class ThreadMcpServerActivateRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/mcpServer/activate"], Field(title="Thread/mcpServer/activateRequestMethod")
+    ]
+    params: ThreadMcpServerActivateParams
 
 
 class ThreadGoalGetRequest(BaseModel):
@@ -6848,17 +7738,6 @@ class ThreadCompactStartRequest(BaseModel):
     params: ThreadCompactStartParams
 
 
-class ThreadShellCommandRequest(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    id: RequestId
-    method: Annotated[
-        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
-    ]
-    params: ThreadShellCommandParams
-
-
 class ThreadApproveGuardianDeniedActionRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6869,6 +7748,15 @@ class ThreadApproveGuardianDeniedActionRequest(BaseModel):
         Field(title="Thread/approveGuardianDeniedActionRequestMethod"),
     ]
     params: ThreadApproveGuardianDeniedActionParams
+
+
+class ThreadRollbackRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/rollback"], Field(title="Thread/rollbackRequestMethod")]
+    params: ThreadRollbackParams
 
 
 class ThreadRevertRequest(BaseModel):
@@ -7466,6 +8354,15 @@ class CommandExecTerminateRequest(BaseModel):
     params: CommandExecTerminateParams
 
 
+class ServerReadRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["server/read"], Field(title="Server/readRequestMethod")]
+    params: ServerReadParams
+
+
 class ConfigReadRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7567,6 +8464,28 @@ class CodexErrorInfo(
         | ActiveTurnNotSteerableCodexErrorInfo,
         Field(
             description="This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant."
+        ),
+    ]
+
+
+class CollabAgentInputResult(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    error: str | None = None
+    hint: str | None = None
+    receiver_thread_id: Annotated[
+        str | None,
+        Field(
+            alias="receiverThreadId",
+            description="Joins the parent item's receiver metadata; absent for unresolved selectors.",
+        ),
+    ] = None
+    status: CollabAgentInputStatus
+    target: Annotated[
+        str,
+        Field(
+            description="Canonical ref when available, otherwise UUID or the unresolved authored selector."
         ),
     ]
 
@@ -8412,6 +9331,7 @@ class McpServerStatus(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    allow_implicit_invocation: Annotated[bool | None, Field(alias="allowImplicitInvocation")] = True
     auth_status: Annotated[McpAuthStatus, Field(alias="authStatus")]
     name: str
     plugin_id: Annotated[str | None, Field(alias="pluginId")] = None
@@ -9150,24 +10070,6 @@ class ProcessOutputDeltaServerNotification(BaseModel):
     params: ProcessOutputDeltaNotification
 
 
-class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    emitted_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="emittedAtMs",
-            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
-        ),
-    ] = None
-    method: Annotated[
-        Literal["item/commandExecution/terminalInteraction"],
-        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
-    ]
-    params: TerminalInteractionNotification
-
-
 class ServerRequestResolvedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9518,6 +10420,58 @@ class SubAgentSource(
     root: SubAgentSourceValue | ThreadSpawnSubAgentSource | OtherSubAgentSource
 
 
+class TerminalWait1(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    interaction_id: Annotated[
+        str,
+        Field(
+            alias="interactionId",
+            description="The `write_stdin` function-call ID, distinct from the command item ID.",
+        ),
+    ]
+    mode: Annotated[
+        TerminalWaitMode,
+        Field(description="Whether this wait has a deadline or continues until process exit."),
+    ]
+    phase: Literal["started"]
+    started_at_ms: Annotated[
+        int,
+        Field(
+            alias="startedAtMs", description="Unix timestamp in milliseconds when the wait began."
+        ),
+    ]
+
+
+class TerminalWait2(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    elapsed_ms: Annotated[
+        int, Field(alias="elapsedMs", description="Actual elapsed wait time in milliseconds.", ge=0)
+    ]
+    interaction_id: Annotated[
+        str,
+        Field(
+            alias="interactionId",
+            description="The `write_stdin` function-call ID matching the start event.",
+        ),
+    ]
+    phase: Literal["finished"]
+    reason: Annotated[TerminalWaitCompletionReason, Field(description="Why the wait finished.")]
+
+
+class TerminalWait(RootModel[TerminalWait1 | TerminalWait2]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        TerminalWait1 | TerminalWait2,
+        Field(description="Start or completion metadata for one `write_stdin` wait."),
+    ]
+
+
 class ThreadForkParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9622,19 +10576,6 @@ class UserMessageThreadItem(BaseModel):
     type: Annotated[Literal["userMessage"], Field(title="UserMessageThreadItemType")]
 
 
-class AgentMessageThreadItem(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    delivery: AgentMessageDelivery | None = None
-    id: str
-    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
-    phase: MessagePhase | None = None
-    questions: list[AsyncUserInputQuestion] | None = None
-    text: str
-    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
-
-
 class CommandExecutionThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9689,6 +10630,13 @@ class CommandExecutionThreadItem(BaseModel):
     source: CommandExecutionSource | None = "agent"
     status: CommandExecutionStatus
     type: Annotated[Literal["commandExecution"], Field(title="CommandExecutionThreadItemType")]
+    user_shell_response_handling: Annotated[
+        ThreadShellCommandResponseHandling | None,
+        Field(
+            alias="userShellResponseHandling",
+            description="Completion delivery policy for a user-authored shell command. `None` for model-authored and unified-exec commands.",
+        ),
+    ] = None
 
 
 class FileChangeThreadItem(BaseModel):
@@ -9701,52 +10649,44 @@ class FileChangeThreadItem(BaseModel):
     type: Annotated[Literal["fileChange"], Field(title="FileChangeThreadItemType")]
 
 
-class CollabAgentToolCallThreadItem(BaseModel):
+class UserAgentControlThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    agents_states: Annotated[
-        dict[str, CollabAgentState],
-        Field(
-            alias="agentsStates",
-            description="Last known status of the target agents, when available.",
-        ),
-    ]
-    id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
-    model: Annotated[
-        str | None, Field(description="Model requested for the spawned agent, when applicable.")
-    ] = None
-    prompt: Annotated[
-        str | None,
-        Field(description="Prompt text sent as part of the collab tool call, when available."),
-    ] = None
-    reasoning_effort: Annotated[
-        ReasoningEffort | None,
-        Field(
-            alias="reasoningEffort",
-            description="Reasoning effort requested for the spawned agent, when applicable.",
-        ),
-    ] = None
-    receiver_thread_ids: Annotated[
-        list[str],
-        Field(
-            alias="receiverThreadIds",
-            description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
-        ),
-    ]
-    sender_thread_id: Annotated[
-        str,
-        Field(
-            alias="senderThreadId", description="Thread ID of the agent issuing the collab request."
-        ),
-    ]
-    status: Annotated[
-        CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
-    ]
-    tool: Annotated[CollabAgentTool, Field(description="Name of the collab tool that was invoked.")]
-    type: Annotated[
-        Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
-    ]
+    action: UserAgentControlAction
+    authored_observer_selector: Annotated[str | None, Field(alias="authoredObserverSelector")] = (
+        None
+    )
+    authored_selector: Annotated[str | None, Field(alias="authoredSelector")] = None
+    error: str | None = None
+    final_response: Annotated[AgentResponseFinalDelivery | None, Field(alias="finalResponse")] = (
+        None
+    )
+    fork_mode: Annotated[UserAgentForkMode | None, Field(alias="forkMode")] = None
+    id: str
+    input_outcome: Annotated[AgentInputOutcome | None, Field(alias="inputOutcome")] = None
+    model: str | None = None
+    new_owner_session_id: Annotated[str | None, Field(alias="newOwnerSessionId")] = None
+    nickname: str | None = None
+    observe_commentary: Annotated[bool | None, Field(alias="observeCommentary")] = None
+    observer_thread_id: Annotated[str | None, Field(alias="observerThreadId")] = None
+    previous_owner_session_id: Annotated[str | None, Field(alias="previousOwnerSessionId")] = None
+    prompt_preview: Annotated[str | None, Field(alias="promptPreview")] = None
+    queue_input: Annotated[bool | None, Field(alias="queueInput")] = None
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
+    ref: str | None = None
+    reply_recipient_thread_id: Annotated[str | None, Field(alias="replyRecipientThreadId")] = None
+    resumed_target: Annotated[bool, Field(alias="resumedTarget")]
+    role: str | None = None
+    status: UserAgentControlStatus
+    target_messages: Annotated[bool | None, Field(alias="targetMessages")] = None
+    target_thread_id: Annotated[str | None, Field(alias="targetThreadId")] = None
+    task: str | None = None
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
+    task_path_mapping: Annotated[
+        list[AgentTaskPathMapping] | None, Field(alias="taskPathMapping")
+    ] = []
+    type: Annotated[Literal["userAgentControl"], Field(title="UserAgentControlThreadItemType")]
 
 
 class WebSearchThreadItem(BaseModel):
@@ -10011,6 +10951,33 @@ class ThreadSettingsUpdatedNotification(BaseModel):
     thread_settings: Annotated[ThreadSettings, Field(alias="threadSettings")]
 
 
+class ThreadShellCommandParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    command: Annotated[
+        str,
+        Field(
+            description="Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy."
+        ),
+    ]
+    response_handling: Annotated[
+        ThreadShellCommandResponseHandling | None,
+        Field(
+            alias="responseHandling",
+            description="Optional completion delivery policy. Omission preserves passive model delivery.",
+        ),
+    ] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+    timeout_ms: Annotated[
+        int | None,
+        Field(
+            alias="timeoutMs",
+            description="Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
+        ),
+    ] = None
+
+
 class ThreadStartParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10216,6 +11183,22 @@ class AccountRateLimitsUpdatedNotification(BaseModel):
     rate_limits: Annotated[RateLimitSnapshot, Field(alias="rateLimits")]
 
 
+class AgentInputAttribution(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    batch_id: Annotated[
+        str | None,
+        Field(
+            alias="batchId",
+            description="Shared sender tool-call identity for an array-target `send_input` batch.",
+        ),
+    ] = None
+    recipient: AgentInputIdentity
+    sender: AgentInputIdentity
+    sender_turn_id: Annotated[str, Field(alias="senderTurnId")]
+
+
 class AppInfo(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10289,6 +11272,17 @@ class ThreadGoalSetRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/goal/set"], Field(title="Thread/goal/setRequestMethod")]
     params: ThreadGoalSetParams
+
+
+class ThreadShellCommandRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
+    ]
+    params: ThreadShellCommandParams
 
 
 class ThreadListRequest(BaseModel):
@@ -10388,6 +11382,31 @@ class ConfigValueWriteRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["config/value/write"], Field(title="Config/value/writeRequestMethod")]
     params: ConfigValueWriteParams
+
+
+class CollabAgentInputBatch(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    flags: Annotated[
+        str,
+        Field(
+            description="Shared, normalized handling flags. Empty means default passive handling."
+        ),
+    ]
+    results: Annotated[
+        list[CollabAgentInputResult],
+        Field(
+            description="Empty while the batch is in progress; populated only on normal completion."
+        ),
+    ]
+    sender_thread_id: Annotated[
+        ThreadId | None,
+        Field(
+            alias="senderThreadId",
+            description="Sender identity for a child-originated live/replayed batch presentation.",
+        ),
+    ] = None
 
 
 class ComputerUseConfig(BaseModel):
@@ -11130,6 +12149,43 @@ class SessionSource(RootModel[SessionSourceValue | CustomSessionSource | SubAgen
     root: SessionSourceValue | CustomSessionSource | SubAgentSessionSource
 
 
+class TerminalInteractionNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    deadline_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="deadlineAtMs",
+            description="Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.",
+        ),
+    ] = None
+    item_id: Annotated[str, Field(alias="itemId")]
+    process_id: Annotated[str, Field(alias="processId")]
+    stdin: str
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+    wait: TerminalWait | None = None
+
+
+class AgentMessageThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    attribution: AgentInputAttribution | None = None
+    delivery: AgentMessageDelivery | None = None
+    id: str
+    input: list[UserInput] | None = None
+    inter_agent_source: Annotated[
+        InterAgentMessageSource | None, Field(alias="interAgentSource")
+    ] = None
+    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
+    phase: MessagePhase | None = None
+    questions: list[AsyncUserInputQuestion] | None = None
+    text: str
+    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
+
+
 class FunctionCallOutputThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11139,6 +12195,103 @@ class FunctionCallOutputThreadItem(BaseModel):
     namespace: str | None = None
     output: FunctionCallOutputBody
     type: Annotated[Literal["functionCallOutput"], Field(title="FunctionCallOutputThreadItemType")]
+
+
+class CollabAgentToolCallThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agents_states: Annotated[
+        dict[str, CollabAgentState],
+        Field(
+            alias="agentsStates",
+            description="Last known status of the target agents, when available.",
+        ),
+    ]
+    id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
+    input_batch: Annotated[
+        CollabAgentInputBatch | None,
+        Field(
+            alias="inputBatch",
+            description="Per-recipient admission outcomes for array-target sends; errors may follow admission.",
+        ),
+    ] = None
+    mailbox_input: Annotated[
+        bool | None,
+        Field(
+            alias="mailboxInput",
+            description="Whether this V1 send explicitly requested mailbox delivery (`send_input` with `w:z`). This is presentation metadata, not evidence of receiver execution or visibility.",
+        ),
+    ] = None
+    model: Annotated[
+        str | None, Field(description="Model requested for the spawned agent, when applicable.")
+    ] = None
+    observe_commentary: Annotated[
+        bool | None,
+        Field(
+            alias="observeCommentary",
+            description="Whether commentary from the receiver is requested.",
+        ),
+    ] = None
+    prompt: Annotated[
+        str | None,
+        Field(description="Prompt text sent as part of the collab tool call, when available."),
+    ] = None
+    queue_input: Annotated[
+        bool | None,
+        Field(
+            alias="queueInput",
+            description="Whether this V1 send was queued as a distinct future target turn.",
+        ),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Reasoning effort requested for the spawned agent, when applicable.",
+        ),
+    ] = None
+    receiver_agents: Annotated[
+        list[CollabAgentRef] | None,
+        Field(
+            alias="receiverAgents",
+            description="Receiver metadata, when available. Absent in older history and populated for new collab tool calls.",
+        ),
+    ] = []
+    receiver_thread_ids: Annotated[
+        list[str],
+        Field(
+            alias="receiverThreadIds",
+            description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
+        ),
+    ]
+    sender_thread_id: Annotated[
+        str,
+        Field(
+            alias="senderThreadId", description="Thread ID of the agent issuing the collab request."
+        ),
+    ]
+    status: Annotated[
+        CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
+    ]
+    target_messages: Annotated[
+        bool | None,
+        Field(
+            alias="targetMessages",
+            description="Whether this V1 lifecycle call granted the target an exact-turn reply route.",
+        ),
+    ] = None
+    tool: Annotated[CollabAgentTool, Field(description="Name of the collab tool that was invoked.")]
+    type: Annotated[
+        Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
+    ]
+    wake_on_completion: Annotated[
+        bool | None,
+        Field(
+            alias="wakeOnCompletion",
+            description="Whether the receiver's terminal response should wake the sender.",
+        ),
+    ] = None
 
 
 class ThreadItem(
@@ -11153,8 +12306,10 @@ class ThreadItem(
         | FileChangeThreadItem
         | McpToolCallThreadItem
         | DynamicToolCallThreadItem
+        | MailboxReadThreadItem
         | CollabAgentToolCallThreadItem
         | SubAgentActivityThreadItem
+        | UserAgentControlThreadItem
         | WebSearchThreadItem
         | ImageViewThreadItem
         | SleepThreadItem
@@ -11178,8 +12333,10 @@ class ThreadItem(
         | FileChangeThreadItem
         | McpToolCallThreadItem
         | DynamicToolCallThreadItem
+        | MailboxReadThreadItem
         | CollabAgentToolCallThreadItem
         | SubAgentActivityThreadItem
+        | UserAgentControlThreadItem
         | WebSearchThreadItem
         | ImageViewThreadItem
         | SleepThreadItem
@@ -11322,6 +12479,13 @@ class TurnStartedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    agent_queue: Annotated[
+        AgentQueueTurnMetadata | None,
+        Field(
+            alias="agentQueue",
+            description="Present when this exact turn was admitted from the shared agent queue.",
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn: Turn
 
@@ -11548,6 +12712,13 @@ class ItemStartedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    deadline_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="deadlineAtMs",
+            description="Advisory Unix-millisecond estimate for the current wait, or null when unavailable. This is not a process deadline and must not be restored as live state during replay.",
+        ),
+    ] = None
     item: ThreadItem
     started_at_ms: Annotated[
         int,
@@ -11722,6 +12893,24 @@ class ItemCompletedServerNotification(BaseModel):
     ] = None
     method: Annotated[Literal["item/completed"], Field(title="Item/completedNotificationMethod")]
     params: ItemCompletedNotification
+
+
+class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/commandExecution/terminalInteraction"],
+        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
+    ]
+    params: TerminalInteractionNotification
 
 
 class Thread(BaseModel):
@@ -12044,6 +13233,18 @@ class ThreadRevertResponse(BaseModel):
     ] = None
 
 
+class ThreadRollbackResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread: Annotated[
+        Thread,
+        Field(
+            description="The updated Legacy thread after applying the rollback, with canonical turns populated."
+        ),
+    ]
+
+
 class ThreadSearchResult(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12256,8 +13457,10 @@ class ClientRequest(
         | ThreadArchiveRequest
         | ThreadDeleteRequest
         | ThreadUnsubscribeRequest
+        | ThreadUnloadRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
+        | ThreadMcpServerActivateRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
         | ThreadMetadataUpdateRequest
@@ -12269,6 +13472,7 @@ class ClientRequest(
         | ThreadCompactStartRequest
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
+        | ThreadRollbackRequest
         | ThreadRevertRequest
         | ThreadListRequest
         | ThreadSectionListRequest
@@ -12340,6 +13544,7 @@ class ClientRequest(
         | CommandExecWriteRequest
         | CommandExecTerminateRequest
         | CommandExecResizeRequest
+        | ServerReadRequest
         | ConfigReadRequest
         | ExternalAgentConfigDetectRequest
         | ExternalAgentConfigImportRequest
@@ -12363,8 +13568,10 @@ class ClientRequest(
         | ThreadArchiveRequest
         | ThreadDeleteRequest
         | ThreadUnsubscribeRequest
+        | ThreadUnloadRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
+        | ThreadMcpServerActivateRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
         | ThreadMetadataUpdateRequest
@@ -12376,6 +13583,7 @@ class ClientRequest(
         | ThreadCompactStartRequest
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
+        | ThreadRollbackRequest
         | ThreadRevertRequest
         | ThreadListRequest
         | ThreadSectionListRequest
@@ -12447,6 +13655,7 @@ class ClientRequest(
         | CommandExecWriteRequest
         | CommandExecTerminateRequest
         | CommandExecResizeRequest
+        | ServerReadRequest
         | ConfigReadRequest
         | ExternalAgentConfigDetectRequest
         | ExternalAgentConfigImportRequest
@@ -12665,6 +13874,7 @@ class ServerNotification(
         | ItemAutoApprovalReviewCompletedServerNotification
         | AutoApprovalReviewStrictReviewRequiredServerNotification
         | ItemCompletedServerNotification
+        | ItemContextCompactionStatusServerNotification
         | ItemAgentMessageDeltaServerNotification
         | ItemPlanDeltaServerNotification
         | CommandExecOutputDeltaServerNotification
@@ -12753,6 +13963,7 @@ class ServerNotification(
         | ItemAutoApprovalReviewCompletedServerNotification
         | AutoApprovalReviewStrictReviewRequiredServerNotification
         | ItemCompletedServerNotification
+        | ItemContextCompactionStatusServerNotification
         | ItemAgentMessageDeltaServerNotification
         | ItemPlanDeltaServerNotification
         | CommandExecOutputDeltaServerNotification

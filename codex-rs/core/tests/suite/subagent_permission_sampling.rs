@@ -141,14 +141,15 @@ async fn permission_context_is_durable_without_requesting_a_response(
     child.flush_rollout().await?;
     let history = test
         .thread_store
-        .load_history(LoadThreadHistoryParams {
+        .load_canonical_artifact_segments(LoadThreadHistoryParams {
             thread_id: child_id,
             include_archived: false,
         })
         .await?;
     let notices = history
-        .items
+        .segments
         .iter()
+        .flatten()
         .filter_map(|item| match item {
             RolloutItem::ResponseItem(envelope) => match &envelope.item {
                 ResponseItem::Message { role, content, .. } if role == "developer" => {

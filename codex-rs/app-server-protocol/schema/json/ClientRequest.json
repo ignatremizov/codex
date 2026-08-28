@@ -34,6 +34,468 @@
       ],
       "type": "string"
     },
+    "AgentControlAction": {
+      "description": "A user-authored multi-agent control operation.",
+      "oneOf": [
+        {
+          "description": "Spawn a default or configured-role child.",
+          "properties": {
+            "fork_mode": {
+              "$ref": "#/definitions/AgentForkMode"
+            },
+            "input": {
+              "description": "Omitted creates a real idle child without starting its first turn.",
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "model": {
+              "description": "Explicit model override. Takes precedence over role and configured defaults.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reasoning_effort": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ReasoningEffort"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted uses passive final-response delivery."
+            },
+            "role": {
+              "description": "Omitted selects the default child configuration.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task": {
+              "description": "Optional assignment label, resolved within the issuing agent's root namespace.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "spawn"
+              ],
+              "title": "SpawnAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "fork_mode",
+            "type"
+          ],
+          "title": "SpawnAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Send genuine user input to a controlled agent, reopening a known closed descendant.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": "array"
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted uses passive final-response delivery."
+            },
+            "target": {
+              "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "prompt"
+              ],
+              "title": "PromptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "target",
+            "type"
+          ],
+          "title": "PromptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Admit target input using response handling reserved by spawn or resume.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": "array"
+            },
+            "target": {
+              "description": "Canonical target thread UUID.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "reservedPrompt"
+              ],
+              "title": "ReservedPromptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "target",
+            "type"
+          ],
+          "title": "ReservedPromptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Queue input as a distinct future target turn, starting it immediately when the target is idle.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": "array"
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted uses passive final-response delivery."
+            },
+            "target": {
+              "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "queuedPrompt"
+              ],
+              "title": "QueuedPromptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "target",
+            "type"
+          ],
+          "title": "QueuedPromptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.",
+          "properties": {
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Omitted reserves passive delivery for the next admitted target turn."
+            },
+            "target": {
+              "description": "Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.",
+              "type": "string"
+            },
+            "task": {
+              "description": "New assignment for cross-root adoption only; same-root resume cannot rename a task.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "resume"
+              ],
+              "title": "ResumeAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "type"
+          ],
+          "title": "ResumeAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Interrupt the active target turn and optionally submit a follow-up after cancellation.",
+          "properties": {
+            "input": {
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Valid only when `input` is present."
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "interrupt"
+              ],
+              "title": "InterruptAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "type"
+          ],
+          "title": "InterruptAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Close a controlled agent runtime.",
+          "properties": {
+            "response_handling": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentResponseHandling"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Controls replay of an undelivered completion after close."
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "close"
+              ],
+              "title": "CloseAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target",
+            "type"
+          ],
+          "title": "CloseAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Authoritatively replace final-response handling for one target turn.",
+          "properties": {
+            "authored_observer_selector": {
+              "description": "Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "observer": {
+              "description": "Existing subscription owner. Omitted means the issuing source thread.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "response_handling": {
+              "$ref": "#/definitions/AgentObservationMode"
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "observe"
+              ],
+              "title": "ObserveAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "response_handling",
+            "target",
+            "type"
+          ],
+          "title": "ObserveAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Enable or disable the target's attributed reply route to a controlled recipient.",
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "recipient": {
+              "description": "Omitted means the source thread issuing the user command.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "replyRoute"
+              ],
+              "title": "ReplyRouteAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "target",
+            "type"
+          ],
+          "title": "ReplyRouteAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Live default for communication within the source's current and future subtree. Explicit directed routes override this default. Not restored from history.",
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "type": {
+              "enum": [
+                "subtreeMessaging"
+              ],
+              "title": "SubtreeMessagingAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "type"
+          ],
+          "title": "SubtreeMessagingAgentControlAction",
+          "type": "object"
+        }
+      ]
+    },
+    "AgentFinalResponseHandling": {
+      "description": "Final-response handling selected by an explicit user observation replacement.",
+      "enum": [
+        "none",
+        "passive",
+        "wake",
+        "presentation"
+      ],
+      "type": "string"
+    },
+    "AgentForkMode": {
+      "description": "Parent conversation history copied into a user-spawned child.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "none"
+              ],
+              "title": "NoneAgentForkModeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "NoneAgentForkMode",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "all"
+              ],
+              "title": "AllAgentForkModeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AllAgentForkMode",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "turns": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "lastNTurns"
+              ],
+              "title": "LastNTurnsAgentForkModeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "turns",
+            "type"
+          ],
+          "title": "LastNTurnsAgentForkMode",
+          "type": "object"
+        }
+      ]
+    },
     "AgentMessageInputContent": {
       "oneOf": [
         {
@@ -77,6 +539,55 @@
           "type": "object"
         }
       ]
+    },
+    "AgentObservationMode": {
+      "description": "Authoritative final-response policy accepted by `agent/control` observe.",
+      "enum": [
+        "passive",
+        "wake",
+        "presentation"
+      ],
+      "type": "string"
+    },
+    "AgentReplyRouteMode": {
+      "description": "User-authored state for a target's attributed reply route.",
+      "enum": [
+        "enabled",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "AgentResponseHandling": {
+      "description": "Response, reverse-message, and admission handling for one target turn.",
+      "properties": {
+        "commentary": {
+          "description": "Deliver the first complete commentary item from the target turn.",
+          "type": "boolean"
+        },
+        "finalResponse": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentFinalResponseHandling"
+            }
+          ],
+          "description": "Select how the target turn's final response reaches the source."
+        },
+        "queueInput": {
+          "description": "Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+          "type": "boolean"
+        },
+        "targetMessages": {
+          "description": "Let the target turn send attributed input back to the source.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "commentary",
+        "finalResponse",
+        "queueInput",
+        "targetMessages"
+      ],
+      "type": "object"
     },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
@@ -3978,6 +4489,9 @@
       ],
       "type": "object"
     },
+    "ServerReadParams": {
+      "type": "object"
+    },
     "SessionMigration": {
       "properties": {
         "cwd": {
@@ -4645,6 +5159,21 @@
       },
       "type": "object"
     },
+    "ThreadMcpServerActivateParams": {
+      "properties": {
+        "serverName": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serverName",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadMemoryMode": {
       "enum": [
         "enabled",
@@ -4987,6 +5516,41 @@
       ],
       "type": "object"
     },
+    "ThreadRollbackParams": {
+      "description": "Legacy-history rollback request. This route applies only to Legacy history mode; Paginated history uses `thread/revert`.",
+      "properties": {
+        "expectedStartTurnId": {
+          "description": "Optional first turn expected in the selected rollback suffix.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedTurnCount": {
+          "description": "Optional materialized turn count observed when the rollback target was selected.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "numTurns": {
+          "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "numTurns",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadSearchSortKey": {
       "enum": [
         "created_at",
@@ -5144,17 +5708,53 @@
       ],
       "type": "object"
     },
+    "ThreadShellCommandFinalDelivery": {
+      "oneOf": [
+        {
+          "description": "Add the result to model context without starting a turn.",
+          "enum": [
+            "passive"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Add the result to model context and wake the thread when it is idle.",
+          "enum": [
+            "wake"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Publish the result without adding it to model context.",
+          "enum": [
+            "presentationOnly"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ThreadShellCommandParams": {
       "properties": {
         "command": {
           "description": "Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy.",
           "type": "string"
         },
+        "responseHandling": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadShellCommandResponseHandling"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional completion delivery policy. Omission preserves passive model delivery."
+        },
         "threadId": {
           "type": "string"
         },
         "timeoutMs": {
-          "description": "Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
+          "description": "Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
           "format": "int64",
           "type": [
             "integer",
@@ -5165,6 +5765,27 @@
       "required": [
         "command",
         "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadShellCommandResponseHandling": {
+      "properties": {
+        "finalDelivery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ThreadShellCommandFinalDelivery"
+            }
+          ],
+          "description": "Whether the completed result is delivered passively, wakes the thread, or stays presentation-only."
+        },
+        "queueCommand": {
+          "description": "Whether execution waits for every earlier user-shell submission in this thread.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "finalDelivery",
+        "queueCommand"
       ],
       "type": "object"
     },
@@ -5377,6 +5998,19 @@
     "ThreadUnarchiveParams": {
       "properties": {
         "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadUnloadParams": {
+      "description": "Stop and unload the owning root and its loaded spawn descendants.",
+      "properties": {
+        "threadId": {
+          "description": "Any thread in the owning spawn subtree, including the root.",
           "type": "string"
         }
       },
@@ -6070,6 +6704,30 @@
         },
         "method": {
           "enum": [
+            "thread/unload"
+          ],
+          "title": "Thread/unloadRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadUnloadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/unloadRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "thread/name/set"
           ],
           "title": "Thread/name/setRequestMethod",
@@ -6109,6 +6767,30 @@
         "params"
       ],
       "title": "Thread/goal/setRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/mcpServer/activate"
+          ],
+          "title": "Thread/mcpServer/activateRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadMcpServerActivateParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/mcpServer/activateRequest",
       "type": "object"
     },
     {
@@ -6373,6 +7055,30 @@
         "params"
       ],
       "title": "Thread/approveGuardianDeniedActionRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/rollback"
+          ],
+          "title": "Thread/rollbackRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRollbackParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/rollbackRequest",
       "type": "object"
     },
     {
@@ -8090,6 +8796,30 @@
         "params"
       ],
       "title": "Command/exec/resizeRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "server/read"
+          ],
+          "title": "Server/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ServerReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Server/readRequest",
       "type": "object"
     },
     {

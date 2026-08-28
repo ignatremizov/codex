@@ -14,6 +14,7 @@ use crate::MailboxMessageState;
 use crate::MailboxPayload;
 use crate::MailboxSender;
 use crate::MailboxSenderInventory;
+use crate::PersistContext;
 use crate::ThreadPersistenceMetadata;
 use crate::ThreadStore;
 use codex_protocol::ThreadId;
@@ -64,6 +65,12 @@ async fn inventory_proof_and_retired_retry_preserve_newer_active_notification() 
         for mode in history_modes(store.as_ref()) {
             let receiver = ThreadId::new();
             create_thread(store.as_ref(), receiver, mode).await;
+            // Absence is provable only from a materialized receiver-owned artifact.
+            // Constructing the lazy writer alone does not publish its metadata.
+            store
+                .persist_thread(receiver, PersistContext::Standard)
+                .await
+                .unwrap();
             assert_eq!(
                 store.read_mailbox_inventory(receiver).await.unwrap(),
                 MailboxInventory {
