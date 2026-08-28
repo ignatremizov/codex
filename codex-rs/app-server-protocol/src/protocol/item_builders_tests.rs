@@ -105,6 +105,7 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
         cwd: cwd.clone(),
         parsed_cmd: vec![ParsedCommand::Unknown { cmd: "cat".into() }],
         source: ExecCommandSource::UnifiedExecStartup,
+        user_shell_response_handling: None,
         interaction_input: None,
     };
     let start_turn = |turn_id: &str| {

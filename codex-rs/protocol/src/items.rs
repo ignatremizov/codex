@@ -22,6 +22,7 @@ use crate::protocol::PatchApplyStatus;
 use crate::protocol::ReviewOutputEvent;
 use crate::protocol::ReviewTarget;
 use crate::protocol::SubAgentActivityKind;
+use crate::protocol::UserShellCommandResponseHandling;
 use crate::user_input::ByteRange;
 use crate::user_input::TextElement;
 use crate::user_input::UserInput;
@@ -364,6 +365,9 @@ pub struct CommandExecutionItem {
     pub cwd: PathUri,
     pub parsed_cmd: Vec<ParsedCommand>,
     pub source: ExecCommandSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub user_shell_response_handling: Option<UserShellCommandResponseHandling>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub interaction_input: Option<String>,

@@ -365,6 +365,7 @@ fn tool_selection_copies_its_displayed_revision_after_the_tool_commits() {
                 "selected tool output".to_owned(),
             )),
             source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,

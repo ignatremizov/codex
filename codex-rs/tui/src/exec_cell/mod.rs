@@ -5,6 +5,7 @@ mod render;
 mod transcript;
 
 pub(crate) use live_output::LiveCommandOutput;
+pub(crate) use model::ActiveExecCall;
 pub(crate) use model::CommandOutput;
 #[cfg(test)]
 pub(crate) use model::ExecCall;

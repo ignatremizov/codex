@@ -288,6 +288,7 @@ fn command_and_output_copy_preserve_hard_lines_across_resize() {
             parsed: Vec::new(),
             output: Some(CommandOutput::new(/*exit_code*/ 0, output.into())),
             source: codex_app_server_protocol::CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,

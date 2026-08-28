@@ -1,16 +1,18 @@
 ---
-source: tui/src/history_cell.rs
+source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
 /ps
 
 Background terminals
 
-  • echo hello
+  • echo hello (wake)
     and then some extra text
-    id 1000
     ↳ hello
       done
-  • rg "foo" src
-    id 1001
+    id 1000
+  • rg "foo" src (presentation only · queued)
     ↳ src/main.rs:12:foo
+    id 1001
+  • sleep 10 (passive)
+    id 1002

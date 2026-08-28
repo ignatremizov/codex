@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::UserShellSubmissionPhase;
 use super::oneshot::Completion;
 
 use crate::codex_thread::BackgroundTerminalInfo;
@@ -1958,29 +1959,26 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_all_processes(&self) {
-        let (entries, user_shell_cancellations): (Vec<ProcessEntry>, Vec<CancellationToken>) = {
+        let entries: Vec<ProcessEntry> = {
             let mut processes = self.process_store.lock().await;
             let entries: Vec<ProcessEntry> = processes
                 .processes
                 .drain()
                 .map(|(_, entry)| entry)
                 .collect();
-            let user_shell_cancellations = processes
-                .user_shell_commands
-                .values()
-                .map(|entry| entry.cancellation_token.clone())
-                .collect();
+            for entry in processes.user_shell_commands.values() {
+                entry.cancellation_token.cancel();
+            }
+            processes.pending_user_shell_submissions.clear();
             processes.reserved_process_ids =
                 processes.user_shell_commands.keys().copied().collect();
-            (entries, user_shell_cancellations)
+            entries
         };
+        self.user_shell_submission_changed.notify_waiters();
 
         for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
             entry.process.terminate();
-        }
-        for cancellation_token in user_shell_cancellations {
-            cancellation_token.cancel();
         }
     }
 
@@ -1998,6 +1996,7 @@ impl UnifiedExecProcessManager {
                         process_id: entry.process_id.to_string(),
                         command: entry.hook_command.clone(),
                         cwd: entry.cwd.clone(),
+                        user_shell_response_handling: None,
                     },
                 )
             })
@@ -2009,6 +2008,7 @@ impl UnifiedExecProcessManager {
                         process_id: entry.process_id.to_string(),
                         command: entry.command.clone(),
                         cwd: entry.cwd.clone(),
+                        user_shell_response_handling: Some(entry.response_handling),
                     },
                 )
             }))
@@ -2018,15 +2018,30 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {
-        let user_shell_cancellation = {
-            let store = self.process_store.lock().await;
-            store
+        let stopped_pending_user_shell = {
+            let mut store = self.process_store.lock().await;
+            let user_shell = store
                 .user_shell_commands
                 .get(&process_id)
-                .map(|entry| entry.cancellation_token.clone())
+                .map(|entry| (entry.cancellation_token.clone(), entry.submission_id));
+            user_shell.map(|(cancellation_token, submission_id)| {
+                let stopped_pending = store
+                    .pending_user_shell_submissions
+                    .get(&submission_id)
+                    .is_some_and(|submission| {
+                        submission.phase == UserShellSubmissionPhase::Pending
+                    });
+                if stopped_pending {
+                    store.pending_user_shell_submissions.remove(&submission_id);
+                }
+                cancellation_token.cancel();
+                stopped_pending
+            })
         };
-        if let Some(cancellation_token) = user_shell_cancellation {
-            cancellation_token.cancel();
+        if let Some(stopped_pending_user_shell) = stopped_pending_user_shell {
+            if stopped_pending_user_shell {
+                self.user_shell_submission_changed.notify_waiters();
+            }
             return true;
         }
 

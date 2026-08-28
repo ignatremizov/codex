@@ -638,6 +638,7 @@ fn find_reveals_hidden_command_output_and_restores_compact_presentation() {
                 /*exit_code*/ 0, output,
             )),
             source: codex_app_server_protocol::CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,
