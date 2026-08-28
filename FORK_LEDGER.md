@@ -27,6 +27,7 @@ This checkpoint inventories the integrated owners through payload-free mailbox a
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
+| Build-profile-independent display fixtures | Release | Keep layout-sensitive unit snapshots stable across source and release builds while production headers, status, and update notices retain the actual package version. Runtime update decisions and client/server version checks remain independent from test display normalization. | `codex-rs/tui/src/version.rs`<br>`codex-rs/tui/src/app/history_ui.rs`<br>`codex-rs/tui/src/history_cell/`<br>`codex-rs/tui/src/status/card.rs` | Source-backed startup and clear headers, status copy, optional version footer, full snapshot metadata, and the final packaging boundary | `test(tui): stabilize display versions across build profiles` |
 | Durable owning-subtree unload | Capability | Stop a selected task's owning root and loaded spawn descendants only after exact runtimes acknowledge producer drain, persistence, and writer release; retain failed actors and cancelled-spawn cleanup for retry. Graceful TUI exit uses unload, while explicit shared-server disconnect leaves server-owned work running. | `codex-rs/core/src/thread_manager/loaded_subtree.rs`<br>`codex-rs/core/src/session/durable_shutdown.rs`<br>`codex-rs/core/src/unified_exec/shutdown.rs`<br>`codex-rs/core/src/thread_manager/owned_resume_startup.rs`<br>`codex-rs/app-server/src/request_processors/thread_unload.rs`<br>`codex-rs/tui/src/app/exit_lifecycle.rs` | Exact lifecycle and subscription fences, canonical completion ownership, captured startup/controller authority, Code Mode and Guardian teardown, real process exit, and writer-lease release | `feat(lifecycle): durably unload owning subtrees on graceful client exit` |
 | Captured credential profiles with shared storage | Capability | Select saved credentials with `CODEX_AUTH_FILE` without relocating configuration, skills, rollouts, or ownership. Preserve provider/API-key precedence, strict browser dictation, and captured reload/login/logout identity; isolate daemon lifecycle and recovery by profile and verify the actual local connection's home and profile before reuse. | `codex-rs/login/src/auth_file_selection.rs`<br>`codex-rs/login/src/auth_profile.rs`<br>`codex-rs/login/src/auth/manager.rs`<br>`codex-rs/app-server-daemon/src/launch_options.rs`<br>`codex-rs/tui/src/auth_profile_connection.rs` | Config/bootstrap capture, account-bound network policy, model-catalog caching, daemon package/PID ownership, actual connection verification, and current TUI startup/reconnect boundaries | `feat(auth): select credential profiles while sharing thread storage` |
 | Batch agent input with shared presentation | Capability | Send one typed input to a nonempty array of canonicalized recipients, deduplicating aliases in first-seen order and retaining independent direct, queued, mailbox, and failure outcomes. Preserve partial admissions on cancellation and show the shared input once, without a second retry ledger or a false delivery guarantee. | `codex-rs/core/src/tools/handlers/multi_agents/send_input_batch.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents/send_input_admission.rs`<br>`codex-rs/core/src/agent/control/message_audit.rs`<br>`codex-rs/protocol/src/collab_input.rs`<br>`codex-rs/tui/src/multi_agents/send_input_batch.rs`<br>`codex-rs/tui/src/app/replay_filter.rs` | Native attribution, shared interrupt facade, retained admission workers, canonical recipient history, typed legacy/API conversion, and source-owned live/replay presentation | `feat(agents): support batch send_input with shared lifecycle presentation` |
@@ -91,6 +92,21 @@ This checkpoint inventories the integrated owners through payload-free mailbox a
 | Manual verification and release infrastructure | Release | Keep routine verification separate from release packaging while retaining distinct cache namespaces, macOS link/checkpoint recovery, credential-path smoke coverage, and artifact integrity. The routine verification sccache limit is 4G; other jobs retain their own limits. Workflow presence does not assert a passing run for this checkpoint. | `.github/workflows/manual-verify.yml`<br>`.github/workflows/manual-release-build.yml` | Remote build/test/schema jobs, cache identity, release checkpointing, credential isolation, and packaging | `ci(fork): consolidate manual verification and release infrastructure` |
 
 ## Integration-specific ownership details
+
+### Build-profile-independent display versions
+
+Ownership anchor: `test(tui): stabilize display versions across build profiles`.
+Only test display surfaces use the fixed display value. Production display still aliases the
+compiled package version; update eligibility, semantic version comparisons, daemon manifests,
+and client/server compatibility checks continue to use the actual runtime version. Current
+source-backed clear headers, the optional version footer, startup/SSH fixtures, and status-copy
+normalization share the display contract without replacing upstream's current layout.
+
+The historical release owner is partitioned rather than replayed as a 0.156.1 package bump.
+Its non-display fixture corrections remain assigned to their earlier downstream owners, and its
+generated exports require coordinated final-source remote regeneration. The workspace remains
+at its source version during replay; the 0.160 release identity and actual-version snapshots
+belong to the final packaging commit. Snapshot normalization is not an executed snapshot result.
 
 ### Built-in collaboration role schemas
 
