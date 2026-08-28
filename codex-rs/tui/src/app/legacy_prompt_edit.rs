@@ -152,7 +152,9 @@ impl App {
                 self.pending_thread_switch_resets -= 1;
                 self.chat_widget
                     .set_queue_autosend_suppressed(/*suppressed*/ false);
-                self.restore_backtrack_prompt_after_revert_error(prompt, err);
+                // The draft was restored before admission; restoring again would append it.
+                self.chat_widget
+                    .add_error_message(format!("Failed to edit the selected prompt: {err:#}"));
                 tui.frame_requester().schedule_frame();
                 return Ok(());
             }

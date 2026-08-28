@@ -571,10 +571,13 @@ goals = true
 
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let (mut app_server, fork_requests, proxy) = Box::pin(
-        super::session_lifecycle_requests::start_recording_app_server(
+        super::session_lifecycle_requests::start_recording_app_server_with_history(
             &app.config,
+            super::session_lifecycle_requests::HistoryCapabilities::CurrentWithLiveNotifications,
             /*blocked_thread_list*/ None,
             /*failed_thread_name*/ None,
+            crate::app_server_session::ThreadParamsMode::Embedded,
+            app.loader_overrides.clone(),
         ),
     )
     .await?;

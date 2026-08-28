@@ -422,7 +422,9 @@ impl App {
     }
 
     pub(super) async fn refresh_in_memory_config_from_disk_best_effort(&mut self, action: &str) {
-        if let Err(err) = self.refresh_in_memory_config_from_disk().await {
+        // Thread transitions already carry their own config and widget state.
+        // Do not embed the config loader's state machine in each transition.
+        if let Err(err) = Box::pin(self.refresh_in_memory_config_from_disk()).await {
             tracing::warn!(
                 error = %err,
                 action,

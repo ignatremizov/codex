@@ -157,7 +157,8 @@ async fn cli_fork_forwards_explicit_rollout_without_reading_active_home_parent()
         "explicit source prompt",
         Some(config.model_provider_id.as_str()),
         /*git_info*/ None,
-    )?;
+    )
+    .map_err(color_eyre::eyre::Report::msg)?;
     let source_path = source_home
         .path()
         .join("sessions/2026/01/01")
