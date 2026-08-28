@@ -15,9 +15,13 @@ use codex_protocol::user_input::UserInput as CoreUserInput;
 use pretty_assertions::assert_eq;
 
 const SELECTED: &str = "use $skill @sample $google-calendar";
+const SOURCE_MODEL: &str = "gpt-5.6-sol";
 
 #[path = "legacy_prompt_edit_tests.rs"]
 mod legacy;
+
+#[path = "forked_prompt_edit_tests.rs"]
+mod forked;
 
 #[derive(Clone, Copy)]
 enum PromptImages {
@@ -87,7 +91,10 @@ async fn prompt_source(
     PathBuf,
 )> {
     let (mut app, events, _) = make_test_app_with_channels().await;
-    app.config.features.enable(Feature::ForkPromptEdits);
+    app.config
+        .features
+        .enable(Feature::ForkPromptEdits)
+        .expect("test config should allow feature update");
     let timestamp = "2026-01-05T12-00-00";
     let create = match mode {
         ThreadHistoryMode::Legacy => app_test_support::create_fake_rollout,
@@ -100,12 +107,27 @@ async fn prompt_source(
         "unused",
         Some(&app.config.model_provider_id),
         /*git_info*/ None,
-    )?;
+    )
+    .map_err(color_eyre::eyre::Report::msg)?;
     let path = app_test_support::rollout_path(app.config.codex_home.as_path(), timestamp, &id);
     let contents = std::fs::read_to_string(&path)?;
     let meta = contents.lines().next().expect("rollout metadata");
     std::fs::write(&path, format!("{meta}\n"))?;
     let id = ThreadId::from_string(&id)?;
+    // Fork attachment restores the source's persisted settings instead of borrowing the
+    // previously focused widget's model. These prompts must remain explicitly sendable.
+    codex_rollout::append_rollout_item_to_path(
+        &path,
+        &RolloutItem::TurnContext(serde_json::from_value(serde_json::json!({
+            "cwd": app.config.cwd.as_path(),
+            "approval_policy": "never",
+            "sandbox_policy": {"type": "danger-full-access"},
+            "model": SOURCE_MODEL,
+            "effort": "low",
+            "summary": "auto",
+        }))?),
+    )
+    .await?;
     for (index, text) in ["older prompt", "retained prompt", SELECTED, SELECTED]
         .into_iter()
         .enumerate()
@@ -147,6 +169,23 @@ async fn prompt_source(
                 });
             }
         }
+        let user = UserMessageItem {
+            id: format!("user-{index}"),
+            client_id: None,
+            content,
+        };
+        // Legacy history reconstructs prompts from its flattened event, while Paginated
+        // history projects the canonical completed item. Use the actual persisted format.
+        let message = match mode {
+            ThreadHistoryMode::Legacy => user.as_legacy_event(),
+            ThreadHistoryMode::Paginated => EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: id,
+                turn_id: turn_id.clone(),
+                item: TurnItem::UserMessage(user),
+                started_at_ms: None,
+                completed_at_ms: 0,
+            }),
+        };
         for item in [
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: turn_id.clone(),
@@ -157,17 +196,7 @@ async fn prompt_source(
                 collaboration_mode_kind: ModeKind::default(),
                 agent_queue: None,
             })),
-            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
-                thread_id: id,
-                turn_id: turn_id.clone(),
-                item: TurnItem::UserMessage(UserMessageItem {
-                    id: format!("user-{index}"),
-                    client_id: None,
-                    content,
-                }),
-                started_at_ms: None,
-                completed_at_ms: 0,
-            })),
+            RolloutItem::EventMsg(message),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id,
                 last_agent_message: None,
@@ -199,6 +228,20 @@ async fn prompt_source(
             crate::app_server_session::ResumeModelSettings::RestoreFromThread,
         )
         .await?;
+    assert_eq!(
+        started
+            .turns
+            .iter()
+            .map(|turn| (
+                turn.id.as_str(),
+                turn.items
+                    .iter()
+                    .filter(|item| matches!(item, ThreadItem::UserMessage { .. }))
+                    .count(),
+            ))
+            .collect::<Vec<_>>(),
+        [("turn-0", 1), ("turn-1", 1), ("turn-2", 1), ("turn-3", 1)],
+    );
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
     Ok((app, events, recording, id, path))
@@ -372,6 +415,7 @@ async fn prompt_forks_preserve_sources_and_drafts_after_owned_and_inline_attachm
                 let before_drain = app.chat_widget.capture_thread_input_state();
                 drain_fork_attachment(&mut app, &mut tui, &mut server, &mut events).await?;
                 assert_eq!(app.chat_widget.capture_thread_input_state(), before_drain);
+                assert_eq!(app.chat_widget.current_model(), SOURCE_MODEL);
                 assert_eq!(app.pending_thread_switch_resets, 0);
                 let fork_id = app.chat_widget.thread_id().expect("attached fork");
                 assert_ne!(fork_id, source_id);
@@ -424,25 +468,30 @@ async fn prompt_forks_preserve_sources_and_drafts_after_owned_and_inline_attachm
                                 (4..10).into(),
                                 Some("$skill".into()),
                             )],
-                            mention_bindings: vec![
-                                crate::bottom_pane::MentionBinding {
-                                    sigil: '$',
-                                    mention: "skill".into(),
-                                    path: test_path_buf("/tmp/skills/skill/SKILL.md")
-                                        .to_string_lossy()
-                                        .into_owned(),
-                                },
-                                crate::bottom_pane::MentionBinding {
-                                    sigil: '@',
-                                    mention: "sample".into(),
-                                    path: "plugin://sample@test".into(),
-                                },
-                                crate::bottom_pane::MentionBinding {
-                                    sigil: '$',
-                                    mention: "google-calendar".into(),
-                                    path: "app://google_calendar".into(),
-                                },
-                            ],
+                            // Legacy events retain text/media but do not encode mention bindings.
+                            mention_bindings: if mode == ThreadHistoryMode::Paginated {
+                                vec![
+                                    crate::bottom_pane::MentionBinding {
+                                        sigil: '$',
+                                        mention: "skill".into(),
+                                        path: test_path_buf("/tmp/skills/skill/SKILL.md")
+                                            .to_string_lossy()
+                                            .into_owned(),
+                                    },
+                                    crate::bottom_pane::MentionBinding {
+                                        sigil: '@',
+                                        mention: "sample".into(),
+                                        path: "plugin://sample@test".into(),
+                                    },
+                                    crate::bottom_pane::MentionBinding {
+                                        sigil: '$',
+                                        mention: "google-calendar".into(),
+                                        path: "app://google_calendar".into(),
+                                    },
+                                ]
+                            } else {
+                                Vec::new()
+                            },
                         },
                     );
                     assert_eq!(app.chat_widget.capture_thread_input_state(), restored);
@@ -473,26 +522,60 @@ async fn prompt_forks_preserve_sources_and_drafts_after_owned_and_inline_attachm
                     // The full draft above includes canonical mention bindings even without a
                     // discovered/authorized catalog. Submission must still retain its image and
                     // text spans; it must not bypass mention authorization to echo hidden targets.
+                    // Legacy history has no bindings for the trailing `$` mention, so restoring
+                    // it can open completion. Dismiss that menu before testing explicit submit.
+                    app.chat_widget
+                        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    assert_eq!(app.chat_widget.composer_text_with_pending(), SELECTED);
                     app.chat_widget
                         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    let mut other_events = Vec::new();
                     let command = std::iter::from_fn(|| events.try_recv().ok())
                         .find_map(|event| match event {
                             AppEvent::CodexOp(AppCommand::UserTurn { items, .. }) => Some(items),
-                            _ => None,
+                            other => {
+                                other_events.push(format!("{other:?}"));
+                                None
+                            }
                         })
-                        .expect("only explicit Enter should submit the restored draft");
-                    assert!(command.iter().any(|item| matches!(item,
-                        codex_app_server_protocol::UserInput::Text { text, text_elements }
-                            if text == SELECTED && text_elements.len() == 1)));
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "explicit Enter did not submit the restored draft: mode={mode:?}, owned={owned}, \
+                                 external_writer={}, active_view={}, draft={:?}, events={other_events:?}, pane={}",
+                                app.chat_widget.is_external_writer_view(),
+                                app.chat_widget.has_active_view(),
+                                app.chat_widget.composer_text_with_pending(),
+                                render_bottom_popup(&app.chat_widget, /*width*/ 80),
+                            )
+                        });
+                    let mut expected_elements =
+                        vec![TextElement::new((4..10).into(), Some("$skill".into()))];
+                    if mode == ThreadHistoryMode::Paginated {
+                        // Restoring canonical bindings also restores their atomic text spans.
+                        // Legacy history only carries the original explicit skill element.
+                        expected_elements.extend([
+                            TextElement::new((11..18).into(), Some("@sample".into())),
+                            TextElement::new((19..35).into(), Some("$google-calendar".into())),
+                        ]);
+                    }
                     assert_eq!(
-                        command
-                            .iter()
-                            .filter(|item| matches!(
-                                item,
-                                codex_app_server_protocol::UserInput::Image { .. }
-                            ))
-                            .count(),
-                        1
+                        command,
+                        vec![
+                            codex_app_server_protocol::UserInput::Image {
+                                image: codex_app_server_protocol::ImageReference::Inline {
+                                    url: "https://example.com/prompt.png".into(),
+                                },
+                                detail: None,
+                            },
+                            codex_app_server_protocol::UserInput::Text {
+                                text: SELECTED.into(),
+                                text_elements: expected_elements
+                                    .into_iter()
+                                    .map(Into::into)
+                                    .collect(),
+                            },
+                        ],
+                        "submission must preserve every restored span and image without granting unknown mentions"
                     );
                 }
                 tui.set_owned_screen(/*owned*/ false)?;
@@ -646,7 +729,31 @@ async fn prompt_fork_keeps_exact_selection_when_an_older_page_arrives() -> Resul
     app.transcript_cells.clear();
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
-    drain_attach_events(&mut app, &mut tui, &mut server, &mut events).await?;
+    // Reflow requests a refill during attachment. Hold that real completion until after
+    // selecting the prompt instead of trying to admit a second page request.
+    let (cursor, page) = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            let event = events.recv().await.expect("attachment event");
+            if let AppEvent::OlderThreadHistoryLoaded {
+                thread_id,
+                cursor,
+                result,
+            } = event
+            {
+                assert_eq!(thread_id, source_id);
+                break Ok::<_, color_eyre::eyre::Report>((
+                    cursor,
+                    result.map_err(color_eyre::eyre::Report::msg)?,
+                ));
+            }
+            assert!(!matches!(
+                event,
+                AppEvent::CodexOp(AppCommand::UserTurn { .. })
+            ));
+            Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+        }
+    })
+    .await??;
     assert!(server.has_older_history(source_id));
     let last = user_count(&app.transcript_cells) - 1;
     app.backtrack.base_id = Some(source_id);
@@ -658,17 +765,7 @@ async fn prompt_fork_keeps_exact_selection_when_an_older_page_arrives() -> Resul
     let edit = std::iter::from_fn(|| events.try_recv().ok())
         .find(|event| matches!(event, AppEvent::RevertSessionForPromptEdit { .. }))
         .expect("queued edit");
-    let cursor = server
-        .begin_older_history_page(source_id)
-        .expect("older page");
-    let page = server
-        .thread_items_page(
-            source_id,
-            /*turn_id*/ None,
-            Some(cursor.clone()),
-            /*limit*/ 1,
-        )
-        .await?;
+    assert!(server.is_older_history_page_pending(source_id, &cursor));
     let stale_page = page.clone();
     app.handle_older_history_page(&mut tui, &mut server, source_id, &cursor, Ok(page))
         .await?;

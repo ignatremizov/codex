@@ -1,6 +1,7 @@
 //! Exercise Legacy edits through the same public RPC transport as prompt forks.
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn legacy_rejection_and_ambiguous_outcomes_preserve_draft_without_retry() -> Result<()> {
@@ -11,7 +12,10 @@ async fn legacy_rejection_and_ambiguous_outcomes_preserve_draft_without_retry() 
     ] {
         let (mut app, mut events, (mut server, requests, proxy), source_id, _path) =
             prompt_source(ThreadHistoryMode::Legacy, capability, PromptImages::Remote).await?;
-        app.config.features.disable(Feature::ForkPromptEdits);
+        app.config
+            .features
+            .disable(Feature::ForkPromptEdits)
+            .expect("test config should allow feature update");
         let mut tui = crate::tui::test_support::make_test_tui()?;
         drain_attach_events(&mut app, &mut tui, &mut server, &mut events).await?;
         // Queue a follow-up through ordinary widget input, without issuing any server mutation.
@@ -290,7 +294,10 @@ async fn guarded_legacy_edit_replaces_history_and_restores_draft_in_both_viewpor
             PromptImages::Remote,
         )
         .await?;
-        app.config.features.disable(Feature::ForkPromptEdits);
+        app.config
+            .features
+            .disable(Feature::ForkPromptEdits)
+            .expect("test config should allow feature update");
         let mut tui = crate::tui::test_support::make_test_tui()?;
         tui.set_owned_screen(owned)?;
         drain_attach_events(&mut app, &mut tui, &mut server, &mut events).await?;
@@ -376,10 +383,12 @@ async fn guarded_legacy_edit_replaces_history_and_restores_draft_in_both_viewpor
             })
             .collect::<Vec<_>>()
             .join("\n");
-        insta::assert_snapshot!(prompts, @"
-        older prompt
-        retained prompt
-        ");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(prompts, @"
+            older prompt
+            retained prompt
+            ");
+        }
         server.shutdown().await?;
         proxy.await??;
     }
