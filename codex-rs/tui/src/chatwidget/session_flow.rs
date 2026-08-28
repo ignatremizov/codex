@@ -3,6 +3,10 @@
 use super::*;
 
 impl ChatWidget {
+    pub(crate) fn update_rollout_path(&mut self, rollout_path: Option<PathBuf>) {
+        self.current_rollout_path = rollout_path;
+    }
+
     pub(crate) fn reset_transient_state_after_thread_rollback(&mut self) {
         self.clear_pending_token_activity_refreshes();
         self.clear_pending_rate_limit_reset_hint();

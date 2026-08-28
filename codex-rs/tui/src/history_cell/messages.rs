@@ -9,7 +9,7 @@ use crate::wrapping::word_wrap_line;
 use codex_protocol::models::MessagePhase;
 use std::borrow::Cow;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct UserMessageSource {
     pub(crate) item_id: String,
     pub(crate) turn_id: String,

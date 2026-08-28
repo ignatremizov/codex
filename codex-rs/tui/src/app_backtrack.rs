@@ -22,7 +22,9 @@
 //! `TranscriptOverlay::sync_live_tail`. This preserves the invariant that the overlay reflects
 //! both committed history and in-flight activity without changing flush or coalescing behavior.
 
+#[cfg(test)]
 use std::any::TypeId;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::app::App;
@@ -70,8 +72,8 @@ pub(crate) struct BacktrackState {
     pub(crate) base_id: Option<ThreadId>,
     /// Index of the currently highlighted user message.
     ///
-    /// This is an index into the filtered "user messages since the last session start" view,
-    /// not an index into `transcript_cells`. `usize::MAX` indicates "no selection".
+    /// This is an index into the editable user-message projection, not an index into
+    /// `transcript_cells`. `usize::MAX` indicates "no selection".
     pub(crate) nth_user_message: usize,
     /// True when the transcript overlay is showing a backtrack preview.
     pub(crate) overlay_preview_active: bool,
@@ -85,7 +87,7 @@ pub(crate) struct BacktrackSelection {
     pub(crate) thread_id: ThreadId,
     /// Canonical persisted identity when the selected cell came from app-server history.
     pub(crate) source: Option<UserMessageSource>,
-    /// The selected user message, counted from the most recent session start.
+    /// The selected user message, counted in the editable user-message projection.
     pub(crate) nth_user_message: usize,
     /// Number of transcript prompts with the same visible content as the selection.
     pub(crate) prompt_occurrences: usize,
@@ -722,7 +724,15 @@ fn trim_transcript_cells_to_nth_user(
 
     if let Some(cut_idx) = nth_user_position(transcript_cells, nth_user_message) {
         let original_len = transcript_cells.len();
+        let session_info = transcript_cells[cut_idx..]
+            .iter()
+            .rev()
+            .find(|cell| cell.as_any().is::<SessionInfoCell>())
+            .cloned();
         transcript_cells.truncate(cut_idx);
+        if let Some(session_info) = session_info {
+            transcript_cells.push(session_info);
+        }
         return transcript_cells.len() != original_len;
     }
     false
@@ -990,20 +1000,31 @@ pub(crate) fn nth_user_position(
 fn user_positions_iter(
     cells: &[Arc<dyn crate::history_cell::HistoryCell>],
 ) -> impl Iterator<Item = usize> + '_ {
-    let session_start_type = TypeId::of::<SessionInfoCell>();
-    let user_type = TypeId::of::<UserHistoryCell>();
-    let type_of = |cell: &Arc<dyn crate::history_cell::HistoryCell>| cell.as_any().type_id();
-
-    let start = cells
+    let current_session_start = cells
         .iter()
-        .rposition(|cell| type_of(cell) == session_start_type)
+        .rposition(|cell| cell.as_any().is::<SessionInfoCell>())
         .map_or(0, |idx| idx + 1);
-
-    cells
-        .iter()
-        .enumerate()
-        .skip(start)
-        .filter_map(move |(idx, cell)| (type_of(cell) == user_type).then_some(idx))
+    let mut seen_sources = HashSet::new();
+    let mut positions = Vec::new();
+    for (idx, cell) in cells.iter().enumerate().rev() {
+        let Some(user) = cell.as_any().downcast_ref::<UserHistoryCell>() else {
+            continue;
+        };
+        let included = match &user.source {
+            // Full-history forks render inherited canonical prompts before their new session
+            // header. Keep those prompts editable, but retain only the newest rendered copy when
+            // replay or a prior backtrack duplicated the same persisted item.
+            Some(source) => seen_sources.insert(source.clone()),
+            // Optimistic prompts do not yet have a durable identity. Keep their historical
+            // session boundary so stale source-less copies cannot shift ordinal fallback.
+            None => idx >= current_session_start,
+        };
+        if included {
+            positions.push(idx);
+        }
+    }
+    positions.reverse();
+    positions.into_iter()
 }
 
 #[cfg(test)]

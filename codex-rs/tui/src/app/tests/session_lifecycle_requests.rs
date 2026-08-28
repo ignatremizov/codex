@@ -4025,6 +4025,101 @@ async fn agents_overview_stop_uses_full_history_after_legacy_negotiation() -> Re
 }
 
 #[tokio::test]
+async fn paginated_backtrack_uses_thread_revert_and_rehydrates_history() -> Result<()> {
+    const BEFORE_TURN_ID: &str = "paginated-backtrack-turn";
+
+    let (app, _codex_home) = make_history_test_app().await?;
+    let thread_id = create_history_rollout(
+        &app.config,
+        ThreadHistoryMode::Paginated,
+        "paginated prompt to edit",
+    )?;
+    let path = rollout_path(
+        app.config.codex_home.as_path(),
+        "2026-01-02T00-00-00",
+        thread_id.to_string().as_str(),
+    );
+    let mut contents = std::fs::read_to_string(&path)?;
+    for (ordinal, payload) in [
+        serde_json::json!({
+            "type": "task_started",
+            "turn_id": BEFORE_TURN_ID,
+            "model_context_window": null,
+        }),
+        serde_json::json!({
+            "type": "item_completed",
+            "thread_id": thread_id,
+            "turn_id": BEFORE_TURN_ID,
+            "item": {
+                "type": "UserMessage",
+                "id": "paginated-backtrack-user",
+                "content": [{
+                    "type": "text",
+                    "text": "paginated prompt to edit",
+                }],
+            },
+        }),
+        serde_json::json!({
+            "type": "task_complete",
+            "turn_id": BEFORE_TURN_ID,
+            "last_agent_message": null,
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let record = serde_json::json!({
+            "timestamp": "2026-01-02T00:00:00Z",
+            "ordinal": ordinal + 3,
+            "type": "event_msg",
+            "payload": payload,
+        });
+        contents.push_str(&format!("{record}\n"));
+    }
+    std::fs::write(path, contents)?;
+    let (mut app_server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    app_server
+        .resume_thread(
+            app.config.clone(),
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
+    let turn_page = app_server
+        .thread_turns_page(thread_id, /*cursor*/ None)
+        .await?;
+    let [persisted_turn] = turn_page.data.as_slice() else {
+        panic!("paginated fixture should materialize one turn");
+    };
+    assert_eq!(persisted_turn.id, BEFORE_TURN_ID);
+    let before_turn_id = persisted_turn.id.clone();
+    requests.lock().expect("request recorder lock").clear();
+
+    let response = app_server
+        .thread_revert_for_backtrack(&app.config, thread_id, before_turn_id.clone())
+        .await?;
+
+    assert!(response.thread.turns.is_empty());
+    assert_eq!(
+        recorded_params(&requests, "thread/revert"),
+        vec![serde_json::json!({
+            "threadId": thread_id,
+            "beforeTurnId": before_turn_id,
+        })]
+    );
+    assert!(recorded_params(&requests, "thread/rollback").is_empty());
+    assert!(!recorded_params(&requests, "thread/turns/list").is_empty());
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn cold_paginated_subagent_transcript_excludes_inherited_parent_history() -> Result<()> {
     let (app, codex_home) = make_history_test_app().await?;
     let parent_thread_id = create_history_rollout(

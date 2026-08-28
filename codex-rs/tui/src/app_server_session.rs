@@ -122,6 +122,8 @@ use codex_app_server_protocol::ThreadRealtimeStopParams;
 use codex_app_server_protocol::ThreadRealtimeStopResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadRevertParams;
+use codex_app_server_protocol::ThreadRevertResponse;
 use codex_app_server_protocol::ThreadRollbackParams;
 use codex_app_server_protocol::ThreadRollbackResponse;
 use codex_app_server_protocol::ThreadSetNameParams;
@@ -1564,6 +1566,40 @@ impl AppServerSession {
                 })
                 .await,
         )
+    }
+
+    pub(crate) async fn thread_revert_for_backtrack(
+        &mut self,
+        config: &Config,
+        thread_id: ThreadId,
+        before_turn_id: String,
+    ) -> Result<ThreadRollbackResponse> {
+        let request_id = self.next_request_id();
+        let ThreadRevertResponse {
+            mut thread,
+            turns_backwards_cursor,
+            items_backwards_cursor,
+        } = self
+            .client
+            .request_typed(ClientRequest::ThreadRevert {
+                request_id,
+                params: ThreadRevertParams {
+                    thread_id: thread_id.to_string(),
+                    before_turn_id,
+                },
+            })
+            .await
+            .wrap_err("thread/revert failed in TUI")?;
+        self.hydrate_initial_thread_history(
+            &mut thread,
+            turns_backwards_cursor,
+            items_backwards_cursor,
+            Some(config),
+            HistoryHydrationScope::Initial,
+        )
+        .await
+        .wrap_err("failed to hydrate reverted thread history in TUI")?;
+        Ok(ThreadRollbackResponse { thread })
     }
 
     pub(crate) async fn thread_shell_command(
