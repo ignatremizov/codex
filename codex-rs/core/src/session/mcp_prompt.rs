@@ -223,6 +223,7 @@ impl Session {
             TurnInput::UserInput { .. }
             | TurnInput::AgentInput { .. }
             | TurnInput::FunctionCallOutput(_)
+            | TurnInput::UserShellContextReady
             | TurnInput::InterAgentCommunication(_) => None,
         }) {
             return Some(text);
@@ -452,6 +453,7 @@ impl Session {
                 TurnInput::UserInput { .. }
                 | TurnInput::AgentInput { .. }
                 | TurnInput::FunctionCallOutput(_)
+                | TurnInput::UserShellContextReady
                 | TurnInput::InterAgentCommunication(_) => None,
             })
             .collect();

@@ -324,6 +324,8 @@ pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
 mod turn_suspension;
+mod user_shell_admission;
+mod user_shell_delivery;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
 pub(crate) use self::environment::ThreadEnvironmentDefaults;
@@ -1141,6 +1143,7 @@ impl SessionIo {
             command_approval::QueuedSubmission {
                 submission,
                 approval,
+                user_shell_completion: None,
             },
         )?;
         Ok(id)
@@ -1194,6 +1197,7 @@ impl SessionIo {
                 command_approval::QueuedSubmission {
                     submission: sub,
                     approval,
+                    user_shell_completion: None,
                 },
             )
             .await

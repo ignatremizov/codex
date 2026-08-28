@@ -31,6 +31,8 @@ pub(crate) enum CommandApprovalOrigin {
 pub(crate) struct QueuedSubmission {
     pub(crate) submission: Submission,
     pub(crate) approval: Option<CommandApprovalClaim>,
+    /// Non-serializable authority captured before a user-shell submission is enqueued.
+    pub(crate) user_shell_completion: Option<super::AcceptedCompletionDelivery>,
 }
 
 impl std::fmt::Debug for QueuedSubmission {
@@ -39,6 +41,10 @@ impl std::fmt::Debug for QueuedSubmission {
             .debug_struct("QueuedSubmission")
             .field("submission", &self.submission)
             .field("has_approval_claim", &self.approval.is_some())
+            .field(
+                "has_user_shell_completion",
+                &self.user_shell_completion.is_some(),
+            )
             .finish()
     }
 }
@@ -48,6 +54,7 @@ impl From<Submission> for QueuedSubmission {
         Self {
             submission,
             approval: None,
+            user_shell_completion: None,
         }
     }
 }

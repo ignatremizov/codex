@@ -998,6 +998,7 @@ pub(super) fn begin_exec_with_source_and_process_id(
         plugin_id: None,
         script_path: None,
         source,
+        user_shell_response_handling: None,
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions,
         aggregated_output: None,
@@ -1025,6 +1026,7 @@ pub(super) fn begin_unified_exec_startup(
         plugin_id: None,
         script_path: None,
         source: ExecCommandSource::UnifiedExecStartup,
+        user_shell_response_handling: None,
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions: Vec::new(),
         aggregated_output: None,
@@ -1249,6 +1251,7 @@ pub(super) fn end_exec(
         plugin_id,
         script_path,
         source,
+        user_shell_response_handling,
         command_actions,
         ..
     } = begin_item
@@ -1267,6 +1270,7 @@ pub(super) fn end_exec(
             plugin_id,
             script_path,
             source,
+            user_shell_response_handling,
             status: if exit_code == 0 {
                 AppServerCommandExecutionStatus::Completed
             } else {

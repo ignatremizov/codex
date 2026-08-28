@@ -611,12 +611,29 @@ async fn start_if_idle_with_lease(
     } else {
         None
     };
+    let shell_wake_reservation = if kind == TurnStartKind::Automatic {
+        Some(
+            session
+                .services
+                .unified_exec_manager
+                .acquire_user_shell_wake_reservation_permit()
+                .await,
+        )
+    } else {
+        None
+    };
     if kind == TurnStartKind::Automatic
-        && session
+        && (session
             .services
             .local_agent_runtime
             .control(session.session_id())
             .has_bound_final_response_wake(session.presentation_id())
+            || session
+                .services
+                .unified_exec_manager
+                .has_pending_user_shell_completion_wake()
+                .await
+            || session.input_queue.has_queued_turn_trigger().await)
     {
         return Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::PendingTriggerTurn,
@@ -639,6 +656,7 @@ async fn start_if_idle_with_lease(
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
         Arc::clone(&active_turn.turn_state)
     };
+    drop(shell_wake_reservation);
     drop(observation);
     // The reserved turn now owns admission. Lifecycle callbacks may reacquire the goal lease.
     drop(lease);
@@ -832,16 +850,16 @@ impl Session {
         if active_turn.is_some() {
             return None;
         }
-        let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
-        if !self.input_queue.has_queued_turn_trigger().await
-            && !has_trigger_turn
+        let needs_new_turn = self.input_queue.has_queued_turn_trigger().await
+            || self.input_queue.has_trigger_turn_mailbox_items().await;
+        if !needs_new_turn
             && !self.has_outstanding_durable_sleep()
             && !self.should_wake_on_agent_messages().await
         {
             return None;
         }
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
-        let previous_options = if has_trigger_turn {
+        let previous_options = if needs_new_turn {
             Default::default()
         } else {
             self.state
