@@ -705,6 +705,7 @@ pub(crate) async fn inspect_pending_input(
         }
         TurnInput::AgentInput { .. }
         | TurnInput::ResponseItem(_)
+        | TurnInput::UserShellContextReady
         | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {
             should_stop: false,
             additional_contexts: Vec::new(),
@@ -773,6 +774,9 @@ pub(crate) async fn record_pending_input(
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item])
                 .await;
         }
+        // The accepted shell producer already owns the canonical write and live installation.
+        // Only continuation scheduling is pending; recording the payload again would duplicate it.
+        TurnInput::UserShellContextReady => {}
         TurnInput::FunctionCallOutput(item) => {
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item.clone()])
                 .await;

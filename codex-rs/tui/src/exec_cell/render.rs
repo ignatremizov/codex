@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use super::model::ActiveExecCall;
 use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
@@ -23,10 +24,10 @@ use crate::terminal_hyperlinks::prefix_hyperlink_lines;
 use crate::terminal_hyperlinks::remap_source_wrapped_line;
 use crate::terminal_hyperlinks::visible_lines;
 use crate::ui_consts::TRANSCRIPT_HINT;
+use crate::user_shell_command::user_shell_response_handling_label;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_line_with_source;
 use codex_ansi_escape::ansi_escape_line;
-use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_shell_command::bash::extract_bash_command;
 use itertools::Itertools;
@@ -53,14 +54,15 @@ struct CommandDisplay {
     hidden_details: bool,
 }
 
-pub(crate) fn new_active_exec_command(
-    call_id: String,
-    command: Vec<String>,
-    parsed: Vec<ParsedCommand>,
-    source: ExecCommandSource,
-    interaction_input: Option<String>,
-    animations_enabled: bool,
-) -> ExecCell {
+pub(crate) fn new_active_exec_command(call: ActiveExecCall, animations_enabled: bool) -> ExecCell {
+    let ActiveExecCall {
+        call_id,
+        command,
+        parsed,
+        source,
+        user_shell_response_handling,
+        interaction_input,
+    } = call;
     ExecCell::new(
         ExecCall {
             call_id,
@@ -68,6 +70,7 @@ pub(crate) fn new_active_exec_command(
             parsed,
             output: None,
             source,
+            user_shell_response_handling,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input,
@@ -509,6 +512,18 @@ impl ExecCell {
         {
             line.push_span(status);
         }
+        if let Some(response_handling) = call.user_shell_response_handling
+            && let Some(first) = highlighted_lines.first_mut()
+        {
+            first.spans.push(" ".into());
+            first.spans.push(
+                format!(
+                    "({})",
+                    user_shell_response_handling_label(response_handling)
+                )
+                .dim(),
+            );
+        }
 
         let continuation_wrap_width = layout.command_continuation.wrap_width(width);
         let continuation_opts =
@@ -646,6 +661,8 @@ mod tests {
     use crate::render::line_utils::push_owned_lines;
     use crate::wrapping::adaptive_wrap_line;
     use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
+    use codex_app_server_protocol::ThreadShellCommandFinalDelivery;
+    use codex_app_server_protocol::ThreadShellCommandResponseHandling;
     use pretty_assertions::assert_eq;
     use ratatui::widgets::Paragraph;
     use ratatui::widgets::Wrap;
@@ -715,6 +732,7 @@ mod tests {
             parsed: Vec::new(),
             output: Some(output),
             source: ExecCommandSource::UserShell,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,
@@ -811,11 +829,14 @@ mod tests {
     #[test]
     fn streamed_output_renders_head_tail_previews() {
         let mut cell = new_active_exec_command(
-            "call-id".to_string(),
-            vec!["bash".into(), "-lc".into(), "echo output".into()],
-            Vec::new(),
-            ExecCommandSource::Agent,
-            /*interaction_input*/ None,
+            ActiveExecCall {
+                call_id: "call-id".to_string(),
+                command: vec!["bash".into(), "-lc".into(), "echo output".into()],
+                parsed: Vec::new(),
+                source: ExecCommandSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         );
         for line in 1..=160 {
@@ -858,11 +879,14 @@ mod tests {
     #[test]
     fn truncated_live_output_preview_and_transcript_snapshot() {
         let mut cell = new_active_exec_command(
-            "call-id".to_string(),
-            vec!["bash".into(), "-lc".into(), "echo output".into()],
-            Vec::new(),
-            ExecCommandSource::Agent,
-            /*interaction_input*/ None,
+            ActiveExecCall {
+                call_id: "call-id".to_string(),
+                command: vec!["bash".into(), "-lc".into(), "echo output".into()],
+                parsed: Vec::new(),
+                source: ExecCommandSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         );
         let hidden = "\x1b[2m".repeat(300_000);
@@ -892,11 +916,14 @@ mod tests {
         ];
         let parsed = codex_shell_command::parse_command::parse_command(&command);
         let cell = new_active_exec_command(
-            "call-id".to_string(),
-            command,
-            parsed,
-            ExecCommandSource::Agent,
-            /*interaction_input*/ None,
+            ActiveExecCall {
+                call_id: "call-id".to_string(),
+                command,
+                parsed,
+                source: ExecCommandSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         );
         let rendered = cell
@@ -921,6 +948,7 @@ mod tests {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::UserShell,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,
@@ -953,6 +981,7 @@ mod tests {
             parsed: Vec::new(),
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
@@ -975,6 +1004,60 @@ mod tests {
     }
 
     #[test]
+    fn active_user_shell_commands_show_response_policy_snapshot() {
+        let rendered = [
+            (
+                "passive",
+                ThreadShellCommandResponseHandling {
+                    final_delivery: ThreadShellCommandFinalDelivery::Passive,
+                    queue_command: false,
+                },
+            ),
+            (
+                "wake",
+                ThreadShellCommandResponseHandling {
+                    final_delivery: ThreadShellCommandFinalDelivery::Wake,
+                    queue_command: false,
+                },
+            ),
+            (
+                "presentation",
+                ThreadShellCommandResponseHandling {
+                    final_delivery: ThreadShellCommandFinalDelivery::PresentationOnly,
+                    queue_command: true,
+                },
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(command, response_handling)| {
+            ExecCell::new(
+                ExecCall {
+                    call_id: command.to_string(),
+                    command: vec!["bash".into(), "-lc".into(), command.to_string()],
+                    parsed: Vec::new(),
+                    output: None,
+                    source: ExecCommandSource::UserShell,
+                    user_shell_response_handling: Some(response_handling),
+                    start_time: Some(Instant::now()),
+                    duration: None,
+                    interaction_input: None,
+                },
+                /*animations_enabled*/ false,
+            )
+            .command_display_lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| render_line_text(&line.line))
+        })
+        .join("\n");
+
+        insta::assert_snapshot!(rendered, @r"
+        • Running passive (passive)
+        • Running wake (wake)
+        • Running presentation (presentation only · queued)
+        ");
+    }
+
+    #[test]
     fn exploring_display_does_not_split_long_url_like_search_query() {
         let url_like = "example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/artifacts/reports/performance/summary/detail/with/a/very/long/path";
         let call = ExecCall {
@@ -987,6 +1070,7 @@ mod tests {
             }],
             output: None,
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,
@@ -1024,6 +1108,7 @@ mod tests {
             parsed: Vec::new(),
             output: Some(CommandOutput::new(/*exit_code*/ 0, url.to_string())),
             source: ExecCommandSource::UserShell,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,
@@ -1053,6 +1138,7 @@ mod tests {
             parsed: Vec::new(),
             output: Some(CommandOutput::new(/*exit_code*/ 0, url.to_string())),
             source: ExecCommandSource::Agent,
+            user_shell_response_handling: None,
             start_time: None,
             duration: None,
             interaction_input: None,

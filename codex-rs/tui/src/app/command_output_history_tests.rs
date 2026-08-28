@@ -42,6 +42,7 @@ async fn owned_viewport_uses_local_tool_and_user_shell_preview_limits() -> Resul
                 cwd: LegacyAppPathString::from_string("/workspace"),
                 process_id: None,
                 source,
+                user_shell_response_handling: None,
                 status: CommandExecutionStatus::Completed,
                 command_actions: Vec::new(),
                 aggregated_output: Some(
@@ -101,13 +102,17 @@ async fn owned_viewport_uses_local_tool_and_user_shell_preview_limits() -> Resul
                 let mut tui = crate::tui::test_support::make_test_tui()?;
                 tui.set_owned_screen(/*owned*/ true)?;
                 let size = Size::new(/*width*/ 100, /*height*/ 32);
-                tui.terminal.resize(size)?;
+                tui.screen_size_for_event(&TuiEvent::Resize(size))?;
                 let bottom = app.render_owned_transcript(&mut tui, size)?;
                 let buffer =
                     crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+                assert_eq!(
+                    (buffer.area.width, buffer.area.height),
+                    (size.width, size.height)
+                );
                 let history = buffer
                     .content()
-                    .chunks(usize::from(size.width))
+                    .chunks(usize::from(buffer.area.width))
                     .take(usize::from(bottom.y.saturating_sub(/*rhs*/ 1)))
                     .map(|row| {
                         row.iter()
