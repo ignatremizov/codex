@@ -45,7 +45,7 @@ use crate::tui;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
-use crate::version::CODEX_CLI_VERSION;
+use crate::version::CODEX_CLI_VERSION_FOR_DISPLAY;
 
 const STARTUP_EVENT_BATCH_SIZE: usize = 64;
 const STARTUP_PASTE_NEWLINE_TIMEOUT: Duration = Duration::from_millis(120);
@@ -470,7 +470,7 @@ fn startup_session_header(config: Option<&Config>) -> Box<dyn HistoryCell> {
             /*reasoning_effort*/ None,
             /*show_fast_status*/ false,
             directory,
-            CODEX_CLI_VERSION,
+            CODEX_CLI_VERSION_FOR_DISPLAY,
         )
         .with_yolo_mode(config.is_some_and(history_cell::is_yolo_mode)),
     )
