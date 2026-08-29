@@ -273,6 +273,10 @@ agent_response_preview_lines = 0
 
 Prompt previews default to 50 wrapped display rows; response previews default to unlimited (`0`). The limits apply to wrapped detail rows, including an omission marker, but exclude the preview title and status line. They affect presentation only. Complete prompt and response content remains available in canonical history and full transcript exports; ordinary replay uses the same presentation caps.
 
+## Thread naming
+
+Thread naming is on demand. `/rename` opens an editable name prompt and requests a suggestion from the recent conversation; sending a normal message does not launch title generation. A suggestion is not saved until you confirm the name. Existing names and manual renames remain authoritative, and canceled or stale suggestions cannot overwrite another prompt.
+
 ## TUI notification previews
 
 The following `[tui]` settings limit notification previews by Unicode grapheme clusters. The agent-turn limit applies to both desktop and ambient-pet previews; the execution-approval and user-input limits apply to their respective desktop notification categories:

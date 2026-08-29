@@ -16,7 +16,6 @@ use crate::app_event::PluginLocation;
 use crate::app_event::PluginRemoteSectionError;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RunningTaskExitAction;
-use crate::app_event::ThreadTitleDestination;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
@@ -665,8 +664,8 @@ pub(crate) struct App {
         HashMap<ThreadId, VecDeque<crate::chatwidget::RealtimeTranscriptRecord>>,
     realtime_replay_order: VecDeque<ThreadId>,
     temporary_structured_requests: HashMap<ThreadId, mpsc::UnboundedSender<ServerNotification>>,
-    /// Track title generation across thread switches and deduplicate automatic requests.
-    pending_thread_titles: HashMap<(ThreadId, ThreadTitleDestination), CancellationToken>,
+    /// Track editable title suggestions by originating thread and request across thread switches.
+    pending_thread_titles: HashMap<(ThreadId, uuid::Uuid), CancellationToken>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
     agents_overview: agents_overview::AgentsOverviewState,

@@ -6,7 +6,6 @@
 
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
-use crate::app_event::ThreadTitleDestination;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 use codex_app_server_protocol::ThreadStartedNotification;
 use codex_app_server_protocol::TurnInterruptParams;
@@ -2375,40 +2374,9 @@ impl App {
             // thread, so unrelated shutdowns cannot consume this marker.
             self.pending_shutdown_exit_thread_id = None;
         }
-        let automatic_title_user_message = if self.chat_widget.thread_name().is_none()
-            && let ThreadBufferedEvent::Notification(notification) = &event
-            && let ServerNotification::ItemCompleted(notification) = notification.as_ref()
-            && let ThreadItem::UserMessage { content, .. } = &notification.item
-        {
-            Some(
-                content
-                    .iter()
-                    .filter_map(|item| match item {
-                        codex_app_server_protocol::UserInput::Text { text, .. } => {
-                            Some(crate::ide_context::extract_prompt_request_with_offset(text).0)
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            )
-        } else {
-            None
-        };
         let had_active_modal = self.chat_widget.has_active_modal();
         self.handle_thread_event_now_recovering_file_changes(event)
             .await;
-        if let Some(user_message) = automatic_title_user_message
-            && !user_message.trim().is_empty()
-            && let Some(thread_id) = self.active_thread_id
-        {
-            self.generate_thread_title(
-                app_server,
-                thread_id,
-                ThreadTitleDestination::Automatic,
-                super::thread_title::thread_title_prompt(&user_message),
-            );
-        }
         if !had_active_modal
             && self.chat_widget.has_active_modal()
             && self.startup_protected_input_boundary

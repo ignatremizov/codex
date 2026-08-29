@@ -34,7 +34,6 @@ const RETRY_PROMPT: &str = "Handle the safety-buffered request";
 const COMMITTED_STEER: &str = "Keep the accepted steer";
 const UNSENT_DRAFT: &str = "Keep this unsent draft";
 const RETRY_GOAL: &str = "Preserve this goal across the retry";
-const SAFETY_RETRY_THREAD_NAME: &str = "Safety retry source";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SafetyRetryScenario {
@@ -578,13 +577,8 @@ goals = true
         ),
     )
     .await?;
-    let mut started = app_server.start_thread(&app.config).await?;
+    let started = app_server.start_thread(&app.config).await?;
     let source_thread_id = started.session.thread_id;
-    // Keep ordered response fixtures focused on safety retries, not background naming.
-    app_server
-        .thread_set_name(source_thread_id, SAFETY_RETRY_THREAD_NAME.to_string())
-        .await?;
-    started.session.thread_name = Some(SAFETY_RETRY_THREAD_NAME.to_string());
     app.replace_chat_widget_with_app_server_thread(
         &mut tui,
         started,
