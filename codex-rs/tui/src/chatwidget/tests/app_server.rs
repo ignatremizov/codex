@@ -2239,7 +2239,7 @@ async fn live_app_server_manual_thread_name_updates_status_surfaces() {
 }
 
 #[tokio::test]
-async fn live_app_server_automatic_thread_name_update_is_silent() {
+async fn repeated_app_server_thread_name_update_is_silent() {
     for replay_kind in [
         None,
         Some(ReplayKind::ThreadSnapshot),
