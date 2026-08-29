@@ -97,7 +97,7 @@ impl SlashCommand {
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
-            SlashCommand::Rename => "rename the current thread",
+            SlashCommand::Rename => "name or rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Archive => "archive this session and exit",
             SlashCommand::Delete => "permanently delete this session and exit",

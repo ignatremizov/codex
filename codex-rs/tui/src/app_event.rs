@@ -224,15 +224,6 @@ pub(crate) enum TranscriptExportDestination {
     File(PathBuf),
 }
 
-/// Deliver a generated title to its originating automatic rename or editable prompt.
-#[derive(Debug)]
-pub(crate) enum ThreadTitleDestination {
-    /// Replace the provisional name only if the user has not renamed the thread.
-    Automatic { expected_title: String },
-    /// Prefill only the still-active rename prompt with the matching request ID.
-    RenameSuggestion { request_id: Uuid },
-}
-
 /// Identifies the policy that initiated a recap request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecapTrigger {
@@ -278,16 +269,16 @@ pub(crate) enum AppEvent {
     /// Register a hidden title-generation thread started in the background.
     ThreadTitleStarted {
         thread_id: ThreadId,
-        destination: ThreadTitleDestination,
+        request_id: Uuid,
         prompt: String,
         effort: Option<ReasoningEffort>,
         result: Result<String, String>,
     },
-    /// Route a hidden title request to its automatic rename or editable prompt.
+    /// Route a hidden title request to its originating editable prompt.
     GeneratedThreadTitle {
         thread_id: ThreadId,
         temporary_thread_id: ThreadId,
-        destination: ThreadTitleDestination,
+        request_id: Uuid,
         result: Result<String, String>,
     },
     /// Interrupt a task directly from the shared dashboard.

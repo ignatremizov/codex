@@ -3,7 +3,6 @@
 use super::App;
 use super::thread_events::ThreadBufferedEvent;
 use crate::app_event::AppEvent;
-use crate::app_event::ThreadTitleDestination;
 use crate::app_server_session::AppServerSession;
 use crate::temporary_structured_request::TemporaryStructuredThreadOptions;
 use crate::temporary_structured_request::run_temporary_structured_turn;
@@ -36,7 +35,7 @@ impl App {
         &mut self,
         app_server: &AppServerSession,
         thread_id: ThreadId,
-        destination: ThreadTitleDestination,
+        request_id: uuid::Uuid,
         prompt: String,
     ) {
         let request_handle = app_server.request_handle();
@@ -74,7 +73,7 @@ impl App {
 
             event_sender.send(AppEvent::ThreadTitleStarted {
                 thread_id,
-                destination,
+                request_id,
                 prompt,
                 effort,
                 result,
@@ -87,7 +86,7 @@ impl App {
         &mut self,
         app_server: &AppServerSession,
         thread_id: ThreadId,
-        destination: ThreadTitleDestination,
+        request_id: uuid::Uuid,
         prompt: String,
         effort: Option<ReasoningEffort>,
         result: Result<String, String>,
@@ -96,20 +95,15 @@ impl App {
             Ok(thread_id) => thread_id,
             Err(error) => {
                 tracing::debug!(%error, "failed to start title-generation thread");
-                if let ThreadTitleDestination::RenameSuggestion { request_id } = destination {
-                    self.chat_widget.apply_thread_name_suggestion(
-                        thread_id, request_id, /*suggestion*/ None,
-                    );
-                }
+                self.chat_widget
+                    .apply_thread_name_suggestion(thread_id, request_id, /*suggestion*/ None);
                 return;
             }
         };
 
         let Ok(temporary_thread_id) = ThreadId::from_string(&temporary_thread_id_text) else {
-            if let ThreadTitleDestination::RenameSuggestion { request_id } = destination {
-                self.chat_widget
-                    .apply_thread_name_suggestion(thread_id, request_id, /*suggestion*/ None);
-            }
+            self.chat_widget
+                .apply_thread_name_suggestion(thread_id, request_id, /*suggestion*/ None);
             return;
         };
 
@@ -134,7 +128,7 @@ impl App {
             event_sender.send(AppEvent::GeneratedThreadTitle {
                 thread_id,
                 temporary_thread_id,
-                destination,
+                request_id,
                 result,
             });
         });
@@ -191,7 +185,7 @@ impl App {
         self.generate_thread_title(
             app_server,
             thread_id,
-            ThreadTitleDestination::RenameSuggestion { request_id },
+            request_id,
             recent_conversation_thread_title_prompt(&conversation),
         );
     }
@@ -223,21 +217,6 @@ fn thread_title_instructions() -> String {
   Do not use quotes, markdown, or trailing punctuation. \
   Do not answer the request."
     )
-}
-
-/// Build a bounded title request without truncating a Unicode character.
-pub(super) fn thread_title_prompt(user_message: &str) -> String {
-    let instructions = thread_title_instructions();
-    let prefix = format!("{instructions}\n\nUser prompt:\n");
-    let remaining_bytes = THREAD_TITLE_PROMPT_MAX_BYTES.saturating_sub(prefix.len());
-    let user_message = user_message
-        .trim()
-        .char_indices()
-        .take_while(|(index, character)| index + character.len_utf8() <= remaining_bytes)
-        .map(|(_, character)| character)
-        .collect::<String>();
-
-    format!("{prefix}{user_message}")
 }
 
 /// Format recent substantive messages chronologically without trusting their markup.

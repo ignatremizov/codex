@@ -14,7 +14,7 @@ expression: commands
 /import - import setup, this project, and recent chats from Claude Code
 /hooks - view and manage lifecycle hooks
 /review - review my current changes and find issues
-/rename - rename the current thread
+/rename - name or rename the current thread
 /new - start a new chat during a conversation
 /archive - archive this session and exit
 /delete - permanently delete this session and exit
