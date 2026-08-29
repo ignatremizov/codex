@@ -4339,7 +4339,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         );
     }
 
-    // Reuse this live spawn setup to cover thread/delete's ThreadManager descendant path.
+    // Deleting the parent must leave its independently running child loaded and addressable.
     let _: ThreadDeleteResponse = mcp
         .request(|request_id| ClientRequest::ThreadDelete {
             request_id,
@@ -4349,19 +4349,12 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         })
         .await?;
 
-    let mut deleted_thread_ids = Vec::new();
-    for _ in 0..2 {
-        let deleted: ThreadDeletedNotification = timeout(
-            DEFAULT_READ_TIMEOUT,
-            mcp.read_notification("thread/deleted"),
-        )
-        .await??;
-        deleted_thread_ids.push(deleted.thread_id);
-    }
-    assert_eq!(
-        deleted_thread_ids,
-        vec![receiver_thread_id, thread.id.clone()]
-    );
+    let deleted: ThreadDeletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/deleted"),
+    )
+    .await??;
+    assert_eq!(deleted.thread_id, thread.id);
 
     let ThreadLoadedListResponse { data, .. } = mcp
         .request(|request_id| ClientRequest::ThreadLoadedList {
@@ -4369,7 +4362,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             params: ThreadLoadedListParams::default(),
         })
         .await?;
-    assert_eq!(data, Vec::<String>::new());
+    assert_eq!(data, vec![receiver_thread_id]);
 
     Ok(())
 }

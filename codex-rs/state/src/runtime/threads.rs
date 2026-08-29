@@ -5,6 +5,12 @@ use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+#[derive(Clone, Copy)]
+enum AgentGraphDeletion {
+    DeleteIncidentEdges,
+    Preserve,
+}
+
 impl StateRuntime {
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
         let row = sqlx::query(
@@ -1111,11 +1117,32 @@ ON CONFLICT(id) DO UPDATE SET
         self.delete_threads_strict(&[thread_id]).await
     }
 
+    /// Delete one thread's state while retaining its durable agent graph relationships.
+    ///
+    /// This keeps independently persisted related threads discoverable and resumable after the
+    /// selected thread's rollout is removed.
+    pub async fn delete_thread_preserving_agent_graph(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<u64> {
+        self.delete_threads_with_agent_graph(&[thread_id], AgentGraphDeletion::Preserve)
+            .await
+    }
+
     /// Delete a set of threads and all associated state.
     ///
     /// Spawn edges and thread rows are deleted last so a failed delete can be retried with enough
     /// state left to rediscover the same spawned subtree.
     pub async fn delete_threads_strict(&self, thread_ids: &[ThreadId]) -> anyhow::Result<u64> {
+        self.delete_threads_with_agent_graph(thread_ids, AgentGraphDeletion::DeleteIncidentEdges)
+            .await
+    }
+
+    async fn delete_threads_with_agent_graph(
+        &self,
+        thread_ids: &[ThreadId],
+        agent_graph_deletion: AgentGraphDeletion,
+    ) -> anyhow::Result<u64> {
         if thread_ids.is_empty() {
             return Ok(0);
         }
@@ -1141,14 +1168,19 @@ ON CONFLICT(id) DO UPDATE SET
                 .execute(&mut *tx)
                 .await?;
         }
-        for thread_id_string in &thread_id_strings {
-            sqlx::query(
-                "DELETE FROM thread_spawn_edges WHERE parent_thread_id = ? OR child_thread_id = ?",
-            )
-            .bind(thread_id_string)
-            .bind(thread_id_string)
-            .execute(&mut *tx)
-            .await?;
+        match agent_graph_deletion {
+            AgentGraphDeletion::DeleteIncidentEdges => {
+                for thread_id_string in &thread_id_strings {
+                    sqlx::query(
+                        "DELETE FROM thread_spawn_edges WHERE parent_thread_id = ? OR child_thread_id = ?",
+                    )
+                    .bind(thread_id_string)
+                    .bind(thread_id_string)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+            AgentGraphDeletion::Preserve => {}
         }
         let mut rows_affected = 0;
         for thread_id_string in &thread_id_strings {

@@ -9,18 +9,16 @@ impl ThreadRequestProcessor {
         request_id: ConnectionRequestId,
         params: ThreadDeleteParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let mut deleted_thread_ids = Vec::new();
         let result = {
             let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
-            self.thread_delete_response(params, &mut deleted_thread_ids)
-                .await
+            self.thread_delete_response(params).await
         };
         match result {
-            Ok(response) => {
+            Ok((response, deleted_thread_id)) => {
                 self.outgoing
                     .send_response(request_id.clone(), response)
                     .await;
-                self.send_thread_deleted_notifications(deleted_thread_ids)
+                self.send_thread_deleted_notification(deleted_thread_id)
                     .await;
                 Ok(None)
             }
@@ -31,32 +29,25 @@ impl ThreadRequestProcessor {
     async fn thread_delete_response(
         &self,
         params: ThreadDeleteParams,
-        deleted_thread_ids: &mut Vec<String>,
-    ) -> Result<ThreadDeleteResponse, JSONRPCErrorError> {
+    ) -> Result<(ThreadDeleteResponse, String), JSONRPCErrorError> {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
-        let thread_ids = self.state_db_spawn_subtree_thread_ids(thread_id).await?;
+        self.validate_thread_delete(thread_id).await?;
+        self.prepare_thread_for_delete(thread_id).await;
 
-        self.validate_root_thread_delete(thread_id, thread_ids.len() > 1)
-            .await?;
-        for thread_id_to_delete in thread_ids.iter().copied() {
-            self.prepare_thread_for_delete(thread_id_to_delete).await;
+        let rollout_delete = self
+            .thread_store
+            .delete_thread(StoreDeleteThreadParams { thread_id })
+            .await;
+        match rollout_delete {
+            Ok(()) | Err(ThreadStoreError::ThreadNotFound { .. }) => {}
+            Err(err) => return Err(thread_store_delete_error(err)),
         }
-
-        let mut delete_order: Vec<_> = thread_ids.iter().skip(1).rev().copied().collect();
-        delete_order.push(thread_id);
-
-        self.thread_store
-            .delete_threads(StoreDeleteThreadsParams {
-                thread_ids: delete_order.clone(),
-            })
-            .await
-            .map_err(thread_store_delete_error)?;
 
         if let Some(state_db) = self.state_db.as_ref() {
             state_db
-                .delete_threads_strict(thread_ids.as_slice())
+                .delete_thread_preserving_agent_graph(thread_id)
                 .await
                 .map_err(|err| {
                     internal_error(format!(
@@ -65,29 +56,18 @@ impl ThreadRequestProcessor {
                 })?;
         }
 
-        deleted_thread_ids.extend(
-            delete_order
-                .into_iter()
-                .map(|thread_id| thread_id.to_string()),
-        );
-        Ok(ThreadDeleteResponse {})
+        Ok((ThreadDeleteResponse {}, thread_id.to_string()))
     }
 
-    async fn send_thread_deleted_notifications(&self, deleted_thread_ids: Vec<String>) {
-        for thread_id in deleted_thread_ids {
-            self.outgoing
-                .send_server_notification(ServerNotification::ThreadDeleted(
-                    ThreadDeletedNotification { thread_id },
-                ))
-                .await;
-        }
+    async fn send_thread_deleted_notification(&self, thread_id: String) {
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadDeleted(
+                ThreadDeletedNotification { thread_id },
+            ))
+            .await;
     }
 
-    async fn validate_root_thread_delete(
-        &self,
-        thread_id: ThreadId,
-        has_descendants: bool,
-    ) -> Result<(), JSONRPCErrorError> {
+    async fn validate_thread_delete(&self, thread_id: ThreadId) -> Result<(), JSONRPCErrorError> {
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             if !thread.config_snapshot().await.ephemeral {
                 return Ok(());
@@ -107,9 +87,6 @@ impl ThreadRequestProcessor {
         {
             Ok(_) => Ok(()),
             Err(ThreadStoreError::ThreadNotFound { .. }) => {
-                if has_descendants {
-                    return Ok(());
-                }
                 let Some(state_db) = self.state_db.as_ref() else {
                     return Err(thread_store_delete_error(
                         ThreadStoreError::ThreadNotFound { thread_id },

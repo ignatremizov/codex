@@ -207,7 +207,7 @@ Example with notification opt-out:
 - `thread/settings/updated` — experimental notification emitted to subscribed clients when a loaded thread’s effective next-turn settings change; includes `threadId` and the full `threadSettings`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
-- `thread/delete` — hard-delete an active or archived thread and any spawned descendant threads; returns `{}` on success and emits `thread/deleted` for each deleted thread.
+- `thread/delete` — hard-delete only the specified active or archived thread; spawned, adopted, or otherwise communicating threads remain available. Returns `{}` on success and emits one `thread/deleted` notification.
 - `thread/unsubscribe` — unsubscribe this connection from thread turn/item events. If this was the last subscriber, the server keeps the thread loaded and unloads it only after it has had no subscribers and no thread activity for 30 minutes, runs `SessionEnd` hooks, then emits `thread/closed`.
 - `thread/name/set` — set or update a thread’s user-facing name for either a loaded thread or a persisted rollout; returns `{}` on success and emits `thread/name/updated` to initialized, opted-in clients. Thread names are not required to be unique; name lookups resolve to the most recently updated thread.
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
@@ -441,7 +441,7 @@ By default, `thread/resume` includes the reconstructed turn history in `thread.t
 
 Paginated threads keep the same resume contract as legacy threads. A default resume materializes the full projected history into `thread.turns`; `excludeTurns: true` keeps that array empty and includes `turnsBackwardsCursor` and `itemsBackwardsCursor` for the durable history visible at the resume boundary. Pass each cursor directly to its matching list API with `sortDirection: "desc"`; the first page includes the row identified by the cursor, while newer records arrive through live notifications. Either cursor is `null` when there is no durable row yet.
 
-Only one app-server process can hold a paginated thread open for writing at a time. If another process already owns the thread, `thread/resume`, `thread/archive`, and `thread/delete` fail with JSON-RPC error `-32600`. Archive and deletion also fail if another process owns any spawned descendant. Read-only requests remain available without resuming the thread.
+Only one app-server process can hold a paginated thread open for writing at a time. If another process already owns the thread, `thread/resume`, `thread/archive`, and `thread/delete` fail with JSON-RPC error `-32600`. Archive also fails if another process owns any spawned descendant. Read-only requests remain available without resuming the thread.
 
 Experimental clients that want the live resume subscription plus a turns page in one round trip can pass `initialTurnsPage`. It accepts the same `limit`, `sortDirection`, and `itemsView` controls as `thread/turns/list`; omitted controls use its defaults. The response includes `initialTurnsPage` with `nextCursor` and `backwardsCursor` for follow-up pagination.
 
@@ -925,7 +925,7 @@ An archived thread will not appear in `thread/list` unless `archived` is set to 
 
 ### Example: Delete a thread
 
-Use `thread/delete` to hard-delete a thread and its spawned descendant threads. Existing rollout files and associated metadata must be removed before the request succeeds; missing rollout files are treated as already deleted.
+Use `thread/delete` to hard-delete one thread. Spawn, adoption, and communication relationships do not cascade deletion; related threads and their durable graph relationships remain available. Existing rollout files and associated metadata for the selected thread must be removed before the request succeeds, and missing rollout files are treated as already deleted. Deletion is rejected when another paginated thread physically references the selected thread's history.
 
 ```json
 { "method": "thread/delete", "id": 23, "params": { "threadId": "thr_b" } }

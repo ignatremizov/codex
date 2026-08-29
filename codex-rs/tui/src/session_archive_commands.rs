@@ -301,7 +301,7 @@ fn confirm_session_delete(target: &ResolvedSessionTarget) -> Result<bool> {
     }?;
     writeln!(
         stderr,
-        "This cannot be undone. Subagent threads will also be deleted."
+        "This cannot be undone. Other sessions will not be deleted."
     )?;
     write!(stderr, "Continue? [y/N]: ")?;
     stderr.flush()?;
