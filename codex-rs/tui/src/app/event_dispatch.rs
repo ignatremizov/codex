@@ -10,7 +10,6 @@ use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_event::CapturedSideStream;
 use crate::app_event::RecapTrigger;
-use crate::app_event::ThreadTitleDestination;
 use crate::app_server_session::ForkGoalContinuation;
 use crate::app_server_session::ThreadSettingsOwner;
 use crate::app_server_session::UnsupportedLegacyPermissionProfile;
@@ -3450,7 +3449,7 @@ impl App {
             AppEvent::ThreadTitleStarted {
                 cancellation,
                 thread_id,
-                destination,
+                request_id,
                 prompt,
                 effort,
                 result,
@@ -3458,7 +3457,7 @@ impl App {
                 self.on_thread_title_started(
                     app_server,
                     thread_id,
-                    destination,
+                    request_id,
                     prompt,
                     effort,
                     result,
@@ -3469,7 +3468,7 @@ impl App {
                 cancellation,
                 thread_id,
                 temporary_thread_id,
-                destination,
+                request_id,
                 result,
             } => {
                 self.temporary_structured_requests
@@ -3478,14 +3477,16 @@ impl App {
                 if cancellation.is_cancelled() {
                     return Ok(AppRunControl::Continue);
                 }
-                self.finish_thread_title_generation(thread_id, destination);
-                if let ThreadTitleDestination::RenameSuggestion { request_id } = destination {
-                    let suggestion = result.ok()
-                        .and_then(|response| super::thread_title::parse_thread_title(&response));
-                    self.chat_widget.apply_thread_name_suggestion(
-                        thread_id, request_id, suggestion.as_deref(),
-                    );
-                }
+                self.finish_thread_title_generation(thread_id, request_id);
+                let suggestion = result
+                    .ok()
+                    .and_then(|response| super::thread_title::parse_thread_title(&response));
+
+                self.chat_widget.apply_thread_name_suggestion(
+                    thread_id,
+                    request_id,
+                    suggestion.as_deref(),
+                );
             }
             AppEvent::HideAgentsOverviewThread { thread_id } => {
                 self.prepare_agents_overview_removal(&HashSet::from([thread_id]));

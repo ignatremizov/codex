@@ -196,8 +196,6 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use std::time::Instant;
-use tokio::sync::Semaphore;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub(crate) const JSONRPC_INVALID_REQUEST: i64 = -32600;
@@ -415,7 +413,6 @@ pub(crate) struct AppServerSession {
     request_handle: AppServerRequestHandle,
     request_id_namespace: Option<Uuid>,
     next_request_id: i64,
-    automatic_name_writes: HashMap<ThreadId, Arc<Semaphore>>,
     /// The newest docked replay refresh on this connection.
     pub(crate) pending_side_skills_refresh: Option<Uuid>,
     history_pagination: HashMap<ThreadId, history::ThreadHistoryPagination>,
@@ -443,35 +440,6 @@ pub(crate) struct AppServerSession {
     dynamic_tool_mcp: Option<Arc<DynamicToolMcpServer>>,
     pub(crate) worktree_source_config_builder:
         Option<Box<crate::legacy_core::config::ConfigBuilder>>,
-}
-
-/// An automatic save holds the gate only while writing, so a manual rename can skip a slow read.
-pub(crate) struct AutomaticThreadName {
-    session: AppServerSession,
-    thread_id: ThreadId,
-    gate: Arc<Semaphore>,
-}
-
-impl AutomaticThreadName {
-    pub(crate) async fn save(mut self, title: String, cancellation: &CancellationToken) {
-        let read = self
-            .session
-            .thread_read(self.thread_id, /*include_turns*/ false);
-        let Some(Ok(thread)) = cancellation.run_until_cancelled(read).await else {
-            return;
-        };
-        if thread.name.is_some() {
-            return;
-        }
-        let Ok(_permit) = self.gate.acquire().await else {
-            return;
-        };
-        if !cancellation.is_cancelled()
-            && let Err(error) = self.session.thread_set_name(self.thread_id, title).await
-        {
-            tracing::debug!(%error, "failed to apply generated thread title");
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -630,7 +598,6 @@ impl AppServerSession {
             request_handle,
             request_id_namespace: None,
             next_request_id: 1,
-            automatic_name_writes: HashMap::new(),
             pending_side_skills_refresh: None,
             attachment_subscribed: None,
             history_pagination: HashMap::new(),
@@ -1998,34 +1965,11 @@ impl AppServerSession {
             .await
     }
 
-    pub(crate) fn automatic_thread_name_writer(
-        &mut self,
-        thread_id: ThreadId,
-    ) -> AutomaticThreadName {
-        self.automatic_name_writes
-            .retain(|_, gate| Arc::strong_count(gate) > 1);
-        let session = self.request_view();
-        let gate = self
-            .automatic_name_writes
-            .entry(thread_id)
-            .or_insert_with(|| Arc::new(Semaphore::new(/*permits*/ 1)));
-        AutomaticThreadName {
-            session,
-            thread_id,
-            gate: Arc::clone(gate),
-        }
-    }
-
     pub(crate) async fn thread_set_name(
         &mut self,
         thread_id: ThreadId,
         name: String,
     ) -> Result<()> {
-        let gate = self.automatic_name_writes.get(&thread_id).cloned();
-        let _permit = match &gate {
-            Some(gate) => Some(gate.acquire().await?),
-            None => None,
-        };
         let request_id = self.next_request_id();
         let _: ThreadSetNameResponse = self
             .request_handle
@@ -2038,10 +1982,6 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/name/set failed in TUI")?;
-        if let Some(gate) = gate.as_ref() {
-            gate.close();
-            self.automatic_name_writes.remove(&thread_id);
-        }
         Ok(())
     }
 
