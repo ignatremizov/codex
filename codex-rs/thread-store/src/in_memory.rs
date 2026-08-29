@@ -54,6 +54,9 @@ static IN_MEMORY_THREAD_STORES: OnceLock<Mutex<HashMap<String, Arc<InMemoryThrea
 #[path = "in_memory_completion.rs"]
 mod completion;
 
+#[path = "in_memory_deletion.rs"]
+mod deletion;
+
 #[cfg(test)]
 #[path = "in_memory_completion_tests.rs"]
 mod completion_tests;
@@ -1074,38 +1077,6 @@ impl InMemoryThreadStore {
         }
         Ok(())
     }
-
-    async fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreResult<()> {
-        self.state.lock().await.calls.delete_thread += 1;
-        let deleted_state_rows = if let Some(state_db) = &self.state_db {
-            state_db
-                .delete_threads_strict(&[params.thread_id])
-                .await
-                .map_err(|error| ThreadStoreError::Internal {
-                    message: format!("failed to delete thread state: {error}"),
-                })?
-        } else {
-            0
-        };
-        let mut state = self.state.lock().await;
-        let existed = state.histories.remove(&params.thread_id).is_some();
-        state.created_threads.remove(&params.thread_id);
-        state.names.remove(&params.thread_id);
-        state.metadata_updates.remove(&params.thread_id);
-        state.sections.remove(&params.thread_id);
-        state.section_positions.remove(&params.thread_id);
-        state.section_entered_at.remove(&params.thread_id);
-        state
-            .rollout_paths
-            .retain(|_, thread_id| *thread_id != params.thread_id);
-        if existed || deleted_state_rows > 0 {
-            Ok(())
-        } else {
-            Err(ThreadStoreError::ThreadNotFound {
-                thread_id: params.thread_id,
-            })
-        }
-    }
 }
 
 impl ThreadStore for InMemoryThreadStore {
@@ -1329,6 +1300,10 @@ impl ThreadStore for InMemoryThreadStore {
 
     fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(InMemoryThreadStore::delete_thread(self, params))
+    }
+
+    fn delete_threads(&self, params: crate::DeleteThreadsParams) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(InMemoryThreadStore::delete_threads(self, params))
     }
 }
 
