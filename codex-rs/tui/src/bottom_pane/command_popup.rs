@@ -445,6 +445,23 @@ mod tests {
     }
 
     #[test]
+    fn rename_prefix_selects_the_naming_action() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/ren".to_string());
+        let commands = popup
+            .filtered_items()
+            .iter()
+            .map(|item| format!("/{} - {}", item.command(), item.description()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(commands, @"/rename - name or rename the current thread");
+        assert_eq!(
+            popup.selected_item(),
+            Some(CommandItem::Builtin(SlashCommand::Rename))
+        );
+    }
+
+    #[test]
     fn unavailable_side_conversation_command_is_shown_only_when_searched() {
         let mut popup = CommandPopup::new(
             CommandPopupFlags {
