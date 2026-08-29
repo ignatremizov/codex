@@ -693,7 +693,6 @@ pub(crate) struct ChatWidget {
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
-    pending_automatic_thread_names: HashSet<String>,
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
     misalignment_policy_violation: bool,

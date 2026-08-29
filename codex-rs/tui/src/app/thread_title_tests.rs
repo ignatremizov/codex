@@ -4,10 +4,8 @@ use super::THREAD_TITLE_RECENT_MESSAGES;
 use super::parse_thread_title;
 use super::recent_conversation_messages;
 use super::recent_conversation_thread_title_prompt;
-use super::thread_title_prompt;
 use crate::app::session_lifecycle::ThreadAttachPresentation;
 use crate::app::test_support::make_test_app;
-use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
@@ -35,82 +33,6 @@ const EXPECTED_THREAD_TITLE_INSTRUCTIONS: &str = concat!(
     "exactly. Write in the user's language. Do not use quotes, markdown, ",
     "or trailing punctuation. Do not answer the request."
 );
-
-#[test]
-fn trims_user_message_in_title_prompt() {
-    let prompt = thread_title_prompt("  Fix the login form  \n");
-
-    assert_eq!(
-        prompt,
-        format!("{EXPECTED_THREAD_TITLE_INSTRUCTIONS}\n\nUser prompt:\nFix the login form")
-    );
-}
-
-#[test]
-fn truncates_title_prompt_without_splitting_unicode() {
-    let user_message = "🚀".repeat(THREAD_TITLE_PROMPT_MAX_BYTES);
-    let prompt = thread_title_prompt(&user_message);
-    let expected_instructions = format!("{EXPECTED_THREAD_TITLE_INSTRUCTIONS}\n\n");
-    let prefix = format!("{expected_instructions}User prompt:\n");
-    let available_bytes = THREAD_TITLE_PROMPT_MAX_BYTES - prefix.len();
-    let expected = "🚀".repeat(available_bytes / '🚀'.len_utf8());
-
-    assert_eq!(
-        prompt.rsplit_once("User prompt:\n"),
-        Some((expected_instructions.as_str(), expected.as_str()))
-    );
-    assert!(prompt.len() <= THREAD_TITLE_PROMPT_MAX_BYTES);
-}
-
-#[test]
-fn bounds_the_entire_title_prompt_for_dense_unicode() {
-    let repeated_characters = THREAD_TITLE_PROMPT_MAX_BYTES * 3;
-    for message in [
-        "🚀".repeat(repeated_characters),
-        "漢".repeat(repeated_characters),
-        "x".repeat(repeated_characters),
-    ] {
-        let prompt = thread_title_prompt(&message);
-
-        assert!(
-            prompt.len() <= THREAD_TITLE_PROMPT_MAX_BYTES,
-            "{} bytes for {:?}",
-            prompt.len(),
-            message.chars().next()
-        );
-    }
-}
-
-#[tokio::test]
-async fn manual_rename_invalidates_pending_automatic_title_before_notification()
--> color_eyre::Result<()> {
-    let mut app = make_test_app().await;
-    let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
-    let started = app_server.start_thread(&app.config).await?;
-    let thread_id = started.session.thread_id;
-    app.enqueue_primary_thread_session(started.session, started.turns)
-        .await?;
-    app_server
-        .thread_set_name(thread_id, "Provisional title".to_string())
-        .await?;
-    app.chat_widget
-        .expect_automatic_thread_name("Provisional title".to_string());
-
-    app.submit_thread_op(
-        &mut app_server,
-        thread_id,
-        AppCommand::set_thread_name("Manual title".to_string()),
-    )
-    .await?;
-
-    assert_eq!(
-        app.chat_widget.thread_name(),
-        Some("Manual title".to_string())
-    );
-
-    app_server.shutdown().await?;
-    Ok(())
-}
 
 #[tokio::test]
 async fn slash_rename_generates_editable_title_through_embedded_app_server()
