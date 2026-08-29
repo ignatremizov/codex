@@ -132,6 +132,10 @@ later. Existing trust decisions and permission checks for projects are unchanged
 
 # Thread removal
 
+`thread/delete` deletes only the selected active or archived thread and emits one `thread/deleted` notification. Spawn, adoption, and communication relationships do not cascade deletion: related threads and their durable graph relationships are retained. Missing rollout files are treated as already deleted. This does not expand the authority to resume or transfer a surviving thread.
+
+Deletion continues to enforce writer-ownership checks for the selected thread and is rejected when another paginated thread physically references its history. Archive retains its existing descendant handling and ownership checks.
+
 `thread/archive` and `thread/delete` reject attempts to remove a live internal
 worker with JSON-RPC error `-32600`. The worker's owner controls its shutdown.
 For example, a Guardian reviewer remains available to its parent conversation

@@ -632,6 +632,7 @@ pub trait ThreadStore: Any + Send + Sync {
 
     /// Deletes a thread's persisted rollout data and associated metadata.
     /// Success includes cleanup of associated persisted state; callers must not repeat it.
+    /// Durable agent graph and alias evidence is retained without reviving deleted identities.
     fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreFuture<'_, ()>;
 
     /// Deletes threads and their associated persisted state in order, treating already-missing

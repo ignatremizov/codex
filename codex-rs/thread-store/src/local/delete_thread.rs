@@ -77,6 +77,11 @@ pub(super) async fn delete_thread(
     let thread_rollouts = ThreadRollouts::from_index(&reference_index, thread_id);
     ensure_no_external_references(&reference_index, std::slice::from_ref(&thread_rollouts))?;
     let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
+    // Recheck after acquiring the selected writer: references may have changed since the initial
+    // scan. This is not a global fence against publication of new references.
+    let reference_index = scan_reference_index(store).await?;
+    let thread_rollouts = ThreadRollouts::from_index(&reference_index, thread_id);
+    ensure_no_external_references(&reference_index, std::slice::from_ref(&thread_rollouts))?;
     if let Some(cleanup) = &store.thread_data_cleanup {
         cleanup(vec![thread_id]).await?;
     }
@@ -87,7 +92,16 @@ pub(super) async fn delete_thread(
             Err(ThreadStoreError::ThreadNotFound { .. }) => false,
             Err(err) => return Err(err),
         };
-    let deleted_state_rows = delete_state_rows(store, &[thread_id]).await?;
+    let deleted_state_rows = if let Some(state_db) = store.state_db.as_ref() {
+        state_db
+            .delete_thread_preserving_agent_graph(thread_id)
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to delete thread state: {err}"),
+            })?
+    } else {
+        0
+    };
     if found_rollout || deleted_state_rows > 0 {
         Ok(())
     } else {
@@ -124,6 +138,12 @@ pub(super) async fn delete_threads(
     ensure_no_external_references(&reference_index, thread_rollouts.as_slice())?;
 
     let mut writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
+    let reference_index = scan_reference_index(store).await?;
+    let thread_rollouts = thread_ids
+        .iter()
+        .map(|thread_id| ThreadRollouts::from_index(&reference_index, *thread_id))
+        .collect::<Vec<_>>();
+    ensure_no_external_references(&reference_index, thread_rollouts.as_slice())?;
     if let Some(cleanup) = &store.thread_data_cleanup {
         cleanup(thread_ids.clone()).await?;
     }
