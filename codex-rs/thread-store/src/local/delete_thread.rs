@@ -115,7 +115,16 @@ pub(super) async fn delete_thread(
             Err(ThreadStoreError::ThreadNotFound { .. }) => false,
             Err(err) => return Err(err),
         };
-    let deleted_state_rows = delete_state_rows(store, &[thread_id]).await?;
+    let deleted_state_rows = if let Some(state_db) = store.state_db.as_ref() {
+        state_db
+            .delete_thread_preserving_agent_graph(thread_id)
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to delete thread state: {err}"),
+            })?
+    } else {
+        0
+    };
     if found_rollout || deleted_state_rows > 0 {
         Ok(())
     } else {
