@@ -1809,7 +1809,7 @@ async fn bang_shell_response_options_are_parsed_while_task_is_running() {
     handle_turn_started(&mut chat, "turn-1");
 
     chat.bottom_pane
-        .set_composer_text("![w:fq] echo hi".to_string(), Vec::new(), Vec::new());
+        .set_composer_text("!w:fq echo hi".to_string(), Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     match op_rx.try_recv() {
@@ -1832,7 +1832,7 @@ async fn bang_shell_response_options_are_parsed_while_task_is_running() {
     let Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) = rx.try_recv() else {
         panic!("expected shell command history entry");
     };
-    insta::assert_snapshot!(text, @"![w:fq] echo hi");
+    insta::assert_snapshot!(text, @"!w:fq echo hi");
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
 }
 

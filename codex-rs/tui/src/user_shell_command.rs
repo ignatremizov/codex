@@ -5,21 +5,34 @@ use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 pub(crate) struct ParsedUserShellCommand<'a> {
     pub(crate) command: &'a str,
     pub(crate) response_handling: ThreadShellCommandResponseHandling,
+    pub(crate) response_option_prefix_len: Option<usize>,
 }
 
 pub(crate) fn parse_user_shell_command(input: &str) -> Result<ParsedUserShellCommand<'_>, String> {
-    let input = input.trim();
-    let Some(options) = input.strip_prefix("[w:") else {
+    let input = input.trim_end();
+    let command = input.trim_start();
+    let Some(options) = input.strip_prefix("w:") else {
+        return Ok(ParsedUserShellCommand {
+            command,
+            response_handling: ThreadShellCommandResponseHandling::default(),
+            response_option_prefix_len: None,
+        });
+    };
+    let (flags, command) = if let Some(flags_end) = options.find(char::is_whitespace) {
+        options.split_at(flags_end)
+    } else {
+        (options, "")
+    };
+    if !flags
+        .chars()
+        .all(|flag| matches!(flag, 'c' | 'f' | 'm' | 'q' | 'x'))
+    {
         return Ok(ParsedUserShellCommand {
             command: input,
             response_handling: ThreadShellCommandResponseHandling::default(),
+            response_option_prefix_len: None,
         });
-    };
-    let Some((flags, command)) = options.split_once(']') else {
-        return Err(
-            "invalid shell response options; expected `![w:<flags>] <command>`".to_string(),
-        );
-    };
+    }
     if flags.is_empty() {
         return Err(
             "invalid empty shell wake/event state; use unique f, q, or x flags in fqx order"
@@ -71,6 +84,7 @@ pub(crate) fn parse_user_shell_command(input: &str) -> Result<ParsedUserShellCom
             final_delivery,
             queue_command,
         },
+        response_option_prefix_len: Some("w:".len() + flags.len()),
     })
 }
 
