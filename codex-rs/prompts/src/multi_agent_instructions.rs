@@ -5,7 +5,7 @@ use crate::without_update_plan_instructions;
 use codex_context_fragments::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
 
-const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Model and reasoning-effort overrides are independent of history inheritance. Only set overrides when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions.";
+const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Model and reasoning-effort overrides are independent of history inheritance. Only set overrides when explicitly requested by the user, applicable instructions, or a clear task-specific reason.";
 const DEFAULT_MULTI_AGENT_V2_DELEGATION_USAGE_HINT_TEXT: &str =
     "Use no inherited context by default. Omitted `fork_turns` uses the configured default";
 const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =

@@ -23,7 +23,6 @@ use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::default_thread_id_generator;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use crate::turn_timing::now_unix_timestamp_ms;
-use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
@@ -124,7 +123,6 @@ mod legacy;
 mod residency;
 mod resume_role;
 mod sender_context;
-mod service_tier;
 mod spawn;
 mod target;
 mod user_authorization;
@@ -155,8 +153,6 @@ pub(crate) struct LocalAgentControl {
     wait_agent_presentations: Arc<presentation::WaitAgentPresentations>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
-    /// The user-selected root routing tier, shared by the entire agent tree.
-    root_service_tier: Arc<ArcSwapOption<String>>,
     /// Retains the root's opt-in instruction provider even when the root is unloaded.
     shared_thread_instructions_provider: Arc<OnceLock<Arc<dyn ThreadInstructionsProvider>>>,
 }
@@ -192,7 +188,6 @@ impl LocalAgentControl {
             agent_execution_limiter: Arc::default(),
             wait_agent_presentations: Arc::default(),
             rollout_budget: Arc::default(),
-            root_service_tier: Arc::new(ArcSwapOption::from(None)),
             shared_thread_instructions_provider: Arc::default(),
         };
         if let Some(rollout_budget) = rollout_budget {

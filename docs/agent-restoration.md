@@ -19,6 +19,15 @@ an explicitly empty string. Omitting the override reapplies the configured role;
 global configuration defaults and inherited parent instructions are not explicit
 resume overrides. Other role restrictions and recorded routing settings still apply.
 
+Owned-agent model requests project that effective value into harness-classified developer
+instruction fragments, including when a resumed or history-forked thread retains
+an older initial-context bundle. Historical audit records are not rewritten.
+Managed policy, client-authored developer messages and unclassified legacy text
+are not replaced by this projection. An absent resolved value leaves historical
+instructions unchanged; an explicitly empty value removes the classified fragments.
+Root sessions, snapshot-only workers, Guardian review sessions and compaction
+decoders keep their existing history behavior.
+
 Workspace settings recovered from history are not an explicit request to retarget
 the live owner's executor. Child restoration preserves that captured attachment.
 An explicitly supplied `cwd` or `runtimeWorkspaceRoots` remains a host-boundary

@@ -1,10 +1,10 @@
 use super::*;
 use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::ResponseObserverKind;
 use crate::agent::next_thread_spawn_depth;
-use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
@@ -149,37 +149,18 @@ async fn handle_spawn_agent(
         &session,
         step_context.as_ref(),
         SpawnConfigOptions {
+            origin: SpawnConfigOrigin::Model,
             version: SpawnConfigVersion::V2,
             fork_mode: fork_mode.as_ref(),
             role_name,
             model: args.model.as_deref(),
+            service_tier: args.service_tier.as_deref(),
             reasoning_effort: args.reasoning_effort.clone(),
         },
     )
-    .await?;
-    let mut config = prepared.config;
-    let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
-    apply_spawn_agent_role(&session, &mut config, role_name).await?;
-    if fork_mode.is_some() {
-        ensure_model_history_fork_allowed(&config)?;
-    }
-    if is_full_history_fork && config.developer_instructions.is_none() {
-        config
-            .developer_instructions
-            .clone_from(&turn.developer_instructions);
-    }
-    apply_spawn_agent_service_tier(&session, &mut config, args.service_tier.as_deref()).await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-
-    // Remember an applied configured default so cold reload reapplies its restrictions.
-    let persisted_role_name = role_name.or_else(|| {
-        (!is_full_history_fork
-            && config
-                .agent_roles
-                .get(DEFAULT_ROLE_NAME)
-                .is_some_and(|role| role.config_file.is_some()))
-        .then_some(DEFAULT_ROLE_NAME)
-    });
+    .await
+    .map_err(FunctionCallError::RespondToModel)?;
+    let config = prepared.config;
     let spawn_source = thread_spawn_source(
         session.thread_id,
         &turn.session_source,

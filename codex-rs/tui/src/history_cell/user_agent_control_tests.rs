@@ -4,6 +4,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserAgentForkMode;
+use codex_protocol::openai_models::ReasoningEffort;
 
 use super::*;
 
@@ -58,6 +59,8 @@ fn renders_successful_user_agent_prompt() {
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
+        model: None,
+        reasoning_effort: None,
         prompt_preview: Some("Review the latest diff.".to_string()),
         resumed_target: false,
         fork_mode: None,
@@ -95,6 +98,8 @@ fn renders_legacy_child_to_main_prompt_without_claiming_admission() {
         agent_ref: Some("1".to_string()),
         nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
         role: None,
+        model: None,
+        reasoning_effort: None,
         prompt_preview: Some("Please confirm.".to_string()),
         resumed_target: false,
         fork_mode: None,
@@ -132,6 +137,8 @@ fn renders_successful_prompt_with_post_admission_warning() {
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
+        model: None,
+        reasoning_effort: None,
         prompt_preview: Some("Review the latest diff.".to_string()),
         resumed_target: false,
         fork_mode: None,
@@ -170,6 +177,8 @@ fn renders_successful_prompt_that_resumed_the_target() {
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
+        model: None,
+        reasoning_effort: None,
         prompt_preview: Some("Continue the review.".to_string()),
         resumed_target: true,
         fork_mode: None,
@@ -206,6 +215,8 @@ fn renders_successful_queued_prompt_that_resumed_the_target() {
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
+        model: None,
+        reasoning_effort: None,
         prompt_preview: Some("Run the queued review.".to_string()),
         resumed_target: true,
         fork_mode: None,
@@ -244,6 +255,8 @@ fn renders_successful_close_with_queued_response_replay() {
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
+        model: None,
+        reasoning_effort: None,
         prompt_preview: None,
         resumed_target: false,
         fork_mode: None,
@@ -280,6 +293,8 @@ fn renders_failed_user_agent_spawn() {
         agent_ref: None,
         nickname: None,
         role: Some("reviewer".to_string()),
+        model: Some("gpt-5.6-luna".to_string()),
+        reasoning_effort: Some(ReasoningEffort::High),
         prompt_preview: Some("Review the latest diff.".to_string()),
         resumed_target: false,
         fork_mode: Some(UserAgentForkMode::LastNTurns { turns: 3 }),
@@ -299,7 +314,7 @@ fn renders_failed_user_agent_spawn() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    • User agent spawn failed [reviewer] (fork last 3) (presentation)
+    • User agent spawn failed [reviewer] (fork last 3) (gpt-5.6-luna high) (presentation)
       └ Review the latest diff.
         Failed: agent depth limit reached
     ");
@@ -318,6 +333,8 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
         agent_ref: Some("2".to_string()),
         nickname: Some("Noether".to_string()),
         role: None,
+        model: None,
+        reasoning_effort: None,
         prompt_preview: None,
         resumed_target: false,
         fork_mode: None,

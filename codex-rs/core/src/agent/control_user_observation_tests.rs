@@ -6,18 +6,19 @@ use crate::UserAgentForkMode;
 use crate::UserAgentObservationBinding;
 use crate::UserAgentObservationMode;
 use crate::UserAgentResponseHandling;
+use crate::UserAgentSpawnOptions;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn close_response_cannot_hold_a_receipt_inside_the_subtree_being_closed() {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;
     let parent = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn parent");
     let parent = harness
@@ -26,12 +27,11 @@ async fn close_response_cannot_hold_a_receipt_inside_the_subtree_being_closed() 
         .await
         .expect("parent");
     let child = parent
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn child");
     let child = harness
@@ -66,12 +66,11 @@ async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;
     let parent = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn parent");
     let parent = harness
@@ -80,12 +79,11 @@ async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
         .await
         .expect("parent runtime");
     let child = parent
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn nested child");
     let control = &root.session.services.agent_control;
@@ -133,17 +131,24 @@ async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
     assert_eq!(report.timed_out, Vec::<ThreadId>::new());
 }
 
+#[test_case::test_case(false; "v1")]
+#[test_case::test_case(true; "v2")]
 #[tokio::test]
-async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_history() {
-    let harness = AgentControlHarness::new().await;
+async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_history(v2: bool) {
+    let (home, mut config) = test_config().await;
+    if v2 {
+        config.features.enable(Feature::MultiAgentV2).expect("V2");
+    } else {
+        config.features.disable(Feature::MultiAgentV2).expect("V1");
+    }
+    let harness = AgentControlHarness::new_with_config(home, config).await;
     let (_, old_root) = harness.start_thread().await;
     let child = old_root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn child");
     old_root
@@ -196,6 +201,7 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
         restored.session_source.parent_thread_id(),
         Some(new_root.session.thread_id())
     );
+    let adopted_source = restored.session_source.clone();
     let after = state
         .read_stored_thread(ReadThreadParams {
             thread_id: child.target_thread_id,
@@ -207,7 +213,13 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
         .history
         .expect("history")
         .items;
-    assert_eq!(after.get(..before.len()), Some(before.as_slice()));
+    let retained = after
+        .get(..before.len())
+        .expect("all prior history items remain after transfer");
+    assert_eq!(
+        serde_json::to_value(retained).expect("serialize retained history"),
+        serde_json::to_value(&before).expect("serialize original history")
+    );
     assert!(
         old_root
             .session
@@ -217,6 +229,28 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
             .await
             .is_err()
     );
+    new_root
+        .close_agent(
+            &child.target_thread_id.to_string(),
+            UserAgentResponseHandling::Presentation,
+        )
+        .await
+        .expect("close the adopted runtime before cold resume");
+    let resumed = new_root
+        .resume_agent(
+            &child.target_thread_id.to_string(),
+            /*task*/ None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await
+        .expect("the generated adoption path survives cold resume");
+    assert_eq!(resumed.ownership_transfer, None);
+    let resumed_child = harness
+        .manager
+        .get_thread(child.target_thread_id)
+        .await
+        .expect("cold-resumed adopted child");
+    assert_eq!(resumed_child.session_source, adopted_source);
     let report = harness
         .manager
         .shutdown_all_threads_bounded(Duration::from_secs(/*secs*/ 5))
@@ -229,12 +263,11 @@ async fn promptless_user_spawn_reserves_one_policy_and_can_downgrade_it() {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;
     let spawned = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Wake,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Wake,
+            ..Default::default()
+        })
         .await
         .expect("create idle user agent");
     assert_eq!(spawned.input_outcome, None);

@@ -62,7 +62,29 @@ spawn tools, not explicit user control-plane forks, and do not select Legacy
 versus Paginated storage. Child context drops parent-owned runtime notification
 fragments while preserving literal user text and the parent's canonical audit.
 
+## Explicit subagent model overrides
+
+An explicit spawn model may repeat the model already selected by inherited,
+configured-child, or role settings, including a configured provider model absent
+from discovery. A different explicit model must still resolve through the model
+catalog. Reasoning validation and the existing precedence order are unchanged:
+parent settings, configured child defaults, role defaults, then explicit overrides.
+
 ## Unified exec yield windows
+
+`exec_command_timeout_ms` was the fork's default deadline for the legacy
+`shell`/`shell_command` tools. It is retired with those handlers, not renamed:
+remove it from configurations after promoting from a build that still uses them.
+Normal unified exec does not impose a command deadline when its output wait ends;
+it returns a session ID for a still-running process. The yield settings below
+control output waits, while `user_shell_command_timeout_ms` separately controls
+deadlines for human `!`/`/shell` commands. Neither is an equivalent replacement
+for the retired key.
+
+When managed requirements prohibit resumable unified exec, a restricted
+one-shot fallback can still expose `exec_command` with a per-call `timeout_ms`
+and a 10000 ms default deadline. That path terminates the command on timeout;
+it does not restore the retired global setting.
 
 The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:
 
@@ -73,7 +95,7 @@ unified_exec_write_stdin_yield_time_ms = 250
 
 Omitting either setting, or setting it to zero, uses the built-in default shown above. A per-call `yield_time_ms` takes precedence over the corresponding configured default, including an explicit zero; the existing platform and minimum-yield clamps still apply. These are output-yield windows, not process deadlines, and do not change command execution timeouts.
 
-Initial `exec_command` waits remain bounded to 250–30000 ms, or 10000–30000 ms when Codex runs on Windows. Subsequent `write_stdin` calls have a 5000 ms minimum for empty polls and a 250 ms minimum for non-empty writes. Both can request longer waits without an upper cap by default; process exit can return sooner, and interrupting a poll does not terminate its process.
+Initial `exec_command` waits remain bounded to 5000–30000 ms for POSIX targets, or 10000–30000 ms for Windows targets. Subsequent `write_stdin` calls have a 5000 ms minimum for empty polls and a 250 ms minimum for non-empty writes. Both kinds of subsequent poll can request longer waits without an upper cap by default; process exit can return sooner, and interrupting a poll does not terminate its process.
 
 The optional `background_terminal_max_timeout` setting caps **empty polls only**, in milliseconds:
 
@@ -187,6 +209,10 @@ fork_prompt_edits = true
 The branch retains history before the selected turn. Creating it does not submit the draft or automatically continue a goal, and it does not undo filesystem changes. This option also works when editing an existing Legacy session; it does not change that session's stored history mode.
 
 In-place editing also follows the session's actual stored history mode: Paginated sessions use `thread/revert`, and Legacy sessions use guarded `thread/rollback`. Selection is tied to canonical user-message identity; an incomplete or ambiguous old transcript must be refreshed before editing. The draft is not automatically submitted. If a Legacy mutation or its refresh has an uncertain outcome, the TUI preserves the draft and keeps that conversation read-only for the current TUI process, including after switching away and back. Navigation, copying, other conversations, and quitting remain available. Save the draft before quitting, then reopen the conversation in a new Codex process for canonical recovery. The TUI never repeats the mutation automatically.
+
+## Agent role instruction files
+
+A configured role may also set `model_instructions_file`. Relative paths are resolved from the role TOML directory, and the non-empty file replaces inherited base instructions for new and resumed agents using that role. The role's `developer_instructions` remain a separate developer message. An explicit spawn model override changes the model without discarding the selected role's base instructions.
 
 ## Notify
 
