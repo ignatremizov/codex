@@ -2754,6 +2754,8 @@ async fn picker_refresh_hydrates_root_and_keeps_transferred_aliases_inspectable(
                 project_id: None,
                 history_mode: Default::default(),
                 model_provider: "openai".to_string(),
+                model: None,
+                reasoning_effort: None,
                 created_at: 1,
                 updated_at: 1,
                 recency_at: Some(1),

@@ -227,6 +227,7 @@ impl LocalAgentControl {
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
+        let stored_service_tier = stored_thread.service_tier.clone();
         let (
             resumed_agent_path,
             resumed_agent_nickname,
@@ -411,15 +412,11 @@ impl LocalAgentControl {
                 )));
             }
         }
-        if multi_agent_version == MultiAgentVersion::V2
-            || matches!(
-                authority,
-                ResumeAuthority::Controlled | ResumeAuthority::Transfer { .. }
-            )
-        {
-            apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
-            config.model_reasoning_effort = stored_reasoning_effort;
-        }
+        // Routing settings belong to the persisted child for every authorized restore path;
+        // ownership and live runtime permissions are resolved independently above.
+        apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
+        config.model_reasoning_effort = stored_reasoning_effort;
+        config.service_tier = stored_service_tier;
         let parent = match session_source.parent_thread_id() {
             Some(parent_id) => Some(state.get_thread(parent_id).await?),
             None => None,

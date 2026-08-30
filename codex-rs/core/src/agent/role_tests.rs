@@ -293,6 +293,96 @@ async fn apply_role_preserves_unspecified_keys() {
 }
 
 #[tokio::test]
+async fn apply_role_loads_relative_model_instructions_file() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_dir = home.path().join("roles");
+    fs::create_dir_all(&role_dir).expect("create role directory");
+    let instructions_path = role_dir.join("base.md");
+    fs::write(&instructions_path, "  Role-owned base instructions.  \n")
+        .expect("write role base instructions");
+    let role_path = role_dir.join("custom.toml");
+    fs::write(
+        &role_path,
+        r#"
+model_instructions_file = "base.md"
+developer_instructions = "Role developer instructions."
+personality = "none"
+"#,
+    )
+    .expect("write role config");
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+    config.base_instructions = Some("Inherited model instructions.".to_string());
+    config.base_instructions_provenance = Some(BaseInstructionsProvenance::Model {
+        model: "parent-model".to_string(),
+    });
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(
+        (
+            config.base_instructions.as_deref(),
+            config.base_instructions_provenance.clone(),
+            config.developer_instructions.as_deref(),
+        ),
+        (
+            Some("Role-owned base instructions."),
+            Some(BaseInstructionsProvenance::Custom),
+            Some("Role developer instructions."),
+        )
+    );
+    let role_layer = config
+        .config_layer_stack
+        .all_layers_low_to_high()
+        .rfind(|layer| layer.name == ConfigLayerSource::SessionFlags)
+        .expect("role should have a projected layer");
+    assert_eq!(
+        role_layer
+            .config
+            .get("model_instructions_file")
+            .and_then(TomlValue::as_str),
+        instructions_path.to_str()
+    );
+}
+
+#[tokio::test]
+async fn apply_role_rejects_missing_or_blank_model_instructions_file() {
+    for (file_name, contents) in [("missing.md", None), ("blank.md", Some("  \n\t"))] {
+        let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+        let role_path = write_role_config(
+            &home,
+            "custom.toml",
+            &format!("model_instructions_file = {file_name:?}\n"),
+        )
+        .await;
+        if let Some(contents) = contents {
+            fs::write(home.path().join(file_name), contents)
+                .expect("write invalid role base instructions");
+        }
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                config_file: Some(role_path),
+                ..Default::default()
+            },
+        );
+
+        let err = apply_role_to_config(&mut config, Some("custom"))
+            .await
+            .expect_err("invalid role base instructions should fail");
+
+        assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
+    }
+}
+
+#[tokio::test]
 async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_changes() {
     for (parent_personality, role_contents, provenance, should_refresh) in [
         (
@@ -813,7 +903,7 @@ fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
 }
 
 #[test]
-fn spawn_tool_spec_marks_role_locked_model_and_reasoning_effort() {
+fn spawn_tool_spec_marks_role_default_model_and_reasoning_effort() {
     let tempdir = TempDir::new().expect("create temp dir");
     let role_path = tempdir.path().join("researcher.toml");
     fs::write(
@@ -833,12 +923,12 @@ fn spawn_tool_spec_marks_role_locked_model_and_reasoning_effort() {
     let spec = spawn_tool_spec::build(&user_defined_roles);
 
     assert!(spec.contains(
-            "Research carefully.\n- This role's model is set to `gpt-5` and its reasoning effort is set to `high`. These settings cannot be changed."
-        ));
+        "Research carefully.\n- This role defaults to model `gpt-5` with `high` reasoning."
+    ));
 }
 
 #[test]
-fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
+fn spawn_tool_spec_marks_role_default_reasoning_effort_only() {
     let tempdir = TempDir::new().expect("create temp dir");
     let role_path = tempdir.path().join("reviewer.toml");
     fs::write(
@@ -857,9 +947,7 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
 
     let spec = spawn_tool_spec::build(&user_defined_roles);
 
-    assert!(spec.contains(
-            "Review carefully.\n- This role's reasoning effort is set to `medium` and cannot be changed."
-        ));
+    assert!(spec.contains("Review carefully.\n- This role defaults to `medium` reasoning."));
 }
 
 #[test]

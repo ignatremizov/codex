@@ -21,6 +21,7 @@ pub use user_control::UserAgentQueuedTurn;
 pub use user_control::UserAgentReservedPromptResult;
 pub use user_control::UserAgentResponseHandling;
 pub use user_control::UserAgentResumeResult;
+pub use user_control::UserAgentSpawnOptions;
 pub use user_control::UserAgentSpawnResult;
 
 pub(crate) use codex_protocol::protocol::AgentStatus;

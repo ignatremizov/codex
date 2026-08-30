@@ -2908,10 +2908,9 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         .properties
         .as_ref()
         .expect("spawn_agent should use object params");
-    for property in ["agent_type", "model", "reasoning_effort"] {
+    for property in ["agent_type", "model", "reasoning_effort", "service_tier"] {
         assert!(spawn_agent_properties.contains_key(property));
     }
-    assert!(!spawn_agent_properties.contains_key("service_tier"));
     let spawn_agent_description = spawn_agent.description.as_str();
     assert!(!spawn_agent_description.contains("max_concurrent_threads_per_session"));
     assert!(spawn_agent_description.contains(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::ResponseObserverKind;
@@ -7,7 +8,6 @@ use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::response_observation::ResponseObservationPolicy;
-use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
@@ -105,21 +105,18 @@ async fn handle_spawn_agent(
         &session,
         step_context.as_ref(),
         SpawnConfigOptions {
+            origin: SpawnConfigOrigin::Model,
             version: SpawnConfigVersion::V1,
             fork_mode: fork_mode.as_ref(),
             role_name,
             model: args.model.as_deref(),
+            service_tier: args.service_tier.as_deref(),
             reasoning_effort: args.reasoning_effort.clone(),
         },
     )
-    .await?;
-    let mut config = prepared.config;
-    apply_spawn_agent_role(&session, &mut config, role_name).await?;
-    if args.fork_context {
-        ensure_model_history_fork_allowed(&config)?;
-    }
-    apply_spawn_agent_service_tier(&session, &mut config, args.service_tier.as_deref()).await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    .await
+    .map_err(FunctionCallError::RespondToModel)?;
+    let config = prepared.config;
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
         input_items,

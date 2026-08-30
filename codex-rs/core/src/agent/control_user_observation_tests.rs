@@ -6,18 +6,18 @@ use crate::UserAgentForkMode;
 use crate::UserAgentObservationBinding;
 use crate::UserAgentObservationMode;
 use crate::UserAgentResponseHandling;
+use crate::UserAgentSpawnOptions;
 
 #[tokio::test]
 async fn close_response_cannot_hold_a_receipt_inside_the_subtree_being_closed() {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;
     let parent = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn parent");
     let parent = harness
@@ -26,12 +26,11 @@ async fn close_response_cannot_hold_a_receipt_inside_the_subtree_being_closed() 
         .await
         .expect("parent");
     let child = parent
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn child");
     let child = harness
@@ -66,12 +65,11 @@ async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;
     let parent = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn parent");
     let parent = harness
@@ -80,12 +78,11 @@ async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
         .await
         .expect("parent runtime");
     let child = parent
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn nested child");
     let control = &root.session.services.agent_control;
@@ -138,12 +135,11 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
     let harness = AgentControlHarness::new().await;
     let (_, old_root) = harness.start_thread().await;
     let child = old_root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn child");
     old_root
@@ -229,12 +225,11 @@ async fn promptless_user_spawn_reserves_one_policy_and_can_downgrade_it() {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;
     let spawned = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Wake,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Wake,
+            ..Default::default()
+        })
         .await
         .expect("create idle user agent");
     assert_eq!(spawned.input_outcome, None);

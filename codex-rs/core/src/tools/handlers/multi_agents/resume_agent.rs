@@ -271,7 +271,8 @@ async fn try_resume_closed_agent(
     ownership: AgentResumeOwnership,
     authored_selector: String,
 ) -> Result<(), FunctionCallError> {
-    let config = build_agent_resume_config(turn.as_ref())?;
+    let config =
+        build_agent_resume_config(turn.as_ref()).map_err(FunctionCallError::RespondToModel)?;
     let result = match ownership {
         AgentResumeOwnership::CurrentRoot => {
             session

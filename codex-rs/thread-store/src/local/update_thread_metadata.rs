@@ -433,6 +433,9 @@ async fn apply_metadata_update(
             if let Some(model) = patch.model {
                 metadata.model = Some(model);
             }
+            if let Some(service_tier) = patch.service_tier {
+                metadata.service_tier = service_tier;
+            }
             if let Some(reasoning_effort) = patch.reasoning_effort {
                 metadata.reasoning_effort = reasoning_effort;
             }
@@ -735,6 +738,7 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.title.is_some()
         || patch.model_provider.is_some()
         || patch.model.is_some()
+        || patch.service_tier.is_some()
         || patch.reasoning_effort.is_some()
         || patch.created_at.is_some()
         || patch.source.is_some()
@@ -1565,7 +1569,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_thread_metadata_updates_permission_profile_and_reasoning_effort() {
+    async fn update_thread_metadata_updates_permission_profile_and_model_settings() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
@@ -1584,6 +1588,7 @@ mod tests {
                 thread_id,
                 patch: ThreadMetadataPatch {
                     permission_profile: Some(PermissionProfile::Disabled),
+                    service_tier: Some(Some("fast".to_string())),
                     reasoning_effort: Some(Some(ReasoningEffort::Ultra)),
                     ..Default::default()
                 },
@@ -1594,10 +1599,12 @@ mod tests {
             .expect("local store returns updated thread");
 
         assert_eq!(thread.permission_profile, PermissionProfile::Disabled);
+        assert_eq!(thread.service_tier.as_deref(), Some("fast"));
         let thread = store
             .update_thread_metadata(UpdateThreadMetadataParams {
                 thread_id,
                 patch: ThreadMetadataPatch {
+                    service_tier: Some(None),
                     reasoning_effort: Some(None),
                     ..Default::default()
                 },
@@ -1607,6 +1614,7 @@ mod tests {
             .expect("clear reasoning effort")
             .expect("local store returns updated thread");
 
+        assert_eq!(thread.service_tier, None);
         assert_eq!(thread.reasoning_effort, None);
         let metadata = runtime
             .get_thread(thread_id)
@@ -1618,6 +1626,7 @@ mod tests {
             metadata.sandbox_policy,
             serde_json::to_string(&permission_profile).expect("serialize profile")
         );
+        assert_eq!(metadata.service_tier, None);
         assert_eq!(metadata.reasoning_effort, None);
     }
 

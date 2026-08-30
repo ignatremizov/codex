@@ -310,6 +310,8 @@ Persisted V2 children can be resumed through their live owning control only when
 
 The experimental `agentAlias/list` method lists durable aliases in a root-scoped namespace, including canonical thread IDs, refs, nicknames, and lifecycle state. The experimental `agent/control` method authorizes user-authored spawn, prompt, reserved/queued prompt, resume, interrupt, close, and observation operations from a source thread. Responses identify the canonical target and admitted submission where applicable; post-admission or audit persistence warnings do not turn committed work into retryable failures. Omitted response handling is passive, and close response handling replays according to the supplied policy. Input outcomes distinguish `queued`, `admitted`, and `unknown` work; unknown inputs must be reconciled from canonical history before retrying.
 
+The `spawn` action accepts optional `model` and `reasoningEffort` overrides. Explicit values take precedence over role settings and configured subagent defaults; omitted values follow the normal child configuration resolution. The durable `userAgentControl` item records the requested model and reasoning values separately from the canonical target and outcome. Existing history-fork and lifecycle authorization rules still apply.
+
 The experimental `agentQueue/list` and `agentQueue/delete` methods expose and cancel pending target-owned FIFO entries. Queue acceptance is not target-turn admission: queued entries have no synthetic turn ID, and their start metadata records the source and response policy once a target turn actually begins.
 
 ## User shell commands

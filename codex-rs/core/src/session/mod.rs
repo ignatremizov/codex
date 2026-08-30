@@ -1678,6 +1678,12 @@ impl Session {
                 // turn/start overrides can be merged before we write model-visible context.
                 self.set_previous_turn_settings(/*previous_turn_settings*/ None)
                     .await;
+                // An idle child has no TurnContext item yet. Persist its resolved settings now so
+                // close/cold-resume preserves per-spawn model, reasoning, and service-tier
+                // overrides instead of falling back to the current role defaults.
+                if is_subagent {
+                    self.checkpoint_thread_settings().await?;
+                }
                 None
             }
             InitialHistory::Resumed(resumed_history) => {
@@ -1942,9 +1948,6 @@ impl Session {
             let updated_permission_profile = updated.permission_profile();
             let permission_profile_changed =
                 previous_permission_profile != updated_permission_profile;
-            let root_service_tier_changed = updated.parent_thread_id.is_none()
-                && state.session_configuration.step_settings.service_tier
-                    != updated.step_settings.service_tier;
             let environment_config = updated.inferred_environment_config();
             let mcp_inputs_changed = self.mcp_inputs_differ(&state.session_configuration, &updated);
             if mcp_inputs_changed {
@@ -1956,15 +1959,6 @@ impl Session {
                     .update_thread_config(&environment_config);
             }
             state.session_configuration = updated;
-            if root_service_tier_changed {
-                self.services.agent_control.set_root_service_tier(
-                    state
-                        .session_configuration
-                        .step_settings
-                        .service_tier
-                        .clone(),
-                );
-            }
             let new_config = notify_config_contributors
                 .then(|| self.build_effective_session_config(&state.session_configuration));
             let commit = SessionSettingsCommit {
@@ -3693,25 +3687,7 @@ impl Session {
         // Capture settings and selection together before asynchronous planning.
         // Existing steps retain this version even if the turn is updated.
         let inputs = turn_context.next_step_input.load_full();
-        let mut settings = Arc::clone(&inputs.settings);
-        if matches!(
-            turn_context.session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        ) {
-            let root_service_tier = self.services.agent_control.root_service_tier();
-            if settings.selected().service_tier != root_service_tier {
-                let mut selected = settings.selected().clone();
-                selected.service_tier = root_service_tier;
-                let mut inherited_settings = ResolvedStepSettings::new(
-                    Arc::new(selected),
-                    Arc::clone(&settings.model_info),
-                    self.features.enabled(Feature::FastMode),
-                );
-                inherited_settings.mcp_approvals_reviewer_override =
-                    settings.mcp_approvals_reviewer_override;
-                settings = Arc::new(inherited_settings);
-            }
-        }
+        let settings = Arc::clone(&inputs.settings);
         let token_budget = token_budget::resolve_token_budget(
             turn_context.configured_token_budget.as_ref(),
             turn_context.use_model_token_budget_defaults,

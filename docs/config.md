@@ -184,6 +184,10 @@ The branch retains history before the selected turn. Creating it does not submit
 
 In-place editing also follows the session's actual stored history mode: Paginated sessions use `thread/revert`, and Legacy sessions use guarded `thread/rollback`. Selection is tied to canonical user-message identity; an incomplete or ambiguous old transcript must be refreshed before editing. The draft is not automatically submitted. If a Legacy mutation or its refresh has an uncertain outcome, the TUI preserves the draft and keeps that conversation read-only for the current TUI process, including after switching away and back. Navigation, copying, other conversations, and quitting remain available. Save the draft before quitting, then reopen the conversation in a new Codex process for canonical recovery. The TUI never repeats the mutation automatically.
 
+## Agent role instruction files
+
+A configured role may also set `model_instructions_file`. Relative paths are resolved from the role TOML directory, and the non-empty file replaces inherited base instructions for new and resumed agents using that role. The role's `developer_instructions` remain a separate developer message. An explicit spawn model override changes the model without discarding the selected role's base instructions.
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.

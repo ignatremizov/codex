@@ -25,11 +25,20 @@ pub(crate) enum SpawnConfigVersion {
     V2,
 }
 
+/// Distinguishes user-authorized history inheritance from model-authored requests.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnConfigOrigin {
+    Model,
+    User,
+}
+
 pub(crate) struct SpawnConfigOptions<'a> {
+    pub(crate) origin: SpawnConfigOrigin,
     pub(crate) version: SpawnConfigVersion,
     pub(crate) fork_mode: Option<&'a SpawnAgentForkMode>,
     pub(crate) role_name: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
+    pub(crate) service_tier: Option<&'a str>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
 }
 
@@ -47,16 +56,19 @@ pub(crate) async fn prepare_agent_spawn_config(
     let turn = step_context.turn.as_ref();
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, step_context)?;
-    apply_requested_spawn_agent_model_overrides(
+    apply_spawn_agent_role_and_model_overrides(
         session,
-        step_context,
+        turn,
         &mut config,
+        options.role_name,
         options.model,
         options.reasoning_effort,
     )
     .await?;
-    apply_spawn_agent_role(session, &mut config, options.role_name).await?;
-    if options.fork_mode.is_some() && !config.agent_allow_history_forks {
+    if options.origin == SpawnConfigOrigin::Model
+        && options.fork_mode.is_some()
+        && !config.agent_allow_history_forks
+    {
         return Err(
             "Parent-history forks are disabled by user configuration. Spawn without inherited \
              history, or ask the user to set `agents.allow_history_forks = true` globally or in \
@@ -72,7 +84,13 @@ pub(crate) async fn prepare_agent_spawn_config(
             .developer_instructions
             .clone_from(&turn.developer_instructions);
     }
-    apply_spawn_agent_service_tier(session, &mut config).await?;
+    apply_spawn_agent_service_tier(
+        session,
+        &mut config,
+        step_context.settings.requested_service_tier(),
+        options.service_tier,
+    )
+    .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     // Remember an applied configured default so cold reload reapplies its restrictions.
@@ -103,6 +121,7 @@ pub(crate) fn build_agent_spawn_config(
     let mut config = build_agent_shared_config(step_context.turn.as_ref())?;
     let settings = &step_context.settings;
     config.model = Some(settings.model_info.slug.clone());
+    config.service_tier = settings.requested_service_tier().map(str::to_owned);
     config.model_reasoning_effort = settings.effective_reasoning_effort();
     config.model_reasoning_summary = Some(settings.reasoning_summary);
     config.base_instructions = Some(base_instructions.text.clone());
@@ -175,17 +194,55 @@ fn apply_spawn_agent_runtime_overrides(
     Ok(())
 }
 
+/// Applies configured defaults, the selected role, and explicit model settings in precedence
+/// order, then validates the resolved child model and reasoning effort.
+async fn apply_spawn_agent_role_and_model_overrides(
+    session: &Session,
+    turn: &TurnContext,
+    config: &mut Config,
+    role_name: Option<&str>,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), String> {
+    apply_default_spawn_agent_model_overrides(turn, config);
+    let role_application = apply_role_to_config(config, role_name).await?;
+    if role_application.overrides_model && !role_application.overrides_reasoning_effort {
+        config.model_reasoning_effort = None;
+    }
+    // A role's model is a default, but its custom base instructions define the selected role.
+    // An explicit model override changes the former without silently discarding the latter.
+    apply_requested_spawn_agent_model_overrides(
+        session,
+        config,
+        requested_model,
+        requested_reasoning_effort,
+    )
+    .await?;
+    validate_spawn_agent_model_selection(session, config).await
+}
+
+fn apply_default_spawn_agent_model_overrides(turn: &TurnContext, config: &mut Config) {
+    if let Some(model) = turn.config.agent_default_subagent_model.as_ref() {
+        config.model = Some(model.clone());
+        if turn
+            .config
+            .agent_default_subagent_reasoning_effort
+            .is_none()
+        {
+            config.model_reasoning_effort = None;
+        }
+    }
+    if let Some(reasoning_effort) = turn.config.agent_default_subagent_reasoning_effort.as_ref() {
+        config.model_reasoning_effort = Some(reasoning_effort.clone());
+    }
+}
+
 async fn apply_requested_spawn_agent_model_overrides(
     session: &Session,
-    step_context: &StepContext,
     config: &mut Config,
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), String> {
-    let turn = step_context.turn.as_ref();
-    let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
-    let requested_reasoning_effort = requested_reasoning_effort
-        .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
     if requested_model.is_none() && requested_reasoning_effort.is_none() {
         return Ok(());
     }
@@ -197,49 +254,60 @@ async fn apply_requested_spawn_agent_model_overrides(
             .list_models(RefreshStrategy::Offline, config.http_client_factory())
             .await;
         let selected_model_name = find_spawn_agent_model_name(&available_models, requested_model)?;
-        let selected_model_info = session
-            .services
-            .models_manager
-            .get_model_info(&selected_model_name, &config.to_models_manager_config())
-            .await;
-
-        config.model = Some(selected_model_name.clone());
-        if let Some(reasoning_effort) = requested_reasoning_effort {
-            validate_spawn_agent_reasoning_effort(
-                &selected_model_name,
-                &selected_model_info.supported_reasoning_levels,
-                &reasoning_effort,
-            )?;
-            config.model_reasoning_effort = Some(reasoning_effort);
-        } else {
-            config.model_reasoning_effort = selected_model_info.default_reasoning_level;
-        }
+        config.model = Some(selected_model_name);
+        config.model_reasoning_effort = requested_reasoning_effort;
 
         return Ok(());
     }
 
     if let Some(reasoning_effort) = requested_reasoning_effort {
-        validate_spawn_agent_reasoning_effort(
-            &step_context.settings.model_info.slug,
-            &step_context.settings.model_info.supported_reasoning_levels,
-            &reasoning_effort,
-        )?;
         config.model_reasoning_effort = Some(reasoning_effort);
     }
 
     Ok(())
 }
 
-pub(crate) async fn apply_spawn_agent_service_tier(
+/// Resolves a missing effort from the final model and validates the final pair once all layers
+/// have been applied.
+async fn validate_spawn_agent_model_selection(
     session: &Session,
     config: &mut Config,
 ) -> Result<(), String> {
-    let Some(service_tier) = session.services.agent_control.root_service_tier() else {
-        config.service_tier = None;
+    let model = config.model.clone().ok_or_else(|| {
+        "spawn_agent could not resolve the child model for reasoning effort validation".to_string()
+    })?;
+    let model_info = session
+        .services
+        .models_manager
+        .get_model_info(&model, &config.to_models_manager_config())
+        .await;
+    let Some(reasoning_effort) = config.model_reasoning_effort.as_ref() else {
+        config.model_reasoning_effort = model_info.default_reasoning_level;
         return Ok(());
     };
-    if service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE {
-        config.service_tier = Some(service_tier);
+    if model_info.used_fallback_model_metadata {
+        return Ok(());
+    }
+    validate_spawn_agent_reasoning_effort(
+        &model,
+        &model_info.supported_reasoning_levels,
+        reasoning_effort,
+    )
+}
+
+pub(crate) async fn apply_spawn_agent_service_tier(
+    session: &Session,
+    config: &mut Config,
+    parent_service_tier: Option<&str>,
+    requested_service_tier: Option<&str>,
+) -> Result<(), String> {
+    let candidate_service_tiers = [
+        requested_service_tier.map(str::to_string),
+        config.service_tier.clone(),
+        parent_service_tier.map(str::to_string),
+    ];
+    if candidate_service_tiers.iter().all(Option::is_none) {
+        config.service_tier = None;
         return Ok(());
     }
 
@@ -252,45 +320,34 @@ pub(crate) async fn apply_spawn_agent_service_tier(
         .get_model_info(model.as_str(), &config.to_models_manager_config())
         .await;
 
-    config.service_tier = model_info
-        .supports_service_tier(service_tier.as_str())
-        .then_some(service_tier);
-    Ok(())
-}
-
-async fn apply_spawn_agent_role(
-    session: &Session,
-    config: &mut Config,
-    role_name: Option<&str>,
-) -> Result<(), String> {
-    let previous_model = config.model.clone();
-    let previous_reasoning_effort = config.model_reasoning_effort.clone();
-    apply_role_to_config(config, role_name).await?;
-    if config.model == previous_model && config.model_reasoning_effort == previous_reasoning_effort
+    if let Some(requested_service_tier) = requested_service_tier
+        && requested_service_tier != SERVICE_TIER_DEFAULT_REQUEST_VALUE
+        && !model_info.supports_service_tier(requested_service_tier)
     {
-        return Ok(());
+        let supported_service_tiers = if model_info.service_tiers.is_empty() {
+            "none".to_string()
+        } else {
+            model_info
+                .service_tiers
+                .iter()
+                .map(|tier| tier.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(format!(
+            "Service tier `{requested_service_tier}` is not supported for model `{model}`. Supported service tiers: {supported_service_tiers}"
+        ));
     }
 
-    let Some(reasoning_effort) = config.model_reasoning_effort.clone() else {
-        return Ok(());
-    };
-    let model = config.model.clone().ok_or_else(|| {
-        "spawn_agent could not resolve the child model for reasoning effort validation".to_string()
-    })?;
-    let model_info = session
-        .services
-        .models_manager
-        .get_model_info(&model, &config.to_models_manager_config())
-        .await;
-    if model_info.used_fallback_model_metadata {
-        return Ok(());
-    }
-
-    validate_spawn_agent_reasoning_effort(
-        &model,
-        &model_info.supported_reasoning_levels,
-        &reasoning_effort,
-    )
+    config.service_tier =
+        candidate_service_tiers
+            .into_iter()
+            .flatten()
+            .find(|candidate_service_tier| {
+                candidate_service_tier == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+                    || model_info.supports_service_tier(candidate_service_tier)
+            });
+    Ok(())
 }
 
 fn find_spawn_agent_model_name(

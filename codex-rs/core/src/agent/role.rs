@@ -16,6 +16,7 @@ use codex_config::ConfigLayerStack;
 use codex_config::McpServerConfig;
 use codex_config::SkillsConfig;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
+use codex_exec_server::LOCAL_FS;
 use codex_exec_server::read_sensitive_file_to_string;
 use codex_features::Feature;
 use codex_features::feature_for_key;
@@ -25,6 +26,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -36,10 +38,19 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AgentRoleApplication {
+    pub(crate) overrides_model: bool,
+    pub(crate) overrides_reasoning_effort: bool,
+}
+
 #[derive(Default, Serialize)]
 struct AgentRoleOverrides {
+    #[serde(skip)]
+    base_instructions: Option<String>,
     developer_instructions: Option<String>,
     model: Option<String>,
+    model_instructions_file: Option<AbsolutePathBuf>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
     model_verbosity: Option<Verbosity>,
@@ -63,7 +74,7 @@ struct AgentRoleHistoryOverrides {
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
-) -> Result<(), String> {
+) -> Result<AgentRoleApplication, String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
 
     let role = resolve_role_config(config, role_name)
@@ -82,16 +93,30 @@ async fn apply_role_to_config_inner(
     config: &mut Config,
     role_name: &str,
     role: &AgentRoleConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AgentRoleApplication> {
     let is_built_in = !config.agent_roles.contains_key(role_name);
     let Some(config_file) = role.config_file.as_ref() else {
-        return Ok(());
+        return Ok(AgentRoleApplication::default());
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
+    // Agent role files are host configuration, even when the child executes remotely. Read their
+    // relative instruction files through the local executor filesystem, matching ordinary config.
+    let base_instructions = Config::try_read_non_empty_file(
+        LOCAL_FS.as_ref(),
+        role_config.model_instructions_file.as_ref(),
+        "agent role model instructions file",
+    )
+    .await?;
+    let application = AgentRoleApplication {
+        overrides_model: role_config.model.is_some(),
+        overrides_reasoning_effort: role_config.model_reasoning_effort.is_some(),
+    };
     let mut overrides = AgentRoleOverrides {
+        base_instructions,
         developer_instructions: role_config.developer_instructions,
         model: role_config.model,
+        model_instructions_file: role_config.model_instructions_file,
         model_reasoning_effort: role_config.model_reasoning_effort,
         model_reasoning_summary: role_config.model_reasoning_summary,
         model_verbosity: role_config.model_verbosity,
@@ -141,10 +166,10 @@ async fn apply_role_to_config_inner(
         .as_table()
         .is_some_and(toml::map::Map::is_empty)
     {
-        return Ok(());
+        return Ok(application);
     }
     *config = role_overrides::build_next_config(config, role_layer_toml, &overrides)?;
-    Ok(())
+    Ok(application)
 }
 
 async fn load_role_layer_toml(
@@ -256,7 +281,10 @@ mod role_overrides {
         }
         let strips_baked_personality =
             |config: &Config| config.personality == Some(Personality::None);
-        if strips_baked_personality(config) != strips_baked_personality(&next_config)
+        if let Some(instructions) = &overrides.base_instructions {
+            next_config.base_instructions = Some(instructions.clone());
+            next_config.base_instructions_provenance = Some(BaseInstructionsProvenance::Custom);
+        } else if strips_baked_personality(config) != strips_baked_personality(&next_config)
             && matches!(
                 config.base_instructions_provenance,
                 Some(BaseInstructionsProvenance::Model { .. })
@@ -351,17 +379,13 @@ pub(crate) mod spawn_tool_spec {
                         .and_then(TomlValue::as_str);
                     match (model, reasoning_effort) {
                         (Some(model), Some(reasoning_effort)) => format!(
-                            "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
+                            "\n- This role defaults to model `{model}` with `{reasoning_effort}` reasoning."
                         ),
                         (Some(model), None) => {
-                            format!(
-                                "\n- This role's model is set to `{model}` and cannot be changed."
-                            )
+                            format!("\n- This role defaults to model `{model}`.")
                         }
                         (None, Some(reasoning_effort)) => {
-                            format!(
-                                "\n- This role's reasoning effort is set to `{reasoning_effort}` and cannot be changed."
-                            )
+                            format!("\n- This role defaults to `{reasoning_effort}` reasoning.")
                         }
                         (None, None) => String::new(),
                     }

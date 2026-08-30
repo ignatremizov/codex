@@ -85,9 +85,9 @@ The TUI must not approximate this by independently chaining `thread/resume` and 
 
 ```text
 /agent
-/agent new [fork:<none|all|N>] [w:<w-mode>] [<prompt>]
+/agent new [fork:<none|all|N>] [model:<slug>] [effort:<level>] [w:<w-mode>] [<prompt>]
 /agent <target>
-/agent <role> [fork:<none|all|N>] [w:<w-mode>] [<prompt>]
+/agent <role> [fork:<none|all|N>] [model:<slug>] [effort:<level>] [w:<w-mode>] [<prompt>]
 /agent <target> [w:<w-mode>] <prompt>
 /agent queue <target>
 /agent queue <target> [w:<w-mode>] <prompt>
@@ -105,7 +105,8 @@ Selectors accept compact unprefixed forms and explicit namespaces:
 <target> = <uuid> | <decimal-ref> | <nickname>
          | id:<uuid> | ref:<decimal-ref> | nick:<name>
 <role>   = <ordinary-role-name> | role:<name>
-<w-mode> = c | f | x | cf | cx
+<w-mode> = one or more unique flags in cfmqx order
+<level>  = a reasoning effort advertised by the selected model
 ```
 
 Examples:
@@ -118,11 +119,12 @@ Examples:
 /agent nick:"Ada Lovelace" Review the latest diff.
 /agent 019ff050-d466-73b0-b133-72ecc7c67269 w:f Continue the review.
 /agent new w:x
-/agent new fork:all w:x
+/agent new model:gpt-5.6-luna effort:high fork:all w:x
 /agent reviewer w:f
 /agent role:"2" w:f
-/agent reviewer fork:3 w:x Review the API contract.
+/agent reviewer model:gpt-5.6-sol effort:xhigh fork:3 w:x Review the API contract.
 /agent queue Epicurus w:f After that, check the test coverage.
+/agent Epicurus w:fq After that, check the test coverage. /agent Epicurus w:fm Review the contract and ask Main about ambiguous requirements.
 ```
 
 Bare `/agent` opens the control pane. `/agent <target>` opens it with that existing agent selected without starting or steering a turn.
@@ -131,16 +133,16 @@ Bare `/agent` opens the control pane. `/agent <target>` opens it with that exist
 
 An unprefixed exact configured role name selects a new-child spawn, including when one or more agents already use that role. Without a prompt, it creates a real idle child and switches into that child's blank transcript and composer. If a nickname equals an ordinary configured role name, the role meaning wins; use the agent's ref, UUID, or `nick:` selector to target the existing agent.
 
-`fork:<mode>` is valid only for default or configured-role spawns. `w:<w-mode>` is valid wherever the grammar shows it. Option tokens appear after the selector, may be given in either order, and may each occur at most once.
+`fork:<mode>`, `model:<slug>`, and `effort:<level>` are valid only for default or configured-role spawns. `w:<w-mode>` is valid wherever the grammar shows it. Option tokens appear after the selector, may be given in any order, and may each occur at most once. Explicit model and effort values override the selected role and configured subagent defaults.
 
 The control prefix uses these lexical rules:
 
-- Unquoted whitespace separates control tokens. Double quotes group selector text; quote delimiters are removed, `\"` and `\\` are decoded, and an unmatched quote is an error.
-- Quoting may follow a namespace prefix, so `nick:"Ada Lovelace"` is one selector whose value is `Ada Lovelace`.
-- After the action or selector, the parser consumes recognized `fork:` and `w:` options until the first non-option token. The untouched input beginning at that token is the prompt.
-- `--` ends option parsing and is removed; the untouched text after it is the prompt. Use it when a prompt intentionally begins with `fork:` or `w:`.
+- Unquoted whitespace separates control tokens. Double quotes group control-token text; quote delimiters are removed, `\"` and `\\` are decoded, and an unmatched quote is an error.
+- Quoting may follow a namespace prefix, so `nick:"Ada Lovelace"` is one selector whose value is `Ada Lovelace`; the same rule permits a quoted model slug after `model:`.
+- After the action or selector, the parser consumes recognized `fork:`, `model:`, `effort:`, and `w:` options until the first non-option token. The untouched input beginning at that token is the prompt.
+- `--` ends option parsing and is removed; the untouched text after it is the prompt. Use it when a prompt intentionally begins with a recognized option prefix.
 - Attached images count as structured prompt input even when no prompt text follows the control tokens. They start or queue work anywhere the grammar accepts a prompt.
-- Unknown values for the recognized `fork:` and `w:` prefixes, misplaced recognized options, and duplicate options fail before any lifecycle mutation. Other `name:value` text begins the prompt.
+- Unknown values for recognized option prefixes, misplaced recognized options, and duplicate options fail before any lifecycle mutation. Other `name:value` text begins the prompt.
 
 Autocomplete inserts the forced form when a nickname or role is numeric, UUID-shaped, action-shaped, option-shaped, contains whitespace, or otherwise collides. A bare generated nickname normally needs no prefix.
 
@@ -179,6 +181,7 @@ Autocomplete should show:
 - `passive`, `wake`, and `presentation` after an `observe` target;
 - a visually distinct “new default agent” row;
 - configured roles as visually distinct “new agent” rows.
+- picker-visible model slugs after `model:` and, once an explicit model is present, that model's advertised reasoning levels after `effort:` on a default or configured-role spawn.
 
 Main owns ref `1` and nickname `Main`; descendants receive monotonic refs in root-wide spawn/adoption order. The control pane must render these stored refs instead of the generic selection widget's filtered row numbers. Filtering, closing agents, or inserting role rows must not renumber them, and refs are never reused within the root lineage. Every thread in the root resolves the same map, allowing a child to address Main as `main`, `Main`, or `1`, and a sibling by its displayed ref.
 
@@ -265,7 +268,7 @@ Every action needs a discoverable text label and keyboard path; color alone cann
 
 In the selected-agent prompt composer, Enter dispatches immediately. `/agent queue` retains a distinct follow-up and its structured input in the TUI until the target can admit it. Tab retains the ordinary composer behavior for the displayed thread. Queued agent prompts are selectable in the control pane and support explicit edit and removal. A shared server-side target-owned FIFO is later work, not the implementation of this client queue.
 
-The new-child composer exposes `none`, `all`, and positive last-N fork modes, defaulting to `none`, alongside the response-observation choice.
+New-child dispatch exposes `none`, `all`, and positive last-N fork modes, defaulting to `none`, alongside model, reasoning, and response-observation choices.
 
 ## Dispatch behavior
 
@@ -313,6 +316,15 @@ Client transcript projection renders a replay through the same canonical complet
 
 `/agent new` spawns a child using the normal default subagent settings. `/agent <role>` applies only the selected role's existing bounded override allowlist; it does not merge arbitrary role TOML or grant new permission/environment authority. Both forms create a real child of the displayed source thread with no inherited conversation history by default and use the same core spawn path as `spawn_agent`.
 
+Model settings resolve in one order across TUI dispatch and model-facing V1/V2 `spawn_agent`:
+
+1. explicit `model:` and `effort:` values (or the corresponding tool fields);
+2. selected role model and reasoning values;
+3. `[agents]` default subagent model and reasoning values;
+4. the parent-derived model and reasoning settings.
+
+An explicit model with no explicit effort uses that model's catalog default. An effort-only override applies to the model resolved from the role/default/parent layers. Core validates the final pair after all layers are applied, so an overridden lower-priority value cannot reject an otherwise valid spawn.
+
 With a prompt, start the child's first turn immediately and leave visual focus on the source. Without a prompt, create the child in an idle state, establish the source as its parent and observer, and switch visual focus into the child so the user can author its first input directly. This resembles opening a new Codex session whose instructions and settings come from the default subagent configuration or selected role, while retaining native subagent identity and lifecycle ownership.
 
 The prompt-less form allocates a real rollout and agent slot immediately, so normal concurrency checks apply. It records the resulting graph depth, but explicit user spawning is not rejected by the autonomous model depth budget. Closing the unused child releases its live slot.
@@ -343,7 +355,7 @@ This `fork:` option controls only the new child's initial model context. The chi
 
 A separate root-thread fork, such as `codex fork`, creates a new alias namespace and carries no live ownership or response subscriptions. A no-history root fork starts with Main `1`/`Main` and next ref `2`. A history-bearing root fork also binds only its new Main to `1`/`Main`; old child refs and nicknames remain unknown, while the source numeric high-water mark and child nickname set are imported as reservations so inherited history cannot silently target newly spawned agents. Explicit UUID adoption into that root allocates fresh aliases.
 
-The base user-facing syntax does not need arbitrary model or reasoning overrides. Configured roles provide the stable customization boundary; explicit overrides can be added later without changing target resolution.
+Model and reasoning options affect only the new child. They do not mutate the source thread, configured role, or global defaults, and they are recorded in the durable user-control item.
 
 Existing full-history-fork role restrictions, model/reasoning precedence, and session persistence remain in force. Selecting a user-controlled fork mode does not authorize a role override that the corresponding core fork path rejects.
 
@@ -553,6 +565,7 @@ The user-facing grammar should not expose the selected multi-agent implementatio
 | TUI-held follow-up | Submit through typed idle-only admission and bind policy only after admission. | Use the same admission boundary, not the native mailbox as an implicit second queue. |
 | `m`/`q` extensions (deferred) | Add exact-turn reverse routing and shared target-owned FIFO. | Adapt the same authority and queue contract without changing provenance. |
 | default or role spawn | Use the V1 child registry and shared role configuration. | Use the V2 task graph and shared role configuration. |
+| model/reasoning precedence | Apply explicit values after role and configured defaults, then validate the final child settings. | Use the same shared resolution path; V2 catalog tags remain descriptive rather than a spawn gate. |
 | `fork:none`, `fork:all`, `fork:N` | Adapt the shared user-dispatch fork mode without changing the model-tool schema. | Adapt the same fork mode to V2 task spawning. |
 | current-root closed resume | Reopen through the existing V1 control edge. | Reopen through the existing V2 task/control edge. |
 | out-of-root UUID adoption | Perform the shared exclusive transfer through explicit `resume`. | Perform the same shared exclusive transfer through explicit `resume`. |
@@ -645,6 +658,7 @@ The following inventory includes both current and deferred contracts. Cases invo
 62. A former owner cannot use stale same-root authority after transfer, but may explicitly adopt the closed rollout back with its latest history and reserved destination identity.
 63. A live writer in another app-server rejects adoption before durable aliases transfer; after that writer closes, the same resume succeeds without process discovery.
 64. A history-bearing root fork cannot be discovered or spawn a first child until inherited ref and nickname reservations commit.
+65. Explicit model and reasoning values override configured role/default values in TUI, V1, and V2 spawns; model-only selection uses the selected model's catalog default effort.
 
 Tests should use deterministic lifecycle and response gates rather than sleeps.
 

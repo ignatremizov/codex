@@ -254,6 +254,7 @@ impl LocalAgentControl {
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
+        let stored_service_tier = stored_thread.service_tier.clone();
         let (stored_source, stored_parent_thread_id, initial_history) =
             match initial_history_override {
                 Some(initial_history) => {
@@ -367,7 +368,7 @@ impl LocalAgentControl {
                 "cannot restore persisted V2 child {thread_id} while agents are disabled"
             )));
         }
-        config.service_tier = self.root_service_tier();
+        config.service_tier = stored_service_tier;
         apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
         config.model_reasoning_effort = stored_reasoning_effort;
         let (inherited_environments, inherited_exec_policy, client_mcp_extensions_override) =
