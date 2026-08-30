@@ -68,9 +68,11 @@ impl App {
                 || role.chars().any(char::is_whitespace)
                 || role.chars().any(|ch| matches!(ch, '"' | '\\'))
                 || ThreadId::from_string(role).is_ok()
-                || ["fork:", "w:", "id:", "ref:", "nick:", "role:"]
-                    .iter()
-                    .any(|prefix| role.starts_with(prefix));
+                || [
+                    "fork:", "w:", "model:", "effort:", "id:", "ref:", "nick:", "role:",
+                ]
+                .iter()
+                .any(|prefix| role.starts_with(prefix));
             let selector = if requires_namespace {
                 let quoted = role.replace('\\', "\\\\").replace('"', "\\\"");
                 format!("role:\"{quoted}\"")

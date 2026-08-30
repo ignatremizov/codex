@@ -37,9 +37,13 @@ pub(super) async fn read_thread(
 ) -> ThreadStoreResult<StoredThread> {
     let thread_id = params.thread_id;
     let sqlite_metadata = read_sqlite_metadata(store, thread_id).await;
-    let persisted_model_settings = sqlite_metadata
-        .as_ref()
-        .map(|metadata| (metadata.model.clone(), metadata.reasoning_effort.clone()));
+    let persisted_model_settings = sqlite_metadata.as_ref().map(|metadata| {
+        (
+            metadata.model.clone(),
+            metadata.service_tier.clone(),
+            metadata.reasoning_effort.clone(),
+        )
+    });
     let daybreak_enabled = sqlite_metadata
         .as_ref()
         .and_then(|metadata| metadata.daybreak_enabled);
@@ -79,6 +83,7 @@ pub(super) async fn read_thread(
             rollout_thread.project_id = thread.project_id;
             rollout_thread.daybreak_enabled = thread.daybreak_enabled;
             rollout_thread.model = thread.model;
+            rollout_thread.service_tier = thread.service_tier;
             rollout_thread.reasoning_effort = thread.reasoning_effort;
             rollout_thread.git_info = thread.git_info;
             if thread.agent_path.is_some() {
@@ -115,8 +120,9 @@ pub(super) async fn read_thread(
 
     let mut thread = read_thread_from_rollout_path(store, path).await?;
     thread.daybreak_enabled = daybreak_enabled;
-    if let Some((model, reasoning_effort)) = persisted_model_settings {
+    if let Some((model, service_tier, reasoning_effort)) = persisted_model_settings {
         thread.model = model;
+        thread.service_tier = service_tier;
         thread.reasoning_effort = reasoning_effort;
     }
     if !params.include_archived && thread.archived_at.is_some() {
@@ -184,6 +190,7 @@ pub(super) async fn read_thread_by_rollout_path(
                 thread.project_id = metadata.project_id;
                 thread.daybreak_enabled = metadata.daybreak_enabled;
                 thread.model = metadata.model;
+                thread.service_tier = metadata.service_tier;
                 thread.reasoning_effort = metadata.reasoning_effort;
                 if !metadata.cwd.as_os_str().is_empty() {
                     thread.cwd = metadata.cwd;
@@ -440,6 +447,7 @@ pub(super) fn stored_thread_from_state_metadata(
             metadata.model_provider
         },
         model: metadata.model,
+        service_tier: metadata.service_tier,
         reasoning_effort: metadata.reasoning_effort,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
@@ -543,6 +551,7 @@ pub(super) fn stored_thread_from_meta_line(
             .filter(|provider| !provider.is_empty())
             .unwrap_or_else(|| store.config.default_model_provider_id.clone()),
         model: None,
+        service_tier: None,
         reasoning_effort: None,
         created_at,
         updated_at,

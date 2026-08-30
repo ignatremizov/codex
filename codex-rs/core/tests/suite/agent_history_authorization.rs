@@ -23,6 +23,7 @@ const OLD_CONTEXT: &str = "older parent history sentinel";
 const PARENT_PROMPT: &str = "delegate the history authorization task";
 const CHILD_PROMPT: &str = "perform the isolated child assignment";
 const CALL_ID: &str = "spawn-history-authorization";
+const PARENT_INSTRUCTIONS: &str = "parent developer instructions";
 const ROLE_INSTRUCTIONS: &str = "role-authorized child instructions";
 const RESTORED_PROMPT: &str = "delegate again after restoring the default-role child";
 const RESTORED_CALL: &str = "restored-child-history-fork";
@@ -153,7 +154,7 @@ async fn spawn_history_obeys_resolved_authorization(
             if matches!(history, History::ConfiguredFull | History::None) {
                 config.multi_agent_v2.default_fork_turns = "all".to_string();
             }
-            config.developer_instructions = Some("parent developer instructions".to_string());
+            config.developer_instructions = Some(PARENT_INSTRUCTIONS.to_string());
             if let Some(role_name) = role_name {
                 let role_path = config.codex_home.join("history-role.toml");
                 let allowed = !matches!(authorization, Authorization::RoleDenies);
@@ -211,8 +212,8 @@ async fn spawn_history_obeys_resolved_authorization(
         arguments["agent_type"] = json!(role_name);
     }
     if role_name.is_some() {
-        // At this owner, role settings follow requested model/effort settings. History
-        // authorization and instructions remain effective; the provider stays parent-owned.
+        // Explicit model and effort override role defaults without changing the role's
+        // history authorization, instructions, or the parent's provider authority.
         arguments["model"] = json!("gpt-5.6-luna");
         arguments["reasoning_effort"] = json!("low");
     }
@@ -330,12 +331,21 @@ async fn spawn_history_obeys_resolved_authorization(
                 child_request.body_json()["model"].clone(),
                 child_request.body_json()["reasoning"]["effort"].clone(),
             ),
-            (json!("gpt-5.5"), json!("high"))
+            (json!("gpt-5.6-luna"), json!("low"))
         );
-        assert!(child_request.body_contains_text(ROLE_INSTRUCTIONS));
-    } else {
-        assert!(child_request.body_contains_text("parent developer instructions"));
     }
+    assert_eq!(
+        child_request
+            .message_input_texts("developer")
+            .into_iter()
+            .filter(|text| [PARENT_INSTRUCTIONS, ROLE_INSTRUCTIONS].contains(&text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![if role_name.is_some() {
+            ROLE_INSTRUCTIONS.to_owned()
+        } else {
+            PARENT_INSTRUCTIONS.to_owned()
+        }]
+    );
     if matches!(
         (version, authorization),
         (Version::V1 | Version::V2, Authorization::DefaultRoleAllows)

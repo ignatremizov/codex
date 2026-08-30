@@ -16,15 +16,14 @@ use super::UserAgentResponseHandling;
 use super::UserAgentResumeResult;
 use super::child_session_source;
 use super::control_relationship_source;
-use super::user_control_tool_error;
 use crate::CodexThread;
 use crate::agent::AgentStatus;
+use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::AgentResumeOwnership;
 use crate::agent::control::ResumeUserInputAdmission;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::config::Config;
-use crate::agent::child_config::build_agent_resume_config;
 
 struct PreparedClosedAgentResume {
     config: Config,

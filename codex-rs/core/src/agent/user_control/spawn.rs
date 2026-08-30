@@ -1,18 +1,18 @@
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::user_input::UserInput;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use super::UserAgentForkMode;
-use super::UserAgentResponseHandling;
+use super::UserAgentSpawnOptions;
 use super::UserAgentSpawnResult;
 use super::child_session_source;
 use crate::CodexThread;
 use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
-use crate::agent::child_config::prepare_user_agent_spawn_config;
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
+use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 
@@ -20,11 +20,16 @@ impl CodexThread {
     /// Spawn a default or configured-role child, optionally starting its first turn.
     pub async fn spawn_agent(
         &self,
-        role: Option<&str>,
-        input: Option<Vec<UserInput>>,
-        fork_mode: UserAgentForkMode,
-        response_handling: UserAgentResponseHandling,
+        options: UserAgentSpawnOptions,
     ) -> CodexResult<UserAgentSpawnResult> {
+        let UserAgentSpawnOptions {
+            role,
+            model,
+            reasoning_effort,
+            input,
+            fork_mode,
+            response_handling,
+        } = options;
         if input.as_ref().is_some_and(Vec::is_empty) {
             return Err(CodexErr::InvalidRequest(
                 "agent prompt requires nonempty user input".to_string(),
@@ -38,28 +43,38 @@ impl CodexThread {
 
         let agent_control = self.native_user_agent_control()?;
         let turn = self.session.new_default_turn().await;
-        let step = self.session.capture_step_context(Arc::clone(&turn), &CancellationToken::new()).await?;
+        let step_context = self
+            .session
+            .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+            .await?;
         let fork_mode = match fork_mode {
             UserAgentForkMode::None => None,
             UserAgentForkMode::All => Some(SpawnAgentForkMode::FullHistory),
             UserAgentForkMode::LastNTurns(turns) => Some(SpawnAgentForkMode::LastNTurns(turns)),
         };
-        let version = if self.session.multi_agent_version() == Some(MultiAgentVersion::V2)
-            || turn.multi_agent_version == MultiAgentVersion::V2
-        { SpawnConfigVersion::V2 } else { SpawnConfigVersion::V1 };
-        let prepared = prepare_user_agent_spawn_config(
-            &self.session,
-            &step,
+        let prepared = prepare_agent_spawn_config(
+            self.session.as_ref(),
+            &step_context,
             SpawnConfigOptions {
-                version,
+                origin: SpawnConfigOrigin::User,
+                version: if self.session.multi_agent_version() == Some(MultiAgentVersion::V2)
+                    || turn.multi_agent_version == MultiAgentVersion::V2
+                {
+                    SpawnConfigVersion::V2
+                } else {
+                    SpawnConfigVersion::V1
+                },
                 fork_mode: fork_mode.as_ref(),
-                role_name: role,
-                model: None,
+                role_name: role.as_deref(),
+                model: model.as_deref(),
                 service_tier: None,
-                reasoning_effort: None,
+                reasoning_effort,
             },
-        ).await.map_err(CodexErr::InvalidRequest)?;
+        )
+        .await
+        .map_err(CodexErr::InvalidRequest)?;
         let config = prepared.config;
+
         let spawn_id = uuid::Uuid::now_v7().as_simple().to_string();
         let task_name = (matches!(
             self.session.multi_agent_version(),
@@ -67,7 +82,12 @@ impl CodexThread {
         ) || turn.config.multi_agent_version_from_features()
             == MultiAgentVersion::V2)
             .then(|| format!("user_{spawn_id}"));
-        let session_source = child_session_source(self, turn.as_ref(), prepared.role_name.as_deref(), task_name)?;
+        let session_source = child_session_source(
+            self,
+            turn.as_ref(),
+            prepared.role_name.as_deref(),
+            task_name,
+        )?;
         let fork_parent_spawn_call_id = fork_mode
             .as_ref()
             .map(|_| format!("user-agent-spawn-{spawn_id}"));
@@ -78,7 +98,7 @@ impl CodexThread {
             parent_turn_id: None,
             root_turn_id: None,
             cyber_access_program: turn.cyber_access_program,
-            environments: Some(step.environments.clone()),
+            environments: Some(step_context.environments.clone()),
             response_observation: response_handling.into(),
             ..Default::default()
         };

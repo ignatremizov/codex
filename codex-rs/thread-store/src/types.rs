@@ -679,6 +679,9 @@ pub struct StoredThread {
     pub model_provider: String,
     /// Latest observed model, if known.
     pub model: Option<String>,
+    /// Latest resolved service tier, if known.
+    #[serde(default)]
+    pub service_tier: Option<String>,
     /// Latest observed reasoning effort, if known.
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Thread creation timestamp.
@@ -804,6 +807,13 @@ pub struct ThreadMetadataPatch {
     pub model_provider: Option<String>,
     /// Latest observed model.
     pub model: Option<String>,
+    /// Latest resolved service tier.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub service_tier: ClearableField<String>,
     /// Latest observed reasoning effort.
     #[serde(
         default,
@@ -905,6 +915,9 @@ impl ThreadMetadataPatch {
         if next.model.is_some() {
             self.model = next.model;
         }
+        if next.service_tier.is_some() {
+            self.service_tier = next.service_tier;
+        }
         if next.reasoning_effort.is_some() {
             self.reasoning_effort = next.reasoning_effort;
         }
@@ -986,6 +999,7 @@ impl ThreadMetadataPatch {
             && self.title.is_none()
             && self.model_provider.is_none()
             && self.model.is_none()
+            && self.service_tier.is_none()
             && self.reasoning_effort.is_none()
             && self.created_at.is_none()
             && self.advance_recency_at.is_none()
@@ -1075,6 +1089,7 @@ mod tests {
     fn thread_metadata_patch_round_trips_optional_clears() {
         let patch = ThreadMetadataPatch {
             name: Some(None),
+            service_tier: Some(None),
             reasoning_effort: Some(None),
             thread_source: Some(None),
             agent_nickname: Some(None),
@@ -1085,6 +1100,7 @@ mod tests {
 
         let value = serde_json::to_value(&patch).expect("serialize patch");
         assert_eq!(value["name"], json!(null));
+        assert_eq!(value["service_tier"], json!(null));
         assert_eq!(value["reasoning_effort"], json!(null));
         assert_eq!(value["thread_source"], json!(null));
         assert_eq!(value["agent_nickname"], json!(null));
@@ -1094,6 +1110,7 @@ mod tests {
         let decoded: ThreadMetadataPatch =
             serde_json::from_value(value).expect("deserialize patch");
         assert_eq!(decoded.name, Some(None));
+        assert_eq!(decoded.service_tier, Some(None));
         assert_eq!(decoded.reasoning_effort, Some(None));
         assert_eq!(decoded.thread_source, Some(None));
         assert_eq!(decoded.agent_nickname, Some(None));

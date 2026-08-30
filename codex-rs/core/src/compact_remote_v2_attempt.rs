@@ -94,6 +94,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     sess.services
         .executed_tool_calls
         .attach_to_compaction_prompt(&mut input);
+    sess.project_child_developer_instructions(turn_context, &mut input);
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {

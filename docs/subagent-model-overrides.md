@@ -1,7 +1,10 @@
 # Subagent model overrides
 
-An explicit `spawn_agent` model override must name a model in the loaded catalog. The model's
-default multi-agent catalog tag is not a compatibility restriction: a V2 parent can select a
+An explicit `spawn_agent` model override must name a model in the loaded catalog, unless it
+repeats the model already selected by inherited, configured-child, or role settings. That
+exception preserves configured provider models absent from discovery; it does not authorize
+an unrelated unknown model. The model's default multi-agent catalog tag is not a compatibility
+restriction: a V2 parent can select a
 known V1-tagged, Disabled-tagged, or untagged model for a V2 child. Models hidden from the picker
 remain valid explicit overrides.
 
@@ -13,6 +16,16 @@ For readability, the tool description lists at most five picker-visible model ov
 That display limit does not restrict accepted model names. An unknown model is rejected before
 creating a child, and its error lists the complete loaded catalog.
 
-Existing role, history-inheritance, reasoning-effort, and service-tier precedence and validation
-still apply. This change does not change delegation-mode instructions or authorize a broader
-history/role combination.
+Settings resolve from captured parent settings, configured child defaults, selected role
+defaults, and explicit spawn overrides, in that order. A higher-precedence model selection
+without an accompanying effort uses that model's catalog default rather than carrying a
+lower-precedence effort across models. Explicit effort and service-tier selections are
+validated against the final model. History authorization and provider/runtime ownership
+remain separate. Model-authored overrides still require explicit user, applicable `AGENTS.md`,
+or skill instructions; the presence of these fields is not permission to infer a new preference.
+
+When a role specifies `model_instructions_file`, the file path is resolved relative to the role
+configuration file (or may be absolute). Its non-empty contents replace inherited base
+instructions for that child and are marked as custom; developer instructions remain a separate
+layer. Missing, unreadable, empty, or invalid-text files identify the selected role and resolved
+path in the error, without partially applying the role.

@@ -90,6 +90,11 @@ impl ResolvedStepSettings {
             .cloned()
     }
 
+    /// The captured routing preference, before filtering for the selected model.
+    pub(crate) fn requested_service_tier(&self) -> Option<&str> {
+        self.selected.service_tier.as_deref()
+    }
+
     pub(crate) fn effective_collaboration_mode(&self) -> CollaborationMode {
         let mut collaboration_mode = self.selected.collaboration_mode.clone();
         collaboration_mode.settings.model = self.model_info.slug.clone();
