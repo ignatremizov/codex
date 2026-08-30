@@ -197,6 +197,7 @@ use crate::key_hint::ShortcutHint;
 use crate::key_hint::has_ctrl_or_alt;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::ui_consts::FOOTER_INDENT_COLS;
+use crate::user_shell_command::parse_user_shell_command;
 use codex_message_history::HistoryBatchCursor;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -5097,15 +5098,13 @@ impl ChatComposer {
                     .render_ref_masked(textarea_rect, buf, &mut state, mask_char);
             } else {
                 let mut highlights = self.plugin_at_mention_highlights();
+                let textarea_text = self.draft.textarea.text();
                 if self.draft.is_bash_mode
-                    && let Some(end) = self
-                        .draft
-                        .textarea
-                        .text()
-                        .strip_prefix("[w:")
-                        .and_then(|options| options.find(']'))
+                    && textarea_text.starts_with("w:")
+                    && let Ok(parsed) = parse_user_shell_command(textarea_text)
+                    && let Some(end) = parsed.response_option_prefix_len
                 {
-                    highlights.push((0..end + 4, Style::default().magenta()));
+                    highlights.push((0..end, Style::default().magenta()));
                 }
                 highlights.extend(
                     agent_command_highlights(
@@ -5654,7 +5653,7 @@ mod tests {
                 composer.set_status_line(Some(Line::from(
                     "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
                 )));
-                composer.set_text_content("![w:fq] git status".to_string(), Vec::new(), Vec::new());
+                composer.set_text_content("!w:fq git status".to_string(), Vec::new(), Vec::new());
             },
         );
 
@@ -5709,7 +5708,7 @@ mod tests {
         composer.set_status_line(Some(Line::from(
             "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
         )));
-        composer.set_text_content("![w:fq] git status".to_string(), Vec::new(), Vec::new());
+        composer.set_text_content("!w:fq git status".to_string(), Vec::new(), Vec::new());
 
         let area = Rect::new(0, 0, 100, 9);
         let mut buf = Buffer::empty(area);
@@ -5719,7 +5718,7 @@ mod tests {
         assert_eq!(prompt_cell.symbol(), "!");
         assert_eq!(prompt_cell.style().fg, Some(Color::LightRed));
         let response_option_cell = &buf[(2, 1)];
-        assert_eq!(response_option_cell.symbol(), "[");
+        assert_eq!(response_option_cell.symbol(), "w");
         assert_eq!(response_option_cell.style().fg, Some(Color::Magenta));
 
         let footer_y = area.height - 1;
@@ -5733,6 +5732,28 @@ mod tests {
             buf[(shell_label_x as u16, footer_y)].style().fg,
             Some(Color::LightRed)
         );
+    }
+
+    #[test]
+    fn shell_command_does_not_highlight_escaped_w_prefix_as_response_option() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_text_content("! w:f arg".to_string(), Vec::new(), Vec::new());
+
+        let area = Rect::new(0, 0, 100, 9);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+
+        let command_cell = &buf[(3, 1)];
+        assert_eq!(command_cell.symbol(), "w");
+        assert_eq!(command_cell.style().fg, Some(Color::Reset));
     }
 
     fn plugin_mention_foreground_color(composer: &ChatComposer) -> Option<Color> {

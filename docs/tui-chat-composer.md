@@ -112,10 +112,10 @@ offered as composer completions.
 User shell commands accept an optional response policy immediately after `!`:
 
 ```text
-![w:f] long-running-command
-![w:q] command-after-earlier-user-shell-work
-![w:fq] queued-command-that-wakes-on-completion
-![w:x] presentation-only-command
+!w:f long-running-command
+!w:q command-after-earlier-user-shell-work
+!w:fq queued-command-that-wakes-on-completion
+!w:x presentation-only-command
 ```
 
 Omitting `w` preserves passive model delivery without a wake. `f` wakes the thread when the
