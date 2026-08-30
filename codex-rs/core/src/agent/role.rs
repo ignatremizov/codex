@@ -34,6 +34,12 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AgentRoleApplication {
+    pub(crate) overrides_model: bool,
+    pub(crate) overrides_reasoning_effort: bool,
+}
+
 #[derive(Default, Serialize)]
 struct AgentRoleOverrides {
     developer_instructions: Option<String>,
@@ -60,7 +66,7 @@ struct AgentRoleAgentOverrides {
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
-) -> Result<(), String> {
+) -> Result<AgentRoleApplication, String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
 
     let role = resolve_role_config(config, role_name)
@@ -79,13 +85,17 @@ async fn apply_role_to_config_inner(
     config: &mut Config,
     role_name: &str,
     role: &AgentRoleConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AgentRoleApplication> {
     let is_built_in = !config.agent_roles.contains_key(role_name);
     let Some(config_file) = role.config_file.as_ref() else {
-        return Ok(());
+        return Ok(AgentRoleApplication::default());
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
+    let application = AgentRoleApplication {
+        overrides_model: role_config.model.is_some(),
+        overrides_reasoning_effort: role_config.model_reasoning_effort.is_some(),
+    };
     let mut overrides = AgentRoleOverrides {
         developer_instructions: role_config.developer_instructions,
         model: role_config.model,
@@ -138,10 +148,10 @@ async fn apply_role_to_config_inner(
         .as_table()
         .is_some_and(toml::map::Map::is_empty)
     {
-        return Ok(());
+        return Ok(application);
     }
     *config = role_overrides::build_next_config(config, role_layer_toml, &overrides)?;
-    Ok(())
+    Ok(application)
 }
 
 async fn load_role_layer_toml(
@@ -349,17 +359,13 @@ pub(crate) mod spawn_tool_spec {
                         .and_then(TomlValue::as_str);
                     match (model, reasoning_effort) {
                         (Some(model), Some(reasoning_effort)) => format!(
-                            "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
+                            "\n- This role defaults to model `{model}` with `{reasoning_effort}` reasoning."
                         ),
                         (Some(model), None) => {
-                            format!(
-                                "\n- This role's model is set to `{model}` and cannot be changed."
-                            )
+                            format!("\n- This role defaults to model `{model}`.")
                         }
                         (None, Some(reasoning_effort)) => {
-                            format!(
-                                "\n- This role's reasoning effort is set to `{reasoning_effort}` and cannot be changed."
-                            )
+                            format!("\n- This role defaults to `{reasoning_effort}` reasoning.")
                         }
                         (None, None) => String::new(),
                     }

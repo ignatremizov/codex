@@ -36,6 +36,7 @@ use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemAccessMode as CoreFileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath as CoreFileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry as CoreFileSystemSandboxEntry;
@@ -5629,6 +5630,8 @@ fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
 fn agent_control_action_uses_camel_case_variant_fields() {
     let action = AgentControlAction::Spawn {
         role: None,
+        model: Some("gpt-5.6-luna".to_string()),
+        reasoning_effort: Some(ReasoningEffort::High),
         input: None,
         fork_mode: AgentForkMode::None,
         response_handling: Some(AgentResponseHandling::new(
@@ -5641,6 +5644,8 @@ fn agent_control_action_uses_camel_case_variant_fields() {
     let expected = json!({
         "type": "spawn",
         "role": null,
+        "model": "gpt-5.6-luna",
+        "reasoningEffort": "high",
         "input": null,
         "forkMode": {
             "type": "none"

@@ -2372,9 +2372,11 @@ fn agent_role_selector(role: &str) -> String {
         || role.chars().any(char::is_whitespace)
         || role.chars().any(|ch| matches!(ch, '"' | '\\'))
         || ThreadId::from_string(role).is_ok()
-        || ["fork:", "w:", "id:", "ref:", "nick:", "role:"]
-            .iter()
-            .any(|prefix| role.starts_with(prefix));
+        || [
+            "fork:", "w:", "model:", "effort:", "id:", "ref:", "nick:", "role:",
+        ]
+        .iter()
+        .any(|prefix| role.starts_with(prefix));
     if !requires_namespace {
         return role.to_string();
     }
@@ -2463,6 +2465,8 @@ mod tests {
         assert_eq!(agent_role_selector("MAIN"), "role:\"MAIN\"");
         assert_eq!(agent_role_selector("queue"), "role:\"queue\"");
         assert_eq!(agent_role_selector("2"), "role:\"2\"");
+        assert_eq!(agent_role_selector("model:custom"), "role:\"model:custom\"");
+        assert_eq!(agent_role_selector("effort:high"), "role:\"effort:high\"");
         assert_eq!(
             agent_role_selector("Ada \"reviewer\""),
             "role:\"Ada \\\"reviewer\\\"\""

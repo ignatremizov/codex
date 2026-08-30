@@ -138,6 +138,23 @@ pub enum UserAgentForkMode {
     LastNTurns(usize),
 }
 
+/// Inputs for spawning a user-controlled default or configured-role child.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UserAgentSpawnOptions {
+    /// Configured role selected for the child, or the default role when omitted.
+    pub role: Option<String>,
+    /// Explicit child model override.
+    pub model: Option<String>,
+    /// Explicit reasoning override for the resolved child model.
+    pub reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    /// Optional first-turn input; omission creates an idle child.
+    pub input: Option<Vec<codex_protocol::user_input::UserInput>>,
+    /// Parent history inherited by the child.
+    pub fork_mode: UserAgentForkMode,
+    /// Source-side handling for the child's next response.
+    pub response_handling: UserAgentResponseHandling,
+}
+
 /// Final-response handling selected by an explicit user observation replacement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserAgentFinalResponseHandling {

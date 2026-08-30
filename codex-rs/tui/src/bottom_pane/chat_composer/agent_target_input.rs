@@ -7,9 +7,6 @@ impl ChatComposer {
         &mut self,
         key_event: KeyEvent,
     ) -> (InputResult, bool) {
-        if self.handle_shortcut_overlay_key(&key_event) {
-            return (InputResult::None, true);
-        }
         self.footer.mode = reset_mode_after_activity(self.footer.mode);
 
         let ActivePopup::AgentTarget(popup) = &mut self.popups.active else {
@@ -91,7 +88,11 @@ impl ChatComposer {
         let text = self.draft.textarea.text();
         let first_line_end = text.find('\n').unwrap_or(text.len());
         let first_line = &text[..first_line_end];
-        agent_target_completion(first_line, self.draft.textarea.cursor())
+        agent_target_completion(
+            first_line,
+            self.draft.textarea.cursor(),
+            &self.agent_prompt_targets,
+        )
     }
 
     fn insert_agent_target(&mut self, range: Range<usize>, selector: &str) {

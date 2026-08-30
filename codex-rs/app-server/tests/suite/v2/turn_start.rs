@@ -4807,8 +4807,8 @@ config_file = "./custom-role.toml"
     assert_eq!(receiver_agents[0].thread_id, receiver_thread_id);
     assert_eq!(receiver_agents[0].agent_role.as_deref(), Some("custom"));
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
-    assert_eq!(model, Some(ROLE_MODEL.to_string()));
-    assert_eq!(reasoning_effort, Some(ROLE_REASONING_EFFORT));
+    assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
+    assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");

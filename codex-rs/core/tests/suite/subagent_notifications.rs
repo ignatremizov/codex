@@ -4,6 +4,7 @@ use codex_core::ThreadConfigSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::UserAgentForkMode;
 use codex_core::UserAgentResponseHandling;
+use codex_core::UserAgentSpawnOptions;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::Config;
 use codex_core::config::CurrentTimeReminderConfig;
@@ -1021,26 +1022,31 @@ async fn wait_for_request_with_model(
     }
 }
 
-async fn setup_turn_one_with_spawned_child(
+async fn setup_turn_one_with_custom_spawned_child(
     server: &MockServer,
+    spawn_args: serde_json::Value,
     child_response_timing: ChildResponseTiming,
-    history_mode: ThreadHistoryMode,
-) -> Result<(TestCodex, String)> {
-    let (test, spawned_id, _child_request_log) = setup_turn_one_with_custom_spawned_child(
+    wait_for_parent_notification: bool,
+    configure_test: impl FnOnce(
+        core_test_support::test_codex::TestCodexBuilder,
+    ) -> core_test_support::test_codex::TestCodexBuilder,
+) -> Result<(
+    TestCodex,
+    String,
+    core_test_support::responses::ResponseMock,
+)> {
+    setup_turn_one_with_custom_spawned_child_and_reasoning(
         server,
-        json!({
-            "message": CHILD_PROMPT,
-        }),
+        spawn_args,
         child_response_timing,
-        /*wait_for_parent_notification*/ true,
+        wait_for_parent_notification,
         INHERITED_REASONING_EFFORT,
-        |builder| builder.with_history_mode(history_mode),
+        configure_test,
     )
-    .await?;
-    Ok((test, spawned_id))
+    .await
 }
 
-async fn setup_turn_one_with_custom_spawned_child(
+async fn setup_turn_one_with_custom_spawned_child_and_reasoning(
     server: &MockServer,
     spawn_args: serde_json::Value,
     child_response_timing: ChildResponseTiming,
@@ -1255,7 +1261,6 @@ async fn spawn_child_and_capture_snapshot(
         spawn_args,
         ChildResponseTiming::Immediate,
         /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
         configure_test,
     )
     .await?;
@@ -1286,15 +1291,39 @@ async fn spawned_agent_uses_multi_agent_reasoning_effort_for_requests(
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let (_test, _spawned_id, child_request_log) = setup_turn_one_with_custom_spawned_child(
-        &server,
-        json!({ "message": CHILD_PROMPT }),
-        ChildResponseTiming::Immediate,
-        /*wait_for_parent_notification*/ false,
-        selected_reasoning_effort,
-        std::convert::identity,
-    )
-    .await?;
+    let catalog_reasoning_effort = selected_reasoning_effort.clone();
+    let add_selected_effort_to_catalog =
+        move |builder: core_test_support::test_codex::TestCodexBuilder| {
+            builder.with_config(move |config| {
+                if catalog_reasoning_effort != ReasoningEffort::Ultra {
+                    return;
+                }
+                let model_catalog = config.model_catalog.get_or_insert_with(|| {
+                    bundled_models_response().expect("bundled models.json should parse")
+                });
+                let model_info = model_catalog
+                    .models
+                    .iter_mut()
+                    .find(|model_info| model_info.slug == INHERITED_MODEL)
+                    .expect("inherited model should exist in bundled models.json");
+                model_info
+                    .supported_reasoning_levels
+                    .push(ReasoningEffortPreset {
+                        effort: ReasoningEffort::Ultra,
+                        description: "Ultra".to_string(),
+                    });
+            })
+        };
+    let (_test, _spawned_id, child_request_log) =
+        setup_turn_one_with_custom_spawned_child_and_reasoning(
+            &server,
+            json!({ "message": CHILD_PROMPT }),
+            ChildResponseTiming::Immediate,
+            /*wait_for_parent_notification*/ false,
+            selected_reasoning_effort,
+            add_selected_effort_to_catalog,
+        )
+        .await?;
 
     let child_request = wait_for_requests(&child_request_log)
         .await?
@@ -5721,12 +5750,11 @@ async fn foreign_close_resumes_idle_lifecycle_after_revoking_final_wake(
     }
     let closer_thread_id = test
         .codex
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await?
         .target_thread_id;
     let closer = test.thread_manager.get_thread(closer_thread_id).await?;
@@ -7989,15 +8017,15 @@ async fn user_spawn_preserves_admitted_child_after_response_observation_persiste
 
     let spawned = test
         .codex
-        .spawn_agent(
-            /*role*/ None,
-            Some(vec![UserInput::Text {
+        .spawn_agent(UserAgentSpawnOptions {
+            input: Some(vec![UserInput::Text {
                 text: USER_CHILD_PROMPT.to_string(),
                 text_elements: Vec::new(),
             }]),
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await?;
 
     assert!(
@@ -8095,15 +8123,15 @@ async fn user_agent_inputs_roll_back_delivery_when_task_context_persistence_fail
         .await;
     let spawned_with_input = test
         .codex
-        .spawn_agent(
-            /*role*/ None,
-            Some(vec![UserInput::Text {
+        .spawn_agent(UserAgentSpawnOptions {
+            input: Some(vec![UserInput::Text {
                 text: SPAWN_PROMPT.to_string(),
                 text_elements: Vec::new(),
             }]),
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Wake,
-        )
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Wake,
+            ..Default::default()
+        })
         .await?;
     assert!(
         spawned_with_input
@@ -8130,12 +8158,11 @@ async fn user_agent_inputs_roll_back_delivery_when_task_context_persistence_fail
 
     let idle = test
         .codex
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Wake,
-        )
+        .spawn_agent(UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Wake,
+            ..Default::default()
+        })
         .await?;
     store
         .fail_next_operation(InMemoryThreadStoreFailure::UserAgentTaskContextFlush)
@@ -8852,7 +8879,6 @@ async fn spawned_agent_uses_summary_support_for_final_model(
         }),
         ChildResponseTiming::Delayed(Duration::from_secs(1)),
         /*wait_for_parent_notification*/ false,
-        INHERITED_REASONING_EFFORT,
         move |builder| {
             builder.with_config(move |config| {
                 config.model_catalog = Some(model_catalog);
@@ -10640,7 +10666,7 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
+async fn spawn_agent_requested_model_and_reasoning_override_role_defaults() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -10675,8 +10701,11 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
     )
     .await?;
 
-    assert_eq!(child_snapshot.model, ROLE_MODEL);
-    assert_eq!(child_snapshot.reasoning_effort, Some(ROLE_REASONING_EFFORT));
+    assert_eq!(child_snapshot.model, REQUESTED_MODEL);
+    assert_eq!(
+        child_snapshot.reasoning_effort,
+        Some(REQUESTED_REASONING_EFFORT)
+    );
 
     Ok(())
 }
@@ -10723,79 +10752,45 @@ async fn spawn_agent_preserves_configured_defaults_through_unrelated_role() -> R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_rejects_reasoning_effort_unsupported_by_role_model() -> Result<()> {
+async fn spawn_agent_role_model_uses_catalog_default_reasoning_effort() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let spawn_args = serde_json::to_string(&json!({
-        "message": CHILD_PROMPT,
-        "agent_type": "custom",
-    }))?;
-    mount_sse_once_match(
+    let child_snapshot = spawn_child_and_capture_snapshot(
         &server,
-        |request: &wiremock::Request| body_contains(request, TURN_1_PROMPT),
-        sse(vec![
-            ev_response_created("resp-turn1-1"),
-            ev_function_call_with_namespace(
-                SPAWN_CALL_ID,
-                MULTI_AGENT_V1_NAMESPACE,
-                "spawn_agent",
-                &spawn_args,
-            ),
-            ev_completed("resp-turn1-1"),
-        ]),
+        json!({
+            "message": CHILD_PROMPT,
+            "agent_type": "custom",
+        }),
+        |builder| {
+            builder.with_config(|config| {
+                let role_path = config.codex_home.join("model-only-role.toml");
+                std::fs::write(&role_path, format!("model = \"{ROLE_MODEL}\"\n"))
+                    .expect("write role config");
+                config.agent_roles.insert(
+                    "custom".to_string(),
+                    AgentRoleConfig {
+                        description: Some("Custom role".to_string()),
+                        config_file: Some(role_path.to_path_buf()),
+                        nickname_candidates: None,
+                    },
+                );
+                config.agent_default_subagent_model = Some("gpt-5.6-sol".to_string());
+                config.agent_default_subagent_reasoning_effort = Some(ReasoningEffort::Ultra);
+            })
+        },
     )
-    .await;
-    let tool_output = mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| body_contains(request, SPAWN_CALL_ID),
-        sse(vec![
-            ev_response_created("resp-turn1-2"),
-            ev_completed("resp-turn1-2"),
-        ]),
-    )
-    .await;
+    .await?;
 
-    let test = test_codex()
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            let role_path = config.codex_home.join("model-only-role.toml");
-            std::fs::write(&role_path, format!("model = \"{ROLE_MODEL}\"\n"))
-                .expect("write role config");
-            config.agent_roles.insert(
-                "custom".to_string(),
-                AgentRoleConfig {
-                    description: Some("Custom role".to_string()),
-                    config_file: Some(role_path.to_path_buf()),
-                    nickname_candidates: None,
-                },
-            );
-            config.agent_default_subagent_model = Some("gpt-5.6-sol".to_string());
-            config.agent_default_subagent_reasoning_effort = Some(ReasoningEffort::Ultra);
-        })
-        .build_with_auto_env(&server)
-        .await?;
-
-    test.submit_turn(TURN_1_PROMPT).await?;
-
-    let (output, _) = tool_output
-        .single_request()
-        .function_call_output_content_and_success(SPAWN_CALL_ID)
-        .expect("spawn_agent output");
     assert_eq!(
-        output.as_deref(),
-        Some(
-            "Reasoning effort `ultra` is not supported for model `gpt-5.4`. Supported reasoning efforts: low, medium, high, xhigh"
-        )
+        (child_snapshot.model, child_snapshot.reasoning_effort),
+        (ROLE_MODEL.to_string(), Some(ReasoningEffort::Medium))
     );
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<()> {
+async fn spawn_agent_tool_description_mentions_role_default_settings() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -10861,7 +10856,7 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
         role_block(&agent_type_description, "custom").expect("custom role description");
     assert_eq!(
         custom_role_description,
-        "custom: {\nCustom role\n- This role's model is set to `gpt-5.4` and its reasoning effort is set to `high`. These settings cannot be changed.\n}"
+        "custom: {\nCustom role\n- This role defaults to model `gpt-5.4` with `high` reasoning.\n}"
     );
 
     Ok(())

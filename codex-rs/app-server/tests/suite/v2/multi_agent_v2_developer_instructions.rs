@@ -971,11 +971,9 @@ features.shell_tool = false
             "warm metadata-only child resume should not replay token usage"
         );
     }
-    let expected_reasoning_effort = if agent_type.is_some() {
-        ReasoningEffort::High
-    } else {
-        ReasoningEffort::Low
-    };
+    // The initial spawn explicitly selected low reasoning. Current role defaults are reapplied
+    // for their restrictions, but cannot replace that persisted per-spawn setting.
+    let expected_reasoning_effort = ReasoningEffort::Low;
     assert_eq!(
         resumed.reasoning_effort,
         Some(expected_reasoning_effort.clone())

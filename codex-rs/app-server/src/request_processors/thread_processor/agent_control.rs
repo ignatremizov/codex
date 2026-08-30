@@ -2,6 +2,7 @@
 
 use super::*;
 use codex_app_server_protocol::AgentForkMode;
+use codex_core::UserAgentSpawnOptions;
 use conversion::agent_control_error;
 use conversion::agent_final_response_handling;
 use conversion::agent_observation_binding;
@@ -39,6 +40,8 @@ impl ThreadRequestProcessor {
             match action {
                 AgentControlAction::Spawn {
                     role,
+                    model,
+                    reasoning_effort,
                     input,
                     fork_mode,
                     response_handling,
@@ -69,7 +72,14 @@ impl ThreadRequestProcessor {
                         .map(user_agent_response_handling)
                         .unwrap_or_default();
                     let result = source_thread
-                        .spawn_agent(role.as_deref(), input, fork_mode, response_handling)
+                        .spawn_agent(UserAgentSpawnOptions {
+                            role,
+                            model,
+                            reasoning_effort,
+                            input,
+                            fork_mode,
+                            response_handling,
+                        })
                         .await
                         .map_err(agent_control_error)?;
                     self.try_attach_thread_listener(

@@ -686,7 +686,7 @@ fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
 }
 
 #[test]
-fn spawn_tool_spec_marks_role_locked_model_and_reasoning_effort() {
+fn spawn_tool_spec_marks_role_default_model_and_reasoning_effort() {
     let tempdir = TempDir::new().expect("create temp dir");
     let role_path = tempdir.path().join("researcher.toml");
     fs::write(
@@ -706,12 +706,12 @@ fn spawn_tool_spec_marks_role_locked_model_and_reasoning_effort() {
     let spec = spawn_tool_spec::build(&user_defined_roles);
 
     assert!(spec.contains(
-            "Research carefully.\n- This role's model is set to `gpt-5` and its reasoning effort is set to `high`. These settings cannot be changed."
-        ));
+        "Research carefully.\n- This role defaults to model `gpt-5` with `high` reasoning."
+    ));
 }
 
 #[test]
-fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
+fn spawn_tool_spec_marks_role_default_reasoning_effort_only() {
     let tempdir = TempDir::new().expect("create temp dir");
     let role_path = tempdir.path().join("reviewer.toml");
     fs::write(
@@ -730,9 +730,7 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
 
     let spec = spawn_tool_spec::build(&user_defined_roles);
 
-    assert!(spec.contains(
-            "Review carefully.\n- This role's reasoning effort is set to `medium` and cannot be changed."
-        ));
+    assert!(spec.contains("Review carefully.\n- This role defaults to `medium` reasoning."));
 }
 
 #[test]

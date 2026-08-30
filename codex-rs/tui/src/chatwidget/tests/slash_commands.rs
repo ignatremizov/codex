@@ -361,6 +361,8 @@ async fn slash_agent_new_with_only_remote_image_starts_the_first_turn() {
         source_thread_id: actual_source_thread_id,
         role,
         authored_selector,
+        model,
+        reasoning_effort,
         prompt,
         fork_mode,
         response_handling,
@@ -371,6 +373,8 @@ async fn slash_agent_new_with_only_remote_image_starts_the_first_turn() {
     assert_eq!(actual_source_thread_id, source_thread_id);
     assert_eq!(role, None);
     assert_eq!(authored_selector, Some("new".to_string()));
+    assert_eq!(model, None);
+    assert_eq!(reasoning_effort, None);
     assert_eq!(
         prompt,
         Some(UserMessage {
@@ -433,14 +437,14 @@ async fn slash_agent_resume_preserves_source_selector_and_response_handling() {
 }
 
 #[tokio::test]
-async fn slash_agent_new_preserves_fork_and_first_turn_response_handling() {
+async fn slash_agent_new_preserves_spawn_overrides_and_response_handling() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     let source_thread_id = chat.thread_id.expect("source thread id");
 
     chat.dispatch_command_with_args(
         SlashCommand::Agent,
-        "new fork:3 w:x".to_string(),
+        "new fork:3 model:gpt-5.6-sol effort:high w:x".to_string(),
         Vec::new(),
     );
 
@@ -453,12 +457,16 @@ async fn slash_agent_new_preserves_fork_and_first_turn_response_handling() {
             source_thread_id: actual_source,
             role: None,
             authored_selector: Some(ref authored_selector),
+            model: Some(ref model),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
             prompt: None,
             fork_mode: codex_app_server_protocol::AgentForkMode::LastNTurns { turns: 3 },
             response_handling: Some(
                 codex_app_server_protocol::AgentResponseHandling::Presentation
             ),
-        } if actual_source == source_thread_id && authored_selector == "new"
+        } if actual_source == source_thread_id
+            && authored_selector == "new"
+            && model == "gpt-5.6-sol"
     );
 }
 
@@ -480,12 +488,11 @@ async fn slash_agent_configured_role_wins_nickname_collision_and_can_repeat() {
         label: "reviewer [worker]".to_string(),
     }]);
 
-    for prompt in ["review the API", "review the TUI"] {
-        chat.dispatch_command_with_args(
-            SlashCommand::Agent,
-            format!("reviewer {prompt}"),
-            Vec::new(),
-        );
+    for command in [
+        "reviewer model:gpt-5.6-luna effort:xhigh review the API",
+        "reviewer review the TUI",
+    ] {
+        chat.dispatch_command_with_args(SlashCommand::Agent, command.to_string(), Vec::new());
     }
 
     let spawned = std::iter::from_fn(|| rx.try_recv().ok())
@@ -493,9 +500,11 @@ async fn slash_agent_configured_role_wins_nickname_collision_and_can_repeat() {
             AppEvent::SpawnAgent {
                 role,
                 authored_selector,
+                model,
+                reasoning_effort,
                 prompt,
                 ..
-            } => Some((role, authored_selector, prompt)),
+            } => Some((role, authored_selector, model, reasoning_effort, prompt)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -505,11 +514,15 @@ async fn slash_agent_configured_role_wins_nickname_collision_and_can_repeat() {
             (
                 Some("reviewer".to_string()),
                 Some("reviewer".to_string()),
+                Some("gpt-5.6-luna".to_string()),
+                Some(ReasoningEffortConfig::XHigh),
                 Some(UserMessage::from("review the API")),
             ),
             (
                 Some("reviewer".to_string()),
                 Some("reviewer".to_string()),
+                None,
+                None,
                 Some(UserMessage::from("review the TUI")),
             ),
         ]

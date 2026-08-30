@@ -103,6 +103,8 @@ async fn user_control_interrupt_admits_structured_follow_up(multi_agent_v2: bool
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: Some(vec![UserInput::Text {
                         text: INITIAL_PROMPT.to_string(),
                         text_elements: Vec::new(),

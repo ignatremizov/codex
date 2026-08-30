@@ -4,6 +4,7 @@ use serde::Serialize;
 use super::UserInput;
 use crate::JsonSchema;
 use crate::TS;
+use codex_protocol::openai_models::ReasoningEffort;
 
 /// Parameters for a user-authored multi-agent control operation.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -32,6 +33,11 @@ pub enum AgentControlAction {
     Spawn {
         /// Omitted selects the default child configuration.
         role: Option<String>,
+        /// Explicit model override. Takes precedence over role and configured defaults.
+        model: Option<String>,
+        /// Explicit reasoning override for the resolved child model. An explicit model without
+        /// this field uses that model's catalog default.
+        reasoning_effort: Option<ReasoningEffort>,
         /// Omitted creates a real idle child without starting its first turn.
         input: Option<Vec<UserInput>>,
         fork_mode: AgentForkMode,

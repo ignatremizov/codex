@@ -53,6 +53,24 @@
                 "null"
               ]
             },
+            "model": {
+              "description": "Explicit model override. Takes precedence over role and configured defaults.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reasoning_effort": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ReasoningEffort"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
+            },
             "response_handling": {
               "anyOf": [
                 {

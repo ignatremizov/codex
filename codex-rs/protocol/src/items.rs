@@ -115,6 +115,10 @@ pub struct UserAgentControlItem {
     pub agent_ref: Option<u64>,
     pub nickname: Option<String>,
     pub role: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
     pub prompt_preview: Option<String>,
     pub resumed_target: bool,
     pub fork_mode: Option<UserAgentForkMode>,
@@ -140,6 +144,8 @@ impl UserAgentControlItem {
             agent_ref: None,
             nickname: None,
             role: None,
+            model: None,
+            reasoning_effort: None,
             prompt_preview: None,
             resumed_target: false,
             fork_mode: None,
