@@ -226,6 +226,8 @@ fn next_goal_draft(
     }
 }
 
+#[path = "tests/agent_spawn_catalog_tests.rs"]
+mod agent_spawn_catalog_tests;
 mod app_server;
 mod approval_requests;
 #[path = "tests/approval_timeout_tests.rs"]

@@ -67,6 +67,7 @@ pub use agent::UserAgentReservedPromptResult;
 pub use agent::UserAgentResponseHandling;
 pub use agent::UserAgentResumeResult;
 pub use agent::UserAgentRuntime;
+pub use agent::UserAgentSpawnOptions;
 pub use agent::UserAgentSpawnResult;
 pub use codex_protocol::protocol::EnvironmentConfig;
 pub use codex_thread::BackgroundTerminalInfo;

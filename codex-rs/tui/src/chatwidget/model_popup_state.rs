@@ -101,6 +101,7 @@ impl ChatWidget {
         if presets.is_empty() || self.model_catalog.models == presets {
             return false;
         }
+        self.bottom_pane.set_agent_spawn_models(presets.clone());
         Arc::make_mut(&mut self.model_catalog).models = presets;
         self.set_daybreak_enabled(self.daybreak_enabled);
         self.queue_unavailable_daybreak_disable(self.current_model());

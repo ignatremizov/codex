@@ -173,6 +173,7 @@ impl ThreadMetadataBuilder {
                 .clone()
                 .unwrap_or_else(|| default_provider.to_string()),
             model: None,
+            service_tier: None,
             reasoning_effort: None,
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone(),

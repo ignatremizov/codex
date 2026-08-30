@@ -304,6 +304,7 @@ mod mcp_prewarm;
 mod mcp_prompt;
 pub(crate) use mcp_prompt::is_mcp_use_input;
 mod agent_status_observation;
+mod developer_instruction_projection;
 mod mcp_refresh;
 mod mcp_runtime;
 mod model_catalog_settings;
@@ -1899,6 +1900,12 @@ impl Session {
                 // turn/start overrides can be merged before we write model-visible context.
                 self.set_previous_turn_settings(/*previous_turn_settings*/ None)
                     .await;
+                // An idle child has no TurnContext item yet. Persist its resolved settings now so
+                // close/cold-resume preserves per-spawn model, reasoning, and service-tier
+                // overrides instead of falling back to the current role defaults.
+                if is_subagent {
+                    self.checkpoint_thread_settings().await?;
+                }
                 None
             }
             InitialHistory::Resumed(resumed_history) => {
@@ -4105,18 +4112,6 @@ impl Session {
         .await
     }
 
-    fn inherits_root_service_tier(&self, session_source: &SessionSource) -> bool {
-        match &self.agent_runtime {
-            crate::agent::host::AgentRuntimeServices::Controller => matches!(
-                session_source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            ),
-            crate::agent::host::AgentRuntimeServices::Host(_) => {
-                crate::agent::host::host_child_uses_shared_service_tier(self)
-            }
-        }
-    }
-
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "step settings and both environment snapshots must be captured under active_turn then state"
@@ -4147,7 +4142,8 @@ impl Session {
                     .then(|| self.services.turn_environments.configured_snapshot_now()),
             )
         };
-        if self.inherits_root_service_tier(&turn_context.session_source) {
+        // Native child preferences remain independent; only an explicit host provider is shared.
+        if crate::agent::host::host_child_uses_shared_service_tier(self) {
             let root_service_tier = tokio::select! {
                 biased;
                 tier = crate::agent::host::service_tier(self, settings.selected().service_tier.clone()) => tier,

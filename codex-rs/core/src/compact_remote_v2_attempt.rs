@@ -195,6 +195,17 @@ pub(super) async fn run_remote_compact_v2_attempt(
             Some(input.window),
         ),
     };
+    let completion_source_items = crate::compact::completion_source_items(&input);
+    let mut prompt_envelopes = input
+        .into_iter()
+        .zip(prompt_input_metadata)
+        .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
+        .collect::<Vec<_>>();
+    sess.project_child_developer_instructions(turn_context, &mut prompt_envelopes);
+    (input, prompt_input_metadata) = prompt_envelopes
+        .into_iter()
+        .map(|envelope| (envelope.item, envelope.metadata))
+        .unzip();
     // Canonical replacement input precedes prompt projection. Immutable rejection facts
     // therefore have to reach it explicitly, including facts already applied to this prompt.
     let mut unavailable = sess
@@ -308,7 +319,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     Ok(RemoteCompactV2Attempt {
         rejected_audio_file_ids: unavailable,
         input_goal_ids,
-        completion_source_items: crate::compact::completion_source_items(&prompt.input),
+        completion_source_items,
         trace_input_history,
         replacement_history_input,
         compacted_prefix_len,

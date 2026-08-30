@@ -8,6 +8,7 @@ use codex_core::StartThreadOptions;
 use codex_core::UserAgentFinalResponseHandling;
 use codex_core::UserAgentForkMode;
 use codex_core::UserAgentResponseHandling;
+use codex_core::UserAgentSpawnOptions;
 use codex_features::Feature;
 use codex_protocol::error::CodexErrorDetails;
 use core_test_support::responses::ev_completed;
@@ -56,21 +57,25 @@ async fn options_resume_reuses_surviving_child_owner_and_cold_provider(shared: b
     );
     let survivor = root
         .thread
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
+        .spawn_agent(UserAgentSpawnOptions {
+            role: None,
+            model: None,
+            reasoning_effort: None,
+            input: None,
+            fork_mode: UserAgentForkMode::None,
             response_handling,
-        )
+        })
         .await?;
     let target = root
         .thread
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
+        .spawn_agent(UserAgentSpawnOptions {
+            role: None,
+            model: None,
+            reasoning_effort: None,
+            input: None,
+            fork_mode: UserAgentForkMode::None,
             response_handling,
-        )
+        })
         .await?;
     let survivor_thread = test
         .thread_manager

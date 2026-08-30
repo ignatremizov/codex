@@ -2,13 +2,13 @@ use super::*;
 use crate::agent::api::AgentInput;
 use crate::agent::api::SpawnRequest;
 use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::response_observation::ResponseObservationPolicy;
-use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
@@ -107,6 +107,7 @@ async fn handle_spawn_agent(
         &session,
         step_context.as_ref(),
         SpawnConfigOptions {
+            origin: SpawnConfigOrigin::Model,
             version: SpawnConfigVersion::V1,
             fork_mode: fork_mode.as_ref(),
             role_name,
