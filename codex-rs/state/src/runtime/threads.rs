@@ -28,6 +28,7 @@ SELECT
     threads.agent_path,
     threads.model_provider,
     threads.model,
+    threads.service_tier,
     threads.reasoning_effort,
     threads.cwd,
     threads.cli_version,
@@ -644,6 +645,7 @@ INSERT INTO threads (
     agent_path,
     model_provider,
     model,
+    service_tier,
     reasoning_effort,
     cwd,
     cli_version,
@@ -665,7 +667,7 @@ INSERT INTO threads (
     memory_mode,
     project_id,
     daybreak_enabled
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -693,6 +695,7 @@ ON CONFLICT(id) DO NOTHING
         .bind(metadata.agent_path.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.model.as_deref())
+        .bind(metadata.service_tier.as_deref())
         .bind(
             metadata
                 .reasoning_effort
@@ -944,6 +947,7 @@ INSERT INTO threads (
     agent_path,
     model_provider,
     model,
+    service_tier,
     reasoning_effort,
     cwd,
     cli_version,
@@ -965,7 +969,7 @@ INSERT INTO threads (
     memory_mode,
     project_id,
     daybreak_enabled
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -989,6 +993,7 @@ ON CONFLICT(id) DO UPDATE SET
     agent_path = excluded.agent_path,
     model_provider = excluded.model_provider,
     model = excluded.model,
+    service_tier = excluded.service_tier,
     reasoning_effort = excluded.reasoning_effort,
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
@@ -1029,6 +1034,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.agent_path.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.model.as_deref())
+        .bind(metadata.service_tier.as_deref())
         .bind(
             metadata
                 .reasoning_effort
@@ -1276,6 +1282,7 @@ SELECT
     threads.agent_path,
     threads.model_provider,
     threads.model,
+    threads.service_tier,
     threads.reasoning_effort,
     threads.cwd,
     threads.cli_version,
@@ -1580,6 +1587,10 @@ fn metadata_preview(metadata: &crate::ThreadMetadata) -> &str {
         .or(metadata.first_user_message.as_deref())
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "thread_metadata_write_tests.rs"]
+mod metadata_write_tests;
 
 #[cfg(test)]
 mod tests {

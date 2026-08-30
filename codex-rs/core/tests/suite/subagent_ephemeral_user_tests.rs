@@ -58,15 +58,17 @@ async fn ephemeral_spawn_delivers_only_the_requested_completion_context(
     let root_status = test.codex.agent_status().await;
     let spawned = test
         .codex
-        .spawn_agent(
-            /*role*/ None,
-            Some(vec![UserInput::Text {
+        .spawn_agent(UserAgentSpawnOptions {
+            role: None,
+            model: None,
+            reasoning_effort: None,
+            input: Some(vec![UserInput::Text {
                 text: TASK.to_owned(),
                 text_elements: Vec::new(),
             }]),
-            UserAgentForkMode::None,
+            fork_mode: UserAgentForkMode::None,
             response_handling,
-        )
+        })
         .await?;
     assert_eq!(spawned.input_outcome, Some(UserAgentInputOutcome::Admitted));
     assert_eq!(spawned.post_admission_warning, None);

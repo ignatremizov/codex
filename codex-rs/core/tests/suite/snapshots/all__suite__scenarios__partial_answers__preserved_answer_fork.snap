@@ -1,17 +1,18 @@
 ---
 source: core/tests/suite/scenarios_partial_answers.rs
-expression: "context_snapshot::format_request_history_snapshot(\"A worker inherits the parent prefix unchanged and receives its own instructions. Requests are grouped by parent, then child.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments())"
+assertion_line: 344
+expression: "context_snapshot::format_request_history_snapshot(\"A worker inherits the parent prefix with only the classified developer instructions projected to its resolved role. Requests are grouped by parent, then child.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments())"
 ---
-Scenario: A worker inherits the parent prefix unchanged and receives its own instructions. Requests are grouped by parent, then child.
+Scenario: A worker inherits the parent prefix with only the classified developer instructions projected to its resolved role. Requests are grouped by parent, then child.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=cefa72e421dc276f):
-        - namespace/functions; hash=125a3a92f05f72e9
+00:additional_tools/developer (2; hash=6016d0d6ac8a2b05):
+        - namespace/functions; hash=c87126d176fd0871
           - custom/exec
           - function/wait
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -41,17 +42,19 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
 10:message/user:
     Have a worker check both results.
 -- request 3 (turn) --
-11:function_call/collaboration.spawn_agent:{"fork_turns":"all","message":"Check both inherited results.","task_name":"worker"}
+11:function_call/collaboration.spawn_agent:{"fork_turns":"all","message":"Check both inherited results.","task_message":"Check both inherited results.","task_name":"worker"}
 12:function_call_output:{"task_name":"/root/worker"}
+13:message/user:
+    <ENVIRONMENT_CONTEXT>
 
-## Window 2 (after request 3: input diverged at item 12)
+## Window 2 (after request 3: input diverged at item 02)
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=cefa72e421dc276f):
-        - namespace/functions; hash=125a3a92f05f72e9
+00:additional_tools/developer (2; hash=6016d0d6ac8a2b05):
+        - namespace/functions; hash=c87126d176fd0871
           - custom/exec
           - function/wait
           - function/request_user_input
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -61,7 +64,7 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/developer[2]:
-    [01] Coordinate the investigation.
+    [01] Check both results independently.
     [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/developer:
     You are /root. Coordinate the investigation.
@@ -79,14 +82,12 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
     The second result is ready.
 10:message/user:
     Have a worker check both results.
-11:function_call/collaboration.spawn_agent:{"fork_turns":"all","message":"Check both inherited results.","task_name":"worker"}
+11:function_call/collaboration.spawn_agent:{"fork_turns":"all","message":"Check both inherited results.","task_message":"Check both inherited results.","task_name":"worker"}
 12:function_call_output:aborted
 13:message/developer:
     You are now a newly spawned child agent. The preceding conversation is inherited parent context. Follow ...are not inherited. Report your result to your parent. [hash=0e586a5d405d39db]
 14:message/developer:
-    Check both results independently.
-15:message/developer:
     You are a worker. Report to your parent.
-16:message/developer:
+15:message/developer:
     <MULTI_AGENT_MODE>
-17:agent_message
+16:agent_message

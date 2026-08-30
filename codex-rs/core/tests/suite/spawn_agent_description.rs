@@ -282,20 +282,15 @@ pub(super) async fn model_catalog_refresh_requests(
         description.contains("- `visible-model`: Fast and capable"),
         !model_catalog_in_context
     );
-    let expected_inherited_model_guidance = if multi_agent_version == MultiAgentVersion::V2
-        && model_catalog_in_context
-    {
-        "Spawned agents inherit your current model by default. Do not set the `model` field unless the user explicitly asks for a different model."
-    } else {
-        "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed."
-    };
     assert!(
-        description.contains(expected_inherited_model_guidance),
-        "expected inherited-model guidance in spawn_agent description: {description:?}"
+        description.contains(
+            "Spawn settings resolve from parent, configured subagent defaults, then selected role; explicit model and reasoning override all three."
+        ),
+        "expected model precedence guidance in spawn_agent description: {description:?}"
     );
     assert_eq!(
         description.contains(
-            "Do not set the `model` field unless the user explicitly asks for a different model."
+            "Use explicit `model` or `reasoning_effort` only when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; otherwise omit them so role/configured defaults apply."
         ),
         multi_agent_version == MultiAgentVersion::V1 || model_catalog_in_context,
         "expected model override usage guidance in spawn_agent description: {description:?}"
