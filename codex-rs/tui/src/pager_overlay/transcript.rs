@@ -85,6 +85,7 @@ impl TranscriptBrowserState {
         self.selected_review_target = None;
     }
 
+    #[cfg(test)]
     pub(super) fn selected_review_target(self) -> Option<usize> {
         self.selected_review_target
     }
@@ -272,8 +273,11 @@ impl TranscriptOverlay {
         self.browser.toggle_detail_mode();
         let _ = self.take_live_tail_renderable();
         self.live_tail_key = None;
-        self.rebuild_renderables(/*tail_renderable*/ None);
-        if !self.cells.is_empty() {
+        self.rebuild_renderables();
+        if !self.cells.is_empty()
+            && self.view.pending_scroll_chunk.is_none()
+            && self.view.pending_align_chunk_top.is_none()
+        {
             self.view.align_chunk_to_top(anchor);
         }
     }
@@ -300,10 +304,46 @@ impl TranscriptOverlay {
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
+        let pager_pairs = [
+            (
+                first_or_empty(&self.view.keymap, "scroll_up", &self.view.keymap.scroll_up)
+                    .into_iter()
+                    .chain(first_or_empty(
+                        &self.view.keymap,
+                        "scroll_down",
+                        &self.view.keymap.scroll_down,
+                    ))
+                    .collect(),
+                "to scroll",
+            ),
+            (
+                first_or_empty(&self.view.keymap, "page_up", &self.view.keymap.page_up)
+                    .into_iter()
+                    .chain(first_or_empty(
+                        &self.view.keymap,
+                        "page_down",
+                        &self.view.keymap.page_down,
+                    ))
+                    .collect(),
+                "to page",
+            ),
+            (
+                first_or_empty(&self.view.keymap, "jump_top", &self.view.keymap.jump_top)
+                    .into_iter()
+                    .chain(first_or_empty(
+                        &self.view.keymap,
+                        "jump_bottom",
+                        &self.view.keymap.jump_bottom,
+                    ))
+                    .collect(),
+                "to jump",
+            ),
+        ];
         if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser {
             Clear.render(line1, buf);
             Clear.render(line2, buf);
             if self.highlight_cell.is_some() {
+                let _ = render_key_hints_fitting(line1, buf, &pager_pairs);
                 let _ = render_key_hints_fitting(
                     line2,
                     buf,
@@ -351,41 +391,6 @@ impl TranscriptOverlay {
                 return;
             }
         }
-        let pager_pairs = [
-            (
-                first_or_empty(&self.view.keymap, "scroll_up", &self.view.keymap.scroll_up)
-                    .into_iter()
-                    .chain(first_or_empty(
-                        &self.view.keymap,
-                        "scroll_down",
-                        &self.view.keymap.scroll_down,
-                    ))
-                    .collect(),
-                "to scroll",
-            ),
-            (
-                first_or_empty(&self.view.keymap, "page_up", &self.view.keymap.page_up)
-                    .into_iter()
-                    .chain(first_or_empty(
-                        &self.view.keymap,
-                        "page_down",
-                        &self.view.keymap.page_down,
-                    ))
-                    .collect(),
-                "to page",
-            ),
-            (
-                first_or_empty(&self.view.keymap, "jump_top", &self.view.keymap.jump_top)
-                    .into_iter()
-                    .chain(first_or_empty(
-                        &self.view.keymap,
-                        "jump_bottom",
-                        &self.view.keymap.jump_bottom,
-                    ))
-                    .collect(),
-                "to jump",
-            ),
-        ];
         if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser {
             let _ = render_key_hints_fitting(line1, buf, &pager_pairs);
             return;
@@ -422,7 +427,28 @@ impl TranscriptOverlay {
         self.view.render(top, buf);
         self.render_history_state(top, buf);
         self.render_hints(bottom, buf);
-        self.highlight_draw_pending = false;
+        self.highlight_draw_pending = self.highlight_cell.is_some_and(|highlight_cell| {
+            let Some(&highlight_bottom) = self.view.chunk_bottoms.get(highlight_cell) else {
+                return true;
+            };
+            let highlight_top = highlight_cell
+                .checked_sub(1)
+                .and_then(|index| self.view.chunk_bottoms.get(index))
+                .copied()
+                .unwrap_or(0);
+            let highlight_content_top = highlight_top.saturating_add(usize::from(
+                highlight_cell > 0
+                    && self
+                        .cells
+                        .get(highlight_cell)
+                        .is_some_and(|cell| !cell.is_stream_continuation()),
+            ));
+            let viewport_bottom = self
+                .view
+                .scroll_offset
+                .saturating_add(self.view.last_content_height.unwrap_or(0));
+            highlight_content_top >= viewport_bottom || highlight_bottom <= self.view.scroll_offset
+        });
     }
 
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
@@ -465,6 +491,11 @@ impl TranscriptOverlay {
                 other => {
                     if self.view.is_scroll_key(other) {
                         self.browser.clear_review_target();
+                        if self.highlight_cell.is_some() {
+                            // Enter must not confirm a selection after scrolling until a frame
+                            // proves that the highlighted target is still visible.
+                            self.highlight_draw_pending = true;
+                        }
                     }
                     self.view.handle_key_event(tui, other)
                 }

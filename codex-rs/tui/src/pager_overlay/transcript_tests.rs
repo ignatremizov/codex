@@ -80,6 +80,14 @@ fn render_overlay_once(overlay: &mut TranscriptOverlay) {
     overlay.render(area, &mut buffer);
 }
 
+fn row_text(buffer: &Buffer, area: Rect, y: u16) -> String {
+    (area.x..area.right())
+        .map(|x| buffer[(x, y)].symbol())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
 #[test]
 fn historical_preview_stays_full() {
     let mut state = TranscriptBrowserState::new(TranscriptFlavor::HistoricalFullPreview);
@@ -300,6 +308,190 @@ async fn live_overlay_handles_mode_navigation_and_manual_scroll() {
     assert_eq!(None, overlay.view.pending_align_chunk_top);
 }
 
+#[test]
+fn backtrack_highlight_visibility_excludes_unstyled_top_inset() {
+    let mut overlay = TranscriptOverlay::new(
+        vec![
+            Arc::new(PlainHistoryCell::new(
+                (0..20)
+                    .map(|line| format!("tool line {line}").into())
+                    .collect(),
+            )),
+            Arc::new(new_user_prompt(
+                "selected prompt".to_string(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )),
+        ],
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    overlay.set_highlight_cell(Some(1));
+    let area = Rect::new(0, 0, 80, 10);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+
+    let viewport_height = overlay
+        .view
+        .last_content_height
+        .expect("render should establish viewport height");
+    let highlight_top = overlay.view.chunk_bottoms[0];
+    let highlight_content_top = highlight_top.saturating_add(1);
+    overlay.view.scroll_offset = highlight_content_top.saturating_sub(viewport_height);
+    overlay.render(area, &mut buffer);
+
+    assert!(overlay.highlight_draw_pending());
+
+    overlay.view.scroll_offset = overlay.view.scroll_offset.saturating_add(1);
+    overlay.render(area, &mut buffer);
+
+    assert!(!overlay.highlight_draw_pending());
+}
+
+#[tokio::test]
+async fn prepending_history_preserves_viewport_away_from_backtrack_highlight() {
+    let mut overlay = TranscriptOverlay::new(
+        vec![
+            Arc::new(PlainHistoryCell::new(
+                (0..30)
+                    .map(|line| format!("current line {line}").into())
+                    .collect(),
+            )),
+            Arc::new(new_user_prompt(
+                "selected prompt".to_string(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )),
+        ],
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    overlay.set_highlight_cell(Some(1));
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    let area = Rect::new(0, 0, 80, 12);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        )
+        .expect("scroll to start");
+    overlay.render(area, &mut buffer);
+    assert!(overlay.highlight_draw_pending());
+    let viewport_top_before = row_text(&buffer, area, /*y*/ 1);
+
+    overlay.prepend(
+        vec![Arc::new(PlainHistoryCell::new(
+            (0..5)
+                .map(|line| format!("older line {line}").into())
+                .collect(),
+        ))],
+        area.width,
+    );
+    // `App::handle_older_history_page` re-applies the same logical selection after prepending.
+    // That must not turn the unchanged selection into a fresh scroll request.
+    overlay.set_highlight_cell(Some(2));
+    overlay.render(area, &mut buffer);
+
+    assert_eq!(row_text(&buffer, area, /*y*/ 1), viewport_top_before);
+    assert!(overlay.highlight_draw_pending());
+}
+
+#[test]
+fn rebuilding_taller_content_above_viewport_preserves_visible_row_anchor() {
+    let visible_cell: Arc<dyn HistoryCell> = Arc::new(PlainHistoryCell::new(
+        (0..30)
+            .map(|line| format!("visible line {line}").into())
+            .collect(),
+    ));
+    let selected_prompt: Arc<dyn HistoryCell> = Arc::new(new_user_prompt(
+        "selected prompt".to_string(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ));
+    let mut overlay = TranscriptOverlay::new(
+        vec![
+            Arc::new(PlainHistoryCell::new(vec!["short heading".into()])),
+            Arc::clone(&visible_cell),
+            Arc::clone(&selected_prompt),
+        ],
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    overlay.set_highlight_cell(Some(2));
+    let area = Rect::new(0, 0, 80, 12);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+    let visible_cell_top = overlay.view.chunk_bottoms[0];
+    overlay.view.scroll_offset = visible_cell_top.saturating_add(10);
+    overlay.render(area, &mut buffer);
+    let viewport_top_before = row_text(&buffer, area, /*y*/ 1);
+    assert!(viewport_top_before.starts_with("visible line "));
+    assert!(overlay.highlight_draw_pending());
+
+    overlay.replace_cells(vec![
+        Arc::new(PlainHistoryCell::new(
+            (0..8)
+                .map(|line| format!("expanded heading {line}").into())
+                .collect(),
+        )),
+        visible_cell,
+        selected_prompt,
+    ]);
+    overlay.render(area, &mut buffer);
+
+    assert_eq!(row_text(&buffer, area, /*y*/ 1), viewport_top_before);
+    assert!(overlay.highlight_draw_pending());
+}
+
+#[test]
+fn removing_cell_before_viewport_preserves_visible_row_and_selection() {
+    let heading: Arc<dyn HistoryCell> = Arc::new(PlainHistoryCell::new(vec!["heading".into()]));
+    let removed: Arc<dyn HistoryCell> =
+        Arc::new(PlainHistoryCell::new(vec!["hidden later".into()]));
+    let visible_cell: Arc<dyn HistoryCell> = Arc::new(PlainHistoryCell::new(
+        (0..30)
+            .map(|line| format!("visible line {line}").into())
+            .collect(),
+    ));
+    let selected_prompt: Arc<dyn HistoryCell> = Arc::new(new_user_prompt(
+        "selected prompt".to_string(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ));
+    let mut overlay = TranscriptOverlay::new(
+        vec![
+            Arc::clone(&heading),
+            removed,
+            Arc::clone(&visible_cell),
+            Arc::clone(&selected_prompt),
+        ],
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    overlay.set_highlight_cell(Some(3));
+    let area = Rect::new(0, 0, 80, 12);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+    let visible_cell_top = overlay.view.chunk_bottoms[1];
+    overlay.view.scroll_offset = visible_cell_top.saturating_add(10);
+    overlay.render(area, &mut buffer);
+    let viewport_top_before = row_text(&buffer, area, /*y*/ 1);
+    assert!(viewport_top_before.starts_with("visible line "));
+
+    overlay.replace_cells(vec![heading, visible_cell, selected_prompt]);
+    overlay.render(area, &mut buffer);
+
+    assert_eq!(row_text(&buffer, area, /*y*/ 1), viewport_top_before);
+    assert_eq!(overlay.highlight_cell, Some(2));
+    assert!(overlay.highlight_draw_pending());
+}
+
 #[tokio::test]
 async fn detail_toggle_preserves_pending_review_target_alignment() {
     let mut overlay = TranscriptOverlay::new(
@@ -325,6 +517,38 @@ async fn detail_toggle_preserves_pending_review_target_alignment() {
 
     assert_eq!(Some(0), overlay.selected_review_target());
     assert_eq!(Some(0), overlay.view.pending_align_chunk_top);
+}
+
+#[test]
+fn detail_toggle_preserves_pending_backtrack_scroll() {
+    let mut overlay = TranscriptOverlay::new(
+        vec![
+            Arc::new(PlainHistoryCell::new(
+                (0..30)
+                    .map(|line| format!("leading line {line}").into())
+                    .collect(),
+            )),
+            Arc::new(new_user_prompt(
+                "selected prompt".to_string(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )),
+        ],
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let area = Rect::new(0, 0, 80, 10);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+
+    overlay.set_highlight_cell(Some(1));
+    assert_eq!(overlay.view.pending_scroll_chunk, Some(1));
+    overlay.toggle_detail_mode();
+
+    assert_eq!(overlay.view.pending_scroll_chunk, Some(1));
+    overlay.render(area, &mut buffer);
+    assert!(!overlay.highlight_draw_pending());
 }
 
 #[tokio::test]
@@ -502,6 +726,34 @@ fn live_review_overlay_snapshot_includes_mode_and_browser_hints() {
     T R A N S C R I P T · R E V I E W
      ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
      q close   v detail   [ review prev   ] review next"
+    );
+}
+
+#[test]
+fn live_review_overlay_snapshot_keeps_pager_hints_during_backtrack() {
+    let mut overlay = TranscriptOverlay::new(
+        review_cells(),
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    overlay.set_highlight_cell(Some(0));
+    let area = Rect::new(0, 0, 80, 10);
+    let mut buffer = Buffer::empty(area);
+
+    overlay.render(area, &mut buffer);
+
+    let row = |y| {
+        let mut text = String::new();
+        for x in area.x..area.right() {
+            text.push_str(buffer[(x, y)].symbol());
+        }
+        text.trim_end().to_string()
+    };
+    assert_snapshot!(
+        format!("{}\n{}", row(area.bottom() - 3), row(area.bottom() - 2)),
+        @r"
+     ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+     q to quit   esc/← to edit prev   → to edit next   enter to edit message"
     );
 }
 

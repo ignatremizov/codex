@@ -199,20 +199,10 @@ impl App {
                     }
                     Ok(true)
                 }
-                TuiEvent::Key(key_event)
-                    if self
-                        .overlay
-                        .as_ref()
-                        .is_some_and(|overlay| overlay.is_transcript_close_key(key_event)) =>
-                {
-                    self.overlay_forward_event(tui, TuiEvent::Key(key_event))?;
-                    Ok(true)
-                }
-                event @ (TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_)) => {
+                event => {
                     self.overlay_forward_event(tui, event)?;
                     Ok(true)
                 }
-                _ => Ok(true),
             }
         } else if let TuiEvent::Key(KeyEvent {
             code: KeyCode::Esc,

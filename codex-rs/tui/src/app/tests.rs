@@ -10056,40 +10056,69 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
 }
 
 #[tokio::test]
-async fn backtrack_preview_suppresses_transcript_browser_and_pager_keys() -> Result<()> {
+async fn backtrack_preview_forwards_transcript_browser_and_pager_keys() -> Result<()> {
     let mut app = make_test_app().await;
     let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-    app.transcript_cells = vec![Arc::new(AgentMarkdownCell::new_with_phase(
-        "commentary".to_string(),
-        Path::new("/tmp"),
-        Some(codex_protocol::models::MessagePhase::Commentary),
-    ))];
+    app.transcript_cells = vec![
+        Arc::new(UserHistoryCell {
+            message: "selected prompt".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+            source: None,
+        }),
+        Arc::new(PlainHistoryCell::new(
+            (0..50)
+                .map(|line| format!("tool line {line}").into())
+                .collect(),
+        )),
+    ];
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.open_transcript_overlay(&mut tui);
-    if let Some(Overlay::Transcript(overlay)) = &mut app.overlay {
-        overlay.handle_event(
-            &mut tui,
-            TuiEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
-        )?;
-    }
     app.backtrack.overlay_preview_active = true;
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    overlay.set_highlight_cell(Some(0));
+    overlay.render(area, &mut buffer);
 
-    for code in [KeyCode::Char('v'), KeyCode::Char(']'), KeyCode::Down] {
-        app.handle_backtrack_overlay_event(
-            &mut tui,
-            &mut app_server,
-            TuiEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)),
-        )
-        .await?;
-    }
-
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
+    )
+    .await?;
     let Some(Overlay::Transcript(overlay)) = &app.overlay else {
         panic!("expected transcript overlay");
     };
-    assert!(overlay.is_review_mode());
+    assert!(!overlay.is_review_mode());
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE)),
+    )
+    .await?;
+    let Some(Overlay::Transcript(overlay)) = &app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    assert_eq!(overlay.selected_review_target(), Some(0));
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+    )
+    .await?;
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    overlay.render(area, &mut buffer);
     assert_eq!(overlay.selected_review_target(), None);
-    assert_eq!(overlay.scroll_offset(), 0);
+    assert_eq!(overlay.scroll_offset(), 1);
     app_server.shutdown().await?;
     Ok(())
 }
@@ -10133,6 +10162,130 @@ async fn backtrack_confirmation_waits_for_selected_highlight_draw() -> Result<()
     )
     .await?;
     assert!(app.overlay.is_none());
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn backtrack_confirmation_requires_scrolled_highlight_to_be_visible() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.chat_widget.handle_thread_session(test_thread_session(
+        thread_id,
+        test_path_buf("/tmp/project"),
+    ));
+    while app_event_rx.try_recv().is_ok() {}
+    let mut app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    app.transcript_cells = vec![
+        Arc::new(UserHistoryCell {
+            message: "selected prompt".to_string(),
+            text_elements: Vec::new(),
+            local_image_paths: Vec::new(),
+            remote_image_urls: Vec::new(),
+            source: None,
+        }),
+        Arc::new(PlainHistoryCell::new(
+            (0..100)
+                .map(|line| format!("tool line {line}").into())
+                .collect(),
+        )),
+    ];
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.open_transcript_overlay(&mut tui);
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+    )
+    .await?;
+    assert!(app.backtrack.overlay_preview_active);
+    assert_eq!(app.backtrack.base_id, Some(thread_id));
+    assert_eq!(app.backtrack.nth_user_message, 0);
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    let area = ratatui::layout::Rect::new(0, 0, 80, 12);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+    assert!(!overlay.highlight_draw_pending());
+    overlay.prepend(
+        vec![Arc::new(PlainHistoryCell::new(vec![
+            "older history".into(),
+        ]))],
+        area.width,
+    );
+    assert!(overlay.highlight_draw_pending());
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    )
+    .await?;
+    assert!(app.overlay.is_some());
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    overlay.render(area, &mut buffer);
+    assert!(!overlay.highlight_draw_pending());
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+    )
+    .await?;
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    overlay.render(area, &mut buffer);
+    assert!(overlay.highlight_draw_pending());
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    )
+    .await?;
+    assert!(app.overlay.is_some());
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+    )
+    .await?;
+    let Some(Overlay::Transcript(overlay)) = &mut app.overlay else {
+        panic!("expected transcript overlay");
+    };
+    overlay.render(area, &mut buffer);
+    assert!(!overlay.highlight_draw_pending());
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+    )
+    .await?;
+    assert!(app.overlay.is_none());
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::RollbackSessionForPromptEdit {
+            thread_id: event_thread_id,
+            nth_user_message: 0,
+            prompt,
+            ..
+        }) if event_thread_id == thread_id
+            && prompt == crate::chatwidget::UserMessage::from("selected prompt")
+    );
+    assert_eq!(
+        app.backtrack
+            .pending_rollback
+            .as_ref()
+            .map(|pending| pending.selection.prompt.text.as_str()),
+        Some("selected prompt")
+    );
     app_server.shutdown().await?;
     Ok(())
 }

@@ -114,13 +114,6 @@ impl Overlay {
             Overlay::Static(o) => o.is_done(),
         }
     }
-
-    pub(crate) fn is_transcript_close_key(&self, key_event: KeyEvent) -> bool {
-        match self {
-            Overlay::Transcript(o) => o.is_close_key(key_event),
-            Overlay::Static(_) => false,
-        }
-    }
 }
 
 fn first_or_empty(
@@ -178,6 +171,12 @@ fn render_navigation_hints(area: Rect, buf: &mut Buffer, keymap: &PagerKeymap) {
 }
 
 /// Generic widget for rendering a pager view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ViewportAnchor {
+    chunk_index: usize,
+    row_offset: usize,
+}
+
 struct PagerView {
     renderables: Vec<Box<dyn Renderable>>,
     layout_width: Option<u16>,
@@ -193,6 +192,7 @@ struct PagerView {
     /// If set, on next render ensure this chunk is visible.
     pending_scroll_chunk: Option<usize>,
     pending_align_chunk_top: Option<usize>,
+    pending_viewport_anchor: Option<ViewportAnchor>,
 }
 
 impl PagerView {
@@ -216,6 +216,7 @@ impl PagerView {
             scroll_percentage_visible: true,
             pending_scroll_chunk: None,
             pending_align_chunk_top: None,
+            pending_viewport_anchor: None,
         }
     }
 
@@ -320,6 +321,7 @@ impl PagerView {
         self.dynamic_layout_revisions = Self::collect_dynamic_layout_revisions(&self.renderables);
         self.pending_scroll_chunk = None;
         self.pending_align_chunk_top = None;
+        self.pending_viewport_anchor = None;
         self.invalidate_layout();
     }
 
@@ -331,21 +333,48 @@ impl PagerView {
         Clear.render(area, buf);
         self.render_header(area, buf);
         let content_area = self.content_area(area);
+        let has_pending_navigation = self.pending_scroll_chunk.is_some()
+            || self.pending_align_chunk_top.is_some()
+            || self.pending_viewport_anchor.is_some();
+        let follow_bottom = !has_pending_navigation && self.is_scrolled_to_bottom();
+        let layout_anchor = (!has_pending_navigation && !follow_bottom)
+            .then(|| self.viewport_anchor())
+            .flatten();
         self.update_last_content_height(content_area.height);
         self.refresh_layout(content_area.width);
         let content_height = self.content_height();
         self.last_rendered_height = Some(content_height);
         // If there is a pending request to scroll a specific chunk into view,
         // satisfy it now that wrapping is up to date for this width.
-        if let Some(idx) = self.pending_scroll_chunk.take() {
-            self.ensure_chunk_visible(idx, content_area);
-        }
-        if let Some(idx) = self.pending_align_chunk_top.take()
+        let pending_scroll_chunk = self.pending_scroll_chunk.take();
+        let pending_align_chunk_top = self.pending_align_chunk_top.take();
+        let viewport_anchor = self.pending_viewport_anchor.take().or(layout_anchor);
+        if let Some(idx) = pending_align_chunk_top
             && idx < self.chunk_bottoms.len()
         {
             self.scroll_offset = idx
                 .checked_sub(1)
                 .map_or(0, |previous| self.chunk_bottoms[previous]);
+        } else if let Some(idx) = pending_scroll_chunk {
+            self.ensure_chunk_visible(idx, content_area);
+        } else if let Some(anchor) = viewport_anchor
+            && !self.chunk_bottoms.is_empty()
+        {
+            let chunk_index = anchor
+                .chunk_index
+                .min(self.chunk_bottoms.len().saturating_sub(1));
+            let chunk_top = chunk_index
+                .checked_sub(1)
+                .map_or(0, |previous| self.chunk_bottoms[previous]);
+            let chunk_height = self.chunk_bottoms[chunk_index].saturating_sub(chunk_top);
+            self.scroll_offset = chunk_top.saturating_add(
+                anchor
+                    .row_offset
+                    .min(chunk_height.saturating_sub(/*rhs*/ 1)),
+            );
+        }
+        if follow_bottom {
+            self.scroll_offset = usize::MAX;
         }
         self.scroll_offset = self
             .scroll_offset
@@ -489,6 +518,7 @@ impl PagerView {
         }
         self.pending_scroll_chunk = None;
         self.pending_align_chunk_top = None;
+        self.pending_viewport_anchor = None;
         tui.frame_requester()
             .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
         Ok(())
@@ -540,12 +570,34 @@ impl PagerView {
     /// Request that the given text chunk index be scrolled into view on next render.
     fn scroll_chunk_into_view(&mut self, chunk_index: usize) {
         self.pending_align_chunk_top = None;
+        self.pending_viewport_anchor = None;
         self.pending_scroll_chunk = Some(chunk_index);
     }
 
     fn align_chunk_to_top(&mut self, chunk_index: usize) {
         self.pending_scroll_chunk = None;
+        self.pending_viewport_anchor = None;
         self.pending_align_chunk_top = Some(chunk_index);
+    }
+
+    fn viewport_anchor(&self) -> Option<ViewportAnchor> {
+        if let Some(anchor) = self.pending_viewport_anchor {
+            return Some(anchor);
+        }
+        if self.scroll_offset == usize::MAX
+            || self.chunk_bottoms.len() != self.renderables.len()
+            || self.renderables.is_empty()
+        {
+            return None;
+        }
+        let chunk_index = self.first_visible_chunk();
+        let chunk_top = chunk_index
+            .checked_sub(1)
+            .map_or(0, |previous| self.chunk_bottoms[previous]);
+        Some(ViewportAnchor {
+            chunk_index,
+            row_offset: self.scroll_offset.saturating_sub(chunk_top),
+        })
     }
 
     fn first_visible_chunk(&self) -> usize {
@@ -935,6 +987,9 @@ impl TranscriptOverlay {
             && state == TranscriptHistoryState::Complete
         {
             self.view.scroll_offset = 0;
+            self.view.pending_scroll_chunk = None;
+            self.view.pending_align_chunk_top = None;
+            self.view.pending_viewport_anchor = None;
         }
         self.history_state = state;
         self.view.scroll_percentage_visible = !state.has_unloaded_history();
@@ -943,8 +998,7 @@ impl TranscriptOverlay {
             .iter()
             .any(|cell| cell.as_any().is::<SessionInfoCell>())
         {
-            let live_tail = self.take_live_tail_renderable();
-            self.rebuild_renderables(live_tail);
+            self.rebuild_renderables();
         }
         previous
     }
@@ -1070,7 +1124,7 @@ impl TranscriptOverlay {
         }
         let follow_bottom = self.view.is_scrolled_to_bottom();
         self.view.refresh_layout(width);
-        let previous_height = self.view.content_height();
+        let mut viewport_anchor = self.view.viewport_anchor();
         let live_tail = self.take_live_tail_renderable();
         let added_cells = cells.len();
         let insert_at = self
@@ -1078,6 +1132,14 @@ impl TranscriptOverlay {
             .iter()
             .rposition(|cell| cell.as_any().is::<SessionInfoCell>())
             .map_or(/*default*/ 0, |index| index.saturating_add(/*rhs*/ 1));
+        let anchor_gains_top_inset = viewport_anchor.as_ref().is_some_and(|anchor| {
+            insert_at == 0
+                && anchor.chunk_index == 0
+                && self
+                    .cells
+                    .first()
+                    .is_some_and(|cell| !cell.is_stream_continuation())
+        });
         self.cells.splice(insert_at..insert_at, cells);
         self.browser.prepend(insert_at, added_cells);
         for index in [
@@ -1091,17 +1153,18 @@ impl TranscriptOverlay {
                 *index = index.saturating_add(added_cells);
             }
         }
-        self.rebuild_renderables(live_tail);
-        self.view.refresh_layout(width);
-        let content_height = self.view.content_height();
-        self.view.scroll_offset = if follow_bottom {
-            usize::MAX
-        } else {
-            self.view
-                .scroll_offset
-                .saturating_add(content_height.saturating_sub(previous_height))
-        };
-        self.view.last_rendered_height = Some(content_height);
+        if let Some(anchor) = viewport_anchor.as_mut()
+            && anchor.chunk_index >= insert_at
+        {
+            anchor.chunk_index = anchor.chunk_index.saturating_add(added_cells);
+            if anchor_gains_top_inset {
+                anchor.row_offset = anchor.row_offset.saturating_add(1);
+            }
+        }
+        self.rebuild_renderables_from_anchor(viewport_anchor, live_tail);
+        if follow_bottom {
+            self.view.scroll_offset = usize::MAX;
+        }
         insert_at
     }
 
@@ -1109,11 +1172,49 @@ impl TranscriptOverlay {
     /// currently shown at the end of the overlay.
     ///
     /// This is used when committed history changes outside the overlay. Same-length replacements
-    /// preserve review navigation because existing cell indices remain valid; trims clear it.
+    /// preserve navigation by index; count changes preserve surviving viewport and backtrack cells
+    /// by identity while clearing the review browser target.
     pub(crate) fn replace_cells(&mut self, cells: Vec<Arc<dyn HistoryCell>>) {
         let follow_bottom = self.view.is_scrolled_to_bottom();
+        let mut viewport_anchor = self.view.viewport_anchor();
+        let old_cell_count = self.cells.len();
+        let had_live_tail = self.view.renderables.len() > old_cell_count;
+        let cell_count_changed = old_cell_count != cells.len();
+        if cell_count_changed {
+            let remap_index = |index: usize| {
+                self.cells.get(index).and_then(|old_cell| {
+                    cells
+                        .iter()
+                        .position(|new_cell| Arc::ptr_eq(old_cell, new_cell))
+                })
+            };
+            let clear_viewport_anchor = if let Some(anchor) = viewport_anchor.as_mut() {
+                if had_live_tail && anchor.chunk_index == old_cell_count {
+                    anchor.chunk_index = cells.len();
+                    false
+                } else if let Some(index) = remap_index(anchor.chunk_index) {
+                    anchor.chunk_index = index;
+                    false
+                } else if cells.is_empty() {
+                    true
+                } else {
+                    anchor.chunk_index = anchor.chunk_index.min(cells.len().saturating_sub(1));
+                    false
+                }
+            } else {
+                false
+            };
+            if clear_viewport_anchor {
+                viewport_anchor = None;
+            }
+            let highlight_cell = self.highlight_cell.and_then(&remap_index);
+            let pending_scroll_chunk = self.view.pending_scroll_chunk.and_then(&remap_index);
+            let pending_align_chunk_top = self.view.pending_align_chunk_top.and_then(remap_index);
+            self.highlight_cell = highlight_cell;
+            self.view.pending_scroll_chunk = pending_scroll_chunk;
+            self.view.pending_align_chunk_top = pending_align_chunk_top;
+        }
         let live_tail = self.take_live_tail_renderable();
-        let cell_count_changed = self.cells.len() != cells.len();
         self.cells = cells;
         if cell_count_changed {
             self.browser.clear_review_target();
@@ -1124,7 +1225,7 @@ impl TranscriptOverlay {
         {
             self.highlight_cell = None;
         }
-        self.rebuild_renderables(live_tail);
+        self.rebuild_renderables_from_anchor(viewport_anchor, live_tail);
         if follow_bottom {
             self.view.scroll_offset = usize::MAX;
         }
@@ -1143,36 +1244,67 @@ impl TranscriptOverlay {
         consolidated: Arc<dyn HistoryCell>,
     ) {
         let follow_bottom = self.view.is_scrolled_to_bottom();
+        let mut viewport_anchor = self.view.viewport_anchor();
+        let live_tail = self.take_live_tail_renderable();
         // Clamp the range to the overlay's cell count to avoid panic if the overlay has fewer
         // cells than the main transcript (e.g. cells were inserted after the overlay has opened).
         let clamped_end = range.end.min(self.cells.len());
         let clamped_start = range.start.min(clamped_end);
         if clamped_start < clamped_end {
-            let live_tail = self.take_live_tail_renderable();
             self.browser.consolidate(
                 clamped_start,
                 clamped_end,
                 consolidated.transcript_navigation_kind().is_some(),
             );
             let removed = clamped_end - clamped_start;
-            if let Some(highlight_cell) = self.highlight_cell.as_mut()
-                && *highlight_cell >= clamped_start
-            {
-                if *highlight_cell < clamped_end {
-                    *highlight_cell = clamped_start;
-                } else {
-                    *highlight_cell = highlight_cell.saturating_sub(removed.saturating_sub(1));
+            if let Some(anchor) = viewport_anchor.as_mut() {
+                match anchor.chunk_index {
+                    index if (clamped_start..clamped_end).contains(&index) => {
+                        let range_top = clamped_start
+                            .checked_sub(1)
+                            .map_or(0, |previous| self.view.chunk_bottoms[previous]);
+                        anchor.chunk_index = clamped_start;
+                        anchor.row_offset = self.view.scroll_offset.saturating_sub(range_top);
+                    }
+                    index if index >= clamped_end => {
+                        anchor.chunk_index =
+                            anchor.chunk_index.saturating_sub(removed.saturating_sub(1));
+                    }
+                    _ => {}
+                }
+            }
+            for index in [
+                &mut self.highlight_cell,
+                &mut self.view.pending_scroll_chunk,
+                &mut self.view.pending_align_chunk_top,
+            ] {
+                if let Some(index) = index.as_mut()
+                    && *index >= clamped_start
+                {
+                    if *index < clamped_end {
+                        *index = clamped_start;
+                    } else {
+                        *index = index.saturating_sub(removed.saturating_sub(1));
+                    }
                 }
             }
             self.cells
                 .splice(clamped_start..clamped_end, std::iter::once(consolidated));
-            if self
-                .highlight_cell
-                .is_some_and(|highlight_cell| highlight_cell >= self.cells.len())
-            {
-                self.highlight_cell = None;
+            for index in [
+                &mut self.highlight_cell,
+                &mut self.view.pending_scroll_chunk,
+                &mut self.view.pending_align_chunk_top,
+            ] {
+                if index
+                    .as_ref()
+                    .is_some_and(|index| *index >= self.cells.len())
+                {
+                    *index = None;
+                }
             }
-            self.rebuild_renderables(live_tail);
+            self.rebuild_renderables_from_anchor(viewport_anchor, live_tail);
+        } else if let Some(live_tail) = live_tail {
+            self.view.push_renderable(live_tail);
         }
         if follow_bottom {
             self.view.scroll_offset = usize::MAX;
@@ -1232,6 +1364,8 @@ impl TranscriptOverlay {
         let previous_highlight = self.highlight_cell;
         self.highlight_cell = cell;
         if previous_highlight != self.highlight_cell {
+            // Only a changed logical selection requests positioning. Pagination re-applies the
+            // same target after shifting its cell index and must preserve manual scrolling.
             self.highlight_draw_pending = true;
             for index in [previous_highlight, self.highlight_cell]
                 .into_iter()
@@ -1250,9 +1384,9 @@ impl TranscriptOverlay {
                     );
                 }
             }
-        }
-        if let Some(idx) = self.highlight_cell {
-            self.view.scroll_chunk_into_view(idx);
+            if let Some(idx) = self.highlight_cell {
+                self.view.scroll_chunk_into_view(idx);
+            }
         }
     }
 
@@ -1268,8 +1402,22 @@ impl TranscriptOverlay {
         self.view.is_scrolled_to_bottom()
     }
 
-    // Detach the live tail before changing cells: their old count identifies the tail renderable.
-    fn rebuild_renderables(&mut self, tail_renderable: Option<Box<dyn Renderable>>) {
+    fn rebuild_renderables(&mut self) {
+        let viewport_anchor = self.view.viewport_anchor();
+        let tail_renderable = self.take_live_tail_renderable();
+        self.rebuild_renderables_from_anchor(viewport_anchor, tail_renderable);
+    }
+
+    fn rebuild_renderables_from_anchor(
+        &mut self,
+        viewport_anchor: Option<ViewportAnchor>,
+        tail_renderable: Option<Box<dyn Renderable>>,
+    ) {
+        if self.highlight_cell.is_some() {
+            // Rebuilds can remap or resize the highlighted cell. Enter must wait for the next
+            // frame to prove that the rebuilt highlight is actually visible.
+            self.highlight_draw_pending = true;
+        }
         let pending_scroll_chunk = self.view.pending_scroll_chunk;
         let pending_align_chunk_top = self.view.pending_align_chunk_top;
         self.view.replace_renderables(Self::render_cells(
@@ -1281,14 +1429,12 @@ impl TranscriptOverlay {
         if let Some(tail) = tail_renderable {
             self.view.push_renderable(tail);
         }
-        if let Some(highlight_cell) = self.highlight_cell {
-            self.view.scroll_chunk_into_view(highlight_cell);
-        } else if let Some(review_target) = self.browser.selected_review_target() {
-            self.view.align_chunk_to_top(review_target);
-        } else if let Some(pending_align_chunk_top) = pending_align_chunk_top {
+        if let Some(pending_align_chunk_top) = pending_align_chunk_top {
             self.view.align_chunk_to_top(pending_align_chunk_top);
         } else if let Some(pending_scroll_chunk) = pending_scroll_chunk {
             self.view.scroll_chunk_into_view(pending_scroll_chunk);
+        } else if let Some(viewport_anchor) = viewport_anchor {
+            self.view.pending_viewport_anchor = Some(viewport_anchor);
         }
     }
 
@@ -2101,6 +2247,42 @@ mod tests {
         assert_eq!(overlay.view.chunk_bottoms, vec![4]);
         assert!(buffer_to_text(&buf, area).contains("unstable-3"));
         assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn transcript_overlay_remeasurement_preserves_visible_row_anchor() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let line_count = Arc::new(AtomicUsize::new(1));
+        let mut overlay = transcript_overlay(vec![
+            Arc::new(UnstableHeightCell {
+                calls,
+                line_count: Arc::clone(&line_count),
+            }),
+            Arc::new(TestCell {
+                lines: (0..30)
+                    .map(|index| Line::from(format!("visible-{index}")))
+                    .collect(),
+            }),
+        ]);
+        let area = Rect::new(0, 0, 40, 10);
+        let pager_area = Rect::new(
+            /*x*/ 0,
+            /*y*/ 0,
+            /*width*/ 40,
+            area.height.saturating_sub(3),
+        );
+        let content_area = overlay.view.content_area(pager_area);
+        let mut buf = Buffer::empty(area);
+
+        overlay.render(area, &mut buf);
+        overlay.view.scroll_offset = overlay.view.chunk_bottoms[0].saturating_add(10);
+        overlay.render(area, &mut buf);
+        let visible_before = buffer_to_text(&buf, content_area);
+
+        line_count.store(5, Ordering::Relaxed);
+        overlay.render(area, &mut buf);
+
+        assert_eq!(buffer_to_text(&buf, content_area), visible_before);
     }
 
     #[test]

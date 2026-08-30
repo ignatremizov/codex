@@ -3040,11 +3040,28 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
             .collect::<Vec<_>>(),
         vec!["hidden cross-page review prompt", "newer visible prompt"]
     );
+    app.backtrack.primed = true;
+    app.backtrack.base_id = Some(thread_id);
     app.backtrack.overlay_preview_active = true;
     app.backtrack.nth_user_message = 1;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.open_transcript_overlay(&mut tui);
     app.apply_backtrack_selection_internal(app.backtrack.nth_user_message);
+    let area = ratatui::layout::Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 12,
+    );
+    let mut buffer = Buffer::empty(area);
+    let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
+        panic!("expected a transcript overlay");
+    };
+    overlay.render(area, &mut buffer);
+    overlay.handle_event(
+        &mut tui,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+    )?;
+    overlay.render(area, &mut buffer);
+    assert!(overlay.highlight_draw_pending());
+
     let cursor = app_server
         .begin_older_history_page(thread_id)
         .expect("review-mode marker should remain on an older page");
@@ -3076,14 +3093,24 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
         vec!["older visible prompt", "newer visible prompt"]
     );
     assert_eq!(app.backtrack.nth_user_message, 1);
-    let area = ratatui::layout::Rect::new(
-        /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 12,
-    );
-    let mut buffer = Buffer::empty(area);
     let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
         panic!("expected a transcript overlay");
     };
     overlay.render(area, &mut buffer);
+    assert!(overlay.highlight_draw_pending());
+
+    app.handle_backtrack_overlay_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+    )
+    .await?;
+    assert_eq!(app.backtrack.nth_user_message, 0);
+    let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
+        panic!("expected a transcript overlay");
+    };
+    overlay.render(area, &mut buffer);
+    assert!(!overlay.highlight_draw_pending());
     let highlighted_output = area
         .positions()
         .filter(|position| {
@@ -3106,7 +3133,7 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
         @r"
     older visible prompt
     newer visible prompt
-    highlighted: newer visible prompt
+    highlighted: older visible prompt
     ");
 
     app_server.shutdown().await?;
