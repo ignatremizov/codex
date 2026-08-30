@@ -5689,3 +5689,80 @@ fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
         }
     );
 }
+#[test]
+fn agent_control_action_uses_camel_case_variant_fields() {
+    let action = AgentControlAction::Spawn {
+        role: None,
+        model: Some("gpt-5.6-luna".to_string()),
+        reasoning_effort: Some(ReasoningEffort::High),
+        input: None,
+        fork_mode: AgentForkMode::None,
+        response_handling: Some(AgentResponseHandling::new(
+            /*commentary*/ true,
+            AgentFinalResponseHandling::Wake,
+            /*target_messages*/ true,
+            /*queue_input*/ true,
+        )),
+    };
+    let expected = json!({
+        "type": "spawn",
+        "role": null,
+        "model": "gpt-5.6-luna",
+        "reasoningEffort": "high",
+        "input": null,
+        "forkMode": {
+            "type": "none"
+        },
+        "responseHandling": {
+            "commentary": true,
+            "finalResponse": "wake",
+            "targetMessages": true,
+            "queueInput": true
+        }
+    });
+
+    assert_eq!(
+        serde_json::to_value(&action).expect("serialize agent control action"),
+        expected
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentControlAction>(expected)
+            .expect("deserialize agent control action"),
+        action
+    );
+}
+
+#[test]
+fn agent_control_response_uses_camel_case_variant_fields() {
+    let response = AgentControlResponse {
+        outcome: AgentControlOutcome::Resumed {
+            target_thread_id: "thread-2".to_string(),
+            agent_ref: Some("2".to_string()),
+            nickname: Some("Hopper".to_string()),
+            observation_binding: Some(AgentObservationBinding::NextTurn),
+            post_commit_warning: None,
+        },
+        audit_warning: None,
+    };
+    let expected = json!({
+        "outcome": {
+            "type": "resumed",
+            "targetThreadId": "thread-2",
+            "ref": "2",
+            "nickname": "Hopper",
+            "observationBinding": "nextTurn",
+            "postCommitWarning": null
+        },
+        "auditWarning": null
+    });
+
+    assert_eq!(
+        serde_json::to_value(&response).expect("serialize agent control response"),
+        expected
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentControlResponse>(expected)
+            .expect("deserialize agent control response"),
+        response
+    );
+}

@@ -144,12 +144,11 @@ async fn prepared_close_response_keeps_tree_shutdown_pending() {
         .local_agent_runtime
         .control(root.session.session_id());
     let child = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            crate::agent::UserAgentForkMode::None,
-            crate::agent::UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(crate::agent::UserAgentSpawnOptions {
+            fork_mode: crate::agent::UserAgentForkMode::None,
+            response_handling: crate::agent::UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn a controlled child");
     let response = control
@@ -193,12 +192,11 @@ async fn tree_shutdown_cancels_pending_queue_without_waiting_for_target_completi
         .local_agent_runtime
         .control(root.session.session_id());
     let child = root
-        .spawn_agent(
-            /*role*/ None,
-            /*input*/ None,
-            UserAgentForkMode::None,
-            UserAgentResponseHandling::Presentation,
-        )
+        .spawn_agent(crate::agent::UserAgentSpawnOptions {
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
         .await
         .expect("spawn an idle controlled child");
     let child = harness

@@ -346,6 +346,8 @@ async fn run_compact_task_inner_impl(
         sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);
+        let completion_source_items = crate::compact::completion_source_items(&turn_input);
+        sess.project_child_developer_instructions(&turn_context, &mut turn_input);
         let turn_input_len = turn_input.len();
         let base_instructions = if turn_input
             .iter()
@@ -381,10 +383,7 @@ async fn run_compact_task_inner_impl(
 
         match attempt_result {
             Ok(response) => {
-                break (
-                    response,
-                    crate::compact::completion_source_items(&prompt.input),
-                );
+                break (response, completion_source_items);
             }
             Err(err)
                 if matches!(
