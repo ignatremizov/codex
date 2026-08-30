@@ -32,6 +32,8 @@ fn parses_uuid_target_and_preserves_multiline_prompt() {
                 "019faa07-aa3d-78d3-9eca-66cd8626adad",
             ),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: None,
             prompt: Some(AgentCommandPrompt {
                 text: "Review this change.\nDo not run tests.",
@@ -48,6 +50,8 @@ fn parses_selectors_and_forced_namespaces() {
         Ok(AgentCommand::SelectOrDispatch {
             selector: selector(AgentSelectorKind::Ref(2), "ref:2"),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: None,
             prompt: Some(AgentCommandPrompt {
                 text: "Review",
@@ -63,6 +67,8 @@ fn parses_selectors_and_forced_namespaces() {
                 "nick:\"Ada Lovelace\"",
             ),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: None,
             prompt: Some(AgentCommandPrompt {
                 text: "Review",
@@ -75,6 +81,8 @@ fn parses_selectors_and_forced_namespaces() {
         Ok(AgentCommand::SelectOrDispatch {
             selector: selector(AgentSelectorKind::Role("2".to_string()), "role:\"2\""),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: Some(AgentResponseHandling::Wake),
             prompt: None,
         })
@@ -87,6 +95,8 @@ fn parses_selectors_and_forced_namespaces() {
                 "Robie",
             ),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: None,
             prompt: None,
         })
@@ -99,6 +109,8 @@ fn parses_selectors_and_forced_namespaces() {
                 "mAiN",
             ),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: Some(AgentResponseHandling::Presentation),
             prompt: Some(AgentCommandPrompt {
                 text: "Check status",
@@ -111,6 +123,8 @@ fn parses_selectors_and_forced_namespaces() {
         Ok(AgentCommand::SelectOrDispatch {
             selector: selector(AgentSelectorKind::Role("main".to_string()), "role:main"),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: None,
             prompt: None,
         })
@@ -120,13 +134,17 @@ fn parses_selectors_and_forced_namespaces() {
 #[test]
 fn parses_spawn_options_in_either_order() {
     assert_eq!(
-        parse_agent_command("new w:cx fork:3 Review this"),
+        parse_agent_command(
+            "new w:cx model:\"provider/model:latest\" effort:xhigh fork:3 Review this"
+        ),
         Ok(AgentCommand::New {
             fork: Some(AgentForkMode::LastNTurns { turns: 3 }),
+            model: Some("provider/model:latest".to_string()),
+            reasoning_effort: Some(ReasoningEffort::XHigh),
             response: Some(AgentResponseHandling::CommentaryPresentation),
             prompt: Some(AgentCommandPrompt {
                 text: "Review this",
-                offset: "new w:cx fork:3 ".len(),
+                offset: "new w:cx model:\"provider/model:latest\" effort:xhigh fork:3 ".len(),
             }),
         })
     );
@@ -138,6 +156,8 @@ fn parses_spawn_options_in_either_order() {
                 "reviewer",
             ),
             fork: Some(AgentForkMode::None),
+            model: None,
+            reasoning_effort: None,
             response: Some(AgentResponseHandling::CommentaryWake),
             prompt: None,
         })
@@ -151,10 +171,25 @@ fn double_dash_preserves_option_shaped_prompt_text() {
         Ok(AgentCommand::SelectOrDispatch {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: Some(AgentResponseHandling::Wake),
             prompt: Some(AgentCommandPrompt {
                 text: "w:x is prompt text",
                 offset: "2 w:f -- ".len(),
+            }),
+        })
+    );
+    assert_eq!(
+        parse_agent_command("new -- model:gpt-5 effort:high is prompt text"),
+        Ok(AgentCommand::New {
+            fork: None,
+            response: None,
+            model: None,
+            reasoning_effort: None,
+            prompt: Some(AgentCommandPrompt {
+                text: "model:gpt-5 effort:high is prompt text",
+                offset: "new -- ".len(),
             }),
         })
     );
@@ -210,6 +245,8 @@ fn parses_lifecycle_actions() {
         Ok(AgentCommand::SelectOrDispatch {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
             fork: None,
+            model: None,
+            reasoning_effort: None,
             response: None,
             prompt: Some(AgentCommandPrompt {
                 text: "\"close\"",
@@ -302,6 +339,16 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
             "new fork:all fork:none",
             "`fork` may be specified only once",
         ),
+        (
+            "new model:gpt-5 model:gpt-5.6",
+            "`model` may be specified only once",
+        ),
+        (
+            "new effort:high effort:low",
+            "`effort` may be specified only once",
+        ),
+        ("new model:", "`model` requires a nonempty model slug"),
+        ("new effort:", "reasoning_effort must not be empty"),
         ("2 w:f w:x prompt", "`w` may be specified only once"),
         ("2 w:qm prompt", "use unique c, f, m, q, or x flags"),
         ("2 w:mm prompt", "use unique c, f, m, q, or x flags"),
@@ -309,6 +356,14 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
         ("interrupt 2 w:x", "`w` requires a follow-up prompt"),
         ("2 fork:all prompt", "`fork` is valid only when spawning"),
         ("MAIN fork:all prompt", "`fork` is valid only when spawning"),
+        (
+            "2 model:gpt-5 prompt",
+            "`model` and `effort` are valid only when spawning",
+        ),
+        (
+            "queue 2 effort:high prompt",
+            "`effort` is valid only when spawning",
+        ),
         ("2 w:f", "`w` requires a prompt for an existing target"),
         (
             "close 2 extra",

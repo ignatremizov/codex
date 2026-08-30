@@ -33,6 +33,8 @@ pub(crate) fn new_user_agent_control(
         agent_ref,
         nickname,
         role,
+        model,
+        reasoning_effort,
         prompt_preview,
         resumed_target,
         fork_mode,
@@ -89,6 +91,15 @@ pub(crate) fn new_user_agent_control(
     }
     if let Some(fork_mode) = fork_mode {
         title.push(format!(" ({})", fork_mode_label(fork_mode)).dim());
+    }
+    let model_and_effort = match (model.as_deref(), reasoning_effort.as_ref()) {
+        (Some(model), Some(reasoning_effort)) => Some(format!("{model} {reasoning_effort}")),
+        (Some(model), None) => Some(model.to_string()),
+        (None, Some(reasoning_effort)) => Some(format!("{reasoning_effort} reasoning")),
+        (None, None) => None,
+    };
+    if let Some(model_and_effort) = model_and_effort {
+        title.push(format!(" ({model_and_effort})").dim());
     }
     if let Some(response_observation) = response_observation_label(
         observe_commentary,

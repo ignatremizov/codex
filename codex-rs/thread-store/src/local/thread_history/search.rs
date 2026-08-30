@@ -349,6 +349,8 @@ fn searchable_text(item: &ThreadItemPayload) -> Option<Cow<'_, str>> {
             agent_ref,
             nickname,
             role,
+            model,
+            reasoning_effort,
             prompt_preview,
             resumed_target,
             fork_mode,
@@ -385,6 +387,7 @@ fn searchable_text(item: &ThreadItemPayload) -> Option<Cow<'_, str>> {
                 AgentResponseFinalDelivery::Wake => "wake on response",
                 AgentResponseFinalDelivery::PresentationOnly => "presentation only response",
             });
+            let reasoning_effort = reasoning_effort.as_ref().map(ToString::to_string);
             let text = [
                 Some(action),
                 Some(status),
@@ -396,6 +399,8 @@ fn searchable_text(item: &ThreadItemPayload) -> Option<Cow<'_, str>> {
                 agent_ref.as_deref(),
                 nickname.as_deref(),
                 role.as_deref(),
+                model.as_deref(),
+                reasoning_effort.as_deref(),
                 prompt_preview.as_deref(),
                 fork_mode.as_deref(),
                 (*observe_commentary == Some(true)).then_some("commentary"),

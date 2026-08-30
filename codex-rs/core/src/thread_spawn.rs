@@ -5,6 +5,7 @@
 use crate::agent::api::AgentInput;
 use crate::agent::api::SpawnRequest;
 use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::next_thread_spawn_depth;
@@ -150,6 +151,7 @@ pub(crate) async fn prepare(
         session,
         step_context,
         SpawnConfigOptions {
+            origin: SpawnConfigOrigin::Model,
             version: SpawnConfigVersion::V2,
             fork_mode: fork_mode.as_ref(),
             role_name,

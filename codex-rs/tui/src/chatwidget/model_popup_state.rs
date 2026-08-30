@@ -48,6 +48,7 @@ impl ChatWidget {
         {
             return false;
         }
+        self.bottom_pane.set_agent_spawn_models(presets.clone());
         Arc::make_mut(&mut self.model_catalog).models = presets;
         self.set_daybreak_enabled(self.daybreak_enabled);
         self.refresh_effective_service_tier();

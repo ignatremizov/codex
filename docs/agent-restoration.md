@@ -10,13 +10,22 @@ adapter must not replace it with a detached native registry or require native gr
 metadata for a host-owned child. Native root recovery reuses a coherent surviving
 tree, but conflicting live controller allocations fail rather than being merged.
 
-Generic V2 `thread/resume` accepts the stored child ID or path, but the V2 child still uses the recorded owning control. Its recorded model, provider, and reasoning settings take precedence over caller choices. Any role change uses the existing allowlisted role fields; restoration is not an arbitrary whole-configuration merge. V1 keeps its caller-model behavior.
+Generic V2 `thread/resume` accepts the stored child ID or path, but the V2 child still uses the recorded owning control. Native child restoration reapplies the recorded model, provider, reasoning, and service-tier settings after allowlisted role restrictions, including the V1 controlled-child path. Caller defaults and later root-tier changes do not silently replace a saved per-spawn selection. Restoration is not an arbitrary whole-configuration merge, and the V1 and V2 ownership/adoption rules remain distinct.
 
 An explicit `developerInstructions` or `config.developer_instructions` on the
 resume request takes precedence over that role's developer instructions, including
 an explicitly empty string. Omitting the override reapplies the configured role;
 global configuration defaults and inherited parent instructions are not explicit
 resume overrides. Other role restrictions and recorded routing settings still apply.
+
+Owned-agent model requests project that effective value into harness-classified developer
+instruction fragments, including when a resumed or history-forked thread retains
+an older initial-context bundle. Historical audit records are not rewritten.
+Managed policy, client-authored developer messages and unclassified legacy text
+are not replaced by this projection. An absent resolved value leaves historical
+instructions unchanged; an explicitly empty value removes the classified fragments.
+Root sessions, snapshot-only workers, Guardian review sessions and compaction
+decoders keep their existing history behavior.
 
 Workspace settings recovered from history are not an explicit request to retarget
 the live owner's executor. Child restoration preserves that captured attachment.
