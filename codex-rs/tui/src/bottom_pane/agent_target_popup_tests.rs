@@ -60,6 +60,10 @@ fn targets() -> Vec<AgentPromptTarget> {
     ]
 }
 
+fn completion(input: &str, cursor: usize) -> Option<AgentTargetCompletion> {
+    agent_target_completion(input, cursor, &targets())
+}
+
 fn render_popup(popup: &AgentTargetPopup) -> String {
     let width = 78;
     let area = Rect::new(
@@ -86,7 +90,7 @@ fn render_popup(popup: &AgentTargetPopup) -> String {
 #[test]
 fn target_completion_only_covers_agent_first_argument() {
     assert_eq!(
-        agent_target_completion("/agent ", "/agent ".len()),
+        completion("/agent ", "/agent ".len()),
         Some(AgentTargetCompletion {
             range: "/agent ".len().."/agent ".len(),
             query: String::new(),
@@ -95,7 +99,7 @@ fn target_completion_only_covers_agent_first_argument() {
         })
     );
     assert_eq!(
-        agent_target_completion("/agent 019f do this", "/agent 019f".len()),
+        completion("/agent 019f do this", "/agent 019f".len()),
         Some(AgentTargetCompletion {
             range: "/agent ".len().."/agent 019f".len(),
             query: "019f".to_string(),
@@ -104,16 +108,16 @@ fn target_completion_only_covers_agent_first_argument() {
         })
     );
     assert_eq!(
-        agent_target_completion("/agent 019f do this", "/agent 019f do".len()),
+        completion("/agent 019f do this", "/agent 019f do".len()),
         None
     );
-    assert_eq!(agent_target_completion("/agents 019f", 12), None);
+    assert_eq!(completion("/agents 019f", 12), None);
 }
 
 #[test]
 fn action_target_completion_only_covers_existing_target_argument() {
     assert_eq!(
-        agent_target_completion("/agent close ", "/agent close ".len()),
+        completion("/agent close ", "/agent close ".len()),
         Some(AgentTargetCompletion {
             range: "/agent close ".len().."/agent close ".len(),
             query: String::new(),
@@ -122,7 +126,7 @@ fn action_target_completion_only_covers_existing_target_argument() {
         })
     );
     assert_eq!(
-        agent_target_completion(
+        completion(
             "/agent queue nick:\"Ada Lovelace\" w:f follow up",
             "/agent queue nick:\"Ada Lovelace\"".len(),
         ),
@@ -134,7 +138,7 @@ fn action_target_completion_only_covers_existing_target_argument() {
         })
     );
     assert_eq!(
-        agent_target_completion(
+        completion(
             "/agent observe 2 presentation",
             "/agent observe 2 presentation".len(),
         ),
@@ -146,9 +150,31 @@ fn action_target_completion_only_covers_existing_target_argument() {
         })
     );
     assert_eq!(
-        agent_target_completion("/agent new w:f", "/agent new w:f".len()),
+        completion("/agent new model:gpt-5", "/agent new model:gpt-5".len()),
+        Some(AgentTargetCompletion {
+            range: "/agent new ".len().."/agent new model:gpt-5".len(),
+            query: "model:gpt-5".to_string(),
+            scope: AgentTargetCompletionScope::Model,
+            action: None,
+        })
+    );
+    assert_eq!(
+        completion(
+            "/agent reviewer fork:none effort:hi",
+            "/agent reviewer fork:none effort:hi".len(),
+        ),
+        Some(AgentTargetCompletion {
+            range: "/agent reviewer fork:none ".len().."/agent reviewer fork:none effort:hi".len(),
+            query: "effort:hi".to_string(),
+            scope: AgentTargetCompletionScope::ReasoningEffort,
+            action: None,
+        })
+    );
+    assert_eq!(
+        completion("/agent 2 model:gpt-5 prompt", "/agent 2 model:gpt-5".len(),),
         None
     );
+    assert_eq!(completion("/agent new w:f", "/agent new w:f".len()), None);
 }
 
 #[test]
@@ -255,6 +281,31 @@ fn observation_mode_popup_snapshot() {
       passive       Deliver the final response without waking
       wake          Deliver the final response and wake
       presentation  Keep the final response out of model context
+    ");
+}
+
+#[test]
+fn spawn_model_option_popup_snapshot() {
+    let popup = AgentTargetPopup::new(
+        vec![
+            AgentPromptTarget {
+                thread_id: None,
+                selector: "model:gpt-5.6-sol".to_string(),
+                label: "GPT-5.6 Sol · Frontier coding model".to_string(),
+            },
+            AgentPromptTarget {
+                thread_id: None,
+                selector: "model:gpt-5.6-luna".to_string(),
+                label: "GPT-5.6 Luna · Fast coding model".to_string(),
+            },
+        ],
+        "model:gpt-5.6",
+        AgentTargetCompletionScope::Model,
+    );
+
+    insta::assert_snapshot!(render_popup(&popup), @r"
+      model:gpt-5.6-sol   GPT-5.6 Sol · Frontier coding model
+      model:gpt-5.6-luna  GPT-5.6 Luna · Fast coding model
     ");
 }
 

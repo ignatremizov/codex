@@ -45,6 +45,7 @@ use codex_features::Features;
 use codex_file_search::FileMatch;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
@@ -107,6 +108,7 @@ pub(crate) struct MentionBinding {
     pub(crate) path: String,
 }
 mod agent_command_highlight;
+mod agent_spawn_option_completion;
 mod agent_target_popup;
 mod chat_composer;
 mod chat_composer_history;
@@ -483,6 +485,11 @@ impl BottomPane {
 
     pub(crate) fn set_agent_prompt_targets(&mut self, targets: Vec<AgentPromptTarget>) {
         self.composer.set_agent_prompt_targets(targets);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_agent_spawn_models(&mut self, models: Vec<ModelPreset>) {
+        self.composer.set_agent_spawn_models(models);
         self.request_redraw();
     }
 

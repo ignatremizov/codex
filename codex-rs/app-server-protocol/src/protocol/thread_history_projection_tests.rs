@@ -218,6 +218,8 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
         agent_ref: Some(2),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
+        model: None,
+        reasoning_effort: None,
         prompt_preview: Some("Review the latest diff.".to_string()),
         resumed_target: false,
         fork_mode: None,

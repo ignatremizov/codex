@@ -34,6 +34,7 @@ use codex_protocol::items::EnteredReviewModeItem;
 use codex_protocol::items::ExitedReviewModeItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -624,6 +625,8 @@ async fn promptless_spawn_routes_first_child_input_through_reserved_control() ->
                 source_thread_id,
                 role: None,
                 authored_selector: Some("new".to_string()),
+                model: Some("gpt-5.6-luna".to_string()),
+                reasoning_effort: Some(ReasoningEffort::High),
                 prompt: None,
                 fork_mode: codex_app_server_protocol::AgentForkMode::None,
                 response_handling: Some(
@@ -633,6 +636,16 @@ async fn promptless_spawn_routes_first_child_input_through_reserved_control() ->
         )
         .await
         .expect("prompt-less spawn should return a child thread");
+    let spawn_request = requests
+        .lock()
+        .expect("request recorder lock")
+        .iter()
+        .find(|request| request.method == "agent/control")
+        .and_then(|request| request.params.as_ref())
+        .cloned()
+        .expect("spawn agent/control params");
+    assert_eq!(spawn_request["action"]["model"], "gpt-5.6-luna");
+    assert_eq!(spawn_request["action"]["reasoningEffort"], "high");
     assert_eq!(
         app.agent_navigation
             .reserved_prompt_source(target_thread_id),
@@ -700,6 +713,8 @@ async fn promptless_resume_routes_next_child_input_through_reserved_control() ->
                 source_thread_id,
                 role: None,
                 authored_selector: Some("new".to_string()),
+                model: None,
+                reasoning_effort: None,
                 prompt: None,
                 fork_mode: codex_app_server_protocol::AgentForkMode::None,
                 response_handling: Some(
@@ -1568,6 +1583,8 @@ async fn interrupt_without_follow_up_refreshes_target_liveness() -> Result<()> {
                 source_thread_id,
                 role: None,
                 authored_selector: Some("new".to_string()),
+                model: None,
+                reasoning_effort: None,
                 prompt: Some(crate::chatwidget::UserMessage::from(
                     "keep running until interrupted",
                 )),

@@ -73,11 +73,8 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(description.contains("Spawns an agent to work on the specified task."));
     assert!(description.contains("The spawned agent will have the same tools as you"));
     assert!(!description.contains("max_concurrent_threads_per_session"));
-    assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
-    assert!(
-        description
-            .contains("Available model overrides (optional; inherited parent model is preferred):")
-    );
+    assert!(description.contains(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE));
+    assert!(description.contains("Available explicit model overrides:"));
     assert!(description.contains(
         "- `visible-model`: visible description Reasoning efforts: medium (default). Service tiers: priority."
     ));
@@ -110,7 +107,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         properties
             .get("reasoning_effort")
             .and_then(|schema| schema.description.as_deref()),
-        Some("Reasoning effort override for the new agent. Omit to inherit the parent effort.")
+        Some(SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION)
     );
     assert_eq!(
         properties
@@ -181,6 +178,12 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
             .get("model")
             .and_then(|schema| schema.description.as_deref()),
         Some(SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION)
+    );
+    assert_eq!(
+        properties
+            .get("reasoning_effort")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION)
     );
     assert_eq!(
         properties
@@ -281,7 +284,7 @@ fn spawn_agent_tool_caps_reasoning_effort_value_length() {
     assert_eq!(
         spawn_agent_models_description(&[model]),
         format!(
-            "Available model overrides (optional; inherited parent model is preferred):\n- `visible-model`: visible description Reasoning efforts: {} (default). Service tiers: priority.",
+            "Available explicit model overrides:\n- `visible-model`: visible description Reasoning efforts: {} (default). Service tiers: priority.",
             "é".repeat(MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION)
         )
     );
@@ -316,8 +319,8 @@ fn spawn_agent_tool_keeps_model_controls_when_spawn_metadata_is_hidden() {
     assert!(properties.contains_key("model"));
     assert!(properties.contains_key("reasoning_effort"));
     assert!(!properties.contains_key("service_tier"));
-    assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
-    assert!(description.contains("Available model overrides"));
+    assert!(description.contains(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE));
+    assert!(description.contains("Available explicit model overrides"));
 }
 
 #[test]
@@ -348,8 +351,8 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
     for property in ["agent_type", "model", "reasoning_effort", "service_tier"] {
         assert!(!properties.contains_key(property));
     }
-    assert!(!description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
-    assert!(!description.contains("Available model overrides"));
+    assert!(!description.contains(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE));
+    assert!(!description.contains("Available explicit model overrides"));
 }
 
 #[test]

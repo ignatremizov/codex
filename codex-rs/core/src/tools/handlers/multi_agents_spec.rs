@@ -13,11 +13,12 @@ pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 pub(crate) const MAX_AGENT_MESSAGE_PAYLOAD_BYTES: usize = 8 * 1024;
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.";
 
-const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
+const SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE: &str = "Spawn settings resolve from parent, configured subagent defaults, then selected role; explicit model and reasoning override all three.";
 const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str =
     "Agent type override for the new agent. Omit to use `default`.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
-    "Model override for the new agent. Omit unless an explicit override is needed.";
+    "Model override for the new agent. Overrides selected role and configured defaults.";
+const SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION: &str = "Reasoning override for the resolved child model. Overrides selected role and configured defaults; an explicit model without this field uses that model's catalog default.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
 const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags may combine in cfmqx order.";
@@ -71,8 +72,8 @@ impl Default for WaitAgentTimeoutOptions {
 pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let available_models_description = (!options.hide_agent_type_model_reasoning)
         .then(|| spawn_agent_models_description(&options.available_models));
-    let inherited_model_guidance =
-        (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
+    let model_precedence_guidance =
+        (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE);
     let return_value_description =
         "Returns canonical agent id and, when available, compact ref and user-facing nickname.";
     let mut properties = spawn_agent_common_properties_v1(&options.agent_type_description);
@@ -90,7 +91,7 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
             name: "spawn_agent".to_string(),
             description: spawn_agent_tool_description(
                 available_models_description.as_deref(),
-                inherited_model_guidance,
+                model_precedence_guidance,
                 return_value_description,
                 options.usage_hint_text,
             ),
@@ -106,9 +107,9 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
     let available_models_description = options
         .expose_spawn_agent_model_overrides
         .then(|| spawn_agent_models_description(&options.available_models));
-    let inherited_model_guidance = (options.expose_spawn_agent_model_overrides
-        && !options.hide_agent_type_model_reasoning)
-        .then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
+    let model_precedence_guidance = options
+        .expose_spawn_agent_model_overrides
+        .then_some(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE);
     let mut properties =
         spawn_agent_common_properties_v2(&options.agent_type_description, options.message_delivery);
     if !options.expose_agent_type {
@@ -144,7 +145,7 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
         name: "spawn_agent".to_string(),
         description: spawn_agent_tool_description_v2(
             available_models_description.as_deref(),
-            inherited_model_guidance,
+            model_precedence_guidance,
             options.usage_hint_text,
         ),
         strict: false,
@@ -688,8 +689,7 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
         (
             "reasoning_effort".to_string(),
             JsonSchema::string(Some(
-                "Reasoning effort override for the new agent. Omit to inherit the parent effort."
-                    .to_string(),
+                SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
         (
@@ -740,8 +740,7 @@ fn spawn_agent_common_properties_v2(
         (
             "reasoning_effort".to_string(),
             JsonSchema::string(Some(
-                "Reasoning effort override for the new agent. Omit to inherit the parent effort."
-                    .to_string(),
+                SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION.to_string(),
             )),
         ),
         (
@@ -783,17 +782,17 @@ fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchem
 
 fn spawn_agent_tool_description(
     available_models_description: Option<&str>,
-    inherited_model_guidance: Option<&str>,
+    model_precedence_guidance: Option<&str>,
     return_value_description: &str,
     usage_hint_text: Option<String>,
 ) -> String {
     let agent_role_guidance = available_models_description.unwrap_or_default();
-    let inherited_model_guidance = inherited_model_guidance.unwrap_or_default();
+    let model_precedence_guidance = model_precedence_guidance.unwrap_or_default();
 
     let tool_description = format!(
         r#"
         {agent_role_guidance}
-        Spawn a sub-agent for a well-scoped task. {return_value_description} {inherited_model_guidance}"#
+        Spawn a sub-agent for a well-scoped task. {return_value_description} {model_precedence_guidance}"#
     );
 
     if let Some(usage_hint_text) = usage_hint_text {
@@ -811,7 +810,7 @@ fn spawn_agent_tool_description(
     format!(
         r#"
         {tool_description}
-This spawn_agent tool provides you access to sub-agents that inherit your current model by default. Do not set the `model` field unless the user explicitly asks for a different model. You should follow the rules and guidelines below to use this tool.
+Use explicit `model` or `reasoning_effort` only when requested or task-specific; otherwise omit them so role/configured defaults apply. Follow the guidance below.
 
 Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.
 Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.
@@ -850,11 +849,11 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
 
 fn spawn_agent_tool_description_v2(
     available_models_description: Option<&str>,
-    inherited_model_guidance: Option<&str>,
+    model_precedence_guidance: Option<&str>,
     usage_hint_text: Option<String>,
 ) -> String {
     let agent_role_guidance = available_models_description.unwrap_or_default();
-    let inherited_model_guidance = inherited_model_guidance.unwrap_or_default();
+    let model_precedence_guidance = model_precedence_guidance.unwrap_or_default();
 
     let tool_description = format!(
         r#"
@@ -862,7 +861,7 @@ fn spawn_agent_tool_description_v2(
         Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name "task_3" the agent will have canonical task name `/root/task1/task_3`.
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
-{inherited_model_guidance}
+{model_precedence_guidance}
 Only call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.
@@ -938,9 +937,7 @@ fn spawn_agent_models_description(models: &[ModelPreset]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!(
-        "Available model overrides (optional; inherited parent model is preferred):\n{model_descriptions}"
-    )
+    format!("Available explicit model overrides:\n{model_descriptions}")
 }
 
 fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema {

@@ -29,6 +29,8 @@ use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::TurnCompletedNotification;
@@ -38,6 +40,7 @@ use codex_app_server_protocol::UserAgentControlAction as AuditAgentControlAction
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SubAgentSource;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
@@ -263,6 +266,8 @@ async fn user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2: b
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::LastNTurns { turns: 0 },
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -288,6 +293,8 @@ async fn user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2: b
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::LastNTurns { turns: 1 },
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -322,6 +329,8 @@ async fn user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2: b
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::All,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -380,10 +389,15 @@ async fn configured_role_user_dispatch_spawns_distinct_children(
 ) -> Result<()> {
     let server = responses::start_mock_server().await;
     let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("reviewer.toml"),
+        "model = \"gpt-5-role-override\"\nmodel_reasoning_effort = \"minimal\"\n",
+    )?;
     let mut config = MockResponsesConfig::new(&server.uri()).with_extra_config(
         r#"
 [agents.reviewer]
 description = "Review changes"
+config_file = "./reviewer.toml"
 "#,
     );
     if multi_agent_v2 {
@@ -407,6 +421,8 @@ description = "Review changes"
                     authored_selector: Some("reviewer".to_string()),
                     action: AgentControlAction::Spawn {
                         role: Some("reviewer".to_string()),
+                        model: Some("gpt-5.4".to_string()),
+                        reasoning_effort: Some(ReasoningEffort::High),
                         input: None,
                         fork_mode: AgentForkMode::None,
                         response_handling: Some(AgentResponseHandling::Presentation),
@@ -423,6 +439,84 @@ description = "Review changes"
             panic!("configured-role dispatch should spawn");
         };
         assert_eq!(agent_ref.as_deref(), Some(expected_ref));
+        let audit = timeout(DEFAULT_READ_TIMEOUT, async {
+            loop {
+                let completed: ItemCompletedNotification =
+                    app.read_notification("item/completed").await?;
+                if matches!(
+                    completed.item,
+                    ThreadItem::UserAgentControl {
+                        action: AuditAgentControlAction::Spawn,
+                        target_thread_id: Some(ref audit_target_thread_id),
+                        ..
+                    } if audit_target_thread_id == &target_thread_id
+                ) {
+                    return Ok::<_, anyhow::Error>(completed.item);
+                }
+            }
+        })
+        .await??;
+        assert!(matches!(
+            audit,
+            ThreadItem::UserAgentControl {
+                model: Some(ref model),
+                reasoning_effort: Some(ReasoningEffort::High),
+                ..
+            } if model == "gpt-5.4"
+        ));
+        if multi_agent_v2 {
+            let closed: AgentControlResponse = app
+                .request(|request_id| ClientRequest::AgentControl {
+                    request_id,
+                    params: AgentControlParams {
+                        source_thread_id: root.thread.id.clone(),
+                        authored_selector: Some(expected_ref.to_string()),
+                        action: AgentControlAction::Close {
+                            target: expected_ref.to_string(),
+                            response_handling: None,
+                        },
+                    },
+                })
+                .await?;
+            assert_eq!(
+                agent_control_outcome(closed),
+                AgentControlOutcome::Closed {
+                    target_thread_id: target_thread_id.clone(),
+                }
+            );
+            let resumed: AgentControlResponse = app
+                .request(|request_id| ClientRequest::AgentControl {
+                    request_id,
+                    params: AgentControlParams {
+                        source_thread_id: root.thread.id.clone(),
+                        authored_selector: Some(expected_ref.to_string()),
+                        action: AgentControlAction::Resume {
+                            target: expected_ref.to_string(),
+                            response_handling: Some(AgentResponseHandling::Presentation),
+                        },
+                    },
+                })
+                .await?;
+            assert!(matches!(
+                agent_control_outcome(resumed),
+                AgentControlOutcome::Resumed {
+                    target_thread_id: ref resumed_thread_id,
+                    ..
+                } if resumed_thread_id == &target_thread_id
+            ));
+        }
+        let resumed: ThreadResumeResponse = app
+            .request(|request_id| ClientRequest::ThreadResume {
+                request_id,
+                params: ThreadResumeParams {
+                    thread_id: target_thread_id.clone(),
+                    exclude_turns: true,
+                    ..Default::default()
+                },
+            })
+            .await?;
+        assert_eq!(resumed.model, "gpt-5.4");
+        assert_eq!(resumed.reasoning_effort, Some(ReasoningEffort::High));
         spawned.push(target_thread_id);
     }
     assert_ne!(spawned[0], spawned[1]);
@@ -479,6 +573,8 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -651,6 +747,8 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Wake),
@@ -890,6 +988,8 @@ async fn commentary_presentation_keeps_user_task_context(multi_agent_v2: bool) -
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: Some(vec![UserInput::Text {
                         text: SPAWN_PROMPT.to_string(),
                         text_elements: Vec::new(),
@@ -917,6 +1017,8 @@ async fn commentary_presentation_keeps_user_task_context(multi_agent_v2: bool) -
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: Some(vec![UserInput::Text {
                         text: SEED_PROMPT.to_string(),
                         text_elements: Vec::new(),
@@ -963,6 +1065,8 @@ async fn commentary_presentation_keeps_user_task_context(multi_agent_v2: bool) -
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::CommentaryPresentation),
@@ -1082,6 +1186,8 @@ async fn queued_prompt_binds_idle_v1_wake_before_target_turn_started_persists() 
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Wake),
@@ -1223,6 +1329,8 @@ async fn queued_prompt_degradation_preserves_idle_v1_reservation(
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::new(
@@ -1372,6 +1480,8 @@ async fn queued_prompt_waits_for_idle_target(multi_agent_v2: bool) -> Result<()>
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: Some(vec![UserInput::Text {
                         text: ACTIVE_PROMPT.to_string(),
                         text_elements: Vec::new(),
@@ -1600,6 +1710,8 @@ async fn agent_queue_delete_removes_pending_input_and_rejects_a_stale_id() -> Re
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: Some(vec![UserInput::Text {
                         text: ACTIVE_PROMPT.to_string(),
                         text_elements: Vec::new(),
@@ -1807,6 +1919,8 @@ async fn user_control_prompt_reopens_closed_target(
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -1962,6 +2076,8 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -1984,6 +2100,8 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -2006,6 +2124,8 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -2063,6 +2183,8 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -2153,6 +2275,8 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -2504,6 +2628,8 @@ async fn user_control_adoption_records_the_previous_owner(multi_agent_v2: bool) 
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -2720,6 +2846,8 @@ async fn passive_close_replay_precedes_the_next_user_prompt() -> Result<()> {
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -2895,6 +3023,8 @@ async fn close_with_none_does_not_replay_a_completed_response() -> Result<()> {
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Presentation),
@@ -3030,6 +3160,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: Some(vec![UserInput::Text {
                         text: SPAWN_PROMPT.to_string(),
                         text_elements: Vec::new(),
@@ -3106,6 +3238,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
                     role: None,
+                    model: None,
+                    reasoning_effort: None,
                     input: None,
                     fork_mode: AgentForkMode::None,
                     response_handling: Some(AgentResponseHandling::Wake),

@@ -2975,6 +2975,7 @@ impl AgentControl {
             .await?;
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
+        let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
         let (
             resumed_agent_path,
             resumed_agent_nickname,
@@ -3241,6 +3242,7 @@ impl AgentControl {
         }
         if multi_agent_version == MultiAgentVersion::V2 {
             apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
+            config.model_reasoning_effort = stored_reasoning_effort;
         }
         let residency_slot = if resume_uses_v2_residency {
             Some(

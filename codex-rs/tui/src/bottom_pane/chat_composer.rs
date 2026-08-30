@@ -218,10 +218,12 @@ use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 
+use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 
 use super::agent_command_highlight::AgentCommandHighlightKind;
 use super::agent_command_highlight::agent_command_highlights;
+use super::agent_spawn_option_completion;
 use super::agent_target_popup::AGENT_OBSERVATION_MODE_CHOICES;
 use super::agent_target_popup::AgentPromptTarget;
 use super::agent_target_popup::AgentTargetCompletion;
@@ -297,8 +299,8 @@ use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::TextElement;
 
-mod agents_navigation;
 mod agent_target_input;
+mod agents_navigation;
 mod attachment_state;
 mod completion_target;
 mod draft_state;
@@ -475,6 +477,7 @@ pub(crate) struct ChatComposer {
     plugins: Option<Vec<PluginCapabilitySummary>>,
     task_mentions: Option<Vec<crate::task_mentions::TaskMention>>,
     agent_prompt_targets: Vec<AgentPromptTarget>,
+    agent_spawn_models: Vec<ModelPreset>,
     mcp_server_names: Vec<String>,
     background_terminals: Vec<BackgroundTerminalCompletion>,
     connectors_snapshot: Option<ConnectorsSnapshot>,
@@ -657,6 +660,7 @@ impl ChatComposer {
             plugins: None,
             task_mentions: None,
             agent_prompt_targets: Vec::new(),
+            agent_spawn_models: Vec::new(),
             mcp_server_names: Vec::new(),
             background_terminals: Vec::new(),
             connectors_snapshot: None,
@@ -809,6 +813,14 @@ impl ChatComposer {
             return;
         }
         self.agent_prompt_targets = targets;
+        self.sync_popups();
+    }
+
+    pub(crate) fn set_agent_spawn_models(&mut self, models: Vec<ModelPreset>) {
+        if self.agent_spawn_models == models {
+            return;
+        }
+        self.agent_spawn_models = models;
         self.sync_popups();
     }
 
@@ -4101,7 +4113,7 @@ impl ChatComposer {
             caret_on_first_line && slash_input.is_editing_stop_args(first_line, cursor);
         let is_editing_command_args = is_editing_mcp_args || is_editing_stop_args;
         let agent_target = caret_on_first_line
-            .then(|| agent_target_completion(first_line, cursor))
+            .then(|| agent_target_completion(first_line, cursor, &self.agent_prompt_targets))
             .flatten();
         let command_filter_text = caret_on_first_line
             .then(|| slash_input::command_popup_filter_text(first_line, cursor))
@@ -4122,7 +4134,12 @@ impl ChatComposer {
 
         if (!self.agent_prompt_targets.is_empty()
             || agent_target.as_ref().is_some_and(|completion| {
-                completion.scope == AgentTargetCompletionScope::ObservationMode
+                matches!(
+                    completion.scope,
+                    AgentTargetCompletionScope::ObservationMode
+                        | AgentTargetCompletionScope::Model
+                        | AgentTargetCompletionScope::ReasoningEffort
+                )
             }))
             && let Some(completion) = agent_target
         {
@@ -4148,10 +4165,24 @@ impl ChatComposer {
                         label: label.to_string(),
                     })
                     .to_vec(),
+                AgentTargetCompletionScope::Model => {
+                    agent_spawn_option_completion::model_targets(&self.agent_spawn_models)
+                }
+                AgentTargetCompletionScope::ReasoningEffort => {
+                    agent_spawn_option_completion::reasoning_effort_targets(
+                        &self.agent_spawn_models,
+                        first_line,
+                    )
+                }
                 AgentTargetCompletionScope::Any | AgentTargetCompletionScope::ExistingTarget => {
                     self.agent_prompt_targets.clone()
                 }
             };
+            if completion.scope == AgentTargetCompletionScope::ReasoningEffort && targets.is_empty()
+            {
+                self.popups.active = ActivePopup::None;
+                return;
+            }
             match &mut self.popups.active {
                 ActivePopup::AgentTarget(popup) => {
                     popup.set_targets(targets);
@@ -5080,6 +5111,7 @@ impl ChatComposer {
                     agent_command_highlights(
                         self.draft.textarea.text(),
                         &self.agent_prompt_targets,
+                        &self.agent_spawn_models,
                     )
                     .into_iter()
                     .map(|highlight| {

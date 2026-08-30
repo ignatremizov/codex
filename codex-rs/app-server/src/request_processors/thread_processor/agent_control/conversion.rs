@@ -32,12 +32,16 @@ pub(super) fn user_agent_control_item(
     match action {
         AgentControlAction::Spawn {
             role,
+            model,
+            reasoning_effort,
             input,
             fork_mode,
             response_handling,
         } => {
             item.authored_selector = authored_selector.map(ToOwned::to_owned);
             item.role = role.clone();
+            item.model = model.clone();
+            item.reasoning_effort = reasoning_effort.clone();
             item.prompt_preview = input.as_deref().and_then(agent_control_prompt_preview);
             item.fork_mode = Some(match fork_mode {
                 AgentForkMode::None => CoreUserAgentForkMode::None,

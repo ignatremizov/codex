@@ -1117,12 +1117,24 @@ impl ChatWidget {
                     AgentCommand::New {
                         fork,
                         response,
+                        model,
+                        reasoning_effort,
                         prompt,
-                    } => Some((None, Some("new".to_string()), *fork, *response, *prompt)),
+                    } => Some((
+                        None,
+                        Some("new".to_string()),
+                        *fork,
+                        *response,
+                        model.clone(),
+                        reasoning_effort.clone(),
+                        *prompt,
+                    )),
                     AgentCommand::SelectOrDispatch {
                         selector,
                         fork,
                         response,
+                        model,
+                        reasoning_effort,
                         prompt,
                     } => match selector.kind() {
                         crate::chatwidget::agent_command::AgentSelectorKind::Role(role) => Some((
@@ -1130,6 +1142,8 @@ impl ChatWidget {
                             Some(selector.authored().to_string()),
                             *fork,
                             *response,
+                            model.clone(),
+                            reasoning_effort.clone(),
                             *prompt,
                         )),
                         crate::chatwidget::agent_command::AgentSelectorKind::UnprefixedName(
@@ -1139,6 +1153,8 @@ impl ChatWidget {
                             Some(selector.authored().to_string()),
                             *fork,
                             *response,
+                            model.clone(),
+                            reasoning_effort.clone(),
                             *prompt,
                         )),
                         crate::chatwidget::agent_command::AgentSelectorKind::Id(_)
@@ -1150,7 +1166,16 @@ impl ChatWidget {
                     },
                     _ => None,
                 };
-                if let Some((role, authored_selector, fork, response, prompt)) = spawn {
+                if let Some((
+                    role,
+                    authored_selector,
+                    fork,
+                    response,
+                    model,
+                    reasoning_effort,
+                    prompt,
+                )) = spawn
+                {
                     let prompt = self.prepared_agent_prompt(PreparedAgentPromptArgs {
                         prompt,
                         has_attached_input,
@@ -1164,6 +1189,8 @@ impl ChatWidget {
                         source_thread_id,
                         role,
                         authored_selector,
+                        model,
+                        reasoning_effort,
                         prompt,
                         fork_mode: fork.unwrap_or(AgentForkMode::None),
                         response_handling: response,
@@ -1266,6 +1293,8 @@ impl ChatWidget {
                     selector,
                     fork: None,
                     response,
+                    model: None,
+                    reasoning_effort: None,
                     prompt,
                 } = parsed
                 else {

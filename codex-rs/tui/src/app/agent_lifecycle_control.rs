@@ -1,6 +1,7 @@
 //! User-authored agent spawn, interruption, observation, resume, and close commands.
 
 use codex_app_server_protocol::AgentResponseHandling;
+use codex_protocol::openai_models::ReasoningEffort;
 
 use super::agent_observation_display::AgentResponseObservationBinding;
 use super::*;
@@ -11,6 +12,8 @@ pub(crate) struct SpawnAgentCommandArgs {
     pub source_thread_id: ThreadId,
     pub role: Option<String>,
     pub authored_selector: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub prompt: Option<UserMessage>,
     pub fork_mode: codex_app_server_protocol::AgentForkMode,
     pub response_handling: Option<AgentResponseHandling>,
@@ -26,6 +29,8 @@ impl App {
             source_thread_id,
             role,
             authored_selector,
+            model,
+            reasoning_effort,
             prompt,
             fork_mode,
             response_handling,
@@ -36,14 +41,16 @@ impl App {
             .as_ref()
             .map(|message| self.chat_widget.user_inputs_from_message(message));
         let result = app_server
-            .spawn_agent(
+            .spawn_agent(crate::app_server_session::SpawnAgentRequest {
                 source_thread_id,
                 role,
                 authored_selector,
+                model,
+                reasoning_effort,
                 input,
                 fork_mode,
                 response_handling,
-            )
+            })
             .await;
         let codex_app_server_protocol::AgentControlResponse {
             outcome,

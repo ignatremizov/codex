@@ -490,6 +490,10 @@ pub enum ThreadItem {
         agent_ref: Option<String>,
         nickname: Option<String>,
         role: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        reasoning_effort: Option<ReasoningEffort>,
         prompt_preview: Option<String>,
         resumed_target: bool,
         fork_mode: Option<UserAgentForkMode>,
@@ -1183,6 +1187,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 agent_ref: control.agent_ref.map(|agent_ref| agent_ref.to_string()),
                 nickname: control.nickname,
                 role: control.role,
+                model: control.model,
+                reasoning_effort: control.reasoning_effort,
                 prompt_preview: control.prompt_preview,
                 resumed_target: control.resumed_target,
                 fork_mode: control.fork_mode.map(Into::into),

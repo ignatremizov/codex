@@ -1,10 +1,9 @@
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::user_input::UserInput;
 
 use super::UserAgentForkMode;
-use super::UserAgentResponseHandling;
+use super::UserAgentSpawnOptions;
 use super::UserAgentSpawnResult;
 use super::child_session_source;
 use super::user_control_tool_error;
@@ -12,8 +11,7 @@ use crate::CodexThread;
 use crate::agent::control::ResponseObserverKind;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
-use crate::tools::handlers::multi_agents_common::apply_requested_spawn_agent_model_overrides;
-use crate::tools::handlers::multi_agents_common::apply_spawn_agent_role;
+use crate::tools::handlers::multi_agents_common::apply_spawn_agent_role_and_model_overrides;
 use crate::tools::handlers::multi_agents_common::apply_spawn_agent_service_tier;
 use crate::tools::handlers::multi_agents_common::build_agent_spawn_config;
 
@@ -21,11 +19,16 @@ impl CodexThread {
     /// Spawn a default or configured-role child, optionally starting its first turn.
     pub async fn spawn_agent(
         &self,
-        role: Option<&str>,
-        input: Option<Vec<UserInput>>,
-        fork_mode: UserAgentForkMode,
-        response_handling: UserAgentResponseHandling,
+        options: UserAgentSpawnOptions,
     ) -> CodexResult<UserAgentSpawnResult> {
+        let UserAgentSpawnOptions {
+            role,
+            model,
+            reasoning_effort,
+            input,
+            fork_mode,
+            response_handling,
+        } = options;
         if input.as_ref().is_some_and(Vec::is_empty) {
             return Err(CodexErr::InvalidRequest(
                 "agent prompt requires nonempty user input".to_string(),
@@ -41,18 +44,16 @@ impl CodexThread {
         let mut config =
             build_agent_spawn_config(&self.session.get_base_instructions().await, turn.as_ref())
                 .map_err(user_control_tool_error)?;
-        apply_requested_spawn_agent_model_overrides(
+        apply_spawn_agent_role_and_model_overrides(
             self.session.as_ref(),
             turn.as_ref(),
             &mut config,
-            /*requested_model*/ None,
-            /*requested_reasoning_effort*/ None,
+            role.as_deref(),
+            model.as_deref(),
+            reasoning_effort,
         )
         .await
         .map_err(user_control_tool_error)?;
-        apply_spawn_agent_role(self.session.as_ref(), &mut config, role)
-            .await
-            .map_err(user_control_tool_error)?;
         apply_spawn_agent_service_tier(
             self.session.as_ref(),
             &mut config,
@@ -69,7 +70,7 @@ impl CodexThread {
         ) || turn.config.multi_agent_version_from_features()
             == MultiAgentVersion::V2)
             .then(|| format!("user_{spawn_id}"));
-        let session_source = child_session_source(self, turn.as_ref(), role, task_name)?;
+        let session_source = child_session_source(self, turn.as_ref(), role.as_deref(), task_name)?;
         let fork_mode = match fork_mode {
             UserAgentForkMode::None => None,
             UserAgentForkMode::All => Some(SpawnAgentForkMode::FullHistory),

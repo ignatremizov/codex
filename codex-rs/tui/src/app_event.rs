@@ -361,6 +361,8 @@ pub(crate) enum AppEvent {
         source_thread_id: ThreadId,
         role: Option<String>,
         authored_selector: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<ReasoningEffort>,
         prompt: Option<UserMessage>,
         fork_mode: codex_app_server_protocol::AgentForkMode,
         response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,

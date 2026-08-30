@@ -56,6 +56,8 @@ fn spawned_fork_mode_comes_from_successful_canonical_control_item() {
             agent_ref: Some("2".to_string()),
             nickname: Some("Anscombe".to_string()),
             role: Some("reviewer".to_string()),
+            model: None,
+            reasoning_effort: None,
             prompt_preview: None,
             resumed_target: false,
             fork_mode: Some(UserAgentForkMode::LastNTurns { turns: 3 }),

@@ -2231,6 +2231,15 @@ impl Session {
                 // turn/start overrides can be merged before we write model-visible context.
                 self.set_previous_turn_settings(/*previous_turn_settings*/ None)
                     .await;
+                // An idle child has no TurnContext item yet. Persist its resolved settings now so
+                // close/cold-resume preserves per-spawn model and reasoning overrides instead of
+                // falling back to the current role defaults.
+                if is_subagent {
+                    self.try_persist_rollout_items(&[RolloutItem::EventMsg(
+                        thread_settings::applied_event(self).await,
+                    )])
+                    .await?;
+                }
                 None
             }
             InitialHistory::Resumed(resumed_history) => {
