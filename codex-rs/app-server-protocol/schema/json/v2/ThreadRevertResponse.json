@@ -2236,6 +2236,13 @@
                 }
               ]
             },
+            "model": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "newOwnerSessionId": {
               "type": [
                 "string",
@@ -2271,6 +2278,17 @@
                 "boolean",
                 "null"
               ]
+            },
+            "reasoningEffort": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ReasoningEffort"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "ref": {
               "type": [

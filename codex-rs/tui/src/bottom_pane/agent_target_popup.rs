@@ -50,6 +50,8 @@ pub(crate) enum AgentTargetCompletionScope {
     Any,
     ExistingTarget,
     ObservationMode,
+    Model,
+    ReasoningEffort,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,6 +212,8 @@ impl WidgetRef for AgentTargetPopup {
                 AgentTargetCompletionScope::ObservationMode => {
                     "no matching response observation modes"
                 }
+                AgentTargetCompletionScope::Model => "no matching models",
+                AgentTargetCompletionScope::ReasoningEffort => "no matching reasoning efforts",
             },
             AGENT_TARGET_COLUMN_WIDTH,
         );
@@ -220,6 +224,7 @@ impl WidgetRef for AgentTargetPopup {
 pub(crate) fn agent_target_completion(
     first_line: &str,
     cursor: usize,
+    targets: &[AgentPromptTarget],
 ) -> Option<AgentTargetCompletion> {
     const COMMAND: &str = "/agent";
     let tail = first_line.strip_prefix(COMMAND)?;
@@ -245,7 +250,12 @@ pub(crate) fn agent_target_completion(
         });
     }
 
-    let action = canonical_agent_target_action(&first_line[target_start..first_end])?;
+    let first = &first_line[target_start..first_end];
+    if first == "new" || is_configured_role_selector(first, targets) {
+        return spawn_option_completion(first_line, cursor, first_end);
+    }
+
+    let action = canonical_agent_target_action(first)?;
 
     let action_tail = &first_line[first_end..];
     if !action_tail.starts_with(char::is_whitespace) {
@@ -288,6 +298,57 @@ pub(crate) fn agent_target_completion(
         scope: AgentTargetCompletionScope::ObservationMode,
         action: Some(action),
     })
+}
+
+fn is_configured_role_selector(value: &str, targets: &[AgentPromptTarget]) -> bool {
+    targets.iter().any(|target| {
+        target.thread_id.is_none()
+            && (target.selector == value
+                || value
+                    .strip_prefix("role:")
+                    .is_some_and(|role| target.selector == trim_quoted_query(role)))
+            && target.selector != "new"
+            && !is_agent_target_action(&target.selector)
+    })
+}
+
+fn spawn_option_completion(
+    input: &str,
+    cursor: usize,
+    mut option_start: usize,
+) -> Option<AgentTargetCompletion> {
+    loop {
+        let tail = &input[option_start..];
+        option_start += tail.len() - tail.trim_start().len();
+        if option_start == input.len() || cursor < option_start {
+            return None;
+        }
+        let option_end = token_end(input, option_start);
+        let option = &input[option_start..option_end];
+        if cursor <= option_end {
+            let scope = if option.starts_with("model:") {
+                AgentTargetCompletionScope::Model
+            } else if option.starts_with("effort:") {
+                AgentTargetCompletionScope::ReasoningEffort
+            } else {
+                return None;
+            };
+            let range = option_start..option_end;
+            return Some(AgentTargetCompletion {
+                query: input[range.clone()].to_string(),
+                range,
+                scope,
+                action: None,
+            });
+        }
+        if !["fork:", "w:", "model:", "effort:"]
+            .iter()
+            .any(|prefix| option.starts_with(prefix))
+        {
+            return None;
+        }
+        option_start = option_end;
+    }
 }
 
 pub(super) fn token_end(input: &str, start: usize) -> usize {
@@ -341,6 +402,12 @@ fn target_matches_query(target: &AgentPromptTarget, query: &str) -> bool {
                 .label
                 .to_ascii_lowercase()
                 .contains(trim_quoted_query(query));
+    }
+    if let Some(query) = query.strip_prefix("model:") {
+        return target
+            .selector
+            .strip_prefix("model:")
+            .is_some_and(|model| trim_quoted_query(model).starts_with(trim_quoted_query(query)));
     }
 
     target_ref(target).is_some_and(|agent_ref| agent_ref.starts_with(query))

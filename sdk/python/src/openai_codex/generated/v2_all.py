@@ -7019,6 +7019,18 @@ class SpawnAgentControlAction(BaseModel):
         list[UserInput] | None,
         Field(description="Omitted creates a real idle child without starting its first turn."),
     ] = None
+    model: Annotated[
+        str | None,
+        Field(
+            description="Explicit model override. Takes precedence over role and configured defaults."
+        ),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            description="Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
+        ),
+    ] = None
     response_handling: Annotated[
         AgentResponseHandling | None,
         Field(description="Omitted uses passive final-response delivery."),
@@ -10706,12 +10718,14 @@ class UserAgentControlThreadItem(BaseModel):
     fork_mode: Annotated[UserAgentForkMode | None, Field(alias="forkMode")] = None
     id: str
     input_outcome: Annotated[AgentInputOutcome | None, Field(alias="inputOutcome")] = None
+    model: str | None = None
     new_owner_session_id: Annotated[str | None, Field(alias="newOwnerSessionId")] = None
     nickname: str | None = None
     observe_commentary: Annotated[bool | None, Field(alias="observeCommentary")] = None
     previous_owner_session_id: Annotated[str | None, Field(alias="previousOwnerSessionId")] = None
     prompt_preview: Annotated[str | None, Field(alias="promptPreview")] = None
     queue_input: Annotated[bool | None, Field(alias="queueInput")] = None
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
     ref: str | None = None
     resumed_target: Annotated[bool, Field(alias="resumedTarget")]
     role: str | None = None
