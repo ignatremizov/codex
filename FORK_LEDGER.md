@@ -23,7 +23,7 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through on-demand naming, graph-preserving singular deletion, inherited prompt editing, and queued user-shell completion policies, including copied cross-home lineage, scoped replies, target-owned queued turns, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
+This checkpoint inventories the integrated owners through per-spawn model/role settings, on-demand naming, graph-preserving singular deletion, inherited prompt editing, and queued user-shell completion policies, including copied cross-home lineage, scoped replies, target-owned queued turns, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; runtime capability is not a claim of executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
@@ -36,7 +36,7 @@ This checkpoint inventories the integrated owners through on-demand naming, grap
 | In-place prompt editing by default | Compatibility | Roll a thread back when editing an earlier prompt, preserving the exact selected durable boundary across compaction, SQLite projection rebuilds, resume, and inherited fork prompts while leaving source-preserving prompt forks available through `fork_prompt_edits`. Duplicate rendered copies use turn/item identity; the latest session header and rejected edit draft are retained. | `codex-rs/tui/src/app_backtrack/prompt_projection.rs`<br>`codex-rs/tui/src/app/legacy_prompt_edit.rs`<br>`codex-rs/tui/src/app/event_dispatch.rs`<br>`codex-rs/core/src/session/handlers.rs`<br>`codex-rs/protocol/src/protocol.rs`<br>`codex-rs/thread-store/src/local/thread_history_materialization.rs` | App-server rollback, durable rollout markers, paginated thread-history projection, TUI thread/event lifecycle, feature configuration | `feat(tui): add opt-in source-preserving prompt edits`, `fix(rollback): preserve exact durable Legacy thread boundaries`, `fix(tui): restore prompt editing across forked histories` |
 | Deferred tool discovery in Lite and Code Mode | Capability | Keep `tool_search` reachable when V1 tools are deferred by Responses Lite and expose ranked deferred MCP discovery inside Code Mode without injecting every schema up front. | `codex-rs/core/src/client.rs`<br>`codex-rs/core/src/tools/handlers/tool_search.rs`<br>`codex-rs/tools/src/code_mode.rs` | Responses request serialization, tool routing, Code Mode declarations/runtime | `fix(client): keep Lite tool search reachable for deferred V1 agents`, `fix(code-mode): expose ranked deferred tool discovery` |
 | Non-persistent raw response traces | Efficiency | Preserve opt-in transport diagnostics while excluding full Responses API payloads from the SQLite log sink to reduce sensitive-data retention and insert/prune churn. | `codex-rs/codex-api/src/sse/responses.rs`<br>`codex-rs/codex-api/src/endpoint/responses_websocket.rs` | State log filtering | `fix(logging): exclude raw response events from SQLite and feedback` |
-| Complete role and model selection for subagents | Capability | Expose built-in roles without requiring custom role configuration, allow MultiAgent V2 to spawn any loaded catalog model regardless of its default multi-agent tag, keep collaboration tools available to those V2 children, and keep explicit model and reasoning overrides independent of full-history inheritance in both agent tool versions. | `codex-rs/core/src/agent/role.rs`<br>`codex-rs/core/src/agent/child_config.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`<br>`codex-rs/core/src/tools/spec_plan.rs` | Spawn tool schemas, model catalog validation, child tool exposure, history inheritance, TUI app-server session configuration | `fix(multi-agent): expose built-in roles and retain authoritative runtime schemas`, `fix(multi-agent): resolve child model overrides across catalog runtime tags`, `feat(multi-agent): require user authorization for inherited history` |
+| Complete role and model selection for subagents | Capability | Expose built-in roles without requiring custom role configuration, allow MultiAgent V2 to spawn any loaded catalog model regardless of its default multi-agent tag, keep collaboration tools available to those V2 children, keep explicit model and reasoning overrides independent of full-history inheritance in both agent tool versions, and let configured roles replace inherited base instructions from a role-local non-empty file while preserving separate developer instructions and custom provenance. | `codex-rs/core/src/agent/role.rs`<br>`codex-rs/core/src/agent/child_config.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`<br>`codex-rs/core/src/tools/spec_plan.rs` | Spawn tool schemas, model catalog validation, child tool exposure, history inheritance, role-local instruction loading, TUI app-server session configuration | `fix(multi-agent): expose built-in roles and retain authoritative runtime schemas`, `fix(multi-agent): resolve child model overrides across catalog runtime tags`, `feat(multi-agent): require user authorization for inherited history`, `feat(multi-agent): add per-spawn model and reasoning overrides` |
 | Interactive and resumable subagent threads | Compatibility | Keep parent-owned and V2 subagent threads directly inspectable and interactive, revive replayed or cold-resumed children through their owning control plane, and preserve routing, identity, completion delivery, graph state, and parent-return behavior. | `codex-rs/core/src/agent/control/spawn.rs`<br>`codex-rs/core/src/thread_manager/v2_spawn_resume.rs`<br>`codex-rs/tui/src/app/thread_resume.rs`<br>`codex-rs/tui/src/app/agent_navigation.rs` | App-server direct input, agent ownership and registry state, V1 adoption, V2 graph restoration, TUI thread navigation | `fix(tui): allow direct child-thread input while preserving writer quarantine`, `fix(app-server): allow direct child input and caller-controlled cold resume`, `feat(multi-agent): restore recorded agents through their live owning control` |
 | Configurable and auditable V2 agent messaging | Observability | Select encrypted, encrypted-with-audit, or plaintext delivery; retain complete readable assignments where permitted; and preserve readable communication in rollout traces without confusing audit text with transport correlation. | `codex-rs/core/src/agent_communication.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents_v2/`<br>`codex-rs/rollout-trace/src/reducer/tool/agents.rs` | Thread config locking, agent registry/control, spawn/send/follow-up schemas, rollout reduction | `feat(config): select the multi-agent V2 message delivery policy`, `feat(multi-agent): separate readable audit from V2 message delivery`, `feat(rollout-trace): retain readable content on agent interaction edges` |
 | Configurable context inheritance for V2 spawns | Efficiency | Default new V2 subagents to no parent turns while allowing `none`, `all`, or a bounded turn count through `features.multi_agent_v2.default_fork_turns`; inherited history additionally requires the user's `agents.allow_history_forks` authorization. Explicit history forks keep parent audit records canonical while excluding stale parent-agent delivery envelopes from child instructions. | `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`<br>`codex-rs/core/src/agent/control/spawn.rs` | Feature configuration, spawn schema and parsing, fork-history filtering | `feat(multi-agent): require user authorization for inherited history` |
@@ -105,6 +105,36 @@ from canonical encrypted recipient input, human authorization, and durable mailb
 Runtime-aware tool-log redaction remains independent of upstream's name-only stream diagnostics.
 Current direct-message disablement, capacity, root-target, residency, and queue-only/no-wake gates
 are preserved. Executable and generated-schema qualification is still pending for this rebase.
+
+### Per-spawn settings and role instructions
+
+Ownership anchor: `feat(multi-agent): add per-spawn model and reasoning overrides`.
+The centralized `core/src/agent/child_config.rs` resolves captured parent settings,
+configured child defaults, role defaults, and explicit overrides in that order. A model
+selection without a same-layer effort chooses the final model default. Explicit effort
+and tier validation follow final model resolution; repeating an already configured model
+outside discovery remains valid. Model-authored overrides still require explicit user,
+AGENTS, or skill instructions. Host-authored spawn origin is distinct from model history
+authorization; the public shared controller and captured native owner remain authoritative.
+
+Role-local base instruction files are host configuration, read before applying changes,
+and remain custom base provenance rather than developer instructions. Sampling projects
+only classified developer configuration for ordinary owned children, preserving canonical
+history, managed policy, client text, and private-helper isolation. The same owner now
+registers the role-file lifecycle/failure scenarios and sampling call that the historical
+stack introduced prematurely as files and activated only in later commits.
+
+Saved child model, effort, and service tier survive controlled cold restoration without a
+root-tier overlay. Current shared-controller tier bookkeeping remains available to its
+existing callers. Idle child settings checkpoint through the canonical publisher. The
+released migration10050 is unchanged; both metadata INSERTs retain all41 current columns,
+placeholders, and bindings, including newer target metadata. Clearable tier patches and
+Legacy/Paginated metadata views remain synchronized.
+
+The TUI passes explicit model/effort fields through structured user control and canonical
+audit, retains quoted selectors and attached-input spans, and refreshes model/effort
+completion candidates only from a current catalog response. No generated-contract,
+executable, or snapshot qualification is implied by these source changes.
 
 ### Authorized parent-history inheritance
 

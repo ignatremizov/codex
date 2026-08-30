@@ -236,6 +236,7 @@ impl LocalAgentControl {
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
+        let stored_service_tier = stored_thread.service_tier.clone();
         let (
             resumed_agent_path,
             resumed_agent_nickname,
@@ -310,8 +311,8 @@ impl LocalAgentControl {
         if multi_agent_version == MultiAgentVersion::V1
             && let Some(role_name) = resumed_agent_role.as_deref()
         {
-            // V1 resumes retain the caller's model selection, unlike V2's stored-model
-            // precedence. Reapply role restrictions without changing that contract.
+            // Reapply bounded role restrictions before restoring the child's persisted routing.
+            // Caller model settings do not silently replace a saved per-spawn selection.
             let model_settings = (
                 config.model.clone(),
                 config.model_reasoning_effort.clone(),
@@ -432,16 +433,12 @@ impl LocalAgentControl {
                 )));
             }
         }
-        if multi_agent_version == MultiAgentVersion::V2
-            || matches!(
-                authority,
-                ResumeAuthority::Controlled | ResumeAuthority::Transfer { .. }
-            )
-        {
-            apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
-            config.model_reasoning_effort = stored_reasoning_effort;
-        }
-        let parent_thread_id = session_source.parent_thread_id()
+        // Persisted child routing wins after role restrictions; live ownership remains separate.
+        apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
+        config.model_reasoning_effort = stored_reasoning_effort;
+        config.service_tier = stored_service_tier;
+        let parent_thread_id = session_source
+            .parent_thread_id()
             .or_else(|| initial_history.get_resumed_parent_thread_id())
             .or(stored_parent_thread_id);
         // Recorded restoration must agree with its original lineage. Controlled resume
@@ -454,11 +451,18 @@ impl LocalAgentControl {
                 .is_some_and(|id| Some(id) != parent_thread_id)
                 || stored_parent_thread_id.is_some_and(|id| Some(id) != parent_thread_id))
         {
-            return Err(CodexErr::InvalidRequest("recorded parent ownership is inconsistent".to_string()));
+            return Err(CodexErr::InvalidRequest(
+                "recorded parent ownership is inconsistent".to_string(),
+            ));
         }
-        let owner = self.capture_restoration_owner(
-            &state, parent_thread_id, expected_parent, multi_agent_version,
-        ).await?;
+        let owner = self
+            .capture_restoration_owner(
+                &state,
+                parent_thread_id,
+                expected_parent,
+                multi_agent_version,
+            )
+            .await?;
         let parent = &owner.parent;
         let residency_slot = if resume_uses_v2_residency {
             Some(

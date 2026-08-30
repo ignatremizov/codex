@@ -185,8 +185,22 @@ async fn wait_for_child_request_with_role(
             return Ok(());
         }
         if Instant::now() >= deadline {
+            let observed = requests
+                .iter()
+                .map(|request| {
+                    let body = request.body_json();
+                    json!({
+                        "model": body["model"],
+                        "thread_id": body["client_metadata"]["thread_id"],
+                        "has_task": request.body_contains_text(task),
+                        "has_role": request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS),
+                        "has_queued_message": request.body_contains_text(QUEUED_MESSAGE),
+                        "followup_output": request.function_call_output_text(FOLLOWUP_CALL_ID),
+                    })
+                })
+                .collect::<Vec<_>>();
             anyhow::bail!(
-                "timed out waiting for child request containing task {task:?} and its role instructions"
+                "timed out waiting for child request containing task {task:?} and its role instructions; observed={observed:?}"
             );
         }
         sleep(Duration::from_millis(/*millis*/ 10)).await;
@@ -329,7 +343,8 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         &server,
         |request: &wiremock::Request| {
             request_has_function_call_output(request, QUEUE_CALL_ID)
-                && !request_has_input_type(request, "agent_message")
+                && !request_has_model(request, ROLE_MODEL)
+                && !body_contains(request, FOLLOWUP_PROMPT)
         },
         sse(vec![ev_completed("resp-parent-turn-assistant")]),
     )
@@ -357,6 +372,8 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         .expect(0..=1)
         .mount_as_scoped(&server)
         .await;
+    // Keep one queue continuation mock. A duplicate remains unused after that
+    // turn and can consume the later follow-up through its historical call ID.
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -625,7 +642,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         ]),
     )
     .await;
-    mount_sse_once_match(
+    let followup_parent_request = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             body_contains(request, FOLLOWUP_CALL_ID) && !request_has_model(request, ROLE_MODEL)
@@ -732,11 +749,31 @@ enabled = false
         resumed.codex.config().await.model_provider,
         "cold reload must preserve the parent's complete model provider",
     );
+    assert_eq!(
+        reloaded_worker.config().await.developer_instructions,
+        Some(ROLE_DEVELOPER_INSTRUCTIONS.to_string()),
+        "cold reload must apply the selected role before follow-up admission",
+    );
     resumed
         .submit_turn(FOLLOWUP_PROMPT)
         .await
         .context("submit worker follow-up")?;
-    wait_for_child_request_with_role(&followup_child_request, FOLLOWUP_TASK).await?;
+    assert_eq!(
+        followup_parent_request
+            .requests()
+            .iter()
+            .find_map(|request| request.function_call_output_text(FOLLOWUP_CALL_ID)),
+        Some(String::new()),
+        "followup_task must be admitted before waiting for the child request",
+    );
+    if let Err(error) =
+        wait_for_child_request_with_role(&followup_child_request, FOLLOWUP_TASK).await
+    {
+        return Err(error.context(format!(
+            "reloaded worker status: {:?}",
+            reloaded_worker.agent_status().await
+        )));
+    }
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if matches!(

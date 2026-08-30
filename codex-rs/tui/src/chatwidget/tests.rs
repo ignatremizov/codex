@@ -277,6 +277,8 @@ mod mcp_startup;
 mod misalignment_policy;
 #[path = "tests/model_display_name_tests.rs"]
 mod model_display_name_tests;
+#[path = "tests/agent_spawn_catalog_tests.rs"]
+mod agent_spawn_catalog_tests;
 #[path = "tests/model_picker_tests.rs"]
 mod model_picker_tests;
 #[path = "tests/notification_tests.rs"]

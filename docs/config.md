@@ -78,7 +78,29 @@ An external source thread UUID does not identify a live parent in the destinatio
 
 Flattening must not invent canonical context evidence by joining records that were separated by source metadata, rollback records, or lineage boundaries. An unsafe copy is rejected without rewriting its source. Existing valid context evidence remains inert history: copied audit records never recreate live queues, reply grants, or pending delivery receipts.
 
+## Explicit subagent model overrides
+
+An explicit spawn model may repeat the model already selected by inherited,
+configured-child, or role settings, including a configured provider model absent
+from discovery. A different explicit model must still resolve through the model
+catalog. Reasoning validation and the existing precedence order are unchanged:
+parent settings, configured child defaults, role defaults, then explicit overrides.
+
 ## Unified exec yield windows
+
+`exec_command_timeout_ms` was the fork's default deadline for the legacy
+`shell`/`shell_command` tools. It is retired with those handlers, not renamed:
+remove it from configurations after promoting from a build that still uses them.
+Normal unified exec does not impose a command deadline when its output wait ends;
+it returns a session ID for a still-running process. The yield settings below
+control output waits, while `user_shell_command_timeout_ms` separately controls
+deadlines for human `!`/`/shell` commands. Neither is an equivalent replacement
+for the retired key.
+
+When managed requirements prohibit resumable unified exec, a restricted
+one-shot fallback can still expose `exec_command` with a per-call `timeout_ms`
+and a 10000 ms default deadline. That path terminates the command on timeout;
+it does not restore the retired global setting.
 
 The optional `unified_exec_yield_time_ms` and `unified_exec_write_stdin_yield_time_ms` settings control the default time before unified-exec returns an output snapshot when the individual tool call does not provide `yield_time_ms`:
 
@@ -205,6 +227,10 @@ The branch retains history before the selected turn. Creating it does not submit
 Inherited canonical prompts remain editable even when the fork's session header appears after them. Replayed copies are matched by turn and item identity, not prompt text, so identical text in different prompts remains independently selectable. Source-less optimistic prompts still belong to their current session. Trimming a confirmed edit preserves the latest session header without reviving an older copy of a removed prompt.
 
 In-place editing also follows the session's actual stored history mode: Paginated sessions use `thread/revert`, and Legacy sessions use guarded `thread/rollback`. Selection is tied to canonical user-message identity; an incomplete or ambiguous old transcript must be refreshed before editing. The draft is not automatically submitted. If a Legacy mutation or its refresh has an uncertain outcome, the TUI preserves the draft and keeps that conversation read-only for the current TUI process, including after switching away and back. Navigation, copying, other conversations, and quitting remain available. Save the draft before quitting, then reopen the conversation in a new Codex process for canonical recovery. The TUI never repeats the mutation automatically.
+
+## Agent role instruction files
+
+A configured role may also set `model_instructions_file`. Relative paths are resolved from the role TOML directory, and the non-empty file replaces inherited base instructions for new and resumed agents using that role. The role's `developer_instructions` remain a separate developer message. An explicit spawn model override changes the model without discarding the selected role's base instructions.
 
 ## Notify
 

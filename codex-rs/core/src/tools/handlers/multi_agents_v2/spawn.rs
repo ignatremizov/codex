@@ -2,10 +2,10 @@ use super::*;
 use crate::agent::api::AgentInput;
 use crate::agent::api::SpawnRequest;
 use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::next_thread_spawn_depth;
-use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
@@ -144,6 +144,7 @@ async fn handle_spawn_agent(
         &session,
         step_context.as_ref(),
         SpawnConfigOptions {
+            origin: SpawnConfigOrigin::Model,
             version: SpawnConfigVersion::V2,
             fork_mode: fork_mode.as_ref(),
             role_name,

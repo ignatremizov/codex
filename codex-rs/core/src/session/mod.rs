@@ -1683,6 +1683,12 @@ impl Session {
                 // turn/start overrides can be merged before we write model-visible context.
                 self.set_previous_turn_settings(/*previous_turn_settings*/ None)
                     .await;
+                // An idle child has no TurnContext item yet. Persist its resolved settings now so
+                // close/cold-resume preserves per-spawn model, reasoning, and service-tier
+                // overrides instead of falling back to the current role defaults.
+                if is_subagent {
+                    self.checkpoint_thread_settings().await?;
+                }
                 None
             }
             InitialHistory::Resumed(resumed_history) => {
@@ -3709,7 +3715,7 @@ impl Session {
     ) -> CodexResult<Arc<StepContext>> {
         // Read the step's model and record its environments together so an update cannot split them.
         // Wait for executor startup below, after releasing the lock.
-        let (mut settings, environments) = {
+        let (settings, environments) = {
             let _active = self
                 .active_turn
                 .lock()
@@ -3720,24 +3726,6 @@ impl Session {
                 self.services.turn_environments.snapshot(),
             )
         };
-        if matches!(
-            turn_context.session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        ) {
-            let root_service_tier = self.services.agent_control.service_tier();
-            if settings.selected().service_tier != root_service_tier {
-                let mut selected = settings.selected().clone();
-                selected.service_tier = root_service_tier;
-                let mut inherited_settings = ResolvedStepSettings::new(
-                    Arc::new(selected),
-                    Arc::clone(&settings.model_info),
-                    self.features.enabled(Feature::FastMode),
-                );
-                inherited_settings.mcp_approvals_reviewer_override =
-                    settings.mcp_approvals_reviewer_override;
-                settings = Arc::new(inherited_settings);
-            }
-        }
         let token_budget = token_budget::resolve_token_budget(
             turn_context.configured_token_budget.as_ref(),
             turn_context.use_model_token_budget_defaults,

@@ -2,6 +2,9 @@
 
 use std::ops::Range;
 
+use codex_protocol::openai_models::ModelPreset;
+
+use super::agent_spawn_option_completion;
 use super::agent_target_popup::AGENT_OBSERVATION_MODE_CHOICES;
 use super::agent_target_popup::AgentPromptTarget;
 use super::agent_target_popup::is_agent_target_action;
@@ -27,6 +30,7 @@ pub(super) struct AgentCommandHighlight {
 pub(super) fn agent_command_highlights(
     input: &str,
     targets: &[AgentPromptTarget],
+    models: &[ModelPreset],
 ) -> Vec<AgentCommandHighlight> {
     let first_line = input.lines().next().unwrap_or(input);
     let Some(tail) = first_line.strip_prefix(AGENT_COMMAND) else {
@@ -45,11 +49,14 @@ pub(super) fn agent_command_highlights(
         return highlights;
     };
     let first = &first_line[first_range.clone()];
+    let selected_model = agent_spawn_option_completion::authored_model(models, first_line);
     let mut index = 1;
     let mut action = None;
+    let mut spawn_options_allowed;
 
     if first == "new" || is_agent_target_action(first) {
         action = Some(first);
+        spawn_options_allowed = first == "new";
         highlights.push(AgentCommandHighlight {
             range: first_range.clone(),
             kind: AgentCommandHighlightKind::Action,
@@ -62,6 +69,7 @@ pub(super) fn agent_command_highlights(
             index += 1;
         }
     } else {
+        spawn_options_allowed = is_spawn_role_selector(first, targets);
         highlights.push(target_highlight(first_line, first_range.clone(), targets));
         if token_ranges
             .get(index)
@@ -73,14 +81,18 @@ pub(super) fn agent_command_highlights(
                 kind: AgentCommandHighlightKind::Action,
             });
             action = Some("close");
+            spawn_options_allowed = false;
             index += 1;
         }
     }
 
     while let Some(range) = token_ranges.get(index) {
         let token = &first_line[range.clone()];
-        let recognized = is_response_option(token)
-            || is_fork_option(token)
+        let recognized = (action != Some("observe") && is_response_option(token))
+            || (spawn_options_allowed
+                && (is_fork_option(token)
+                    || is_model_option(token, models)
+                    || is_effort_option(token, selected_model)))
             || (action == Some("observe")
                 && AGENT_OBSERVATION_MODE_CHOICES
                     .iter()
@@ -128,6 +140,21 @@ fn target_highlight(
         AgentCommandHighlightKind::UnknownTarget
     };
     AgentCommandHighlight { range, kind }
+}
+
+fn is_spawn_role_selector(token: &str, targets: &[AgentPromptTarget]) -> bool {
+    if token.starts_with("role:") {
+        return true;
+    }
+    if token.starts_with("id:") || token.starts_with("ref:") || token.starts_with("nick:") {
+        return false;
+    }
+    targets.iter().any(|target| {
+        target.thread_id.is_none()
+            && !is_agent_target_action(&target.selector)
+            && target.selector != "new"
+            && target_matches(target, token)
+    })
 }
 
 fn target_matches(target: &AgentPromptTarget, token: &str) -> bool {
@@ -184,6 +211,22 @@ fn is_fork_option(token: &str) -> bool {
         return false;
     };
     matches!(value, "none" | "all") || value.parse::<u32>().is_ok_and(|turns| turns > 0)
+}
+
+fn is_model_option(token: &str, models: &[ModelPreset]) -> bool {
+    agent_spawn_option_completion::model_for_selector(models, token).is_some()
+}
+
+fn is_effort_option(token: &str, selected_model: Option<&ModelPreset>) -> bool {
+    let Some(effort) = token.strip_prefix("effort:") else {
+        return false;
+    };
+    selected_model.is_some_and(|model| {
+        model
+            .supported_reasoning_efforts
+            .iter()
+            .any(|preset| preset.effort.to_string() == effort)
+    })
 }
 
 #[cfg(test)]

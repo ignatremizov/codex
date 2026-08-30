@@ -1835,6 +1835,22 @@ async fn run_sampling_request(
                 .for_prompt(&step_context.settings.model_info.input_modalities)
         };
         let mut prompt_input = prompt_input;
+        // Resolved role instructions replace only harness-classified configuration in the
+        // sampling view. Canonical audit, root sessions, and isolated helpers remain unchanged.
+        if turn_context.session_source.is_non_root_agent()
+            && sess.isolation != codex_extension_api::SessionIsolation::Isolated
+            && !crate::guardian::is_basic_session_source(&turn_context.session_source)
+            && sess
+                .services
+                .thread_extension_data
+                .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+                .is_none()
+        {
+            crate::context::project_developer_instructions(
+                &mut prompt_input,
+                turn_context.developer_instructions.as_deref(),
+            );
+        }
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
