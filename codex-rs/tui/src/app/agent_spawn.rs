@@ -13,6 +13,8 @@ impl App {
             source_thread_id,
             role,
             authored_selector,
+            model,
+            reasoning_effort,
             prompt,
             fork_mode,
             response_handling,
@@ -25,9 +27,25 @@ impl App {
             codex_app_server_protocol::AgentForkMode::All => "all".to_string(),
             codex_app_server_protocol::AgentForkMode::LastNTurns { turns } => turns.to_string(),
         };
+        let model_option = model.as_deref().map(|model| {
+            if model
+                .chars()
+                .any(|character| character.is_whitespace() || matches!(character, '"' | '\\'))
+            {
+                let model = model.replace('\\', "\\\\").replace('"', "\\\"");
+                format!(" model:\"{model}\"")
+            } else {
+                format!(" model:{model}")
+            }
+        });
+        let reasoning_effort_option = reasoning_effort
+            .as_ref()
+            .map(|effort| format!(" effort:{effort}"))
+            .unwrap_or_default();
         let recovery_command = format!(
-            "/agent {} fork:{fork}{response}",
-            authored_selector.as_deref().unwrap_or("new")
+            "/agent {} fork:{fork}{}{reasoning_effort_option}{response}",
+            authored_selector.as_deref().unwrap_or("new"),
+            model_option.as_deref().unwrap_or_default()
         );
         if let Err(error) =
             self.ensure_agent_control_admission(source_thread_id, /*target*/ None)
@@ -56,14 +74,16 @@ impl App {
             None => None,
         };
         let result = app_server
-            .spawn_agent(
+            .spawn_agent(crate::app_server_session::SpawnAgentRequest {
                 source_thread_id,
                 role,
                 authored_selector,
+                model,
+                reasoning_effort,
                 input,
                 fork_mode,
                 response_handling,
-            )
+            })
             .await;
         let codex_app_server_protocol::AgentControlResponse {
             outcome,

@@ -239,6 +239,7 @@ impl LocalAgentControl {
         let created_at = stored_thread.created_at;
         let stored_model_provider = stored_thread.model_provider.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
+        let stored_service_tier = stored_thread.service_tier.clone();
         let (
             resumed_agent_path,
             resumed_agent_nickname,
@@ -314,8 +315,8 @@ impl LocalAgentControl {
         if multi_agent_version == MultiAgentVersion::V1
             && let Some(role_name) = resumed_agent_role.as_deref()
         {
-            // V1 resumes retain the caller's model selection, unlike V2's stored-model
-            // precedence. Reapply role restrictions without changing that contract.
+            // Reapply bounded role restrictions before restoring the child's persisted routing.
+            // Caller model settings do not silently replace a saved per-spawn selection.
             let model_settings = (
                 config.model.clone(),
                 config.model_reasoning_effort.clone(),
@@ -440,6 +441,7 @@ impl LocalAgentControl {
             }
         }
         if multi_agent_version == MultiAgentVersion::V2
+            || session_source.is_non_root_agent()
             || matches!(
                 authority,
                 ResumeAuthority::Controlled | ResumeAuthority::Transfer { .. }
@@ -448,6 +450,7 @@ impl LocalAgentControl {
             apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
             config.model_reasoning_effort = stored_reasoning_effort;
         }
+        config.service_tier = stored_service_tier;
         let parent_thread_id = session_source
             .parent_thread_id()
             .or_else(|| initial_history.get_resumed_parent_thread_id())

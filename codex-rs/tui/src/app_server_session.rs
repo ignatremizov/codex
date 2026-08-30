@@ -343,6 +343,17 @@ pub(crate) struct AppServerBootstrap {
     pub(crate) allowed_approval_policies: Option<Vec<AskForApproval>>,
 }
 
+pub(crate) struct SpawnAgentRequest {
+    pub(crate) source_thread_id: ThreadId,
+    pub(crate) role: Option<String>,
+    pub(crate) authored_selector: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    pub(crate) input: Option<Vec<UserInput>>,
+    pub(crate) fork_mode: codex_app_server_protocol::AgentForkMode,
+    pub(crate) response_handling: Option<AgentResponseHandling>,
+}
+
 pub(crate) struct AppServerSession {
     backend_id: crate::backend_id::BackendId,
     client: AppServerClient,
@@ -1951,13 +1962,18 @@ impl AppServerSession {
 
     pub(crate) async fn spawn_agent(
         &mut self,
-        source_thread_id: ThreadId,
-        role: Option<String>,
-        authored_selector: Option<String>,
-        input: Option<Vec<UserInput>>,
-        fork_mode: codex_app_server_protocol::AgentForkMode,
-        response_handling: Option<AgentResponseHandling>,
+        request: SpawnAgentRequest,
     ) -> Result<AgentControlResponse> {
+        let SpawnAgentRequest {
+            source_thread_id,
+            role,
+            authored_selector,
+            model,
+            reasoning_effort,
+            input,
+            fork_mode,
+            response_handling,
+        } = request;
         let request_id = self.next_request_id();
         self.client
             .request_typed(ClientRequest::AgentControl {
@@ -1967,6 +1983,8 @@ impl AppServerSession {
                     authored_selector,
                     action: AgentControlAction::Spawn {
                         role,
+                        model,
+                        reasoning_effort,
                         input,
                         fork_mode,
                         response_handling,

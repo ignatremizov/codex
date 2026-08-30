@@ -185,6 +185,8 @@ pub(super) async fn run_remote_compact_v2_attempt(
             Some(input.window),
         ),
     };
+    let completion_source_items = crate::compact::completion_source_items(&input);
+    sess.project_child_developer_instructions(turn_context, &mut input);
     let tools_in_history = model_info.use_responses_lite
         && input
             .iter()
@@ -241,7 +243,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     } = compaction_output_result?;
     Ok(RemoteCompactV2Attempt {
         input_goal_ids,
-        completion_source_items: crate::compact::completion_source_items(&prompt.input),
+        completion_source_items,
         trace_input_history,
         replacement_history_input,
         compacted_prefix_len,

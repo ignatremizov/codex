@@ -1038,7 +1038,12 @@ impl ModelClient {
         } else {
             Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into())
         };
-        if !prompt.base_instructions.text.is_empty() {
+        if !prompt.base_instructions.text.is_empty()
+            && !input.iter().any(|item| {
+                BaseInstructionsFragment::text_from_item(item)
+                    == Some(prompt.base_instructions.text.as_str())
+            })
+        {
             let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
                 prompt.base_instructions.text.clone(),
             ));

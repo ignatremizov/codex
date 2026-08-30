@@ -6,6 +6,7 @@ use codex_app_server_protocol::AgentObservationMode;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_protocol::MAIN_AGENT_NICKNAME;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ReasoningEffort;
 
 pub(super) const AGENT_COMMAND_USAGE: &str =
     "Usage: /agent [new|<target>|<role>|queue|interrupt|close|resume|observe] ...";
@@ -16,12 +17,16 @@ pub(super) enum AgentCommand<'a> {
     New {
         fork: Option<AgentForkMode>,
         response: Option<AgentResponseHandling>,
+        model: Option<String>,
+        reasoning_effort: Option<ReasoningEffort>,
         prompt: Option<AgentCommandPrompt<'a>>,
     },
     SelectOrDispatch {
         selector: AgentSelector,
         fork: Option<AgentForkMode>,
         response: Option<AgentResponseHandling>,
+        model: Option<String>,
+        reasoning_effort: Option<ReasoningEffort>,
         prompt: Option<AgentCommandPrompt<'a>>,
     },
     Queue {
@@ -82,6 +87,20 @@ struct ControlToken {
 struct ParsedOptions {
     fork: Option<AgentForkMode>,
     response: Option<AgentResponseHandling>,
+    model: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentCommandOptionScope {
+    Spawn,
+    Existing,
+}
+
+impl AgentCommandOptionScope {
+    fn allows_spawn_options(self) -> bool {
+        self == Self::Spawn
+    }
 }
 
 struct AgentCommandParser<'a> {
@@ -108,16 +127,18 @@ pub(super) fn parse_agent_command_with_attached_input(
 
     match first.value.as_str() {
         "new" => {
-            let (options, prompt) = parser.options_and_prompt(/*allow_fork*/ true)?;
+            let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Spawn)?;
             Ok(AgentCommand::New {
                 fork: options.fork,
                 response: options.response,
+                model: options.model,
+                reasoning_effort: options.reasoning_effort,
                 prompt,
             })
         }
         "queue" => {
             let selector = parser.required_selector("queue")?;
-            let (options, prompt) = parser.options_and_prompt(/*allow_fork*/ false)?;
+            let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Existing)?;
             if options.response.is_some() && prompt.is_none() && !has_attached_input {
                 return Err("`w` requires a queued prompt.".to_string());
             }
@@ -129,7 +150,7 @@ pub(super) fn parse_agent_command_with_attached_input(
         }
         "interrupt" => {
             let selector = parser.required_selector("interrupt")?;
-            let (options, prompt) = parser.options_and_prompt(/*allow_fork*/ false)?;
+            let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Existing)?;
             if options.response.is_some() && prompt.is_none() && !has_attached_input {
                 return Err("`w` requires a follow-up prompt after `interrupt`.".to_string());
             }
@@ -145,7 +166,7 @@ pub(super) fn parse_agent_command_with_attached_input(
         }
         "resume" => {
             let selector = parser.required_selector("resume")?;
-            let (options, prompt) = parser.options_and_prompt(/*allow_fork*/ false)?;
+            let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Existing)?;
             Ok(AgentCommand::Resume {
                 selector,
                 response: options.response,
@@ -172,7 +193,7 @@ pub(super) fn parse_agent_command_with_attached_input(
                 return parser.close_command(selector);
             }
             parser.cursor = target_first_action_start;
-            let (options, prompt) = parser.options_and_prompt(/*allow_fork*/ true)?;
+            let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Spawn)?;
             let known_target = matches!(
                 selector.kind(),
                 AgentSelectorKind::Id(_)
@@ -182,6 +203,11 @@ pub(super) fn parse_agent_command_with_attached_input(
             if known_target && options.fork.is_some() {
                 return Err("`fork` is valid only when spawning an agent.".to_string());
             }
+            if known_target && (options.model.is_some() || options.reasoning_effort.is_some()) {
+                return Err(
+                    "`model` and `effort` are valid only when spawning an agent.".to_string(),
+                );
+            }
             if known_target && options.response.is_some() && prompt.is_none() && !has_attached_input
             {
                 return Err("`w` requires a prompt for an existing target.".to_string());
@@ -190,6 +216,8 @@ pub(super) fn parse_agent_command_with_attached_input(
                 selector,
                 fork: options.fork,
                 response: options.response,
+                model: options.model,
+                reasoning_effort: options.reasoning_effort,
                 prompt,
             })
         }
@@ -198,7 +226,7 @@ pub(super) fn parse_agent_command_with_attached_input(
 
 impl<'a> AgentCommandParser<'a> {
     fn close_command(&mut self, selector: AgentSelector) -> Result<AgentCommand<'a>, String> {
-        let (options, prompt) = self.options_and_prompt(/*allow_fork*/ false)?;
+        let (options, prompt) = self.options_and_prompt(AgentCommandOptionScope::Existing)?;
         if prompt.is_some() {
             return Err("`close` accepts response handling but not a prompt.".to_string());
         }
@@ -217,7 +245,7 @@ impl<'a> AgentCommandParser<'a> {
 
     fn options_and_prompt(
         &mut self,
-        allow_fork: bool,
+        scope: AgentCommandOptionScope,
     ) -> Result<(ParsedOptions, Option<AgentCommandPrompt<'a>>), String> {
         let mut options = ParsedOptions::default();
         loop {
@@ -232,7 +260,7 @@ impl<'a> AgentCommandParser<'a> {
                 });
                 return Ok((options, prompt));
             }
-            if token.value.strip_prefix("fork:").is_some() && !allow_fork {
+            if token.value.strip_prefix("fork:").is_some() && !scope.allows_spawn_options() {
                 return Err("`fork` is valid only when spawning an agent.".to_string());
             }
             if let Some(value) = token.value.strip_prefix("fork:") {
@@ -247,6 +275,33 @@ impl<'a> AgentCommandParser<'a> {
             }
             if let Some(value) = token.value.strip_prefix("w:") {
                 options.response = Some(parse_response_mode(value)?);
+                continue;
+            }
+            if token.value.strip_prefix("model:").is_some() && !scope.allows_spawn_options() {
+                return Err("`model` is valid only when spawning an agent.".to_string());
+            }
+            if let Some(value) = token.value.strip_prefix("model:") {
+                if options.model.is_some() {
+                    return Err("`model` may be specified only once.".to_string());
+                }
+                if value.is_empty() {
+                    return Err("`model` requires a nonempty model slug.".to_string());
+                }
+                options.model = Some(value.to_string());
+                continue;
+            }
+            if token.value.strip_prefix("effort:").is_some() && !scope.allows_spawn_options() {
+                return Err("`effort` is valid only when spawning an agent.".to_string());
+            }
+            if let Some(value) = token.value.strip_prefix("effort:") {
+                if options.reasoning_effort.is_some() {
+                    return Err("`effort` may be specified only once.".to_string());
+                }
+                options.reasoning_effort = Some(
+                    value
+                        .parse()
+                        .map_err(|error| format!("Invalid reasoning effort `{value}`: {error}"))?,
+                );
                 continue;
             }
             return Ok((
