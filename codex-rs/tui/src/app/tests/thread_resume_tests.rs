@@ -104,7 +104,7 @@ async fn replay_only_skills_refresh_does_not_revive_thread() -> Result<()> {
         &mut server,
         thread_id,
         AppCommand::ListSkills {
-            cwds: Vec::new(),
+            cwds: vec![app.config.cwd.to_path_buf()],
             force_reload: false,
         },
     )
