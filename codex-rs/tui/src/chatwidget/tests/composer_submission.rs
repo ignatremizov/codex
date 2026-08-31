@@ -2440,6 +2440,52 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
 }
 
 #[tokio::test]
+async fn reconnect_preserves_replayed_clock_and_uncertain_input_without_resending() {
+    for running in [false, true] {
+        let (mut previous, _events, _operations) =
+            make_chatwidget_manual(/*model_override*/ None).await;
+        previous.thread_id = Some(ThreadId::new());
+        let pending = pending_steer("still unconfirmed");
+        let client_id = pending.client_id.clone();
+        previous.input_queue.pending_steers.push_back(pending);
+        let mut saved = previous.capture_thread_input_state().expect("saved input");
+        saved.reconnect_pending = true;
+
+        let (mut restored, _events, mut operations) =
+            make_chatwidget_manual(/*model_override*/ None).await;
+        restored.thread_id = previous.thread_id;
+        let started_at =
+            std::time::Instant::now() - std::time::Duration::from_secs(/*secs*/ 42);
+        if running {
+            restored.restore_active_turn("replayed-turn", started_at);
+        }
+        restored.restore_reconnected_input(Some(saved), &[]);
+
+        assert_eq!(
+            (
+                restored.turn_lifecycle.agent_turn_running,
+                restored.turn_lifecycle.started_at(),
+                restored.turn_lifecycle.goal_status_active_turn_started_at,
+            ),
+            (
+                running,
+                running.then_some(started_at),
+                running.then_some(started_at)
+            ),
+        );
+        assert_eq!(
+            restored.input_queue.pending_steers.front().map(|pending| (
+                pending.client_id.as_str(),
+                pending.user_message.text.as_str(),
+            )),
+            Some((client_id.as_str(), "still unconfirmed")),
+        );
+        assert!(!restored.maybe_send_next_queued_input());
+        assert_no_submit_op(&mut operations);
+    }
+}
+
+#[tokio::test]
 async fn reconnect_keeps_queue_paused_after_pending_compact() {
     let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

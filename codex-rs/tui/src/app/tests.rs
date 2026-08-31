@@ -1533,6 +1533,10 @@ async fn replay_thread_snapshot_restores_the_matching_safety_buffer_prompt() {
     app.chat_widget = chat_widget;
     app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
 
+    // The snapshot has no active backend turn. Retain its safety prompt without
+    // reviving the optimistic pending-start flag from the earlier submission.
+    let mut expected_input_state = expected_input_state;
+    expected_input_state.user_turn_pending_start = false;
     assert_eq!(
         app.chat_widget.capture_thread_input_state(),
         Some(expected_input_state)
@@ -3328,6 +3332,8 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
                     agent_nickname: Some(format!("child-{index}")),
                     agent_role: Some("worker".to_string()),
                 }),
+                agent_nickname: Some(format!("child-{index}")),
+                agent_role: Some("worker".to_string()),
                 model_provider: Some(app.config.model_provider_id.clone()),
                 multi_agent_version: Some(multi_agent_version),
                 ..SessionMeta::default()

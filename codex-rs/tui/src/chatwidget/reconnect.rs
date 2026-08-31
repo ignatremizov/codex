@@ -40,7 +40,7 @@ impl ChatWidget {
         input: Option<ThreadInputState>,
         confirmed_message_ids: &[String],
     ) {
-        let running = self.turn_lifecycle.agent_turn_running;
+        let started_at = self.turn_lifecycle.started_at();
         let reconnect_pending = input.as_ref().is_some_and(|input| input.reconnect_pending);
         if let Some(mut input) = input {
             // Navigation can continue an unresolved recovery while new steers are in flight.
@@ -107,8 +107,8 @@ impl ChatWidget {
                 format!("Couldn't confirm whether “{preview}” was sent. It hasn't been resent.");
             self.add_info_message(notice, /*hint*/ None);
         }
-        if running {
-            self.turn_lifecycle.restore_running_since(Instant::now());
+        if let Some(started_at) = started_at {
+            self.turn_lifecycle.restore_running_since(started_at);
         } else {
             self.turn_lifecycle.finish();
         }

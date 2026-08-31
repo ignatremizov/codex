@@ -79,7 +79,7 @@ impl App {
                 self.chat_widget.pause_unavailable_thread();
             }
             self.chat_widget.add_error_message(format!(
-                "Failed to resume agent thread: {error:#}. No operation was sent. Your input is preserved; reopen the parent conversation and retry."
+                "Failed to resume agent thread: {error}. No operation was sent. Your input is preserved; reopen the parent conversation and retry."
             ));
             return false;
         }
