@@ -99,10 +99,8 @@ impl App {
     fn display_lines_for_history_insert(
         &mut self,
         cell: &dyn HistoryCell,
-        width: u16,
+        mut display: Vec<HyperlinkLine>,
     ) -> Vec<HyperlinkLine> {
-        let mut display =
-            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
         if !display.is_empty() && !cell.is_stream_continuation() {
             if self.has_emitted_history_lines {
                 display.insert(/*index*/ 0, HyperlinkLine::new(Line::from("")));
@@ -123,7 +121,22 @@ impl App {
             tui.frame_requester().schedule_frame();
             return;
         }
-        let display = self.display_lines_for_history_insert(cell, width);
+        let display =
+            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
+        self.insert_prepared_history_cell_lines(tui, cell, display);
+    }
+
+    pub(super) fn insert_prepared_history_cell_lines(
+        &mut self,
+        tui: &mut tui::Tui,
+        cell: &dyn HistoryCell,
+        display: Vec<HyperlinkLine>,
+    ) {
+        let display = self.display_lines_for_history_insert(cell, display);
+        if tui.is_owned_screen() {
+            tui.frame_requester().schedule_frame();
+            return;
+        }
         if display.is_empty() {
             return;
         }
@@ -226,11 +239,11 @@ impl App {
         self.request_scrollback_history_top_up(retained_rows);
     }
 
-    pub(super) fn insert_history_cell_lines_with_initial_replay_buffer(
+    pub(super) fn insert_prepared_history_cell_lines_with_initial_replay_buffer(
         &mut self,
         tui: &mut tui::Tui,
         cell: &dyn HistoryCell,
-        width: u16,
+        display: Vec<HyperlinkLine>,
     ) {
         if tui.is_owned_screen() {
             tui.frame_requester().schedule_frame();
@@ -244,7 +257,7 @@ impl App {
             return;
         }
 
-        let display = self.display_lines_for_history_insert(cell, width);
+        let display = self.display_lines_for_history_insert(cell, display);
 
         if display.is_empty() {
             return;

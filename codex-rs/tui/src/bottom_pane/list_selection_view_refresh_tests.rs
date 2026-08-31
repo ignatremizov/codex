@@ -151,6 +151,9 @@ fn refresh_preserves_on_demand_search_input_and_escape() {
     "###
     );
     view.handle_key_event(KeyEvent::from(KeyCode::Esc));
-    assert_eq!((view.search_query(), view.search_query.as_str()), (None, ""));
+    assert_eq!(
+        (view.search_query(), view.search_query.as_str()),
+        (None, "")
+    );
     assert!(!view.is_complete());
 }

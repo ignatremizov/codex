@@ -233,7 +233,7 @@ impl RuntimeChordBinding {
 
     /// Transcript selection remains active beside pager actions on native transcript surfaces.
     fn overlaps(&self, action: KeymapActionId) -> bool {
-        self.action.overlaps(action)
+        actions_can_share_input_path(self.action, action)
             || (matches!(
                 (self.action.context, self.action.action),
                 (KeymapContext::Global, "select_transcript")
@@ -401,11 +401,13 @@ Reduce `tui.keymap.global.leader` alternatives or `leader ...` bindings."
         prefix: KeyBinding,
         event: KeyEvent,
         contexts: KeymapContextSet,
+        additional_action: Option<KeymapActionId>,
     ) -> Option<&RuntimeChordBinding> {
         self.bindings
             .iter()
             .filter(|binding| {
-                contexts.contains_action(binding.action)
+                (contexts.contains_action(binding.action)
+                    || additional_action == Some(binding.action))
                     && binding.chord.prefix == prefix
                     && chord_stroke_matches(binding.chord.completion, event)
             })
@@ -498,6 +500,7 @@ struct PendingChord {
     started_at: Option<Instant>,
     prefix: KeyBinding,
     contexts: KeymapContextSet,
+    additional_action: Option<KeymapActionId>,
 }
 
 /// Tracks one pending chord or leader menu without buffering ordinary input.
@@ -529,6 +532,7 @@ impl KeyChordMatcher {
                         pending.prefix,
                         KeyEvent::new(code, modifiers),
                         pending.contexts,
+                        pending.additional_action,
                     )
                     .is_some_and(|active| std::ptr::eq(active, *binding))
             })
@@ -575,12 +579,18 @@ impl KeyChordMatcher {
         self.pending.take().is_some()
     }
 
-    pub(crate) fn expire(&mut self, contexts: KeymapContextSet) -> bool {
+    pub(crate) fn expire_with_additional_action(
+        &mut self,
+        contexts: KeymapContextSet,
+        additional_action: Option<KeymapActionId>,
+        now: Instant,
+    ) -> bool {
         if self.pending.is_some_and(|pending| {
             pending.contexts != contexts
-                || pending
-                    .started_at
-                    .is_some_and(|started_at| started_at.elapsed() >= KEY_CHORD_TIMEOUT)
+                || pending.additional_action != additional_action
+                || pending.started_at.is_some_and(|started_at| {
+                    now.saturating_duration_since(started_at) >= KEY_CHORD_TIMEOUT
+                })
         }) {
             self.pending = None;
             return true;
@@ -594,11 +604,28 @@ impl KeyChordMatcher {
         keymap: &RuntimeChordKeymap,
         contexts: KeymapContextSet,
     ) -> KeyChordMatch {
+        self.advance_with_additional_action(
+            key_event,
+            keymap,
+            contexts,
+            /*additional_action*/ None,
+            Instant::now(),
+        )
+    }
+
+    pub(crate) fn advance_with_additional_action(
+        &mut self,
+        key_event: KeyEvent,
+        keymap: &RuntimeChordKeymap,
+        contexts: KeymapContextSet,
+        additional_action: Option<KeymapActionId>,
+        now: Instant,
+    ) -> KeyChordMatch {
         if is_dispatch_token_event(key_event) {
             return KeyChordMatch::Ignored;
         }
 
-        self.expire(contexts);
+        self.expire_with_additional_action(contexts, additional_action, now);
 
         if self.pending.is_some() && key_event.kind != KeyEventKind::Press {
             return KeyChordMatch::Ignored;
@@ -613,9 +640,12 @@ impl KeyChordMatcher {
             {
                 return KeyChordMatch::Cancelled;
             }
-            if let Some(binding) =
-                keymap.binding_for_completion(pending.prefix, key_event, contexts)
-            {
+            if let Some(binding) = keymap.binding_for_completion(
+                pending.prefix,
+                key_event,
+                contexts,
+                pending.additional_action,
+            ) {
                 let Some(dispatch_event) = dispatch_event(binding.action) else {
                     return KeyChordMatch::Ignored;
                 };
@@ -627,7 +657,8 @@ impl KeyChordMatcher {
             .bindings
             .iter()
             .find(|binding| {
-                contexts.contains_action(binding.action)
+                (contexts.contains_action(binding.action)
+                    || additional_action == Some(binding.action))
                     && chord_stroke_matches(binding.chord.prefix, key_event)
             })
             .map(|binding| binding.chord.prefix)
@@ -642,9 +673,10 @@ impl KeyChordMatcher {
                             && binding.action.context.overlaps(KeymapContext::Global)))
             });
             self.pending = Some(PendingChord {
-                started_at: (!persistent).then(Instant::now),
+                started_at: (!persistent).then_some(now),
                 prefix,
                 contexts,
+                additional_action,
             });
             return KeyChordMatch::Pending(prefix);
         }
@@ -814,6 +846,16 @@ Choose a unique chord and retry.",
     }
 
     Ok(())
+}
+
+fn actions_can_share_input_path(left: KeymapActionId, right: KeymapActionId) -> bool {
+    left.overlaps(right)
+        || is_agent_picker_transcript_action(left) && right.context == KeymapContext::List
+        || is_agent_picker_transcript_action(right) && left.context == KeymapContext::List
+}
+
+fn is_agent_picker_transcript_action(action: KeymapActionId) -> bool {
+    action.context == KeymapContext::Global && action.action == "open_transcript"
 }
 
 fn validate_binding_shape(binding: &RuntimeChordBinding) -> Result<(), String> {
