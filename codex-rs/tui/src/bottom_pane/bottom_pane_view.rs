@@ -1,6 +1,7 @@
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
+use crate::keymap::KeymapActionId;
 use crate::keymap::KeymapContextSet;
 use crate::render::renderable::Renderable;
 use codex_app_server_protocol::ToolRequestUserInputParams;
@@ -25,6 +26,12 @@ pub(crate) trait BottomPaneView: Renderable {
     /// Return the keymap contexts whose handlers are active in this view.
     fn keymap_contexts(&self) -> KeymapContextSet {
         KeymapContextSet::default()
+    }
+
+    /// Return one action from outside the active contexts whose configured
+    /// chord should remain available while this view is open.
+    fn additional_keymap_chord_action(&self) -> Option<KeymapActionId> {
+        None
     }
 
     /// Return `true` if the view has finished and should be removed.

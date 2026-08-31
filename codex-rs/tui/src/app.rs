@@ -221,6 +221,9 @@ mod agents_overview_threads;
 mod agents_overview_view;
 pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 mod agent_transcript_inspection;
+#[cfg(test)]
+#[path = "app/agent_transcript_inspection_tests.rs"]
+mod agent_transcript_inspection_tests;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;

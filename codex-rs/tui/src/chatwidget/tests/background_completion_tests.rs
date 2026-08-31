@@ -313,8 +313,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
                 agent_role: Some("default".to_string()),
             }],
             prompt: Some("Review the metadata presentation change.".to_string()),
-            model: None,
-            reasoning_effort: None,
+            model: Some("gpt-5.6-sol".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
             agents_states: HashMap::from([(
                 receiver_thread_id.to_string(),
                 AppServerCollabAgentState {
@@ -377,15 +377,15 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
     assert_snapshot!(
         rendered,
     @r"
-    • Spawned Herschel [default] (no commentary · no wake on completion)
+    • Spawned Herschel [default] (gpt-5.6-sol high) (no commentary · no wake on completion)
       └ Review the metadata presentation change.
 
 
-    • Sent input to Herschel [default] (no commentary · no wake on completion)
+    • Sent input to Herschel [default] (gpt-5.6-sol high) (no commentary · no wake on completion)
       └ Give me one random ingredient.
 
 
-    • Herschel [default] completed (● visible):
+    • Herschel [default] (gpt-5.6-sol high) completed (● visible):
       └ Cinnamon
     "
     );

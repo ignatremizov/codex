@@ -1,5 +1,6 @@
 //! Bounded app-server transcript loading for resume, fork, and transcript views.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use super::AppServerSession;
@@ -9,11 +10,13 @@ use crate::resize_reflow_cap::resize_reflow_max_rows;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::collab_agent_metadata_from_items;
 use crate::thread_transcript::thread_items_to_transcript_cells_with_metadata;
+use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemEntry;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadTurnsListParams;
@@ -137,7 +140,8 @@ impl AppServerSession {
         cursor: Option<String>,
     ) -> Result<ThreadTurnsListResponse> {
         let request_id = self.next_request_id();
-        self.client
+        let response = self
+            .client
             .request_typed(ClientRequest::ThreadTurnsList {
                 request_id,
                 params: ThreadTurnsListParams {
@@ -148,8 +152,15 @@ impl AppServerSession {
                     items_view: Some(TurnItemsView::NotLoaded),
                 },
             })
-            .await
-            .wrap_err("failed to load a bounded thread history page")
+            .await;
+        if matches!(
+            &response,
+            Err(TypedRequestError::Server { source, .. })
+                if super::is_history_pagination_unsupported(source)
+        ) {
+            self.history_support = super::ThreadHistorySupport::LegacyOnly;
+        }
+        response.wrap_err("failed to load a bounded thread history page")
     }
 
     async fn merge_thread_item_page(
@@ -164,9 +175,13 @@ impl AppServerSession {
             page.next_cursor,
             &mut state.seen_item_cursors,
         );
-        let mut items = Vec::new();
-        for entry in page.data {
-            while !turns.iter().any(|turn| turn.id == entry.turn_id) {
+        let mut known_turns = turns
+            .iter()
+            .map(|turn| turn.id.clone())
+            .collect::<HashSet<_>>();
+        let mut older_turns = Vec::new();
+        for entry in &page.data {
+            while !known_turns.contains(&entry.turn_id) {
                 let Some(cursor) = state.next_turn_cursor.take() else {
                     break;
                 };
@@ -178,18 +193,15 @@ impl AppServerSession {
                     page.next_cursor,
                     &mut state.seen_turn_cursors,
                 );
-                turns.splice(0..0, page.data.into_iter().rev());
-            }
-            if let Some(turn) = turns.iter_mut().find(|turn| turn.id == entry.turn_id)
-                && !turn.items.iter().any(|item| item.id() == entry.item.id())
-            {
-                items.push(entry.item.clone());
-                turn.items.insert(/*index*/ 0, entry.item);
-                turn.items_view = TurnItemsView::Summary;
+                for turn in page.data {
+                    if known_turns.insert(turn.id.clone()) {
+                        older_turns.push(turn);
+                    }
+                }
             }
         }
-        items.reverse();
-        Ok(items)
+        turns.splice(0..0, older_turns.into_iter().rev());
+        Ok(prepend_item_page(turns, page.data))
     }
 
     /// Hydrates paginated threads through bounded turn and item pages.
@@ -284,6 +296,44 @@ impl AppServerSession {
         }
         Ok(())
     }
+}
+
+/// Index each touched turn once and move its retained items only once per page.
+fn prepend_item_page(turns: &mut [Turn], entries: Vec<ThreadItemEntry>) -> Vec<ThreadItem> {
+    let turn_indices = turns
+        .iter()
+        .enumerate()
+        .map(|(index, turn)| (turn.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut batches = HashMap::<usize, (HashSet<String>, Vec<ThreadItem>)>::new();
+    let mut items = Vec::new();
+    for entry in entries {
+        let Some(&index) = turn_indices.get(&entry.turn_id) else {
+            continue;
+        };
+        let (known, batch) = batches.entry(index).or_insert_with(|| {
+            (
+                turns[index]
+                    .items
+                    .iter()
+                    .map(|item| item.id().to_string())
+                    .collect(),
+                Vec::new(),
+            )
+        });
+        if known.insert(entry.item.id().to_string()) {
+            items.push(entry.item.clone());
+            batch.push(entry.item);
+        }
+    }
+    for (index, (_, batch)) in batches {
+        if !batch.is_empty() {
+            turns[index].items.splice(0..0, batch.into_iter().rev());
+            turns[index].items_view = TurnItemsView::Summary;
+        }
+    }
+    items.reverse();
+    items
 }
 
 fn rendered_history_rows(

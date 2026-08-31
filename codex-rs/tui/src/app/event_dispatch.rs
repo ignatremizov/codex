@@ -183,7 +183,10 @@ impl App {
                 {
                     app_server.cancel_older_history_page(thread_id);
                     if self.chat_widget.thread_id() == Some(thread_id)
-                        && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+                        && let Some(overlay) = self
+                            .overlay
+                            .as_mut()
+                            .and_then(Overlay::active_transcript_mut)
                     {
                         overlay.set_history_state(TranscriptHistoryState::Failed);
                         tui.frame_requester().schedule_frame();
@@ -721,7 +724,11 @@ impl App {
                     self.transcript_cells
                         .splice(start..end, std::iter::once(consolidated.clone()));
 
-                    if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+                    if let Some(t) = self
+                        .overlay
+                        .as_mut()
+                        .and_then(Overlay::active_transcript_mut)
+                    {
                         t.consolidate_cells(start..end, consolidated.clone());
                         tui.frame_requester().schedule_frame();
                     }
@@ -729,7 +736,11 @@ impl App {
                     self.finish_required_stream_reflow(tui)?;
                 } else {
                     self.transcript_cells.push(consolidated.clone());
-                    if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+                    if let Some(t) = self
+                        .overlay
+                        .as_mut()
+                        .and_then(Overlay::active_transcript_mut)
+                    {
                         t.insert_cell(consolidated.clone());
                         tui.frame_requester().schedule_frame();
                     }

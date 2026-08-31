@@ -2,13 +2,13 @@
 source: tui/src/pager_overlay.rs
 expression: term.backend()
 ---
-"/ T R A N S C R I P T / / / / / / / / / "
+"/ T R A N S C R I P T · R E V I E W / / "
 "alpha                                   "
 "                                        "
 "tail                                    "
 "~                                       "
 "~                                       "
 "───────────────────────────────── 100% ─"
-" ↑/↓ to scroll   pgup/pgdn to page   hom"
-" q to quit   esc to edit prev           "
+" ↑/↓ to scroll   pgup/pgdn to page      "
+" q close   v detail   [ review prev     "
 "                                        "

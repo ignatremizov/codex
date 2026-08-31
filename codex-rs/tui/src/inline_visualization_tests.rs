@@ -355,7 +355,7 @@ fn transcript_overlay_remeasures_visualization_when_artifact_becomes_available()
     let mut overlay = TranscriptOverlay::new(
         vec![Arc::new(cell)],
         RuntimeKeymap::defaults().pager,
-        crate::pager_overlay::TranscriptFlavor::HistoricalFullPreview,
+        crate::pager_overlay::TranscriptFlavor::InspectionReviewBrowser,
     );
     let area = Rect::new(
         /*x*/ 0, /*y*/ 0, /*width*/ 240, /*height*/ 12,

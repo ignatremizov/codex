@@ -3,7 +3,7 @@ source: tui/src/pager_overlay.rs
 expression: snapshots
 ---
 --- loading ---
-/ T R A N S C R I P T / / / / / / / / / / / /  loading older history...
+/ T R A N S C R I P T · R E V I E W / / / / /  loading older history...
 recent transcript
 ~
 ~
@@ -11,10 +11,10 @@ recent transcript
 ~
 ────────────────────────────────────────────────────────────────────────
  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q to quit   esc to edit prev
+ q close   v detail   [ review prev   ] review next
 
 --- partial ---
-/ T R A N S C R I P T / / / / / / /  partial history | PgUp for earlier
+/ T R A N S C R I P T · R E V I E W  partial history | PgUp for earlier
 recent transcript
 ~
 ~
@@ -22,10 +22,10 @@ recent transcript
 ~
 ────────────────────────────────────────────────────────────────────────
  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q to quit   esc to edit prev
+ q close   v detail   [ review prev   ] review next
 
 --- failed ---
-/ T R A N S C R I P T / / / / / / / history unavailable | PgUp to retry
+/ T R A N S C R I P T · R E V I E W history unavailable | PgUp to retry
 recent transcript
 ~
 ~
@@ -33,10 +33,10 @@ recent transcript
 ~
 ────────────────────────────────────────────────────────────────────────
  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q to quit   esc to edit prev
+ q close   v detail   [ review prev   ] review next
 
 --- complete ---
-/ T R A N S C R I P T / / / / / / / / / / / / / / / /  start of history
+/ T R A N S C R I P T · R E V I E W / / / / / / / / /  start of history
 recent transcript
 ~
 ~
@@ -44,4 +44,4 @@ recent transcript
 ~
 ───────────────────────────────────────────────────────────────── 100% ─
  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q to quit   esc to edit prev
+ q close   v detail   [ review prev   ] review next

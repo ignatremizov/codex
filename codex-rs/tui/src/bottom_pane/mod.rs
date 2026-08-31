@@ -137,6 +137,7 @@ pub(crate) use list_selection_view::ColumnWidthMode;
 pub(crate) use list_selection_view::ListSelectionView;
 pub(crate) use list_selection_view::OnSelectionChangedCallback;
 pub(crate) use list_selection_view::SelectionDescriptionLayout;
+pub(crate) use list_selection_view::SelectionListHeight;
 pub(crate) use list_selection_view::SelectionRowDisplay;
 pub(crate) use list_selection_view::SelectionToggle;
 pub(crate) use list_selection_view::SelectionViewParams;
@@ -798,6 +799,12 @@ impl BottomPane {
         } else {
             self.composer.keymap_contexts()
         }
+    }
+
+    pub(crate) fn additional_keymap_chord_action(&self) -> Option<crate::keymap::KeymapActionId> {
+        self.view_stack
+            .last()
+            .and_then(|view| view.additional_keymap_chord_action())
     }
 
     pub(crate) fn composer_submit_or_queue_pressed(&self, key_event: KeyEvent) -> bool {

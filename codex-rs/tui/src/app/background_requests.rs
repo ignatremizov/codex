@@ -869,7 +869,11 @@ impl App {
         };
 
         self.transcript_cells.remove(index);
-        if let Some(Overlay::Transcript(overlay)) = &mut self.overlay {
+        if let Some(overlay) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             overlay.replace_cells(self.transcript_cells.clone());
         }
     }

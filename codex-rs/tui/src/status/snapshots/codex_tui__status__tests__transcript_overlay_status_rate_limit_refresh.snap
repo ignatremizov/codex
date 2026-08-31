@@ -3,7 +3,7 @@ source: tui/src/status/tests.rs
 expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\")"
 ---
 before:
-/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+/ T R A N S C R I P T · R E V I E W / / / / / / / / / / / / / / / / / / / / / /
 /status
 
 ╭──────────────────────────────────────────────────────────────────────────╮
@@ -31,11 +31,11 @@ before:
 ~
 ───────────────────────────────────────────────────────────────────────── 100% ─
  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q to quit   esc to edit prev
+ q close   v detail   [ review prev   ] review next
 
 
 after:
-/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
+/ T R A N S C R I P T · R E V I E W / / / / / / / / / / / / / / / / / / / / / /
 /status
 
 ╭───────────────────────────────────────────────────────────────────────────╮
@@ -63,4 +63,4 @@ next message
 ~
 ───────────────────────────────────────────────────────────────────────── 100% ─
  ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
- q to quit   esc to edit prev
+ q close   v detail   [ review prev   ] review next

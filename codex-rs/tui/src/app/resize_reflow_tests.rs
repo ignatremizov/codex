@@ -60,10 +60,14 @@ async fn initial_resume_replay_retains_scrollback_beyond_the_visible_viewport() 
     app.begin_initial_history_replay_buffer();
     let mut tui = crate::tui::test_support::make_test_tui()?;
     for cell in plain_history_cells(/*count*/ 24) {
-        app.insert_history_cell_lines_with_initial_replay_buffer(
+        let display = cell.display_hyperlink_lines_for_mode(
+            screen_size.width,
+            app.chat_widget.history_render_mode(),
+        );
+        app.insert_prepared_history_cell_lines_with_initial_replay_buffer(
             &mut tui,
             cell.as_ref(),
-            screen_size.width,
+            display,
         );
     }
 

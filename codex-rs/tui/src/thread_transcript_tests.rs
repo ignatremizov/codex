@@ -5,11 +5,13 @@ use super::refresh_collab_agent_metadata;
 use super::thread_items_to_transcript_cells_with_metadata;
 use super::thread_items_with_sources_to_transcript_cells;
 use super::thread_to_transcript_cells;
-use crate::history_cell::HistoryCell;
 use crate::history_cell::UserHistoryCell;
 use codex_app_server_protocol::CollabAgentRef;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::CommandAction;
+use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadStatus;
@@ -21,7 +23,66 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::MessagePhase;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
+use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+
+#[test]
+fn older_review_boundaries_hide_nested_inputs_without_hiding_following_prompts() {
+    let user = |id: &str, text: &str| ThreadItem::UserMessage {
+        id: id.to_string(),
+        client_id: None,
+        content: vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+    };
+    let turn = |id: &str, items| Turn {
+        id: id.to_string(),
+        items,
+        items_view: TurnItemsView::Full,
+        status: TurnStatus::Completed,
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+    };
+    let nested = Turn {
+        status: TurnStatus::Interrupted,
+        ..turn(
+            "nested",
+            vec![user("nested-1", "review"), user("nested-2", "review")],
+        )
+    };
+    let later = turn("later", vec![user("later-user", "real prompt")]);
+    let mut turns = vec![nested, later];
+    assert!(super::hidden_review_item_ids(&turns).is_empty());
+    turns.insert(
+        0,
+        turn(
+            "review",
+            vec![
+                user("review-prompt", "start review"),
+                ThreadItem::EnteredReviewMode {
+                    id: "entered".to_string(),
+                    review: "review".to_string(),
+                },
+                user("inline-input", "review"),
+                ThreadItem::ExitedReviewMode {
+                    id: "exited".to_string(),
+                    review: "done".to_string(),
+                },
+            ],
+        ),
+    );
+    assert_eq!(
+        super::hidden_review_item_ids(&turns),
+        std::collections::HashSet::from([
+            "inline-input".to_string(),
+            "nested-1".to_string(),
+            "nested-2".to_string(),
+        ]),
+    );
+}
 
 fn thread_items_to_transcript_cells(
     thread_id: Option<ThreadId>,
@@ -121,6 +182,80 @@ fn hydrated_user_message_preserves_canonical_turn_and_item_identity() {
 }
 
 #[test]
+fn hydrated_command_execution_uses_canonical_review_cell_snapshot() {
+    let cwd = test_path_buf("/tmp").abs();
+    let script =
+        "rg -n transcript_navigation codex-rs/tui; sed -n '1,80p' codex-rs/tui/src/replay.rs";
+    let command = codex_shell_command::parse_command::shlex_join(&[
+        "/bin/zsh".to_string(),
+        "-lc".to_string(),
+        script.to_string(),
+    ]);
+    let cells = thread_items_to_transcript_cells(
+        /*thread_id*/ None,
+        &cwd,
+        [ThreadItem::CommandExecution {
+            id: "exec-1".to_string(),
+            command,
+            cwd: cwd.clone().into(),
+            process_id: None,
+            plugin_id: None,
+            script_path: None,
+            source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
+            status: CommandExecutionStatus::Completed,
+            command_actions: vec![
+                CommandAction::Search {
+                    command: "rg -n transcript_navigation codex-rs/tui".to_string(),
+                    query: Some("transcript_navigation".to_string()),
+                    path: Some("codex-rs/tui".to_string()),
+                },
+                CommandAction::Read {
+                    command: "sed -n '1,80p' codex-rs/tui/src/replay.rs".to_string(),
+                    name: "replay.rs".to_string(),
+                    path: test_path_buf("/tmp/codex-rs/tui/src/replay.rs")
+                        .abs()
+                        .into(),
+                },
+            ],
+            aggregated_output: Some("matching source\nreplayed source\n".to_string()),
+            exit_code: Some(0),
+            duration_ms: Some(42),
+        }],
+        RawReasoningVisibility::Hidden,
+        /*config*/ None,
+    );
+
+    assert_eq!(cells.len(), 1);
+    assert!(cells[0].as_any().is::<crate::exec_cell::ExecCell>());
+    let review = cells[0]
+        .display_lines(/*width*/ 120)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let full = cells[0]
+        .transcript_lines(/*width*/ 120)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(
+        review,
+        @r"
+    • Explored
+      └ Search transcript_navigation in codex-rs/tui
+        Read replay.rs
+    "
+    );
+    assert!(full.contains(script));
+    assert!(full.contains("matching source"));
+    assert!(!review.contains(script));
+    assert!(!review.contains("matching source"));
+}
+
+#[test]
 fn collab_response_observation_transcript_snapshot() {
     let rendered = [
         (Some(false), Some(true)),
@@ -145,7 +280,7 @@ fn collab_response_observation_transcript_snapshot() {
             reasoning_effort: None,
             agents_states: HashMap::new(),
         };
-        fallback_transcript_cell(&item)
+        fallback_transcript_cell(&item, /*config*/ None)
             .expect("collab tool call should render")
             .display_lines(/*width*/ 200)
             .into_iter()
@@ -175,7 +310,7 @@ fn compaction_decode_error_transcript_snapshot() {
         decode_error: Some("Selected model is at capacity.".to_string()),
         available_skills: Vec::new(),
     };
-    let rendered = fallback_transcript_cell(&item)
+    let rendered = fallback_transcript_cell(&item, /*config*/ None)
         .expect("compaction error should render")
         .display_lines(/*width*/ 200)
         .into_iter()
@@ -331,8 +466,8 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
             agent_role: Some("explorer".to_string()),
         }],
         prompt: Some("Inspect the change.".to_string()),
-        model: None,
-        reasoning_effort: None,
+        model: Some("gpt-5.6-sol".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
         agents_states: HashMap::new(),
     };
     let mut cells = thread_items_to_transcript_cells(
@@ -383,7 +518,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Robie II [explorer] completed (● visible):
+    • Robie II [explorer] (gpt-5.6-sol high) completed (● visible):
       └ Finished the split-page review.
     "
     );

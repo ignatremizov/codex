@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -6,6 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -17,9 +20,11 @@ use super::selection_popup_common::render_menu_surface;
 use super::selection_popup_common::wrap_styled_line;
 use crate::app_event_sender::AppEventSender;
 use crate::clipboard_paste::normalize_pasted_search_query;
+use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
 use crate::key_hint::ShortcutHint;
 use crate::key_hint::is_plain_text_key_event;
+use crate::keymap::KeymapActionId;
 use crate::keymap::ListKeymap;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::Renderable;
@@ -53,6 +58,10 @@ const SIDE_CONTENT_GAP: u16 = 2;
 /// Shared menu-surface horizontal inset (2 cells per side) used by selection popups.
 const MENU_SURFACE_HORIZONTAL_INSET: u16 = 4;
 
+/// Minimum terminal rows retained for a fill-available list when its preview
+/// falls back below the list.
+const MIN_FILL_AVAILABLE_LIST_HEIGHT: u16 = 3;
+
 /// Controls how the side content panel is sized relative to the popup width.
 ///
 /// When the computed side width falls below `side_content_min_width` or the
@@ -64,6 +73,9 @@ pub(crate) enum SideContentWidth {
     Fixed(u16),
     /// Exact 50/50 split of the content area (minus the inter-column gap).
     Half,
+    /// Reserve up to the requested width for the list and give the remainder
+    /// to the side panel.
+    RemainingAfterList(u16),
 }
 
 impl Default for SideContentWidth {
@@ -86,15 +98,34 @@ pub(crate) fn side_by_side_layout_widths(
     side_content_width: SideContentWidth,
     side_content_min_width: u16,
 ) -> Option<(u16, u16)> {
-    let side_width = match side_content_width {
+    let (list_width, side_width) = match side_content_width {
         SideContentWidth::Fixed(0) => return None,
-        SideContentWidth::Fixed(width) => width,
-        SideContentWidth::Half => content_width.saturating_sub(SIDE_CONTENT_GAP) / 2,
+        SideContentWidth::Fixed(side_width) => (
+            content_width.saturating_sub(SIDE_CONTENT_GAP + side_width),
+            side_width,
+        ),
+        SideContentWidth::Half => {
+            let side_width = content_width.saturating_sub(SIDE_CONTENT_GAP) / 2;
+            (
+                content_width.saturating_sub(SIDE_CONTENT_GAP + side_width),
+                side_width,
+            )
+        }
+        SideContentWidth::RemainingAfterList(requested_list_width) => {
+            let max_list_width =
+                content_width.saturating_sub(SIDE_CONTENT_GAP + side_content_min_width);
+            let list_width = requested_list_width
+                .max(MIN_LIST_WIDTH_FOR_SIDE)
+                .min(max_list_width);
+            (
+                list_width,
+                content_width.saturating_sub(SIDE_CONTENT_GAP + list_width),
+            )
+        }
     };
     if side_width < side_content_min_width {
         return None;
     }
-    let list_width = content_width.saturating_sub(SIDE_CONTENT_GAP + side_width);
     (list_width >= MIN_LIST_WIDTH_FOR_SIDE).then_some((list_width, side_width))
 }
 
@@ -103,6 +134,13 @@ pub(crate) enum SelectionRowDisplay {
     #[default]
     Wrapped,
     SingleLine,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SelectionListHeight {
+    #[default]
+    Capped,
+    FillAvailable,
 }
 
 /// One selectable item in the generic selection list.
@@ -133,6 +171,7 @@ pub(crate) type OnCancelCallback = Option<Box<dyn Fn(&AppEventSender) + Send + S
 #[derive(Default)]
 pub(crate) struct SelectionItem {
     pub name: String,
+    pub name_style: Style,
     pub name_prefix_spans: Vec<Span<'static>>,
     pub toggle: Option<SelectionToggle>,
     pub toggle_placeholder: Option<&'static str>,
@@ -148,6 +187,9 @@ pub(crate) struct SelectionItem {
     /// This is intended for contextual child views such as the `/agent` action menu. The primary
     /// Enter action remains unchanged.
     pub secondary_action: Option<SelectionAction>,
+    /// Optional action invoked by the view's configured global shortcut without
+    /// accepting or dismissing the row.
+    pub global_shortcut_action: Option<SelectionAction>,
     pub dismiss_on_select: bool,
     /// Require an explicit accept key after a direct shortcut highlights this sensitive item.
     pub require_explicit_confirmation: bool,
@@ -187,11 +229,13 @@ pub(crate) struct SelectionViewParams {
     pub search_placeholder: Option<String>,
     pub col_width_mode: ColumnWidthMode,
     pub row_display: SelectionRowDisplay,
+    pub list_height: SelectionListHeight,
     pub description_layout: SelectionDescriptionLayout,
     /// Rendered left-column width to use for auto-sized rows.
     pub name_column_width: Option<usize>,
     pub header: Box<dyn Renderable>,
     pub initial_selected_idx: Option<usize>,
+    pub show_current_item_suffix: bool,
 
     /// Rich content rendered beside (wide terminals) or below (narrow terminals)
     /// the list items, inside the bordered menu surface. Used by the theme picker
@@ -215,6 +259,12 @@ pub(crate) struct SelectionViewParams {
     /// Called when the highlighted item changes (navigation, filter, number-key).
     /// Receives the *actual* item index, not the filtered/visible index.
     pub on_selection_changed: OnSelectionChangedCallback,
+
+    /// Global keymap bindings that invoke the selected row's shortcut action.
+    pub global_shortcut_bindings: Vec<KeyBinding>,
+
+    /// One out-of-context chord action accepted by this view.
+    pub global_shortcut_action_id: Option<KeymapActionId>,
 
     /// Whether cancellation keys can dismiss the picker.
     pub allow_cancel: bool,
@@ -240,16 +290,20 @@ impl Default for SelectionViewParams {
             search_placeholder: None,
             col_width_mode: ColumnWidthMode::AutoVisible,
             row_display: SelectionRowDisplay::Wrapped,
+            list_height: SelectionListHeight::Capped,
             description_layout: SelectionDescriptionLayout::Columns,
             name_column_width: None,
             header: Box::new(()),
             initial_selected_idx: None,
+            show_current_item_suffix: true,
             side_content: Box::new(()),
             side_content_width: SideContentWidth::default(),
             side_content_min_width: 0,
             stacked_side_content: None,
             preserve_side_content_bg: false,
             on_selection_changed: None,
+            global_shortcut_bindings: Vec::new(),
+            global_shortcut_action_id: None,
             allow_cancel: true,
             on_cancel: None,
         }
@@ -279,6 +333,7 @@ pub(crate) struct ListSelectionView {
     search_placeholder: Option<String>,
     col_width_mode: ColumnWidthMode,
     row_display: SelectionRowDisplay,
+    list_height: SelectionListHeight,
     description_layout: SelectionDescriptionLayout,
     name_column_width: Option<usize>,
     filtered_indices: Vec<usize>,
@@ -286,14 +341,20 @@ pub(crate) struct ListSelectionView {
     rendered_item_count: std::cell::Cell<usize>,
     header: Box<dyn Renderable>,
     initial_selected_idx: Option<usize>,
+    show_current_item_suffix: bool,
     side_content: Box<dyn Renderable>,
     side_content_width: SideContentWidth,
     side_content_min_width: u16,
     stacked_side_content: Option<Box<dyn Renderable>>,
     preserve_side_content_bg: bool,
+    last_rendered_visible_rows: Cell<usize>,
+    last_rendered_scroll_top: Cell<usize>,
 
     /// Called when the highlighted item changes (navigation, filter, number-key).
     on_selection_changed: OnSelectionChangedCallback,
+
+    global_shortcut_bindings: Vec<KeyBinding>,
+    global_shortcut_action_id: Option<KeymapActionId>,
 
     allow_cancel: bool,
 
@@ -416,6 +477,7 @@ impl ListSelectionView {
             },
             col_width_mode: params.col_width_mode,
             row_display: params.row_display,
+            list_height: params.list_height,
             description_layout: params.description_layout,
             name_column_width: params.name_column_width,
             filtered_indices: Vec::new(),
@@ -423,12 +485,17 @@ impl ListSelectionView {
             rendered_item_count: std::cell::Cell::new(0),
             header,
             initial_selected_idx: params.initial_selected_idx,
+            show_current_item_suffix: params.show_current_item_suffix,
             side_content: params.side_content,
             side_content_width: params.side_content_width,
             side_content_min_width: params.side_content_min_width,
             stacked_side_content: params.stacked_side_content,
             preserve_side_content_bg: params.preserve_side_content_bg,
+            last_rendered_visible_rows: Cell::new(MAX_POPUP_ROWS),
+            last_rendered_scroll_top: Cell::new(0),
             on_selection_changed: params.on_selection_changed,
+            global_shortcut_bindings: params.global_shortcut_bindings,
+            global_shortcut_action_id: params.global_shortcut_action_id,
             allow_cancel: params.allow_cancel,
             on_cancel: params.on_cancel,
             keymap,
@@ -491,8 +558,18 @@ impl ListSelectionView {
             .map(|tab| tab.id.as_str())
     }
 
-    fn max_visible_rows(len: usize) -> usize {
-        MAX_POPUP_ROWS.min(len.max(1))
+    fn max_visible_rows(&self, len: usize) -> usize {
+        let limit = match self.list_height {
+            SelectionListHeight::Capped => MAX_POPUP_ROWS,
+            SelectionListHeight::FillAvailable => self.last_rendered_visible_rows.get().max(1),
+        };
+        limit.min(len.max(1))
+    }
+
+    fn sync_last_rendered_scroll_top(&mut self) {
+        if matches!(self.list_height, SelectionListHeight::FillAvailable) {
+            self.state.scroll_top = self.last_rendered_scroll_top.get();
+        }
     }
 
     fn selected_actual_idx(&self) -> Option<usize> {
@@ -502,6 +579,7 @@ impl ListSelectionView {
     }
 
     fn apply_filter(&mut self) {
+        self.sync_last_rendered_scroll_top();
         let previously_selected = self
             .selected_actual_idx()
             .filter(|actual_idx| self.enabled_actual_idx(*actual_idx).is_some())
@@ -561,7 +639,7 @@ impl ListSelectionView {
             .or_else(|| self.first_enabled_visible_idx())
             .or_else(|| (len > 0).then_some(0));
 
-        let visible = Self::max_visible_rows(len);
+        let visible = self.max_visible_rows(len);
         self.state.clamp_selection(len);
         self.state.ensure_visible(len, visible);
 
@@ -596,7 +674,11 @@ impl ListSelectionView {
                     let prefix = if is_selected { '›' } else { ' ' };
                     let name = item.name.as_str();
                     let marker = if item.is_current {
-                        " (current)"
+                        if self.show_current_item_suffix {
+                            " (current)"
+                        } else {
+                            ""
+                        }
                     } else if item.is_default {
                         " (default)"
                     } else {
@@ -636,6 +718,7 @@ impl ListSelectionView {
                     let wrap_indent = description.is_none().then_some(wrap_prefix_width);
                     GenericDisplayRow {
                         name: name_with_marker,
+                        name_style: item.name_style,
                         name_prefix_spans,
                         display_shortcut: item.display_shortcut,
                         match_indices: None,
@@ -715,10 +798,11 @@ impl ListSelectionView {
     }
 
     fn move_up(&mut self) {
+        self.sync_last_rendered_scroll_top();
         let before = self.selected_actual_idx();
         let len = self.visible_len();
         self.state.move_up_wrap(len);
-        let visible = Self::max_visible_rows(len);
+        let visible = self.max_visible_rows(len);
         self.skip_disabled_up();
         self.state.ensure_visible(len, visible);
         if self.selected_actual_idx() != before {
@@ -727,10 +811,11 @@ impl ListSelectionView {
     }
 
     fn move_down(&mut self) {
+        self.sync_last_rendered_scroll_top();
         let before = self.selected_actual_idx();
         let len = self.visible_len();
         self.state.move_down_wrap(len);
-        let visible = Self::max_visible_rows(len);
+        let visible = self.max_visible_rows(len);
         self.skip_disabled_down();
         self.state.ensure_visible(len, visible);
         if self.selected_actual_idx() != before {
@@ -739,9 +824,10 @@ impl ListSelectionView {
     }
 
     fn page_up(&mut self) {
+        self.sync_last_rendered_scroll_top();
         let before = self.selected_actual_idx();
         let len = self.visible_len();
-        let visible = Self::max_visible_rows(len);
+        let visible = self.max_visible_rows(len);
         self.state.page_up_clamped(len, visible);
         self.skip_disabled_up_clamped();
         self.state.ensure_visible(len, visible);
@@ -751,9 +837,10 @@ impl ListSelectionView {
     }
 
     fn page_down(&mut self) {
+        self.sync_last_rendered_scroll_top();
         let before = self.selected_actual_idx();
         let len = self.visible_len();
-        let visible = Self::max_visible_rows(len);
+        let visible = self.max_visible_rows(len);
         self.state.page_down_clamped(len, visible);
         self.skip_disabled_down_clamped();
         self.state.ensure_visible(len, visible);
@@ -763,9 +850,10 @@ impl ListSelectionView {
     }
 
     fn jump_top(&mut self) {
+        self.sync_last_rendered_scroll_top();
         let before = self.selected_actual_idx();
         let len = self.visible_len();
-        let visible = Self::max_visible_rows(len);
+        let visible = self.max_visible_rows(len);
         self.state.jump_top(len, visible);
         self.skip_disabled_down_clamped();
         self.state.ensure_visible(len, visible);
@@ -775,9 +863,10 @@ impl ListSelectionView {
     }
 
     fn jump_bottom(&mut self) {
+        self.sync_last_rendered_scroll_top();
         let before = self.selected_actual_idx();
         let len = self.visible_len();
-        let visible = Self::max_visible_rows(len);
+        let visible = self.max_visible_rows(len);
         self.state.jump_bottom(len, visible);
         self.skip_disabled_up_clamped();
         self.state.ensure_visible(len, visible);
@@ -850,6 +939,17 @@ impl ListSelectionView {
             .and_then(|item| item.secondary_action.as_ref());
         if let Some(secondary_action) = secondary_action {
             secondary_action(&self.app_event_tx);
+        }
+    }
+
+    fn accept_global_shortcut(&self) {
+        let action = self
+            .selected_actual_idx()
+            .and_then(|actual_idx| self.active_items().get(actual_idx))
+            .filter(|item| Self::item_is_enabled(item))
+            .and_then(|item| item.global_shortcut_action.as_ref());
+        if let Some(action) = action {
+            action(&self.app_event_tx);
         }
     }
 
@@ -1000,6 +1100,14 @@ impl BottomPaneView for ListSelectionView {
         crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::List)
     }
 
+    fn additional_keymap_chord_action(&self) -> Option<KeymapActionId> {
+        if self.global_shortcut_bindings.is_empty() {
+            None
+        } else {
+            self.global_shortcut_action_id
+        }
+    }
+
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         // Searchable lists reserve printable characters for query input. This
         // keeps vim-style plain j/k/h/l useful in non-search lists without
@@ -1063,6 +1171,9 @@ impl BottomPaneView for ListSelectionView {
                 && self.selected_item_has_toggle_placeholder() => {}
             _ if self.allow_cancel && self.keymap.cancel.is_pressed(key_event) => {
                 self.on_ctrl_c();
+            }
+            _ if self.global_shortcut_bindings.is_pressed(key_event) => {
+                self.accept_global_shortcut()
             }
             KeyEvent {
                 code: KeyCode::Tab,
@@ -1183,19 +1294,27 @@ impl Renderable for ListSelectionView {
             Self::rows_width(width)
         };
 
-        // Measure wrapped height for up to MAX_POPUP_ROWS items.
+        // Fill-available lists request their complete row height and let the
+        // outer layout clamp them to the terminal. Capped lists preserve the
+        // shared popup limit.
         let rows = self.build_rows();
+        let max_items = match self.list_height {
+            SelectionListHeight::Capped => MAX_POPUP_ROWS,
+            SelectionListHeight::FillAvailable => rows.len().max(1),
+        };
         let column_width = ColumnWidthConfig::new(self.col_width_mode, self.name_column_width)
             .with_description_layout(self.description_layout);
         let rows_height = match self.row_display {
             SelectionRowDisplay::Wrapped => measure_rows_height_with_col_width_mode(
                 &rows,
                 &self.state,
-                MAX_POPUP_ROWS,
+                max_items,
                 effective_rows_width.saturating_add(1),
                 column_width,
             ),
-            SelectionRowDisplay::SingleLine => rows.len().clamp(1, MAX_POPUP_ROWS) as u16,
+            SelectionRowDisplay::SingleLine => {
+                u16::try_from(rows.len().clamp(1, max_items)).unwrap_or(u16::MAX)
+            }
         };
 
         let header = self.active_header();
@@ -1273,24 +1392,103 @@ impl Renderable for ListSelectionView {
         let rows = self.build_rows();
         let column_width = ColumnWidthConfig::new(self.col_width_mode, self.name_column_width)
             .with_description_layout(self.description_layout);
-        let rows_height = match self.row_display {
+        let capped_visible_items = rows.len().clamp(1, MAX_POPUP_ROWS);
+        let capped_rows_height = match self.row_display {
             SelectionRowDisplay::Wrapped => measure_rows_height_with_col_width_mode(
                 &rows,
                 &self.state,
-                MAX_POPUP_ROWS,
+                capped_visible_items,
                 effective_rows_width.saturating_add(1),
                 column_width,
             ),
-            SelectionRowDisplay::SingleLine => rows.len().clamp(1, MAX_POPUP_ROWS) as u16,
+            SelectionRowDisplay::SingleLine => {
+                u16::try_from(capped_visible_items).unwrap_or(u16::MAX)
+            }
         };
 
+        let list_fixed_height = header_height
+            .saturating_add(1)
+            .saturating_add(tab_height)
+            .saturating_add(u16::from(tab_height > 0))
+            .saturating_add(u16::from(self.is_searchable));
         // Stacked (fallback) side content height — only used when not side-by-side.
-        let stacked_side_h = if side_w.is_none() {
+        let desired_stacked_side_h = if side_w.is_none() {
             self.stacked_side_content().desired_height(inner_width)
         } else {
             0
         };
+        let stacked_side_h = if matches!(self.list_height, SelectionListHeight::FillAvailable)
+            && desired_stacked_side_h > 0
+        {
+            let available_height = content_area.height.saturating_sub(list_fixed_height);
+            let reserved_list_height = MIN_FILL_AVAILABLE_LIST_HEIGHT.min(available_height);
+            desired_stacked_side_h.min(
+                available_height
+                    .saturating_sub(reserved_list_height)
+                    .saturating_sub(1),
+            )
+        } else {
+            desired_stacked_side_h
+        };
         let stacked_gap = if stacked_side_h > 0 { 1 } else { 0 };
+        let (rows_height, visible_items) =
+            if matches!(self.list_height, SelectionListHeight::FillAvailable) {
+                let fixed_height = list_fixed_height
+                    .saturating_add(stacked_gap)
+                    .saturating_add(stacked_side_h);
+                let available_rows_height = content_area.height.saturating_sub(fixed_height);
+                match self.row_display {
+                    SelectionRowDisplay::Wrapped => {
+                        let mut visible_items = 1;
+                        let mut rows_height = measure_rows_height_with_col_width_mode(
+                            &rows,
+                            &self.state,
+                            visible_items,
+                            effective_rows_width.saturating_add(1),
+                            column_width,
+                        );
+                        let max_visible_items = rows
+                            .len()
+                            .max(1)
+                            .min(usize::from(available_rows_height.max(1)));
+                        for candidate_items in 2..=max_visible_items {
+                            let candidate_height = measure_rows_height_with_col_width_mode(
+                                &rows,
+                                &self.state,
+                                candidate_items,
+                                effective_rows_width.saturating_add(1),
+                                column_width,
+                            );
+                            if candidate_height <= available_rows_height {
+                                visible_items = candidate_items;
+                                rows_height = candidate_height;
+                            }
+                        }
+                        (rows_height.min(available_rows_height), visible_items)
+                    }
+                    SelectionRowDisplay::SingleLine => {
+                        let visible_items = rows
+                            .len()
+                            .max(1)
+                            .min(usize::from(available_rows_height.max(1)));
+                        (
+                            u16::try_from(visible_items)
+                                .unwrap_or(u16::MAX)
+                                .min(available_rows_height),
+                            visible_items,
+                        )
+                    }
+                }
+            } else {
+                (capped_rows_height, capped_visible_items)
+            };
+        self.last_rendered_visible_rows.set(visible_items.max(1));
+        let mut render_state = self.state;
+        render_state.scroll_top = render_state
+            .scroll_top
+            .min(rows.len().saturating_sub(visible_items));
+        render_state.ensure_visible(rows.len(), visible_items);
+        self.last_rendered_scroll_top.set(render_state.scroll_top);
 
         let [
             header_area,
@@ -1362,8 +1560,8 @@ impl Renderable for ListSelectionView {
                     render_area,
                     buf,
                     &rows,
-                    &self.state,
-                    render_area.height as usize,
+                    &render_state,
+                    visible_items,
                     "no matches",
                     column_width,
                 ),
@@ -1371,8 +1569,8 @@ impl Renderable for ListSelectionView {
                     render_area,
                     buf,
                     &rows,
-                    &self.state,
-                    render_area.height as usize,
+                    &render_state,
+                    visible_items,
                     "no matches",
                     column_width,
                 ),
@@ -1382,8 +1580,7 @@ impl Renderable for ListSelectionView {
 
         // -- Side content (preview panel) --
         if let Some(sw) = side_w {
-            // Side-by-side: render to the right half of the popup content
-            // area so preview content can center vertically in that panel.
+            // Render the preview at the right edge using its configured width.
             let side_x = content_area.x + content_area.width - sw;
             let side_area = Rect::new(side_x, content_area.y, sw, content_area.height);
 
@@ -2091,6 +2288,70 @@ mod tests {
     }
 
     #[test]
+    fn fill_available_requests_all_list_rows() {
+        let items = || {
+            (1..=12)
+                .map(|idx| SelectionItem {
+                    name: format!("Agent {idx}"),
+                    ..Default::default()
+                })
+                .collect()
+        };
+        let (capped_tx_raw, _capped_rx) = unbounded_channel::<AppEvent>();
+        let capped = new_view(
+            SelectionViewParams {
+                items: items(),
+                ..Default::default()
+            },
+            AppEventSender::new(capped_tx_raw),
+        );
+        let (fill_tx_raw, _fill_rx) = unbounded_channel::<AppEvent>();
+        let fill = new_view(
+            SelectionViewParams {
+                items: items(),
+                list_height: SelectionListHeight::FillAvailable,
+                ..Default::default()
+            },
+            AppEventSender::new(fill_tx_raw),
+        );
+
+        assert!(
+            fill.desired_height(/*width*/ 80) > capped.desired_height(/*width*/ 80),
+            "fill-available lists should request space beyond the shared eight-row popup cap",
+        );
+    }
+
+    #[test]
+    fn fill_available_navigation_counts_wrapped_items_instead_of_terminal_lines() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let mut view = new_view(
+            SelectionViewParams {
+                items: (1..=6)
+                    .map(|idx| SelectionItem {
+                        name: format!("Agent {idx}"),
+                        description: Some(format!("Agent {idx} details")),
+                        ..Default::default()
+                    })
+                    .collect(),
+                list_height: SelectionListHeight::FillAvailable,
+                description_layout: SelectionDescriptionLayout::StackBelowWhenNarrow {
+                    min_description_width: u16::MAX,
+                },
+                ..Default::default()
+            },
+            AppEventSender::new(tx_raw),
+        );
+        let area = Rect::new(0, 0, 40, 9);
+        let mut buffer = Buffer::empty(area);
+
+        view.render(area, &mut buffer);
+
+        assert_eq!(view.last_rendered_visible_rows.get(), 3);
+        view.handle_key_event(KeyEvent::from(KeyCode::PageDown));
+        assert_eq!(view.selected_actual_idx(), Some(3));
+    }
+
+    #[test]
     fn name_column_width_override_moves_description_column_right() {
         let auto_items = vec![
             SelectionItem {
@@ -2211,6 +2472,65 @@ mod tests {
 
         assert!(!view.is_complete());
         assert!(matches!(rx.try_recv(), Ok(AppEvent::OpenApprovalsPopup)));
+    }
+
+    #[test]
+    fn configured_global_shortcut_invokes_row_action_without_accepting_row() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let shortcut = crate::key_hint::ctrl(KeyCode::Char('t'));
+        let action_id =
+            crate::keymap::keymap_action_id("global", "open_transcript").expect("known action");
+        let mut view = new_view(
+            SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Agent".to_string(),
+                    global_shortcut_action: Some(Box::new(|tx: &_| {
+                        tx.send(AppEvent::OpenApprovalsPopup);
+                    })),
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }],
+                global_shortcut_bindings: vec![shortcut],
+                global_shortcut_action_id: Some(action_id),
+                ..Default::default()
+            },
+            tx,
+        );
+
+        assert_eq!(view.additional_keymap_chord_action(), Some(action_id));
+        view.handle_key_event(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+
+        assert!(!view.is_complete());
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::OpenApprovalsPopup)));
+    }
+
+    #[test]
+    fn configured_tab_shortcut_takes_precedence_over_secondary_action() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let mut view = new_view(
+            SelectionViewParams {
+                items: vec![SelectionItem {
+                    name: "Agent".to_string(),
+                    secondary_action: Some(Box::new(|tx: &_| {
+                        tx.send(AppEvent::OpenApprovalsPopup);
+                    })),
+                    global_shortcut_action: Some(Box::new(|tx: &_| {
+                        tx.send(AppEvent::OpenAgentPicker);
+                    })),
+                    ..Default::default()
+                }],
+                global_shortcut_bindings: vec![crate::key_hint::plain(KeyCode::Tab)],
+                ..Default::default()
+            },
+            AppEventSender::new(tx_raw),
+        );
+
+        view.handle_key_event(KeyEvent::from(KeyCode::Tab));
+
+        assert!(!view.is_complete());
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::OpenAgentPicker)));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -2456,13 +2776,13 @@ mod tests {
         assert_eq!(view.selected_actual_idx(), Some(7));
         let selected = view.state.selected_idx.expect("selection should be set");
         assert!(view.state.scroll_top <= selected);
-        assert!(selected < view.state.scroll_top + ListSelectionView::max_visible_rows(/*len*/ 12));
+        assert!(selected < view.state.scroll_top + view.max_visible_rows(/*len*/ 12));
 
         view.handle_key_event(KeyEvent::from(KeyCode::End));
         assert_eq!(view.selected_actual_idx(), Some(7));
         let selected = view.state.selected_idx.expect("selection should be set");
         assert!(view.state.scroll_top <= selected);
-        assert!(selected < view.state.scroll_top + ListSelectionView::max_visible_rows(/*len*/ 12));
+        assert!(selected < view.state.scroll_top + view.max_visible_rows(/*len*/ 12));
     }
 
     #[test]
@@ -2816,6 +3136,26 @@ mod tests {
         let content_width: u16 = 120;
         let expected = content_width.saturating_sub(SIDE_CONTENT_GAP) / 2;
         assert_eq!(view.side_layout_width(content_width), Some(expected));
+    }
+
+    #[test]
+    fn side_layout_can_give_remaining_width_to_preview() {
+        assert_eq!(
+            side_by_side_layout_widths(
+                /*content_width*/ 156,
+                SideContentWidth::RemainingAfterList(60),
+                /*side_content_min_width*/ 48,
+            ),
+            Some((60, 94))
+        );
+        assert_eq!(
+            side_by_side_layout_widths(
+                /*content_width*/ 120,
+                SideContentWidth::RemainingAfterList(100),
+                /*side_content_min_width*/ 48,
+            ),
+            Some((70, 48))
+        );
     }
 
     #[test]

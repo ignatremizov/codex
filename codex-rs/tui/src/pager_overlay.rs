@@ -66,14 +66,6 @@ pub(crate) enum Overlay {
 }
 
 impl Overlay {
-    pub(crate) fn new_transcript(cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
-        Self::Transcript(TranscriptOverlay::new(
-            cells,
-            keymap,
-            TranscriptFlavor::HistoricalFullPreview,
-        ))
-    }
-
     pub(crate) fn new_review_transcript(
         cells: Vec<Arc<dyn HistoryCell>>,
         keymap: PagerKeymap,
@@ -82,6 +74,17 @@ impl Overlay {
             cells,
             keymap,
             TranscriptFlavor::LiveReviewBrowser,
+        ))
+    }
+
+    pub(crate) fn new_inspection_transcript(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+    ) -> Self {
+        Self::Transcript(TranscriptOverlay::new(
+            cells,
+            keymap,
+            TranscriptFlavor::InspectionReviewBrowser,
         ))
     }
 
@@ -112,6 +115,14 @@ impl Overlay {
         match self {
             Overlay::Transcript(o) => o.is_done(),
             Overlay::Static(o) => o.is_done(),
+        }
+    }
+
+    /// Returns the transcript that mirrors the displayed thread, excluding fixed inspections.
+    pub(crate) fn active_transcript_mut(&mut self) -> Option<&mut TranscriptOverlay> {
+        match self {
+            Self::Transcript(transcript) if transcript.tracks_active_thread() => Some(transcript),
+            Self::Transcript(_) | Self::Static(_) => None,
         }
     }
 }
@@ -1318,8 +1329,9 @@ impl TranscriptOverlay {
     ///
     /// The overlay owns committed transcript cells while the live tail is derived from the current
     /// active cell, which can mutate in place while streaming. `App` calls this during
-    /// `TuiEvent::Draw` for `Overlay::Transcript`, passing a key that changes when the active cell
-    /// mutates or animates so the cached tail stays fresh.
+    /// `TuiEvent::Draw` for the active-thread transcript, passing a key that changes when the active
+    /// cell mutates or animates so the cached tail stays fresh. Inspection transcripts pass no key
+    /// and remain independent of the displayed thread.
     ///
     /// Passing a key that does not change on in-place active-cell mutations will freeze the tail in
     /// `Ctrl+T` while the main viewport continues to update.
@@ -1803,8 +1815,17 @@ mod tests {
         TranscriptOverlay::new(
             cells,
             default_pager_keymap(),
-            TranscriptFlavor::HistoricalFullPreview,
+            TranscriptFlavor::LiveReviewBrowser,
         )
+    }
+
+    #[test]
+    fn only_active_thread_transcript_accepts_live_history_updates() {
+        let mut active = Overlay::new_review_transcript(Vec::new(), default_pager_keymap());
+        let mut inspection = Overlay::new_inspection_transcript(Vec::new(), default_pager_keymap());
+
+        assert!(active.active_transcript_mut().is_some());
+        assert!(inspection.active_transcript_mut().is_none());
     }
 
     fn static_overlay(lines: Vec<Line<'static>>, title: &str) -> StaticOverlay {
@@ -1872,24 +1893,6 @@ mod tests {
 
         assert_eq!(view.pending_align_chunk_top, None);
         assert_eq!(view.pending_scroll_chunk, Some(0));
-    }
-
-    #[test]
-    fn edit_prev_hint_is_visible() {
-        let mut overlay = transcript_overlay(vec![Arc::new(TestCell {
-            lines: vec![Line::from("hello")],
-        })]);
-
-        // Render into a wide buffer so the footer hints aren't truncated.
-        let area = Rect::new(0, 0, 120, 10);
-        let mut buf = Buffer::empty(area);
-        overlay.render(area, &mut buf);
-
-        let s = buffer_to_text(&buf, area);
-        assert!(
-            s.contains("edit prev"),
-            "expected 'edit prev' hint in overlay footer, got: {s:?}"
-        );
     }
 
     #[test]
