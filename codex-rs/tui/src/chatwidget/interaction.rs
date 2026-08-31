@@ -86,6 +86,10 @@ impl ChatWidget {
             .consume_view_transition_key_event(key_event)
     }
 
+    pub(crate) fn additional_keymap_chord_action(&self) -> Option<crate::keymap::KeymapActionId> {
+        self.bottom_pane.additional_keymap_chord_action()
+    }
+
     #[cfg(test)]
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) -> KeyEventAction {
         self.handle_key_event_with_activation_key(key_event, /*activation_key*/ None)
