@@ -2,6 +2,7 @@ use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::key_hint::KeyBinding;
+use crate::keymap::KeymapActionId;
 use crate::keymap::KeymapContextSet;
 use crate::keymap::ListKeymap;
 use crate::render::renderable::Renderable;
@@ -78,6 +79,12 @@ pub(crate) trait BottomPaneView: Renderable {
     /// Whether this local-only view can continue handling input while disconnected.
     fn accepts_input_when_disconnected(&self) -> bool {
         false
+    }
+
+    /// Return one action from outside the active contexts whose configured
+    /// chord should remain available while this view is open.
+    fn additional_keymap_chord_action(&self) -> Option<KeymapActionId> {
+        None
     }
 
     /// Return `true` if the view has finished and should be removed.
