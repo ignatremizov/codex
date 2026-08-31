@@ -23,12 +23,23 @@ use ratatui::widgets::Widget;
 
 use super::TranscriptOverlay;
 use super::first_or_empty;
-use super::render_key_hints;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TranscriptFlavor {
+    /// Follows the displayed thread and permits prompt rollback.
     LiveReviewBrowser,
-    HistoricalFullPreview,
+    /// Browses a fixed transcript with the same detail/navigation controls but no prompt rollback.
+    InspectionReviewBrowser,
+}
+
+impl TranscriptFlavor {
+    pub(super) fn tracks_active_thread(self) -> bool {
+        self == Self::LiveReviewBrowser
+    }
+
+    pub(super) fn allows_backtrack(self) -> bool {
+        self.tracks_active_thread()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,13 +63,9 @@ pub(super) struct TranscriptBrowserState {
 
 impl TranscriptBrowserState {
     pub(super) fn new(flavor: TranscriptFlavor) -> Self {
-        let detail_mode = match flavor {
-            TranscriptFlavor::LiveReviewBrowser => TranscriptDetailMode::Review,
-            TranscriptFlavor::HistoricalFullPreview => TranscriptDetailMode::Full,
-        };
         Self {
             flavor,
-            detail_mode,
+            detail_mode: TranscriptDetailMode::Review,
             selected_review_target: None,
         }
     }
@@ -72,9 +79,6 @@ impl TranscriptBrowserState {
     }
 
     pub(super) fn toggle_detail_mode(&mut self) {
-        if self.flavor != TranscriptFlavor::LiveReviewBrowser {
-            return;
-        }
         self.detail_mode = match self.detail_mode {
             TranscriptDetailMode::Review => TranscriptDetailMode::Full,
             TranscriptDetailMode::Full => TranscriptDetailMode::Review,
@@ -96,9 +100,6 @@ impl TranscriptBrowserState {
         first_visible_cell: usize,
         direction: TranscriptNavigationDirection,
     ) -> Option<usize> {
-        if self.flavor != TranscriptFlavor::LiveReviewBrowser {
-            return None;
-        }
         let selected = match (self.selected_review_target, direction) {
             (Some(selected), TranscriptNavigationDirection::Previous) => cells
                 .iter()
@@ -208,21 +209,13 @@ fn is_review_navigation_char(key_event: KeyEvent, character: char) -> bool {
 }
 
 pub(super) fn transcript_title(browser: TranscriptBrowserState) -> String {
-    match (browser.flavor(), browser.detail_mode()) {
-        (TranscriptFlavor::HistoricalFullPreview, _) => "T R A N S C R I P T".to_string(),
-        (TranscriptFlavor::LiveReviewBrowser, TranscriptDetailMode::Review) => {
-            "T R A N S C R I P T · R E V I E W".to_string()
-        }
-        (TranscriptFlavor::LiveReviewBrowser, TranscriptDetailMode::Full) => {
-            "T R A N S C R I P T · F U L L".to_string()
-        }
+    match browser.detail_mode() {
+        TranscriptDetailMode::Review => "T R A N S C R I P T · R E V I E W".to_string(),
+        TranscriptDetailMode::Full => "T R A N S C R I P T · F U L L".to_string(),
     }
 }
 
 fn transcript_title_for_width(browser: TranscriptBrowserState, width: u16) -> String {
-    if browser.flavor() == TranscriptFlavor::HistoricalFullPreview {
-        return transcript_title(browser);
-    }
     let candidates = match browser.detail_mode() {
         TranscriptDetailMode::Review => [
             "T R A N S C R I P T · R E V I E W",
@@ -246,6 +239,14 @@ impl TranscriptOverlay {
         self.browser.detail_mode() == TranscriptDetailMode::Review
     }
 
+    pub(crate) fn tracks_active_thread(&self) -> bool {
+        self.browser.flavor().tracks_active_thread()
+    }
+
+    pub(crate) fn allows_backtrack(&self) -> bool {
+        self.browser.flavor().allows_backtrack()
+    }
+
     #[cfg(test)]
     pub(crate) fn selected_review_target(&self) -> Option<usize> {
         self.browser.selected_review_target()
@@ -262,9 +263,6 @@ impl TranscriptOverlay {
     }
 
     fn toggle_detail_mode(&mut self) {
-        if self.browser.flavor() != TranscriptFlavor::LiveReviewBrowser {
-            return;
-        }
         let anchor = self
             .view
             .pending_align_chunk_top
@@ -339,84 +337,54 @@ impl TranscriptOverlay {
                 "to jump",
             ),
         ];
-        if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser {
-            Clear.render(line1, buf);
-            Clear.render(line2, buf);
-            if self.highlight_cell.is_some() {
-                let _ = render_key_hints_fitting(line1, buf, &pager_pairs);
-                let _ = render_key_hints_fitting(
-                    line2,
-                    buf,
-                    &[
-                        (
-                            first_or_empty(&self.view.keymap, "close", &self.view.keymap.close),
-                            "to quit",
-                        ),
-                        (
-                            vec![
-                                key_hint::plain(KeyCode::Esc).into(),
-                                key_hint::plain(KeyCode::Left).into(),
-                            ],
-                            "to edit prev",
-                        ),
-                        (vec![key_hint::plain(KeyCode::Right).into()], "to edit next"),
-                        (
-                            vec![key_hint::plain(KeyCode::Enter).into()],
-                            "to edit message",
-                        ),
-                    ],
-                );
-                return;
-            }
-            let all_browser_hints_fit = render_key_hints_fitting(
+        Clear.render(line1, buf);
+        Clear.render(line2, buf);
+        if self.highlight_cell.is_some() && self.allows_backtrack() {
+            let _ = render_key_hints_fitting(line1, buf, &pager_pairs);
+            let _ = render_key_hints_fitting(
                 line2,
                 buf,
                 &[
                     (
                         first_or_empty(&self.view.keymap, "close", &self.view.keymap.close),
-                        "close",
-                    ),
-                    (vec![key_hint::plain(KeyCode::Char('v')).into()], "detail"),
-                    (
-                        vec![key_hint::plain(KeyCode::Char('[')).into()],
-                        "review prev",
+                        "to quit",
                     ),
                     (
-                        vec![key_hint::plain(KeyCode::Char(']')).into()],
-                        "review next",
+                        vec![
+                            key_hint::plain(KeyCode::Esc).into(),
+                            key_hint::plain(KeyCode::Left).into(),
+                        ],
+                        "to edit prev",
+                    ),
+                    (vec![key_hint::plain(KeyCode::Right).into()], "to edit next"),
+                    (
+                        vec![key_hint::plain(KeyCode::Enter).into()],
+                        "to edit message",
                     ),
                 ],
             );
-            if !all_browser_hints_fit {
-                return;
-            }
-        }
-        if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser {
-            let _ = render_key_hints_fitting(line1, buf, &pager_pairs);
             return;
         }
-        render_key_hints(line1, buf, &pager_pairs);
-        let mut pairs: Vec<(Vec<ShortcutHint>, &str)> = vec![(
-            first_or_empty(&self.view.keymap, "close", &self.view.keymap.close),
-            "to quit",
-        )];
-        if self.highlight_cell.is_some() {
-            pairs.push((
-                vec![
-                    key_hint::plain(KeyCode::Esc).into(),
-                    key_hint::plain(KeyCode::Left).into(),
-                ],
-                "to edit prev",
-            ));
-            pairs.push((vec![key_hint::plain(KeyCode::Right).into()], "to edit next"));
-            pairs.push((
-                vec![key_hint::plain(KeyCode::Enter).into()],
-                "to edit message",
-            ));
-        } else {
-            pairs.push((vec![key_hint::plain(KeyCode::Esc).into()], "to edit prev"));
-        }
-        render_key_hints(line2, buf, &pairs);
+        let _ = render_key_hints_fitting(line1, buf, &pager_pairs);
+        let _ = render_key_hints_fitting(
+            line2,
+            buf,
+            &[
+                (
+                    first_or_empty(&self.view.keymap, "close", &self.view.keymap.close),
+                    "close",
+                ),
+                (vec![key_hint::plain(KeyCode::Char('v')).into()], "detail"),
+                (
+                    vec![key_hint::plain(KeyCode::Char('[')).into()],
+                    "review prev",
+                ),
+                (
+                    vec![key_hint::plain(KeyCode::Char(']')).into()],
+                    "review next",
+                ),
+            ],
+        );
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -458,8 +426,16 @@ impl TranscriptOverlay {
                     self.is_done = true;
                     Ok(())
                 }
-                e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
-                    && self.view.last_content_height.is_none()
+                KeyEvent {
+                    code: KeyCode::Esc,
+                    modifiers: KeyModifiers::NONE,
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } if self.browser.flavor() == TranscriptFlavor::InspectionReviewBrowser => {
+                    self.is_done = true;
+                    Ok(())
+                }
+                e if self.view.last_content_height.is_none()
                     && (is_plain_char(e, 'v')
                         || is_review_navigation_char(e, '[')
                         || is_review_navigation_char(e, ']')) =>
@@ -467,23 +443,17 @@ impl TranscriptOverlay {
                     tui.frame_requester().schedule_frame();
                     Ok(())
                 }
-                e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
-                    && is_plain_char(e, 'v') =>
-                {
+                e if is_plain_char(e, 'v') => {
                     self.toggle_detail_mode();
                     tui.frame_requester().schedule_frame();
                     Ok(())
                 }
-                e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
-                    && is_review_navigation_char(e, '[') =>
-                {
+                e if is_review_navigation_char(e, '[') => {
                     self.navigate_review_target(TranscriptNavigationDirection::Previous);
                     tui.frame_requester().schedule_frame();
                     Ok(())
                 }
-                e if self.browser.flavor() == TranscriptFlavor::LiveReviewBrowser
-                    && is_review_navigation_char(e, ']') =>
-                {
+                e if is_review_navigation_char(e, ']') => {
                     self.navigate_review_target(TranscriptNavigationDirection::Next);
                     tui.frame_requester().schedule_frame();
                     Ok(())

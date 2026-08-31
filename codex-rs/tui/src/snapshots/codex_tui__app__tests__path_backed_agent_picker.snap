@@ -11,12 +11,8 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
 
   /root/worker
   running · ref 2
-
-  UUID
-  00000000-0000-0000-0000-000000000123
-
-  Path
-  /root/worker
+  UUID: 00000000-0000-0000-0000-000000000123
+  Path: /root/worker
 
   Response: wake · current turn
   Commentary: none
@@ -24,7 +20,7 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Children: 0
   Approval: pending
 
-  Enter opens this thread
 
-  Tab opens controls for the selected agent.
+
+  ctrl + t inspects transcript · Tab opens controls.
   Press enter to confirm or esc to go back

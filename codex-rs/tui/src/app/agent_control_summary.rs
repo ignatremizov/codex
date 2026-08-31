@@ -1,9 +1,12 @@
 //! Canonical thread-state summaries for the `/agent` Overview pane.
 
+use std::collections::HashMap;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use codex_app_server_protocol::CollabAgentTool;
+use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserAgentControlAction;
@@ -16,7 +19,11 @@ use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use super::ThreadBufferedEvent;
 use super::ThreadEventStore;
 use super::agent_preview::compact_agent_preview;
+use super::agent_preview::detailed_agent_preview;
 use crate::chatwidget::ChatWidget;
+use crate::multi_agents::SpawnRequestSummary;
+use crate::multi_agents::parse_thread_id;
+use crate::multi_agents::spawn_request_summary;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct AgentControlSummary {
@@ -33,6 +40,12 @@ pub(super) enum AgentTerminalOutcome {
     Completed,
     Interrupted,
     Errored,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct SpawnedAgentSettings {
+    pub(super) fork_mode: Option<UserAgentForkMode>,
+    pub(super) model_settings: Option<SpawnRequestSummary>,
 }
 
 impl AgentTerminalOutcome {
@@ -66,7 +79,7 @@ impl AgentControlSummary {
             ThreadItem::AgentMessage { id, text, .. }
                 if sub_agent_completion_status_from_response_item_id(id).is_none() =>
             {
-                compact_agent_preview(text)
+                detailed_agent_preview(text)
             }
             _ => None,
         });
@@ -84,23 +97,54 @@ impl AgentControlSummary {
     }
 }
 
-pub(super) fn spawned_agent_fork_modes(
+pub(super) fn spawned_agent_settings(
     store: &ThreadEventStore,
-) -> Vec<(ThreadId, UserAgentForkMode)> {
-    thread_items_newest_first(store)
-        .filter_map(|item| match item {
+) -> HashMap<ThreadId, SpawnedAgentSettings> {
+    let mut settings: HashMap<ThreadId, SpawnedAgentSettings> = HashMap::new();
+    for item in thread_items_newest_first(store) {
+        match item {
+            ThreadItem::CollabAgentToolCall {
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                receiver_thread_ids,
+                ..
+            } => {
+                let Some(spawn_request) = spawn_request_summary(item) else {
+                    continue;
+                };
+                for thread_id in receiver_thread_ids
+                    .iter()
+                    .filter_map(|id| parse_thread_id(id))
+                {
+                    settings
+                        .entry(thread_id)
+                        .or_default()
+                        .model_settings
+                        .get_or_insert_with(|| spawn_request.clone());
+                }
+            }
             ThreadItem::UserAgentControl {
                 action: UserAgentControlAction::Spawn,
-                target_thread_id: Some(target_thread_id),
-                fork_mode: Some(fork_mode),
+                target_thread_id: Some(thread_id),
+                fork_mode,
                 status: UserAgentControlStatus::Succeeded,
                 ..
-            } => ThreadId::from_string(target_thread_id)
-                .ok()
-                .map(|target_thread_id| (target_thread_id, *fork_mode)),
-            _ => None,
-        })
-        .collect()
+            } => {
+                let Some(thread_id) = parse_thread_id(thread_id) else {
+                    continue;
+                };
+                let agent_settings = settings.entry(thread_id).or_default();
+                if agent_settings.fork_mode.is_none() {
+                    agent_settings.fork_mode = *fork_mode;
+                }
+                if agent_settings.model_settings.is_none() {
+                    agent_settings.model_settings = spawn_request_summary(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    settings
 }
 
 fn active_turn_elapsed(store: &ThreadEventStore) -> Option<Duration> {

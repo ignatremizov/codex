@@ -1081,7 +1081,7 @@ impl PickerState {
         else {
             return;
         };
-        self.overlay = Some(Overlay::new_transcript(
+        self.overlay = Some(Overlay::new_inspection_transcript(
             cells.clone(),
             self.pager_keymap.clone(),
         ));

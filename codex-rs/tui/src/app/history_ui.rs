@@ -23,7 +23,11 @@ pub(super) struct ThreadUsageStatusHistory {
 impl App {
     pub(super) fn insert_history_cell(&mut self, tui: &mut tui::Tui, cell: Box<dyn HistoryCell>) {
         let cell: Arc<dyn HistoryCell> = cell.into();
-        if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+        if let Some(t) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             t.insert_cell(cell.clone());
             tui.frame_requester().schedule_frame();
         }

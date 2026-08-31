@@ -91,6 +91,9 @@ impl CollabAgentHistoryCell {
         if metadata.agent_role.is_some() {
             agent_title.metadata.agent_role = metadata.agent_role;
         }
+        if metadata.spawn_request.is_some() {
+            agent_title.metadata.spawn_request = metadata.spawn_request;
+        }
         let title = agent_title.render();
         (title != self.title).then(|| Self {
             title,
@@ -270,6 +273,8 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Known model settings captured when this agent was spawned.
+    pub(crate) spawn_request: Option<SpawnRequestSummary>,
 }
 
 #[derive(Clone, Copy)]
@@ -277,12 +282,13 @@ struct AgentLabel<'a> {
     thread_id: Option<ThreadId>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
+    spawn_request: Option<&'a SpawnRequestSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SpawnRequestSummary {
-    pub(crate) model: String,
-    pub(crate) reasoning_effort: ReasoningEffortConfig,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -409,10 +415,20 @@ pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSum
     match item {
         ThreadItem::CollabAgentToolCall {
             tool: CollabAgentTool::SpawnAgent,
-            model: Some(model),
-            reasoning_effort: Some(reasoning_effort),
+            model,
+            reasoning_effort,
             ..
-        } => Some(SpawnRequestSummary {
+        } => (model.is_some() || reasoning_effort.is_some()).then(|| SpawnRequestSummary {
+            model: model.clone(),
+            reasoning_effort: reasoning_effort.clone(),
+        }),
+        ThreadItem::UserAgentControl {
+            action: codex_app_server_protocol::UserAgentControlAction::Spawn,
+            model,
+            reasoning_effort,
+            status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
+            ..
+        } => (model.is_some() || reasoning_effort.is_some()).then(|| SpawnRequestSummary {
             model: model.clone(),
             reasoning_effort: reasoning_effort.clone(),
         }),
@@ -801,8 +817,8 @@ fn title_with_agent(
     spawn_request: Option<&SpawnRequestSummary>,
 ) -> Line<'static> {
     let mut spans = vec![Span::from(format!("{prefix} ")).bold()];
-    spans.extend(agent_label_spans(agent));
-    spans.extend(spawn_request_spans(spawn_request));
+    spans.extend(agent_identity_spans(agent));
+    spans.extend(spawn_request_spans(spawn_request.or(agent.spawn_request)));
     title_spans_line(spans)
 }
 
@@ -889,6 +905,7 @@ fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> 
         thread_id: Some(thread_id),
         nickname: metadata.agent_nickname.as_deref(),
         role: metadata.agent_role.as_deref(),
+        spawn_request: metadata.spawn_request.as_ref(),
     }
 }
 
@@ -902,16 +919,26 @@ fn agent_label_plain(agent: AgentLabel<'_>) -> String {
         .map(str::trim)
         .filter(|nickname| !nickname.is_empty());
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
-    match (nickname, role, agent.thread_id) {
+    let identity = match (nickname, role, agent.thread_id) {
         (Some(nickname), Some(role), _) => format!("{nickname} [{role}]"),
         (Some(nickname), None, _) => nickname.to_string(),
         (None, Some(role), _) => format!("[{role}]"),
         (None, None, Some(thread_id)) => thread_id.to_string(),
         (None, None, None) => "agent".to_string(),
+    };
+    match spawn_request_label(agent.spawn_request) {
+        Some(settings) => format!("{identity} {settings}"),
+        None => identity,
     }
 }
 
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
+    let mut spans = agent_identity_spans(agent);
+    spans.extend(spawn_request_spans(agent.spawn_request));
+    spans
+}
+
+fn agent_identity_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let nickname = agent
         .nickname
@@ -936,22 +963,24 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
 }
 
 fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<'static>> {
-    let Some(spawn_request) = spawn_request else {
-        return Vec::new();
-    };
+    spawn_request_label(spawn_request)
+        .map(|details| vec![Span::from(" ").dim(), Span::from(details).magenta()])
+        .unwrap_or_default()
+}
 
-    let model = spawn_request.model.trim();
-    if model.is_empty() && spawn_request.reasoning_effort == ReasoningEffortConfig::default() {
-        return Vec::new();
+fn spawn_request_label(spawn_request: Option<&SpawnRequestSummary>) -> Option<String> {
+    let spawn_request = spawn_request?;
+    let model = spawn_request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    match (model, spawn_request.reasoning_effort.as_ref()) {
+        (Some(model), Some(reasoning_effort)) => Some(format!("({model} {reasoning_effort})")),
+        (Some(model), None) => Some(format!("({model})")),
+        (None, Some(reasoning_effort)) => Some(format!("({reasoning_effort})")),
+        (None, None) => None,
     }
-
-    let details = if model.is_empty() {
-        format!("({})", spawn_request.reasoning_effort)
-    } else {
-        format!("({model} {})", spawn_request.reasoning_effort)
-    };
-
-    vec![Span::from(" ").dim(), Span::from(details).magenta()]
 }
 
 fn prompt_lines(prompt: &str, agent_prompt_preview_lines: usize) -> Vec<CollabDetail> {
@@ -1235,6 +1264,24 @@ mod tests {
                 agent_path: "/root/child".to_string(),
                 is_running_hint: false,
             })
+        );
+    }
+
+    #[test]
+    fn spawn_request_labels_preserve_partial_model_settings() {
+        assert_eq!(
+            spawn_request_label(Some(&SpawnRequestSummary {
+                model: Some("gpt-5.6-luna".to_string()),
+                reasoning_effort: None,
+            })),
+            Some("(gpt-5.6-luna)".to_string())
+        );
+        assert_eq!(
+            spawn_request_label(Some(&SpawnRequestSummary {
+                model: None,
+                reasoning_effort: Some(ReasoningEffortConfig::Max),
+            })),
+            Some("(max)".to_string())
         );
     }
 
@@ -1526,13 +1573,13 @@ mod tests {
             snapshot,
             @r###"
         • Finished waiting
-          └ Robie [explorer]: Completed
+          └ Robie [explorer] (gpt-5 high): Completed
               first line
                 indented line
               last line
 
         • Finished waiting
-          └ Robie [explorer]: Completed
+          └ Robie [explorer] (gpt-5 high): Completed
               first line
               … +2 rows hidden
         "###
@@ -1841,11 +1888,19 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                spawn_request: Some(SpawnRequestSummary {
+                    model: Some("gpt-5".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::High),
+                }),
             }
         } else if thread_id == bob_id {
             AgentMetadata {
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),
+                spawn_request: Some(SpawnRequestSummary {
+                    model: Some("gpt-5-mini".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                }),
             }
         } else {
             AgentMetadata::default()

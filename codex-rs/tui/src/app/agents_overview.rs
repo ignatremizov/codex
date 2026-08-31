@@ -341,6 +341,7 @@ impl App {
                     path: target_thread.path.clone(),
                     thread_id: root_thread_id,
                     history_mode: Some(target_thread.history_mode),
+                    source_rollout_path: None,
                 };
                 match self
                     .resume_config_for_target(tui, app_server, &target_session)
@@ -691,10 +692,19 @@ impl App {
                     .await?;
                 let turns = match thread.history_mode {
                     ThreadHistoryMode::Paginated if app_server.supports_paginated_history() => {
-                        app_server
+                        match app_server
                             .thread_turns_page(thread_id, /*cursor*/ None)
-                            .await?
-                            .data
+                            .await
+                        {
+                            Ok(page) => page.data,
+                            Err(_) if !app_server.supports_paginated_history() => {
+                                app_server
+                                    .thread_read(thread_id, /*include_turns*/ true)
+                                    .await?
+                                    .turns
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                     ThreadHistoryMode::Legacy | ThreadHistoryMode::Paginated => {
                         app_server

@@ -285,7 +285,9 @@ fn extend_collab_agent_metadata<'a>(
     for item in items {
         match item {
             ThreadItem::CollabAgentToolCall {
-                receiver_agents, ..
+                receiver_thread_ids,
+                receiver_agents,
+                ..
             } => {
                 for receiver in receiver_agents {
                     let Some(thread_id) = parse_thread_id(&receiver.thread_id) else {
@@ -297,6 +299,15 @@ fn extend_collab_agent_metadata<'a>(
                     }
                     if receiver.agent_role.is_some() {
                         metadata.agent_role = receiver.agent_role.clone();
+                    }
+                }
+                if let Some(spawn_request) = crate::multi_agents::spawn_request_summary(item) {
+                    for receiver_thread_id in receiver_thread_ids {
+                        let Some(thread_id) = parse_thread_id(receiver_thread_id) else {
+                            continue;
+                        };
+                        metadata.entry(thread_id).or_default().spawn_request =
+                            Some(spawn_request.clone());
                     }
                 }
             }
@@ -315,6 +326,9 @@ fn extend_collab_agent_metadata<'a>(
                 }
                 if role.is_some() {
                     metadata.agent_role = role.clone();
+                }
+                if let Some(spawn_request) = crate::multi_agents::spawn_request_summary(item) {
+                    metadata.spawn_request = Some(spawn_request);
                 }
             }
             _ => {}

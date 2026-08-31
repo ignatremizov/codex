@@ -1010,13 +1010,44 @@ impl ChatWidget {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) {
-        self.collab_agent_metadata.insert(
+        let metadata = self.collab_agent_metadata.entry(thread_id).or_default();
+        metadata.agent_nickname = agent_nickname;
+        metadata.agent_role = agent_role;
+    }
+
+    pub(crate) fn set_collab_agent_spawn_request(
+        &mut self,
+        thread_id: ThreadId,
+        spawn_request: crate::multi_agents::SpawnRequestSummary,
+    ) {
+        self.collab_agent_metadata
+            .entry(thread_id)
+            .or_default()
+            .spawn_request = Some(spawn_request);
+    }
+
+    fn remember_user_agent_control_metadata(&mut self, item: &ThreadItem) {
+        let ThreadItem::UserAgentControl {
+            target_thread_id: Some(target_thread_id),
+            nickname,
+            role,
+            ..
+        } = item
+        else {
+            return;
+        };
+        let Some(thread_id) = crate::multi_agents::parse_thread_id(target_thread_id) else {
+            return;
+        };
+        let previous = self.collab_agent_metadata(thread_id);
+        self.set_collab_agent_metadata(
             thread_id,
-            AgentMetadata {
-                agent_nickname,
-                agent_role,
-            },
+            nickname.clone().or(previous.agent_nickname),
+            role.clone().or(previous.agent_role),
         );
+        if let Some(spawn_request) = crate::multi_agents::spawn_request_summary(item) {
+            self.set_collab_agent_spawn_request(thread_id, spawn_request);
+        }
     }
 
     /// Registers the primary thread under the same stable label used by the agent picker.

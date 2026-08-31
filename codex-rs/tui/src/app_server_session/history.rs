@@ -9,6 +9,7 @@ use crate::resize_reflow_cap::resize_reflow_max_rows;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::collab_agent_metadata_from_items;
 use crate::thread_transcript::thread_items_to_transcript_cells_with_metadata;
+use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread;
@@ -137,7 +138,8 @@ impl AppServerSession {
         cursor: Option<String>,
     ) -> Result<ThreadTurnsListResponse> {
         let request_id = self.next_request_id();
-        self.client
+        let response = self
+            .client
             .request_typed(ClientRequest::ThreadTurnsList {
                 request_id,
                 params: ThreadTurnsListParams {
@@ -148,8 +150,15 @@ impl AppServerSession {
                     items_view: Some(TurnItemsView::NotLoaded),
                 },
             })
-            .await
-            .wrap_err("failed to load a bounded thread history page")
+            .await;
+        if matches!(
+            &response,
+            Err(TypedRequestError::Server { source, .. })
+                if super::is_history_pagination_unsupported(source)
+        ) {
+            self.history_support = super::ThreadHistorySupport::LegacyOnly;
+        }
+        response.wrap_err("failed to load a bounded thread history page")
     }
 
     async fn merge_thread_item_page(

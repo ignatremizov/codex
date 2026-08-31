@@ -4,7 +4,9 @@ use super::Result;
 use super::RuntimeKeymap;
 use super::TuiEvent;
 use super::make_test_app;
+use super::make_test_app_with_channels;
 use super::start_config_write_test_app_server;
+use crate::app_event::AppEvent;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
@@ -112,6 +114,66 @@ async fn completed_global_chord_reuses_the_existing_action_handler() -> Result<(
     press(&mut app, &mut tui, &mut app_server, ctrl('t')).await?;
     assert!(!app.key_chord_matcher.is_pending());
     assert!(app.overlay.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn tab_transcript_chord_inspects_agent_without_opening_controls() -> Result<()> {
+    let (mut app, mut app_events, _op_rx) = make_test_app_with_channels().await;
+    let main_thread_id =
+        codex_protocol::ThreadId::from_string("00000000-0000-0000-0000-000000000001")?;
+    let child_thread_id =
+        codex_protocol::ThreadId::from_string("00000000-0000-0000-0000-000000000002")?;
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("Hume".to_string()),
+        Some("reviewer".to_string()),
+        /*is_closed*/ false,
+    );
+
+    let mut config = TuiKeymap::default();
+    config.global.open_transcript = Some(KeybindingsSpec::One(KeybindingSpec(
+        "tab ctrl-t".to_string(),
+    )));
+    config.composer.queue = Some(KeybindingsSpec::Many(Vec::new()));
+    let runtime =
+        RuntimeKeymap::from_config(&config).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    app.chat_widget.apply_keymap_update(config, &runtime);
+    app.keymap = runtime;
+
+    let params = app.agent_picker_selection_view_params(/*selected*/ Some(1));
+    assert_eq!(
+        params.footer_note.as_ref().map(ToString::to_string),
+        Some("tab ctrl + t inspects transcript.".to_string())
+    );
+    app.chat_widget.show_selection_view(params);
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    assert_eq!(
+        app.route_key_chord_event(&mut tui, KeyCode::Tab.into()),
+        None
+    );
+    let dispatch_event = app
+        .route_key_chord_event(&mut tui, ctrl('t'))
+        .expect("second stroke should produce the transcript dispatch token");
+    app.chat_widget.handle_key_event(dispatch_event);
+
+    assert!(matches!(
+        app_events.try_recv(),
+        Ok(AppEvent::InspectAgentTranscript(thread_id)) if thread_id == child_thread_id
+    ));
+    assert!(
+        app_events.try_recv().is_err(),
+        "the Tab controls action must not also fire"
+    );
     Ok(())
 }
 

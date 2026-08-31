@@ -331,8 +331,8 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
             agent_role: Some("explorer".to_string()),
         }],
         prompt: Some("Inspect the change.".to_string()),
-        model: None,
-        reasoning_effort: None,
+        model: Some("gpt-5.6-sol".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
         agents_states: HashMap::new(),
     };
     let mut cells = thread_items_to_transcript_cells(
@@ -383,7 +383,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Robie II [explorer] completed (● visible):
+    • Robie II [explorer] (gpt-5.6-sol high) completed (● visible):
       └ Finished the split-page review.
     "
     );

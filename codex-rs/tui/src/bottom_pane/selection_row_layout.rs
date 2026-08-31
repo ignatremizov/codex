@@ -100,12 +100,12 @@ fn build_name_spans(row: &GenericDisplayRow, name_limit: usize) -> Vec<Span<'sta
             char_idx += 1;
         }
 
-        let grapheme = grapheme.to_string();
-        name_spans.push(if matched {
-            grapheme.bold()
+        let style = if matched {
+            row.name_style.bold()
         } else {
-            grapheme.into()
-        });
+            row.name_style
+        };
+        name_spans.push(Span::styled(grapheme.to_string(), style));
     }
 
     if truncated {

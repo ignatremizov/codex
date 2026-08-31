@@ -119,7 +119,11 @@ impl App {
         ) {
             return;
         }
-        if let Some(Overlay::Transcript(transcript)) = &mut self.overlay {
+        if let Some(transcript) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             transcript.replace_cells(self.transcript_cells.clone());
         }
     }
@@ -137,6 +141,7 @@ impl App {
     ) -> Result<bool> {
         if let TuiEvent::Key(key_event) = &event
             && let Some(Overlay::Transcript(overlay)) = self.overlay.as_ref()
+            && overlay.tracks_active_thread()
             && (overlay.should_load_older(*key_event)
                 || (self.backtrack.overlay_preview_active
                     && self.backtrack.nth_user_message == 0
@@ -146,7 +151,11 @@ impl App {
             && app_server.has_older_history(thread_id)
             && self.request_older_history_page(app_server, thread_id)
         {
-            if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+            if let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+            {
                 overlay.set_history_state(if overlay.should_load_from_start(*key_event) {
                     TranscriptHistoryState::LoadingBeginning
                 } else {
@@ -209,6 +218,9 @@ impl App {
             kind: KeyEventKind::Press | KeyEventKind::Repeat,
             ..
         }) = event
+            && self.overlay.as_ref().is_some_and(
+                |overlay| matches!(overlay, Overlay::Transcript(overlay) if overlay.allows_backtrack()),
+            )
         {
             // First Esc in transcript overlay: begin backtrack preview at latest user message.
             self.begin_overlay_backtrack_preview(tui);
@@ -463,8 +475,9 @@ impl App {
 
     /// Forwards an event to the overlay and closes it if done.
     ///
-    /// The transcript overlay draw path is special because the overlay should match the main
-    /// viewport while the active cell is still streaming or mutating.
+    /// The active-thread transcript draw path is special because it should match the main viewport
+    /// while the active cell is still streaming or mutating. Inspection overlays pass no live-tail
+    /// key and remain fixed to the thread history that was loaded for inspection.
     ///
     /// `TranscriptOverlay` owns committed transcript cells, while `ChatWidget` owns the current
     /// in-flight active cell (often a coalesced exec/tool group). During draws we append that
@@ -480,7 +493,10 @@ impl App {
             TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
         ) && let Some(Overlay::Transcript(t)) = &mut self.overlay
         {
-            let active_key = self.chat_widget.active_cell_transcript_key();
+            let active_key = t
+                .tracks_active_thread()
+                .then(|| self.chat_widget.active_cell_transcript_key())
+                .flatten();
             let review_mode = t.is_review_mode();
             let chat_widget = &self.chat_widget;
             tui.draw(u16::MAX, |frame| {
@@ -684,7 +700,11 @@ impl App {
 
     /// Keep transcript-related UI state aligned after `transcript_cells` was trimmed.
     fn sync_overlay_after_transcript_trim(&mut self) {
-        if let Some(Overlay::Transcript(transcript)) = &mut self.overlay {
+        if let Some(transcript) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             transcript.replace_cells(self.transcript_cells.clone());
         }
         if self.backtrack.overlay_preview_active {

@@ -227,6 +227,7 @@ pub(crate) enum KeyChordMatch {
 struct PendingChord {
     prefix: KeyBinding,
     contexts: KeymapContextSet,
+    additional_action: Option<KeymapActionId>,
     started_at: Instant,
 }
 
@@ -245,9 +246,15 @@ impl KeyChordMatcher {
         self.pending.take().is_some()
     }
 
-    pub(crate) fn expire(&mut self, contexts: KeymapContextSet, now: Instant) -> bool {
+    pub(crate) fn expire_with_additional_action(
+        &mut self,
+        contexts: KeymapContextSet,
+        additional_action: Option<KeymapActionId>,
+        now: Instant,
+    ) -> bool {
         if self.pending.is_some_and(|pending| {
             pending.contexts != contexts
+                || pending.additional_action != additional_action
                 || now.saturating_duration_since(pending.started_at) >= KEY_CHORD_TIMEOUT
         }) {
             self.pending = None;
@@ -263,11 +270,24 @@ impl KeyChordMatcher {
         contexts: KeymapContextSet,
         now: Instant,
     ) -> KeyChordMatch {
+        self.advance_with_additional_action(
+            key_event, keymap, contexts, /*additional_action*/ None, now,
+        )
+    }
+
+    pub(crate) fn advance_with_additional_action(
+        &mut self,
+        key_event: KeyEvent,
+        keymap: &RuntimeChordKeymap,
+        contexts: KeymapContextSet,
+        additional_action: Option<KeymapActionId>,
+        now: Instant,
+    ) -> KeyChordMatch {
         if is_dispatch_token_event(key_event) {
             return KeyChordMatch::Ignored;
         }
 
-        self.expire(contexts, now);
+        self.expire_with_additional_action(contexts, additional_action, now);
 
         if self.pending.is_some() && key_event.kind != KeyEventKind::Press {
             return KeyChordMatch::Ignored;
@@ -281,7 +301,8 @@ impl KeyChordMatcher {
                 return KeyChordMatch::Cancelled;
             }
             if let Some(binding) = keymap.bindings.iter().find(|binding| {
-                contexts.contains(binding.action.context)
+                (contexts.contains(binding.action.context)
+                    || additional_action == Some(binding.action))
                     && binding.chord.prefix == pending.prefix
                     && chord_stroke_matches(binding.chord.completion, key_event)
             }) {
@@ -296,7 +317,8 @@ impl KeyChordMatcher {
             .bindings
             .iter()
             .find(|binding| {
-                contexts.contains(binding.action.context)
+                (contexts.contains(binding.action.context)
+                    || additional_action == Some(binding.action))
                     && chord_stroke_matches(binding.chord.prefix, key_event)
             })
             .map(|binding| binding.chord.prefix)
@@ -304,6 +326,7 @@ impl KeyChordMatcher {
             self.pending = Some(PendingChord {
                 prefix,
                 contexts,
+                additional_action,
                 started_at: now,
             });
             return KeyChordMatch::Pending(prefix);
@@ -411,7 +434,7 @@ pub(super) fn validate_chord_conflicts(keymap: &RuntimeKeymap) -> Result<(), Str
         validate_reserved_strokes(binding)?;
 
         if let Some(conflict) = runtime_action_bindings(keymap)
-            .filter(|candidate| binding.action.context.overlaps(candidate.id.context))
+            .filter(|candidate| actions_can_share_input_path(binding.action, candidate.id))
             .find(|candidate| {
                 candidate.bindings.iter().any(|single| {
                     normalize_chord_binding(*single).parts() == binding.chord.prefix.parts()
@@ -429,7 +452,7 @@ Unbind or remap the existing shortcut before using it as a chord prefix.",
 
         for previous in &keymap.chords.bindings[..index] {
             if previous.action != binding.action
-                && previous.action.context.overlaps(binding.action.context)
+                && actions_can_share_input_path(previous.action, binding.action)
                 && previous.chord == binding.chord
             {
                 return Err(format!(
@@ -444,6 +467,16 @@ Choose a unique chord and retry.",
     }
 
     Ok(())
+}
+
+fn actions_can_share_input_path(left: KeymapActionId, right: KeymapActionId) -> bool {
+    left.context.overlaps(right.context)
+        || is_agent_picker_transcript_action(left) && right.context == KeymapContext::List
+        || is_agent_picker_transcript_action(right) && left.context == KeymapContext::List
+}
+
+fn is_agent_picker_transcript_action(action: KeymapActionId) -> bool {
+    action.context == KeymapContext::Global && action.action == "open_transcript"
 }
 
 fn validate_binding_shape(binding: &RuntimeChordBinding) -> Result<(), String> {

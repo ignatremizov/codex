@@ -89,15 +89,6 @@ fn row_text(buffer: &Buffer, area: Rect, y: u16) -> String {
 }
 
 #[test]
-fn historical_preview_stays_full() {
-    let mut state = TranscriptBrowserState::new(TranscriptFlavor::HistoricalFullPreview);
-
-    state.toggle_detail_mode();
-
-    assert_eq!(TranscriptDetailMode::Full, state.detail_mode());
-}
-
-#[test]
 fn live_browser_toggles_detail_mode() {
     let mut state = TranscriptBrowserState::new(TranscriptFlavor::LiveReviewBrowser);
 
@@ -105,6 +96,22 @@ fn live_browser_toggles_detail_mode() {
     assert_eq!(TranscriptDetailMode::Full, state.detail_mode());
     state.toggle_detail_mode();
     assert_eq!(TranscriptDetailMode::Review, state.detail_mode());
+}
+
+#[test]
+fn inspection_browser_matches_review_navigation_without_active_thread_controls() {
+    let cells = review_cells();
+    let mut state = TranscriptBrowserState::new(TranscriptFlavor::InspectionReviewBrowser);
+
+    assert_eq!(TranscriptDetailMode::Review, state.detail_mode());
+    assert_eq!(
+        Some(0),
+        state.select_review_target(&cells, 0, TranscriptNavigationDirection::Next)
+    );
+    state.toggle_detail_mode();
+    assert_eq!(TranscriptDetailMode::Full, state.detail_mode());
+    assert!(!state.flavor().tracks_active_thread());
+    assert!(!state.flavor().allows_backtrack());
 }
 
 #[test]
@@ -132,6 +139,47 @@ fn review_navigation_visits_turn_boundaries_commentary_and_patches() {
         Some(3),
         state.select_review_target(&cells, 0, TranscriptNavigationDirection::Previous)
     );
+}
+
+#[tokio::test]
+async fn inspection_overlay_supports_review_controls_and_escape_close() {
+    let mut overlay = TranscriptOverlay::new(
+        review_cells(),
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::InspectionReviewBrowser,
+    );
+    let area = Rect::new(0, 0, 80, 10);
+    let mut buffer = Buffer::empty(area);
+    overlay.render(area, &mut buffer);
+
+    assert_snapshot!(
+        format!(
+            "{}\n{}\n{}",
+            overlay.view.title,
+            row_text(&buffer, area, area.bottom() - 3),
+            row_text(&buffer, area, area.bottom() - 2)
+        ),
+        @r"
+    T R A N S C R I P T · R E V I E W
+     ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+     q close   v detail   [ review prev   ] review next"
+    );
+
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE)),
+        )
+        .expect("navigate review targets");
+    assert_eq!(Some(0), overlay.selected_review_target());
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        )
+        .expect("close inspection");
+    assert!(overlay.is_done());
 }
 
 #[test]

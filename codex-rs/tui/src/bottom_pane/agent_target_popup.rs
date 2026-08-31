@@ -180,6 +180,7 @@ impl AgentTargetPopup {
                 .then(|| (0..query_len).collect());
                 GenericDisplayRow {
                     name: target.selector,
+                    name_style: Default::default(),
                     name_prefix_spans: Vec::new(),
                     match_indices,
                     display_shortcut: None,

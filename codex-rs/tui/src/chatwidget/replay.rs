@@ -341,6 +341,7 @@ impl ChatWidget {
             ),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             item @ ThreadItem::UserAgentControl { .. } => {
+                self.remember_user_agent_control_metadata(&item);
                 if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
                     self.add_boxed_history(Box::new(cell));
                 }

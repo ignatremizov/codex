@@ -144,9 +144,20 @@ impl ChatWidget {
                 receiver.agent_role.clone().or(previous.agent_role),
             );
         }
-        if matches!(tool, CollabAgentTool::SpawnAgent)
-            && let Some(spawn_request) = multi_agents::spawn_request_summary(&item)
-        {
+        let spawn_request = if matches!(tool, CollabAgentTool::SpawnAgent) {
+            multi_agents::spawn_request_summary(&item)
+        } else {
+            None
+        };
+        if let Some(spawn_request) = spawn_request.as_ref() {
+            for receiver_thread_id in receiver_thread_ids {
+                let Some(thread_id) = multi_agents::parse_thread_id(receiver_thread_id) else {
+                    continue;
+                };
+                self.set_collab_agent_spawn_request(thread_id, spawn_request.clone());
+            }
+        }
+        if let Some(spawn_request) = spawn_request {
             self.pending_collab_spawn_requests
                 .insert(id.clone(), spawn_request);
         }

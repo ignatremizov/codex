@@ -166,7 +166,6 @@ async fn start_recording_app_server_with_history(
         let mut inventories = usize::from(failed_thread_name == Some("background"));
         let mut reject_detach = false;
         let mut reject_thread_list = history_capabilities == HistoryCapabilities::ThreadListFails;
-        let mut queued_prompt_attempts = HashMap::<String, usize>::new();
         while let Some(frame) = websocket.next().await {
             let Message::Text(text) = frame? else {
                 continue;
@@ -4036,7 +4035,8 @@ async fn agents_overview_seeds_loaded_threads_when_recent_listing_is_unavailable
 }
 
 #[tokio::test]
-async fn agents_overview_stop_uses_full_history_after_legacy_negotiation() -> Result<()> {
+async fn agents_overview_stop_falls_back_to_full_history_when_pagination_is_unsupported()
+-> Result<()> {
     let (mut app, _codex_home) = make_history_test_app().await?;
     let thread_id = create_history_rollout(
         &app.config,
@@ -4061,7 +4061,10 @@ async fn agents_overview_stop_uses_full_history_after_legacy_negotiation() -> Re
         .map(|params| params["includeTurns"].as_bool().unwrap_or(false))
         .collect::<Vec<_>>();
     assert_eq!(include_turns, vec![false, true]);
-    assert!(recorded_params(&requests, "thread/turns/list").is_empty());
+    assert_eq!(
+        recorded_params(&requests, "thread/turns/list").len(),
+        /*expected*/ 1
+    );
 
     app_server.shutdown().await?;
     proxy.await??;
@@ -5193,38 +5196,34 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                 futures::FutureExt::now_or_never(app.open_agent_picker(&mut app_server))
                     .expect("opening the agent picker waited for the app server");
                 drop(child_store_guard);
+                let current_model = app.chat_widget.current_model().to_string();
                 insta::assert_snapshot!(
                     render_bottom_popup(&app.chat_widget, /*width*/ 80)
                         .replace(&root_thread_id.to_string(), "[root]")
-                        .replace(&child_thread_id.to_string(), "[child]"),
+                        .replace(&child_thread_id.to_string(), "[child]")
+                        .replace(&current_model, "[model]"),
                     @r###"
                       Agents
                       Select an agent to watch. ⌥ + ← previous, ⌥ + → next.
 
                       Filter by ref, name, role, path, or UUID
-                    › 1 • Main [default] (current)  [root] ·
-                                                    completed
-                      2 ↳ • worker [worker]         [child] · idle
+                    › 1 • Main [default]     [root] · completed
+                      2 ↳ • worker [worker]  [child] · idle
 
                       Main [default]
                       completed · ref 1
+                      UUID: [root]
+                      Model: [model]
 
-                      UUID
-                      [root]
-
-                      Nickname
-                      Main
-
-                      Model: gpt-5.6-sol
                       Task: Saved user message
 
                       Response: none
                       Queued: 0
                       Children: 1
 
-                      Enter opens this thread
 
-                      Tab opens controls for the selected agent.
+
+                      ctrl + t inspects transcript · Tab opens controls.
                       Press enter to confirm or esc to go back
                     "###
                 );

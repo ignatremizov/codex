@@ -177,12 +177,9 @@ impl StatusIndicatorWidget {
     }
 
     fn countdown_remaining_seconds_at(&self, now: Instant) -> Option<u64> {
-        self.countdown_deadline.and_then(|deadline| {
-            if deadline <= now {
-                return None;
-            }
+        self.countdown_deadline.map(|deadline| {
             let remaining = deadline.saturating_duration_since(now);
-            Some(remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0))
+            remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
         })
     }
 
@@ -474,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_countdown_falls_back_to_elapsed_segment() {
+    fn expired_countdown_stays_visible_at_zero() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
         let mut w = StatusIndicatorWidget::new(
@@ -498,7 +495,10 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
 
-        assert!(line.starts_with("Working (7s • esc to interrupt)"));
+        insta::assert_snapshot!(
+            line.trim_end(),
+            @"Working (0s left • esc to interrupt)"
+        );
     }
 
     #[test]

@@ -41,6 +41,7 @@ pub(crate) use vim_search::VimSearchKeymap;
 #[path = "keymap/conflict_tests.rs"]
 mod conflict_tests;
 
+pub(crate) use bindings::KeymapActionId;
 pub(crate) use bindings::KeymapContext;
 pub(crate) use bindings::bindings_for_action;
 pub(crate) use bindings::keymap_action_id;

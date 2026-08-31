@@ -193,13 +193,20 @@ impl App {
                 for index in hidden_transcript_indices {
                     self.transcript_cells.remove(index);
                 }
-                if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+                if let Some(overlay) = self
+                    .overlay
+                    .as_mut()
+                    .and_then(Overlay::active_transcript_mut)
+                {
                     overlay.replace_cells(self.transcript_cells.clone());
                 }
             }
         }
         if refresh_collab_agent_metadata(&mut self.transcript_cells, &collab_agent_metadata)
-            && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+            && let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
         {
             overlay.replace_cells(self.transcript_cells.clone());
         }
@@ -243,7 +250,11 @@ impl App {
         }
         self.scrollback_has_older_history = app_server.has_older_history(thread_id);
         let mut continue_to_start = false;
-        if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+        if let Some(overlay) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             let index = overlay.prepend(cells.clone(), width);
             self.transcript_cells.splice(index..index, cells);
             let previous_state = overlay.set_history_state(if self.scrollback_has_older_history {
@@ -274,7 +285,10 @@ impl App {
         }
         if continue_to_start
             && self.request_older_history_page(app_server, thread_id)
-            && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+            && let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
         {
             overlay.set_history_state(TranscriptHistoryState::LoadingBeginning);
         }

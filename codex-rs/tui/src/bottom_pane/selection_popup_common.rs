@@ -2,6 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 // Note: Table-based layout previously used Constraint; the manual renderer
 // below no longer requires it.
+use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -31,6 +32,7 @@ use super::selection_row_layout::wrap_stacked_row;
 #[derive(Default)]
 pub(crate) struct GenericDisplayRow {
     pub name: String,
+    pub name_style: Style,
     pub name_prefix_spans: Vec<Span<'static>>,
     pub display_shortcut: Option<ShortcutHint>,
     pub match_indices: Option<Vec<usize>>, // indices to bold (char positions)
@@ -330,7 +332,7 @@ fn apply_row_state_style(lines: &mut [Line<'static>], selected: bool, is_disable
     if selected {
         for line in lines.iter_mut() {
             line.spans.iter_mut().for_each(|span| {
-                span.style = accent_style();
+                span.style = selected_span_style(span.style);
             });
         }
     }
@@ -341,6 +343,10 @@ fn apply_row_state_style(lines: &mut [Line<'static>], selected: bool, is_disable
             });
         }
     }
+}
+
+fn selected_span_style(existing: Style) -> Style {
+    accent_style().add_modifier(existing.add_modifier & ratatui::style::Modifier::UNDERLINED)
 }
 
 fn compute_item_window_start(
@@ -687,7 +693,7 @@ pub(crate) fn render_rows_single_line_with_col_width_mode(
         let mut full_line = build_full_line(row, desc_col, column_width.description_layout);
         if Some(i) == state.selected_idx && !row.is_disabled {
             full_line.spans.iter_mut().for_each(|span| {
-                span.style = accent_style();
+                span.style = selected_span_style(span.style);
             });
         }
         if row.is_disabled {
