@@ -52,10 +52,14 @@ async fn switch_budget_is_independent_of_resize_policy_and_consumed_once() -> Re
         app.reset_history_emission_state();
         app.begin_initial_history_replay_buffer();
         for cell in &sources {
-            app.insert_history_cell_lines_with_initial_replay_buffer(
+            let display = cell.display_hyperlink_lines_for_mode(
+                size.width,
+                app.chat_widget.history_render_mode(),
+            );
+            app.insert_prepared_history_cell_lines_with_initial_replay_buffer(
                 &mut tui,
                 cell.as_ref(),
-                size.width,
+                display,
             );
         }
         app.finish_initial_history_replay_buffer(&mut tui);

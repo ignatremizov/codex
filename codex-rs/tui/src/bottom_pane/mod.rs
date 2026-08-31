@@ -169,6 +169,7 @@ pub(crate) use list_selection_view::ListSelectionView;
 pub(crate) use list_selection_view::OnSelectionChangedCallback;
 pub(crate) use list_selection_view::PickerSurface;
 pub(crate) use list_selection_view::SelectionDescriptionLayout;
+pub(crate) use list_selection_view::SelectionListHeight;
 pub(crate) use list_selection_view::SelectionRowDisplay;
 pub(crate) use list_selection_view::SelectionToggle;
 pub(crate) use list_selection_view::SelectionViewParams;
@@ -942,6 +943,18 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn additional_keymap_chord_action(&self) -> Option<crate::keymap::KeymapActionId> {
+        self.view_stack
+            .last()
+            .and_then(|view| view.additional_keymap_chord_action())
+    }
+
+    pub(crate) fn composer_submit_or_queue_pressed(&self, key_event: KeyEvent) -> bool {
+        self.view_stack.is_empty()
+            && !self.composer.popup_active()
+            && (self.keymap.composer.submit.is_pressed(key_event)
+                || self.keymap.composer.queue.is_pressed(key_event))
+    }
     /// Handles a Ctrl+C press within the bottom pane.
     ///
     /// An active modal view is given the first chance to consume the key (typically to dismiss

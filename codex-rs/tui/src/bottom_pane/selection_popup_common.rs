@@ -34,6 +34,7 @@ pub(crate) struct GenericDisplayRow {
     pub name: String,
     /// Optional full-width selection treatment; other rows use the shared text accent.
     pub selection_style: Option<Style>,
+    pub name_style: Style,
     pub name_prefix_spans: Vec<Span<'static>>,
     pub display_shortcut: Option<ShortcutHint>,
     pub match_indices: Option<Vec<usize>>, // indices to bold (char positions)

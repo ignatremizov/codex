@@ -4,7 +4,6 @@
 //! picker entries, and the fast-switch keyboard shortcuts. Higher-level coordination, such as
 //! deciding which thread becomes active or when a thread closes, stays in [`crate::app::App`].
 
-use crate::history_cell::HistoryCell;
 use crate::style::accent_color;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentState;
@@ -74,6 +73,8 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Known model settings captured when this agent was spawned.
+    pub(crate) spawn_request: Option<SpawnRequestSummary>,
 }
 
 #[derive(Clone, Copy)]
@@ -81,12 +82,13 @@ struct AgentLabel<'a> {
     thread_id: Option<ThreadId>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
+    spawn_request: Option<&'a SpawnRequestSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SpawnRequestSummary {
-    pub(crate) model: String,
-    pub(crate) reasoning_effort: ReasoningEffortConfig,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 mod wait_status;
@@ -209,10 +211,20 @@ pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSum
     match item {
         ThreadItem::CollabAgentToolCall {
             tool: CollabAgentTool::SpawnAgent,
-            model: Some(model),
-            reasoning_effort: Some(reasoning_effort),
+            model,
+            reasoning_effort,
             ..
-        } => Some(SpawnRequestSummary {
+        } => (model.is_some() || reasoning_effort.is_some()).then(|| SpawnRequestSummary {
+            model: model.clone(),
+            reasoning_effort: reasoning_effort.clone(),
+        }),
+        ThreadItem::UserAgentControl {
+            action: codex_app_server_protocol::UserAgentControlAction::Spawn,
+            model,
+            reasoning_effort,
+            status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
+            ..
+        } => (model.is_some() || reasoning_effort.is_some()).then(|| SpawnRequestSummary {
             model: model.clone(),
             reasoning_effort: reasoning_effort.clone(),
         }),
@@ -555,8 +567,8 @@ fn title_with_agent(
     spawn_request: Option<&SpawnRequestSummary>,
 ) -> Line<'static> {
     let mut spans = vec![Span::from(format!("{prefix} ")).bold()];
-    spans.extend(agent_label_spans(agent));
-    spans.extend(spawn_request_spans(spawn_request));
+    spans.extend(agent_identity_spans(agent));
+    spans.extend(spawn_request_spans(spawn_request.or(agent.spawn_request)));
     title_spans_line(spans)
 }
 
@@ -643,6 +655,7 @@ fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> 
         thread_id: Some(thread_id),
         nickname: metadata.agent_nickname.as_deref(),
         role: metadata.agent_role.as_deref(),
+        spawn_request: metadata.spawn_request.as_ref(),
     }
 }
 
@@ -651,6 +664,12 @@ fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
 }
 
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
+    let mut spans = agent_identity_spans(agent);
+    spans.extend(spawn_request_spans(agent.spawn_request));
+    spans
+}
+
+fn agent_identity_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let nickname = agent
         .nickname
@@ -675,22 +694,24 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
 }
 
 fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<'static>> {
-    let Some(spawn_request) = spawn_request else {
-        return Vec::new();
-    };
+    spawn_request_label(spawn_request)
+        .map(|details| vec![Span::from(" ").dim(), Span::from(details).magenta()])
+        .unwrap_or_default()
+}
 
-    let model = spawn_request.model.trim();
-    if model.is_empty() && spawn_request.reasoning_effort == ReasoningEffortConfig::default() {
-        return Vec::new();
+fn spawn_request_label(spawn_request: Option<&SpawnRequestSummary>) -> Option<String> {
+    let spawn_request = spawn_request?;
+    let model = spawn_request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    match (model, spawn_request.reasoning_effort.as_ref()) {
+        (Some(model), Some(reasoning_effort)) => Some(format!("({model} {reasoning_effort})")),
+        (Some(model), None) => Some(format!("({model})")),
+        (None, Some(reasoning_effort)) => Some(format!("({reasoning_effort})")),
+        (None, None) => None,
     }
-
-    let details = if model.is_empty() {
-        format!("({})", spawn_request.reasoning_effort)
-    } else {
-        format!("({model} {})", spawn_request.reasoning_effort)
-    };
-
-    vec![Span::from(" ").dim(), Span::from(details).magenta()]
 }
 
 fn prompt_lines(prompt: &str, agent_prompt_preview_lines: usize) -> Vec<CollabDetail> {
@@ -894,6 +915,24 @@ mod tests {
                 agent_path: "/root/child".to_string(),
                 is_running_hint: false,
             })
+        );
+    }
+
+    #[test]
+    fn spawn_request_labels_preserve_partial_model_settings() {
+        assert_eq!(
+            spawn_request_label(Some(&SpawnRequestSummary {
+                model: Some("gpt-5.6-luna".to_string()),
+                reasoning_effort: None,
+            })),
+            Some("(gpt-5.6-luna)".to_string())
+        );
+        assert_eq!(
+            spawn_request_label(Some(&SpawnRequestSummary {
+                model: None,
+                reasoning_effort: Some(ReasoningEffortConfig::Max),
+            })),
+            Some("(max)".to_string())
         );
     }
 
@@ -1106,6 +1145,256 @@ mod tests {
         assert_snapshot!("collab_agent_transcript", snapshot);
     }
 
+    #[test]
+    fn sub_agent_activity_shows_plaintext_prompt_snapshot() {
+        let item = ThreadItem::SubAgentActivity {
+            id: "call-spawn".to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: ThreadId::new().to_string(),
+            agent_path: "/root/direct_input_demo".to_string(),
+            prompt: Some(
+                "Reply with a single sentence only, consisting of lorem ipsum placeholder prose."
+                    .to_string(),
+            ),
+        };
+
+        let cell = sub_agent_activity_history_cell(&item, UNLIMITED_AGENT_PREVIEW_ROWS)
+            .expect("activity item renders");
+
+        assert_snapshot!(
+            cell_to_text(&cell),
+            @r###"
+        • Started `/root/direct_input_demo`
+          └ Reply with a single sentence only, consisting of lorem ipsum placeholder prose.
+        "###
+        );
+    }
+
+    #[test]
+    fn wait_completion_preserves_multiline_agent_response_snapshot() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid robie thread id");
+        let message = "first line\n  indented line\nlast line\n";
+
+        let item = ThreadItem::CollabAgentToolCall {
+            id: "call-wait".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![robie_id.to_string()],
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::from([(
+                robie_id.to_string(),
+                agent_state(CollabAgentStatus::Completed, Some(message)),
+            )]),
+        };
+
+        let unlimited = tool_call_history_cell(
+            &item,
+            /*cached_spawn_request*/ None,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
+        )
+        .expect("wait end item renders");
+        let capped = tool_call_history_cell(
+            &item,
+            /*cached_spawn_request*/ None,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            /*agent_response_preview_lines*/ 2,
+            |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
+        )
+        .expect("wait end item renders");
+
+        let snapshot = [unlimited, capped]
+            .iter()
+            .map(cell_to_text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_snapshot!(
+            snapshot,
+            @r###"
+        • Finished waiting
+          └ Robie [explorer] (gpt-5 high): Completed
+              first line
+                indented line
+              last line
+
+        • Finished waiting
+          └ Robie [explorer] (gpt-5 high): Completed
+              first line
+              … +2 rows hidden
+        "###
+        );
+    }
+
+    #[test]
+    fn spawn_prompt_preview_preserves_multiline_prompt_snapshot() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid robie thread id");
+        let prompt =
+            "Review the change.\nFocus on regressions.\nDo not run tests.\nReport findings.";
+
+        let item = ThreadItem::CollabAgentToolCall {
+            id: "call-spawn".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::Completed,
+            observe_commentary: Some(false),
+            wake_on_completion: Some(false),
+            target_messages: Some(false),
+            queue_input: Some(false),
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![robie_id.to_string()],
+            receiver_agents: Vec::new(),
+            prompt: Some(prompt.to_string()),
+            model: Some("gpt-5".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+            agents_states: HashMap::from([(
+                robie_id.to_string(),
+                agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
+            )]),
+        };
+
+        let unlimited = tool_call_history_cell(
+            &item,
+            /*cached_spawn_request*/ None,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
+        )
+        .expect("spawn item renders");
+        let capped = tool_call_history_cell(
+            &item,
+            /*cached_spawn_request*/ None,
+            /*agent_prompt_preview_lines*/ 2,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
+        )
+        .expect("spawn item renders");
+
+        let snapshot = [unlimited, capped]
+            .iter()
+            .map(cell_to_text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_snapshot!(
+            snapshot,
+            @r###"
+        • Spawned Robie [explorer] (gpt-5 high) (no commentary · no wake on completion)
+          └ Review the change.
+            Focus on regressions.
+            Do not run tests.
+            Report findings.
+
+        • Spawned Robie [explorer] (gpt-5 high) (no commentary · no wake on completion)
+          └ Review the change.
+            … +3 rows hidden
+        "###
+        );
+    }
+
+    #[test]
+    fn preview_caps_wrapped_rows_for_long_single_lines() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let robie_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid robie thread id");
+        let long_text = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+
+        let spawn = tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "call-spawn".to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: Vec::new(),
+                prompt: Some(long_text.to_string()),
+                model: Some("gpt-5".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: HashMap::from([(
+                    robie_id.to_string(),
+                    agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
+                )]),
+            },
+            /*cached_spawn_request*/ None,
+            /*agent_prompt_preview_lines*/ 2,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
+        )
+        .expect("spawn item renders");
+
+        let wait = tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "call-wait".to_string(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
+                target_messages: None,
+                queue_input: None,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: Vec::new(),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    robie_id.to_string(),
+                    agent_state(CollabAgentStatus::Completed, Some(long_text)),
+                )]),
+            },
+            /*cached_spawn_request*/ None,
+            UNLIMITED_AGENT_PREVIEW_ROWS,
+            /*agent_response_preview_lines*/ 2,
+            |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
+        )
+        .expect("wait item renders");
+
+        let spawn_lines = spawn.display_lines(/*width*/ 28);
+        let spawn_prompt_rows = &spawn_lines[1..];
+        assert_eq!(spawn_prompt_rows.len(), 2);
+        assert!(
+            line_to_text(
+                spawn_prompt_rows
+                    .last()
+                    .expect("hidden marker should render")
+            )
+            .contains("rows hidden")
+        );
+
+        let wait_lines = wait.display_lines(/*width*/ 28);
+        let response_preview_rows = wait_lines
+            .iter()
+            .filter(|line| {
+                let text = line_to_text(line);
+                text.contains("alpha") || text.contains("rows hidden")
+            })
+            .count();
+        assert_eq!(response_preview_rows, 2);
+        let hidden_marker_index = wait_lines
+            .iter()
+            .position(|line| line_to_text(line).contains("rows hidden"))
+            .expect("hidden marker should render");
+        assert_eq!(wait_lines.len() - hidden_marker_index, 1);
+        assert!(hidden_marker_index >= 2);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn agent_shortcut_matches_option_arrow_word_motion_fallbacks_only_when_allowed() {
@@ -1257,11 +1546,19 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                spawn_request: Some(SpawnRequestSummary {
+                    model: Some("gpt-5".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::High),
+                }),
             }
         } else if thread_id == bob_id {
             AgentMetadata {
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),
+                spawn_request: Some(SpawnRequestSummary {
+                    model: Some("gpt-5-mini".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                }),
             }
         } else {
             AgentMetadata::default()

@@ -178,6 +178,12 @@ impl StatusIndicatorWidget {
         StatusIndicator { row: self, timer }
     }
 
+    fn countdown_remaining_seconds_at(&self, now: Instant) -> Option<u64> {
+        self.countdown_deadline.map(|deadline| {
+            let remaining = deadline.saturating_duration_since(now);
+            remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
+        })
+    }
     /// Wrap the details text into a fixed width and return the lines, truncating if necessary.
     fn wrapped_details_lines(&self, width: u16) -> Vec<Line<'static>> {
         let Some(details) = self.details.as_deref() else {
@@ -477,6 +483,65 @@ mod tests {
             .collect::<String>();
 
         assert!(line.starts_with("Working (0s • esc to interrupt)"));
+    }
+
+    #[test]
+    fn countdown_replaces_elapsed_segment() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            Default::default(),
+        );
+        w.update_header("Waiting".to_string());
+        w.update_countdown_deadline(Some(Instant::now() + Duration::from_secs(60)));
+        let mut timer = StatusTimer::default();
+        timer.pause_at(timer.last_resume_at);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.with_timer(&timer).render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(line.starts_with("Waiting (1m 00s left • esc to interrupt)"));
+    }
+
+    #[test]
+    fn expired_countdown_stays_visible_at_zero() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut w = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            Default::default(),
+        );
+        w.update_countdown_deadline(Some(Instant::now() - Duration::from_secs(1)));
+        let mut timer = StatusTimer {
+            elapsed_running: Duration::from_secs(7),
+            ..Default::default()
+        };
+        timer.pause_at(timer.last_resume_at);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+        terminal
+            .draw(|f| w.with_timer(&timer).render(f.area(), f.buffer_mut()))
+            .expect("draw");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        insta::assert_snapshot!(
+            line.trim_end(),
+            @"Working (0s left • esc to interrupt)"
+        );
     }
 
     #[test]

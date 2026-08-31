@@ -92,6 +92,9 @@ impl CollabAgentHistoryCell {
         if metadata.agent_role.is_some() {
             agent_title.metadata.agent_role = metadata.agent_role;
         }
+        if metadata.spawn_request.is_some() {
+            agent_title.metadata.spawn_request = metadata.spawn_request;
+        }
         let title = agent_title.render();
         (title != self.title).then(|| Self {
             title,

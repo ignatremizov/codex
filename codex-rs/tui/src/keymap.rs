@@ -48,7 +48,7 @@ mod voice_tests;
 #[cfg(test)]
 #[path = "keymap/global_find_tests.rs"]
 mod global_find_tests;
-
+pub(crate) use bindings::KeymapActionId;
 pub(crate) use bindings::KeymapContext;
 pub(crate) use bindings::bindings_for_action;
 pub(crate) use bindings::keymap_action_id;

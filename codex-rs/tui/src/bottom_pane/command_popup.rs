@@ -298,6 +298,7 @@ impl CommandPopup {
                 GenericDisplayRow {
                     category_tag: None,
                     name,
+                    name_style: Default::default(),
                     name_prefix_spans: vec![if self.state.selected_idx == Some(index) {
                         "› ".into()
                     } else {

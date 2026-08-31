@@ -15,6 +15,12 @@ use crate::transcript_view::ViewAction;
 use crossterm::event::KeyEventKind;
 use crossterm::event::MouseEventKind;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TranscriptOverlayScope {
+    ActiveThread,
+    FixedInspection,
+}
+
 pub(crate) struct TranscriptOverlay {
     pub(super) view: Box<TranscriptView>,
     pub(crate) motion: MotionMode,
@@ -28,6 +34,7 @@ pub(crate) struct TranscriptOverlay {
     pub(crate) key_chord_hint: Option<Vec<(String, String)>>,
     pub(crate) browsing_footer: Option<Line<'static>>,
     is_done: bool,
+    scope: TranscriptOverlayScope,
 }
 
 #[cfg(test)]
@@ -54,6 +61,14 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn new(cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
+        Self::new_scoped(cells, keymap, TranscriptOverlayScope::ActiveThread)
+    }
+
+    pub(crate) fn new_scoped(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+        scope: TranscriptOverlayScope,
+    ) -> Self {
         let mut view = TranscriptView::default();
         view.set_presentation(/*detailed*/ true, HistoryRenderMode::Rich);
         Self {
@@ -69,7 +84,16 @@ impl TranscriptOverlay {
             key_chord_hint: None,
             browsing_footer: None,
             is_done: false,
+            scope,
         }
+    }
+
+    pub(crate) fn tracks_active_thread(&self) -> bool {
+        self.scope == TranscriptOverlayScope::ActiveThread
+    }
+
+    pub(crate) fn allows_backtrack(&self) -> bool {
+        self.tracks_active_thread()
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -445,6 +469,13 @@ impl TranscriptOverlay {
         }
         if self.view.has_active_interaction() {
             return self.view.handle_key(key, &self.cells);
+        }
+        if !self.tracks_active_thread()
+            && key.code == KeyCode::Esc
+            && key.modifiers == KeyModifiers::NONE
+        {
+            self.is_done = true;
+            return Some(ViewAction::Changed);
         }
         if self.keymap.close.is_pressed(key) || self.keymap.close_transcript.is_pressed(key) {
             self.is_done = true;

@@ -1131,11 +1131,10 @@ impl PickerState {
         else {
             return;
         };
-        let mut overlay = Overlay::new_transcript(cells.clone(), self.keymap.pager.clone());
-        if let Overlay::Transcript(view) = &mut overlay {
-            view.set_keymap_bindings(&self.keymap);
-        }
-        self.overlay = Some(overlay);
+        self.overlay = Some(Overlay::new_inspection_transcript(
+            cells.clone(),
+            self.pager_keymap.clone(),
+        ));
         self.pending_transcript_open = None;
         self.transcript_loading_frame_shown = false;
         self.request_frame();

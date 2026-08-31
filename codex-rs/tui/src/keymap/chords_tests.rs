@@ -18,6 +18,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use pretty_assertions::assert_eq;
 use std::collections::HashSet;
+use tokio::time::Instant;
 
 fn binding(spec: &str) -> KeybindingsSpec {
     KeybindingsSpec::One(KeybindingSpec(spec.to_string()))
@@ -168,6 +169,33 @@ fn vim_jump_top_supports_single_and_custom_chord_remaps() {
 }
 
 #[test]
+fn rejects_agent_picker_transcript_chords_that_shadow_list_navigation() {
+    let mut config = TuiKeymap::default();
+    config.global.open_transcript = Some(binding("down f12"));
+    config.editor.move_down = Some(KeybindingsSpec::Many(Vec::new()));
+    config.vim_normal.move_down = Some(KeybindingsSpec::Many(Vec::new()));
+
+    let error = RuntimeKeymap::from_config(&config)
+        .expect_err("agent transcript chords must preserve list navigation");
+
+    assert!(error.contains("global.open_transcript"), "{error}");
+    assert!(error.contains("list.move_down"), "{error}");
+}
+
+#[test]
+fn rejects_agent_picker_transcript_chords_that_duplicate_list_chords() {
+    let mut config = TuiKeymap::default();
+    config.global.open_transcript = Some(binding("ctrl-x home"));
+    config.list.jump_top = Some(binding("ctrl-x home"));
+
+    let error = RuntimeKeymap::from_config(&config)
+        .expect_err("agent transcript chords must not duplicate list chords");
+
+    assert!(error.contains("global.open_transcript"), "{error}");
+    assert!(error.contains("list.jump_top"), "{error}");
+}
+
+#[test]
 fn composer_chord_inherits_global_fallback() {
     let mut config = TuiKeymap::default();
     config.global.submit = Some(binding("ctrl-x enter"));
@@ -246,6 +274,7 @@ fn allows_shared_prefixes_with_distinct_completions() {
     let mut config = TuiKeymap::default();
     config.global.open_transcript = Some(binding("ctrl-x ctrl-t"));
     config.global.copy = Some(binding("ctrl-x ctrl-o"));
+    config.list.jump_top = Some(binding("ctrl-x home"));
 
     RuntimeKeymap::from_config(&config).expect("prefix trie can branch on the second stroke");
 }
@@ -485,8 +514,67 @@ fn matching_chords_dispatches_the_active_context_action() {
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn matcher_cancels_on_escape_context_change_and_timeout() {
+#[test]
+fn matcher_can_activate_one_action_outside_the_view_context() {
+    let mut config = TuiKeymap::default();
+    config.global.open_transcript = Some(binding("ctrl-x ctrl-t"));
+    config.global.copy = Some(binding("ctrl-x ctrl-o"));
+    config.list.jump_top = Some(binding("ctrl-x home"));
+    let runtime = RuntimeKeymap::from_config(&config).expect("valid chord keymap");
+    let list = KeymapContextSet::new(KeymapContext::List);
+    let open_transcript =
+        keymap_action_id("global", "open_transcript").expect("known keymap action");
+    let now = Instant::now();
+    let mut matcher = KeyChordMatcher::default();
+
+    assert!(matches!(
+        matcher.advance_with_additional_action(
+            key_event(key_hint::ctrl(KeyCode::Char('x'))),
+            &runtime.chords,
+            list,
+            Some(open_transcript),
+            now,
+        ),
+        KeyChordMatch::Pending(_)
+    ));
+    let KeyChordMatch::Completed(dispatch_event) = matcher.advance_with_additional_action(
+        key_event(key_hint::ctrl(KeyCode::Char('t'))),
+        &runtime.chords,
+        list,
+        Some(open_transcript),
+        now,
+    ) else {
+        panic!("the selected out-of-context action should complete");
+    };
+    assert!(runtime.app.open_transcript.is_pressed(dispatch_event));
+    assert!(!runtime.app.copy.is_pressed(dispatch_event));
+
+    let mut matcher = KeyChordMatcher::default();
+    assert!(matches!(
+        matcher.advance_with_additional_action(
+            key_event(key_hint::ctrl(KeyCode::Char('x'))),
+            &runtime.chords,
+            list,
+            Some(open_transcript),
+            now,
+        ),
+        KeyChordMatch::Pending(_)
+    ));
+    let KeyChordMatch::Completed(dispatch_event) = matcher.advance_with_additional_action(
+        KeyEvent::new(KeyCode::Home, crossterm::event::KeyModifiers::NONE),
+        &runtime.chords,
+        list,
+        Some(open_transcript),
+        now,
+    ) else {
+        panic!("the active list action should still complete");
+    };
+    assert!(runtime.list.jump_top.is_pressed(dispatch_event));
+    assert!(!runtime.app.open_transcript.is_pressed(dispatch_event));
+}
+
+#[test]
+fn matcher_cancels_on_escape_context_change_and_timeout() {
     let mut config = TuiKeymap::default();
     config.list.jump_top = Some(binding("ctrl-x ctrl-t"));
     let runtime = RuntimeKeymap::from_config(&config).expect("valid list chord");
@@ -512,9 +600,17 @@ async fn matcher_cancels_on_escape_context_change_and_timeout() {
         matcher.advance(prefix, &runtime.chords, list),
         KeyChordMatch::Pending(_)
     ));
-    assert!(matcher.expire(pager));
+    assert!(matcher.expire_with_additional_action(
+        pager,
+        /*additional_action*/ None,
+        tokio::time::Instant::now(),
+    ));
     matcher.advance(prefix, &runtime.chords, list);
-    tokio::time::advance(super::KEY_CHORD_TIMEOUT).await;
+    assert!(matcher.expire_with_additional_action(
+        list,
+        /*additional_action*/ None,
+        tokio::time::Instant::now() + super::KEY_CHORD_TIMEOUT,
+    ));
     assert_eq!(
         matcher.advance(
             key_event(key_hint::ctrl(KeyCode::Char('t'))),
@@ -623,7 +719,11 @@ fn activity_context_preserves_list_chords_and_its_remapped_focus_toggle() {
         matcher.advance(KeyCode::F(12).into(), &runtime.chords, combined),
         KeyChordMatch::Pending(_)
     ));
-    assert!(matcher.expire(KeymapContextSet::activity()));
+    assert!(matcher.expire_with_additional_action(
+        KeymapContextSet::activity(),
+        /*additional_action*/ None,
+        tokio::time::Instant::now(),
+    ));
     assert!(!matcher.is_pending());
 }
 
