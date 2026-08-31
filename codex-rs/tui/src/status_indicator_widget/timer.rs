@@ -29,12 +29,11 @@ impl Default for StatusTimer {
 
 impl StatusTimer {
     pub(super) fn countdown_remaining_seconds_at(&self, now: Instant) -> Option<u64> {
-        self.countdown_deadline
-            .filter(|deadline| *deadline > now)
-            .map(|deadline| {
-                let remaining = deadline.saturating_duration_since(now);
-                remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
-            })
+        // The estimate reaching zero is not a completion receipt. Its lifecycle owner clears it.
+        self.countdown_deadline.map(|deadline| {
+            let remaining = deadline.saturating_duration_since(now);
+            remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
+        })
     }
 
     pub(crate) fn reset(&mut self, elapsed: Duration) {
