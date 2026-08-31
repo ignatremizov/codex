@@ -174,6 +174,7 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
         .transcript_cells
         .iter()
         .map(|cell| lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+        .filter(|text| !text.trim().is_empty())
         .chain(std::iter::once(lines_to_single_string(
             &error_cell.display_lines(/*width*/ 80),
         )))
@@ -355,6 +356,7 @@ async fn replay_only_thread_resume_failure_is_shown_without_exiting() -> Result<
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(transcript, @r"
+
     › continue
 
     ■ Failed to resume agent thread: thread/resume failed during TUI bootstrap: thread/resume failed: no rollout found for thread id 123e4567-e89b-12d3-a456-426614174001 (code -32600). No operation was sent. Your input is preserved; reopen the parent conversation and retry.
@@ -403,9 +405,7 @@ async fn replay_only_compact_resume_failure_is_shown_without_exiting() -> Result
         })
         .expect("thread/resume failure should be added to history");
     let transcript = lines_to_single_string(&error_cell.display_lines(/*width*/ 80));
-    insta::assert_snapshot!(transcript, @r"
-    ■ Failed to resume agent thread: thread/resume failed during TUI bootstrap: thread/resume failed: no rollout found for thread id 123e4567-e89b-12d3-a456-426614174002 (code -32600). No operation was sent. Your input is preserved; reopen the parent conversation and retry.
-    ");
+    insta::assert_snapshot!(transcript, @"■ Failed to resume agent thread: thread/resume failed during TUI bootstrap: thread/resume failed: no rollout found for thread id 123e4567-e89b-12d3-a456-426614174002 (code -32600). No operation was sent. Your input is preserved; reopen the parent conversation and retry.");
     let channel = app
         .thread_event_channels
         .get(&thread_id)

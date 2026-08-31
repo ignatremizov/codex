@@ -38,7 +38,7 @@ impl ChatWidget {
 
     /// Restore local input only after replay, which can otherwise move interrupted queues into the draft.
     pub(crate) fn restore_reconnected_input(&mut self, input: Option<ThreadInputState>) {
-        let running = self.turn_lifecycle.agent_turn_running;
+        let started_at = self.turn_lifecycle.started_at();
         if let Some(mut input) = input {
             // Its acceptance is unknown. Keep a local copy for manual recovery without
             // comparing against partial history or automatically submitting it again.
@@ -67,8 +67,8 @@ impl ChatWidget {
                 },
             );
         }
-        if running {
-            self.turn_lifecycle.restore_running_since(Instant::now());
+        if let Some(started_at) = started_at {
+            self.turn_lifecycle.restore_running_since(started_at);
         } else {
             self.turn_lifecycle.finish();
         }

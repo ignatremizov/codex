@@ -6073,6 +6073,30 @@ async fn replay_only_v1_selection_stays_read_only_until_exact_user_turn() -> Res
         )
         .expect("create replay-only rollout"),
     )?;
+    // Read-only selection restores the saved model, never the previously focused
+    // thread's model. Give this sendable fixture its actual persisted settings.
+    let child_rollout_path = rollout_path(
+        codex_home.path(),
+        "2026-01-01T00-00-01",
+        &thread_id.to_string(),
+    );
+    let mut child_rollout = std::fs::read_to_string(&child_rollout_path)?;
+    child_rollout.push_str(&format!(
+        "{}\n",
+        serde_json::json!({
+            "timestamp": "2026-01-01T00:00:02Z",
+            "type": "turn_context",
+            "payload": {
+                "cwd": app.config.cwd.as_path(),
+                "approval_policy": "never",
+                "sandbox_policy": {"type": "danger-full-access"},
+                "model": "gpt-5.6-sol",
+                "effort": "low",
+                "summary": "auto",
+            },
+        })
+    ));
+    std::fs::write(&child_rollout_path, child_rollout)?;
     let (mut app_server, requests, proxy) = start_recording_app_server(
         &app.config,
         /*blocked_thread_list*/ None,
@@ -6121,6 +6145,7 @@ async fn replay_only_v1_selection_stays_read_only_until_exact_user_turn() -> Res
     assert_eq!(app.active_thread_id, Some(thread_id));
     assert!(recorded_params(&requests, "thread/resume").is_empty());
     assert!(recorded_params(&requests, "turn/start").is_empty());
+    assert_eq!(app.chat_widget.current_model(), "gpt-5.6-sol");
 
     app.chat_widget
         .restore_user_message_to_composer(crate::chatwidget::UserMessage::from("continue"));
