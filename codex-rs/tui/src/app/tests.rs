@@ -212,6 +212,7 @@ use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
 use codex_app_server_protocol::ThreadUnarchivedNotification;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_app_server_protocol::TokenUsageBreakdown;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::Turn;
@@ -1711,6 +1712,10 @@ async fn replay_thread_snapshot_restores_the_matching_safety_buffer_prompt() {
     app.chat_widget = chat_widget;
     app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
 
+    // The snapshot has no active backend turn. Retain its safety prompt without
+    // reviving the optimistic pending-start flag from the earlier submission.
+    let mut expected_input_state = expected_input_state;
+    expected_input_state.user_turn_pending_start = false;
     assert_eq!(
         app.chat_widget.capture_thread_input_state(),
         Some(expected_input_state)
@@ -3586,6 +3591,8 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
                     agent_nickname: Some(format!("child-{index}")),
                     agent_role: Some("worker".to_string()),
                 }),
+                agent_nickname: Some(format!("child-{index}")),
+                agent_role: Some("worker".to_string()),
                 model_provider: Some(app.config.model_provider_id.clone()),
                 multi_agent_version: Some(multi_agent_version),
                 ..SessionMeta::default()
@@ -3672,6 +3679,18 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
                     .iter()
                     .any(|line| rendered_line_text(line).contains(&saved_message))
             );
+            // Selecting saved history is read-only; revive it before testing runtime teardown.
+            assert_eq!(
+                app_server.thread_read(child_thread_id, /*include_turns*/ false).await?.status,
+                codex_app_server_protocol::ThreadStatus::NotLoaded
+            );
+            app.resume_replay_only_thread(&mut app_server, child_thread_id)
+                .await
+                .wrap_err_with(|| format!("resume {multi_agent_version:?} child {child_thread_id}"))?;
+            assert!(!matches!(
+                app_server.thread_read(child_thread_id, /*include_turns*/ false).await?.status,
+                codex_app_server_protocol::ThreadStatus::NotLoaded
+            ));
             app.select_agent_thread(&mut tui, &mut app_server, root_thread_id)
                 .await?;
             let unsubscribe: ThreadUnsubscribeResponse = app_server
@@ -3683,8 +3702,13 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
                     },
                 })
                 .await?;
-            // Keep bounded diagnostics without consuming the queued close being tested.
-            let mut recent_events = VecDeque::new();
+            assert_eq!(
+                unsubscribe,
+                ThreadUnsubscribeResponse {
+                    status: ThreadUnsubscribeStatus::Unsubscribed,
+                },
+                "{multi_agent_version:?} child {child_thread_id} must have a live subscription"
+            );
             let closed = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
                 while let Some(event) = app_server.next_event().await {
                     if matches!(&event.event,
@@ -3694,79 +3718,25 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
                     {
                         return event;
                     }
-                    let summary = match &event.event {
-                        codex_app_server_client::AppServerEvent::ServerNotification(notification) => {
-                            match notification.as_ref() {
-                                ServerNotification::ThreadStatusChanged(changed) => {
-                                    format!("thread/status/changed: {changed:?}")
-                                }
-                                ServerNotification::ThreadClosed(closed) => {
-                                    format!("thread/closed: {closed:?}")
-                                }
-                                notification => notification.to_string(),
-                            }
-                        }
-                        codex_app_server_client::AppServerEvent::ServerRequest(request) => {
-                            format!("server request: id={:?}", request.id())
-                        }
-                        codex_app_server_client::AppServerEvent::Lagged { skipped } => {
-                            format!("lagged: {skipped}")
-                        }
-                        codex_app_server_client::AppServerEvent::Disconnected { .. } => {
-                            "disconnected".to_string()
-                        }
-                        codex_app_server_client::AppServerEvent::RequestCompleted { .. } => {
-                            "request completed".to_string()
-                        }
-                    };
-                    if recent_events.len() == 16 {
-                        recent_events.pop_front();
-                    }
-                    recent_events.push_back(summary);
                 }
                 panic!(
                     "server event stream ended before {multi_agent_version:?} child \
-                     {child_thread_id} closed; unsubscribe={unsubscribe:?}; events={recent_events:?}"
+                     {child_thread_id} closed"
                 );
             })
-            .await;
-            let closed = match closed {
-                Ok(closed) => closed,
-                Err(error) => {
-                    let request_handle = app_server.request_handle();
-                    let (thread_status, unload_delay) = tokio::join!(
-                        tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
-                            app_server
-                                .thread_read(child_thread_id, /*include_turns*/ false)
-                                .await
-                                .map(|thread| thread.status)
-                        }),
-                        tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
-                            crate::config_update::read_effective_config(
-                                request_handle,
-                                app.config.cwd.display().to_string(),
-                            )
-                            .await
-                            .map(|response| {
-                                response
-                                    .config
-                                    .additional
-                                    .get("thread_unload_delay_secs")
-                                    .cloned()
-                            })
-                        }),
-                    );
-                    color_eyre::eyre::bail!(
-                        "waiting for thread/closed after selecting root {root_thread_id} and \
-                         unsubscribing {multi_agent_version:?} child {child_thread_id}: {error}; \
-                         unsubscribe={unsubscribe:?}; thread_status={thread_status:?}; \
-                         thread_unload_delay_secs={unload_delay:?}; events={recent_events:?}"
-                    );
-                }
-            };
+            .await
+            .wrap_err_with(|| {
+                format!("waiting for {multi_agent_version:?} child {child_thread_id} to close")
+            })?;
             while app_event_rx.try_recv().is_ok() {}
             app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
                 .await?;
+            // History selection alone cannot replace the runtime that emitted `closed`.
+            app.resume_replay_only_thread(&mut app_server, child_thread_id)
+                .await
+                .wrap_err_with(|| {
+                    format!("resume closed {multi_agent_version:?} child {child_thread_id}")
+                })?;
             // A queued close from the old runtime must not undo the new attachment.
             app.handle_backend_event(&app_server, closed).await;
             app.drain_active_thread_events(&mut tui).await?;
@@ -3824,9 +3794,14 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
             .restore_user_message_to_composer("v1 remains writable".into());
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let events = std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
         assert!(
-            std::iter::from_fn(|| app_event_rx.try_recv().ok())
-                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+            events
+                .iter()
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. }))),
+            "V1 submission: model={:?}; queued={:?}; events={events:?}",
+            app.chat_widget.current_model(),
+            app.chat_widget.queued_user_message_texts(),
         );
 
         app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[1])
@@ -3838,9 +3813,14 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
+        let events = std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
         assert!(
-            std::iter::from_fn(|| app_event_rx.try_recv().ok())
-                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+            events
+                .iter()
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. }))),
+            "V2 submission: model={:?}; queued={:?}; events={events:?}",
+            app.chat_widget.current_model(),
+            app.chat_widget.queued_user_message_texts(),
         );
 
         let resumed = Box::pin(app_server.resume_thread(
@@ -3865,9 +3845,14 @@ fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
+        let events = std::iter::from_fn(|| app_event_rx.try_recv().ok()).collect::<Vec<_>>();
         assert!(
-            std::iter::from_fn(|| app_event_rx.try_recv().ok())
-                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+            events
+                .iter()
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. }))),
+            "direct resume submission: model={:?}; queued={:?}; events={events:?}",
+            app.chat_widget.current_model(),
+            app.chat_widget.queued_user_message_texts(),
         );
         Ok(())
     }))

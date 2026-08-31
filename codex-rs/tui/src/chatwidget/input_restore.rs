@@ -640,8 +640,25 @@ impl ChatWidget {
             } else {
                 None
             };
-            self.current_collaboration_mode = input_state.current_collaboration_mode;
+            // A history-only draft can predate model resolution. Keep the live session's
+            // resolved settings instead of restoring that placeholder over them.
+            if !input_state
+                .current_collaboration_mode
+                .model()
+                .trim()
+                .is_empty()
+            {
+                self.current_collaboration_mode = input_state.current_collaboration_mode;
+            }
             self.active_collaboration_mask = input_state.active_collaboration_mask;
+            if let Some(mask) = self.active_collaboration_mask.as_mut()
+                && mask
+                    .model
+                    .as_deref()
+                    .is_some_and(|model| model.trim().is_empty())
+            {
+                mask.model = None;
+            }
             self.config.plan_mode_reasoning_effort = input_state.plan_mode_reasoning_effort;
             self.restore_status_surface_overrides(input_state.status_surface_overrides);
             self.safety_buffering_prompt = input_state.safety_buffering_prompt;
