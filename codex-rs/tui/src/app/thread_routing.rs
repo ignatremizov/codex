@@ -560,7 +560,7 @@ impl App {
                 error = %error,
                 "failed to resume replay-only thread for live operation"
             );
-            let message = format!("Failed to resume agent thread: {error:#}");
+            let message = format!("Failed to resume agent thread: {error}");
             if matches!(&op, AppCommand::UserTurn { .. })
                 && self
                     .chat_widget
@@ -1694,7 +1694,17 @@ impl App {
                 .await
             {
                 Ok(thread) => {
-                    let session = self.session_state_for_thread_read(thread_id, &thread).await;
+                    let mut session = self.session_state_for_thread_read(thread_id, &thread).await;
+                    // `thread/read` has no settings. Keep the selected thread's cached
+                    // permissions rather than borrowing them from the conversation displayed
+                    // while this replay-only snapshot is refreshed.
+                    if let Some(cached) = snapshot.session.as_ref() {
+                        session.approval_policy = cached.approval_policy;
+                        session.permission_profile = cached.permission_profile.clone();
+                        session.active_permission_profile =
+                            cached.active_permission_profile.clone();
+                        session.approvals_reviewer = cached.approvals_reviewer;
+                    }
                     if let Some(channel) = self.thread_event_channels.get(&thread_id) {
                         channel.store.lock().await.session = Some(session.clone());
                     }
@@ -1920,7 +1930,7 @@ impl App {
     #[cfg(test)]
     pub(super) fn replay_thread_snapshot(
         &mut self,
-        mut snapshot: ThreadEventSnapshot,
+        snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
     ) {
         self.replay_thread_snapshot_with_in_flight_state(
@@ -1932,7 +1942,7 @@ impl App {
 
     pub(super) fn replay_thread_snapshot_with_in_flight_state(
         &mut self,
-        snapshot: ThreadEventSnapshot,
+        mut snapshot: ThreadEventSnapshot,
         resume_restored_queue: bool,
         preserve_in_flight_turn: bool,
     ) {
@@ -1963,6 +1973,12 @@ impl App {
         }
         let suppress_replay_notices =
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
+        let recovered_input = snapshot
+            .input_state
+            .as_ref()
+            .is_some_and(|input| input.recovered_queue)
+            .then(|| snapshot.input_state.take())
+            .flatten();
         let ThreadEventSnapshot {
             session,
             turns,
@@ -1989,12 +2005,6 @@ impl App {
                 self.chat_widget.handle_thread_session(session);
             }
         }
-        let recovered_input = snapshot
-            .input_state
-            .as_ref()
-            .is_some_and(|input| input.recovered_queue)
-            .then(|| snapshot.input_state.take())
-            .flatten();
         self.sync_mcp_inventory_loading_for_current_thread();
         let restored_active_turn_timing = if preserve_in_flight_turn {
             active_turn_timing
