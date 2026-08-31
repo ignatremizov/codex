@@ -39,7 +39,11 @@ impl App {
         // source-backed cell during consolidation.
         if let Some(cell) = deferred_history_cell {
             let cell: Arc<dyn HistoryCell> = cell.into();
-            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+            if let Some(t) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+            {
                 t.insert_cell(cell.clone());
             }
             if !tui.is_owned_screen() {
@@ -86,7 +90,11 @@ impl App {
             self.transcript_cells
                 .splice(start..end, std::iter::once(consolidated.clone()));
 
-            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+            if let Some(t) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+            {
                 t.regroup_cells(start..end, consolidated.clone());
                 tui.frame_requester().schedule_frame();
             }

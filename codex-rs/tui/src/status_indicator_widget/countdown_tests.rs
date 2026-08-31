@@ -3,7 +3,7 @@ use pretty_assertions::assert_eq;
 use tokio::sync::mpsc::unbounded_channel;
 
 #[test]
-fn countdown_rounds_up_expires_and_preserves_phase_elapsed() {
+fn countdown_rounds_up_stays_at_zero_and_preserves_phase_elapsed_until_cleared() {
     let now = Instant::now();
     let (tx, _rx) = unbounded_channel();
     let mut row = StatusIndicatorWidget::new(
@@ -30,15 +30,22 @@ fn countdown_rounds_up_expires_and_preserves_phase_elapsed() {
     };
     insta::assert_snapshot!(render(now), @"Waiting for background terminal (1m 00s left • esc to interrupt)");
     insta::assert_snapshot!(render(now + Duration::from_secs(/*secs*/ 59)), @"Waiting for background terminal (1s left • esc to interrupt)");
-    insta::assert_snapshot!(render(now + Duration::from_secs(/*secs*/ 60)), @"Waiting for background terminal (1m 07s • esc to interrupt)");
+    insta::assert_snapshot!(render(now + Duration::from_secs(/*secs*/ 60)), @"Waiting for background terminal (0s left • esc to interrupt)");
     assert_eq!(
         timer.countdown_remaining_seconds_at(now + Duration::from_millis(/*millis*/ 59_001)),
-        None
+        Some(0)
     );
     assert_eq!(
         timer.countdown_remaining_seconds_at(now + Duration::from_secs(/*secs*/ 60)),
-        None
+        Some(0)
     );
+    timer.countdown_deadline = None;
+    let cleared = StatusIndicator {
+        row: &row,
+        timer: &timer,
+    }
+    .lines_at(/*width*/ 100, now + Duration::from_secs(/*secs*/ 60));
+    insta::assert_snapshot!(cleared[0].to_string(), @"Waiting for background terminal (1m 07s • esc to interrupt)");
 }
 
 #[test]

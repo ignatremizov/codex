@@ -145,6 +145,7 @@ fn contextual_controls_render_labels_disabled_reasons_and_confirmation_hint() {
         thread_id,
         "2",
         "Hopper [reviewer]".to_string(),
+        "Hopper".to_string(),
         AgentControlTargetState {
             is_current: false,
             is_primary: false,
@@ -180,6 +181,7 @@ fn inspect_action_keeps_thread_switch_distinct() {
             thread_id,
             "2",
             "Hopper [reviewer]".to_string(),
+            "Hopper".to_string(),
             AgentControlTargetState {
                 is_current: false,
                 is_primary: false,

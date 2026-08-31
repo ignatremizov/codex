@@ -34,7 +34,11 @@ impl App {
                 .consolidate(&self.transcript_cells[range.clone()], &older);
             self.transcript_view
                 .replace_group(&self.transcript_cells, range.clone(), &older);
-            if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+            if let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+            {
                 overlay.regroup_cells(range.clone(), Arc::clone(&older));
             }
             self.transcript_cells.splice(range, [older]);
@@ -58,7 +62,11 @@ impl App {
                 previous_revision,
                 hydrated_revision,
             );
-            if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+            if let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+            {
                 overlay.absorb_tail_into_live(previous_revision, hydrated_revision);
             }
             self.transcript_cells.pop();
@@ -78,7 +86,11 @@ impl App {
             .consolidate(&self.transcript_cells[range.clone()], &group);
         self.transcript_view
             .replace_group(&self.transcript_cells, range.clone(), &group);
-        if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+        if let Some(overlay) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             overlay.regroup_cells(range.clone(), Arc::clone(&group));
         }
         self.transcript_cells.splice(range, [group]);

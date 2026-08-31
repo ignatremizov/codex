@@ -400,6 +400,7 @@ async fn rejected_delete_preserves_a_live_attachment_and_draft() -> Result<()> {
 #[tokio::test]
 async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashboard() -> Result<()>
 {
+    let mut rendered_snapshots = Vec::new();
     for (action, snapshot, attach_child) in [
         (AgentsOverviewAction::Archive, "archive_task", false),
         (AgentsOverviewAction::Delete, "delete_task", false),
@@ -642,10 +643,10 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
             (app.primary_thread_id, app.chat_widget.thread_id()),
             (Some(primary), Some(primary))
         );
-        insta::assert_snapshot!(
+        rendered_snapshots.push((
             format!("{snapshot}_failure"),
-            render_bottom_popup(&app.chat_widget, /*width*/ 80)
-        );
+            render_bottom_popup(&app.chat_widget, /*width*/ 80),
+        ));
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
         app_server
             .request_handle()
@@ -678,10 +679,10 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
             .find(|event| matches!(event, AppEvent::ConfirmAgentsOverviewAction { .. }))
             .expect("shortcut requests confirmation");
         Box::pin(app.handle_event(&mut tui, &mut app_server, confirmation)).await?;
-        insta::assert_snapshot!(
+        rendered_snapshots.push((
             format!("{snapshot}_confirmation"),
-            render_bottom_popup(&app.chat_widget, /*width*/ 72)
-        );
+            render_bottom_popup(&app.chat_widget, /*width*/ 72),
+        ));
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
         assert!(
             !std::iter::from_fn(|| rx.try_recv().ok())
@@ -710,14 +711,16 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
             finish_overview_refresh(&mut app, &app_server, &mut rx).await;
         }
         assert!(!app.agents_overview.view_state.lock().unwrap().loading);
-        assert_eq!(app.voice_owner_thread_id(), None);
+        let surviving_primary =
+            (action == AgentsOverviewAction::Delete && attach_child).then_some(primary);
+        assert_eq!(app.voice_owner_thread_id(), surviving_primary);
         assert_eq!(
             (
                 app.primary_thread_id,
                 app.current_displayed_thread_id(),
                 app.chat_widget.thread_id()
             ),
-            (None, None, None)
+            (surviving_primary, surviving_primary, surviving_primary)
         );
         assert_eq!(
             app.agents_overview.visible_thread_ids,
@@ -728,8 +731,24 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
                 .thread_loaded_list(ThreadLoadedListParams::default())
                 .await?
                 .data,
-            Vec::<String>::new()
+            surviving_primary
+                .map(|thread_id| thread_id.to_string())
+                .into_iter()
+                .collect::<Vec<_>>()
         );
+        if let Some(child) = surviving_primary {
+            assert!(matches!(
+                app_server
+                    .thread_read(child, /*include_turns*/ false)
+                    .await?
+                    .status,
+                ThreadStatus::Active { .. }
+            ));
+            rendered_snapshots.push((
+                "delete_root_keeps_child_attachment".to_string(),
+                render_bottom_popup(&app.chat_widget, /*width*/ 80),
+            ));
+        }
         assert!(
             app.chat_widget
                 .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID)
@@ -751,6 +770,10 @@ async fn lifecycle_removes_background_and_current_tasks_without_losing_the_dashb
         app_server.shutdown().await?;
         drop(release);
         server.shutdown().await;
+    }
+    // Complete every lifecycle scenario before reviewing presentation changes.
+    for (name, rendered) in rendered_snapshots {
+        insta::assert_snapshot!(name, rendered);
     }
     Ok(())
 }

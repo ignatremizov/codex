@@ -7,6 +7,7 @@ use crate::history_cell::FinalMessageSeparator;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::UserInput;
 use pretty_assertions::assert_eq;
+use std::collections::HashSet;
 
 fn turn(id: &str, status: TurnStatus, item_ids: &[&str]) -> Turn {
     Turn {
@@ -35,7 +36,10 @@ fn overlapping_history_keeps_live_turn_state_and_newer_items() {
         turn("old", TurnStatus::Completed, &["first"]),
         turn("shared", TurnStatus::Completed, &["before", "overlap"]),
     ];
-    merge_older_turns(&mut current, older);
+    assert_eq!(
+        reconcile_older_turns(&mut current, older, &HashSet::from(["shared".to_string()]),),
+        HashSet::from(["first".to_string(), "before".to_string()]),
+    );
     assert_eq!(
         current,
         vec![
@@ -45,6 +49,34 @@ fn overlapping_history_keeps_live_turn_state_and_newer_items() {
                 TurnStatus::InProgress,
                 &["before", "overlap", "live"]
             ),
+        ],
+    );
+}
+
+#[test]
+fn page_reconciliation_preserves_live_payloads_and_rejects_removed_turns() {
+    let mut current = vec![turn("live", TurnStatus::InProgress, &["newer"])];
+    let incoming = vec![
+        turn("older", TurnStatus::Completed, &["old"]),
+        turn("live", TurnStatus::Completed, &["older", "newer"]),
+        turn("removed", TurnStatus::Completed, &["stale"]),
+    ];
+
+    let inserted = reconcile_older_turns(
+        &mut current,
+        incoming,
+        &HashSet::from(["live".to_string(), "removed".to_string()]),
+    );
+
+    assert_eq!(
+        inserted,
+        HashSet::from(["old".to_string(), "older".to_string()])
+    );
+    assert_eq!(
+        current,
+        vec![
+            turn("older", TurnStatus::Completed, &["old"]),
+            turn("live", TurnStatus::InProgress, &["older", "newer"]),
         ],
     );
 }
