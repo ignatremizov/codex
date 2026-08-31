@@ -1131,11 +1131,13 @@ impl PickerState {
         else {
             return;
         };
-        let mut overlay = Overlay::new_transcript(cells.clone(), self.keymap.pager.clone());
-        if let Overlay::Transcript(view) = &mut overlay {
-            view.set_keymap_bindings(&self.keymap);
+        self.overlay = Some(Overlay::new_inspection_transcript(
+            cells.clone(),
+            self.keymap.pager.clone(),
+        ));
+        if let Some(Overlay::Transcript(overlay)) = &mut self.overlay {
+            overlay.set_keymap_bindings(&self.keymap);
         }
-        self.overlay = Some(overlay);
         self.pending_transcript_open = None;
         self.transcript_loading_frame_shown = false;
         self.request_frame();
@@ -5246,6 +5248,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(text.contains("BAtail"), "Find query: {text}");
+        insta::assert_debug_snapshot!("inspected_transcript_remapped_find", buffer);
     }
 
     #[tokio::test]

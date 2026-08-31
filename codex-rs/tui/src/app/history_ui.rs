@@ -38,7 +38,11 @@ impl App {
         }
         let is_session_header = cell.as_any().is::<history_cell::SessionInfoCell>();
         let cell: Arc<dyn HistoryCell> = cell.into();
-        if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+        if let Some(t) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             t.insert_cell(cell.clone());
             tui.frame_requester().schedule_frame();
         }
@@ -60,6 +64,16 @@ impl App {
         cell: &Arc<dyn HistoryCell>,
         deferred: bool,
     ) {
+        let render_deferred = self
+            .initial_history_replay_buffer
+            .as_ref()
+            .is_some_and(|buffer| buffer.render_from_transcript_tail);
+        if render_deferred && !cell.as_any().is::<history_cell::CompositeHistoryCell>() {
+            // The transcript tail will be rendered once replay completes.
+            self.last_rendered_history_tail = None;
+            self.chat_widget.request_pending_usage_output_insertion();
+            return;
+        }
         let width = self
             .chat_widget
             .history_wrap_width(tui.terminal.last_known_screen_size.width);
@@ -88,11 +102,15 @@ impl App {
             return;
         }
         if self.initial_history_replay_buffer.as_ref().is_some() {
-            self.insert_history_cell_lines_with_initial_replay_buffer(tui, cell.as_ref(), width);
+            self.insert_prepared_history_cell_lines_with_initial_replay_buffer(
+                tui,
+                cell.as_ref(),
+                lines,
+            );
             self.last_rendered_history_tail = None;
         } else {
-            self.insert_history_cell_lines(tui, cell.as_ref(), width);
-            self.last_rendered_history_tail = if self.overlay.is_none() {
+            self.insert_prepared_history_cell_lines(tui, cell.as_ref(), lines.clone());
+            self.last_rendered_history_tail = if self.overlay.is_none() && !lines.is_empty() {
                 Some(RenderedHistoryTail {
                     cell: Arc::downgrade(cell),
                     lines,
@@ -177,7 +195,11 @@ impl App {
             return Ok(());
         }
         let Some(rendered_tail) = self.last_rendered_history_tail.as_ref() else {
-            self.insert_history_cell_lines(tui, status_cell.as_ref(), width);
+            self.insert_prepared_history_cell_lines(
+                tui,
+                status_cell.as_ref(),
+                updated_lines.clone(),
+            );
             self.last_rendered_history_tail = Some(RenderedHistoryTail {
                 cell: Arc::downgrade(&status_cell),
                 lines: updated_lines.clone(),
@@ -193,7 +215,11 @@ impl App {
             .upgrade()
             .is_some_and(|cell| Arc::ptr_eq(&cell, &status_cell))
         {
-            self.insert_history_cell_lines(tui, status_cell.as_ref(), width);
+            self.insert_prepared_history_cell_lines(
+                tui,
+                status_cell.as_ref(),
+                updated_lines.clone(),
+            );
             self.last_rendered_history_tail = Some(RenderedHistoryTail {
                 cell: Arc::downgrade(&status_cell),
                 lines: updated_lines.clone(),
@@ -222,7 +248,11 @@ impl App {
             &updated_lines[prefix_len..],
             wrap_policy,
         )? {
-            self.insert_history_cell_lines(tui, status_cell.as_ref(), width);
+            self.insert_prepared_history_cell_lines(
+                tui,
+                status_cell.as_ref(),
+                updated_lines.clone(),
+            );
         }
         self.last_rendered_history_tail = Some(RenderedHistoryTail {
             cell: Arc::downgrade(&status_cell),

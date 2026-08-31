@@ -169,6 +169,7 @@ pub(crate) use list_selection_view::ListSelectionView;
 pub(crate) use list_selection_view::OnSelectionChangedCallback;
 pub(crate) use list_selection_view::PickerSurface;
 pub(crate) use list_selection_view::SelectionDescriptionLayout;
+pub(crate) use list_selection_view::SelectionListHeight;
 pub(crate) use list_selection_view::SelectionRowDisplay;
 pub(crate) use list_selection_view::SelectionToggle;
 pub(crate) use list_selection_view::SelectionViewParams;
@@ -942,6 +943,12 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn additional_keymap_chord_action(&self) -> Option<crate::keymap::KeymapActionId> {
+        self.view_stack
+            .last()
+            .and_then(|view| view.additional_keymap_chord_action())
+    }
+
     /// Handles a Ctrl+C press within the bottom pane.
     ///
     /// An active modal view is given the first chance to consume the key (typically to dismiss
@@ -1241,6 +1248,9 @@ impl BottomPane {
     }
 
     pub(crate) fn update_status_countdown_deadline(&mut self, deadline: Option<Instant>) {
+        if self.status_timer.countdown_deadline == deadline {
+            return;
+        }
         self.status_timer.countdown_deadline = deadline;
         self.request_redraw();
     }

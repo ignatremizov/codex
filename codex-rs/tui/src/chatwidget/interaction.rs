@@ -33,6 +33,10 @@ impl ChatWidget {
         self.bottom_pane.keymap_contexts()
     }
 
+    pub(crate) fn additional_keymap_chord_action(&self) -> Option<crate::keymap::KeymapActionId> {
+        self.bottom_pane.additional_keymap_chord_action()
+    }
+
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
         if self
             .dictation

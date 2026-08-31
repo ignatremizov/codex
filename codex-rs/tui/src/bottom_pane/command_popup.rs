@@ -298,6 +298,7 @@ impl CommandPopup {
                 GenericDisplayRow {
                     category_tag: None,
                     name,
+                    name_style: Default::default(),
                     name_prefix_spans: vec![if self.state.selected_idx == Some(index) {
                         "› ".into()
                     } else {
@@ -351,15 +352,6 @@ impl CommandItem {
                 .to_string()
                 .into(),
             Self::BackgroundTerminal(terminal) => terminal.process_id.as_str().into(),
-        }
-    }
-
-    fn description(&self) -> &str {
-        match self {
-            Self::Builtin(command) => command.description(),
-            Self::ServiceTier(command) => &command.description,
-            Self::Mcp(completion) => completion.description(),
-            Self::BackgroundTerminal(terminal) => &terminal.command_display,
         }
     }
 }
@@ -748,6 +740,7 @@ mod tests {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
                 CommandItem::Mcp(command) => command.text(),
+                CommandItem::BackgroundTerminal(terminal) => terminal.process_id,
             })
             .collect();
 

@@ -28,14 +28,19 @@ fn bare_navigation_commands_dispatch() {
 
 #[test]
 fn navigation_command_dispatches_from_prefix() {
-    let (mut composer, _rx) = new_test_composer();
-    type_chars_humanlike(&mut composer, &['/', 'a', 'g']);
+    for (prefix, expected) in [
+        ("/ag", SlashCommand::Agent),
+        ("/subag", SlashCommand::MultiAgents),
+    ] {
+        let (mut composer, _rx) = new_test_composer();
+        type_chars_humanlike(&mut composer, &prefix.chars().collect::<Vec<_>>());
 
-    let result = composer
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-        .0;
+        let result = composer
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .0;
 
-    assert_eq!(result, InputResult::Command(SlashCommand::Agents));
+        assert_eq!(result, InputResult::Command(expected));
+    }
 }
 
 #[test]

@@ -1,0 +1,29 @@
+---
+source: tui/src/app/agents_overview_actions_tests.rs
+assertion_line: 765
+expression: rendered
+---
+  Agent command center  Group: Project  g
+   All 0   Needs you 0   Working 0   Ready 0   Inactive 0
+  ────────────────────────────────────────────────────────────────────────────
+  Loading tasks…
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ? help  esc back  ↑/↓ move  enter open  n new

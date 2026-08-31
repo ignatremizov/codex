@@ -532,7 +532,7 @@ mod tests {
                 .expect("cached primary")
                 .reasoning_effort = Some(ReasoningEffort::High);
             read_thread.model = Some("closed-child-model".into());
-            read_thread.reasoning_effort = effort;
+            read_thread.reasoning_effort = effort.clone();
             let session = app
                 .session_state_for_thread_read(read_thread_id, &read_thread)
                 .await;

@@ -120,6 +120,12 @@ impl App {
             self.overlay_forward_event(tui, event)?;
             return Ok(true);
         }
+        if self.overlay.as_ref().is_some_and(
+            |overlay| matches!(overlay, Overlay::Transcript(overlay) if !overlay.tracks_active_thread()),
+        ) {
+            self.overlay_forward_event(tui, event)?;
+            return Ok(true);
+        }
         self.handle_legacy_transcript_event(tui, app_server, event)
     }
 
@@ -172,7 +178,7 @@ impl App {
             .add_error_message(format!("Failed to edit the selected prompt: {err:#}"));
     }
 
-    /// Open a live Review browser in either presentation; historical previews remain Full.
+    /// Open the active thread in the shared Review browser.
     pub(crate) fn open_transcript_overlay(&mut self, tui: &mut tui::Tui) {
         if tui.is_owned_screen() {
             self.transcript_view
@@ -329,7 +335,11 @@ impl App {
         if let Some(cell_idx) = nth_user_position(&self.transcript_cells, nth_user_message) {
             let changed = self.backtrack.nth_user_message != nth_user_message;
             self.backtrack.nth_user_message = nth_user_message;
-            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+            if let Some(t) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+            {
                 t.set_highlight_cell(Some(cell_idx));
             }
             if self.overlay.is_none() {
@@ -341,7 +351,11 @@ impl App {
             }
         } else {
             self.backtrack.nth_user_message = usize::MAX;
-            if let Some(Overlay::Transcript(t)) = &mut self.overlay {
+            if let Some(t) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+            {
                 t.set_highlight_cell(/*cell*/ None);
             }
             self.transcript_view.set_highlight(/*index*/ None);
@@ -350,8 +364,9 @@ impl App {
 
     /// Forwards an event to the overlay and closes it if done.
     ///
-    /// The transcript overlay draw path is special because the overlay should match the main
-    /// viewport while the active cell is still streaming or mutating.
+    /// The active-thread transcript draw path is special because it should match the main viewport
+    /// while the active cell is still streaming or mutating. Inspection overlays pass no live-tail
+    /// key and remain fixed to the thread history that was loaded for inspection.
     ///
     /// `TranscriptOverlay` owns committed transcript cells, while `ChatWidget` owns the current
     /// in-flight active cell (often a coalesced exec/tool group). During draws we append that
@@ -387,17 +402,22 @@ impl App {
             t.motion = crate::motion::MotionMode::from_animations_enabled(
                 self.local_settings.tui.animations && self.local_settings.tui.effects.shimmer,
             );
-            let active_key = self.chat_widget.active_cell_transcript_key();
+            let active_key = t
+                .tracks_active_thread()
+                .then(|| self.chat_widget.active_cell_transcript_key())
+                .flatten();
             let chat_widget = &self.chat_widget;
             let detailed = t.is_detailed();
             let size = tui.prepare_draw_size()?;
-            t.sync_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
-                if detailed {
-                    chat_widget.active_cell_transcript_hyperlink_lines(width)
-                } else {
-                    chat_widget.active_cell_review_hyperlink_lines(width)
-                }
-            });
+            if t.tracks_active_thread() {
+                t.sync_live_tail(size.width.max(/*other*/ 1), active_key, |width| {
+                    if detailed {
+                        chat_widget.active_cell_transcript_hyperlink_lines(width)
+                    } else {
+                        chat_widget.active_cell_review_hyperlink_lines(width)
+                    }
+                });
+            }
             // Refresh visible rows before selection captures this live revision.
             let result =
                 if input { t.draw(tui) } else { Ok(()) }.and_then(|()| t.handle_event(tui, event));

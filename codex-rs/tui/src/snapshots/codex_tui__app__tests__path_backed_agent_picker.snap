@@ -1,23 +1,21 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 3067
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Agents
   Select an agent to watch. ⌥+← previous, ⌥+→ next.
 
-
   Filter by ref, name, role, path, or UUID
+
 › 2 • /root/worker (wake · approval)  00000000-0000-0000-0000-000000000123 ·
                                       running · approval pending
 
+
   /root/worker
   running · ref 2
-
-  UUID
-  00000000-0000-0000-0000-000000000123
-
-  Path
-  /root/worker
+  UUID: 00000000-0000-0000-0000-000000000123
+  Path: /root/worker
 
   Response: wake · current turn
   Commentary: none
@@ -26,6 +24,5 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Approval: pending
 
   Enter opens this thread
-
-  Tab opens controls for the selected agent.
+  ctrl+t inspects transcript · Tab opens controls.
   Tab opens controls

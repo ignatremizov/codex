@@ -12,6 +12,7 @@ use cached_rows::CachedRows;
 use view::PagerView;
 
 pub(crate) use transcript::TranscriptOverlay;
+use transcript::TranscriptOverlayScope;
 
 #[cfg(test)]
 #[path = "pager_overlay/transcript_tests.rs"]
@@ -63,6 +64,18 @@ impl Overlay {
         Self::Transcript(overlay)
     }
 
+    pub(crate) fn new_inspection_transcript(
+        cells: Vec<Arc<dyn HistoryCell>>,
+        keymap: PagerKeymap,
+    ) -> Self {
+        let mut overlay =
+            TranscriptOverlay::new_scoped(cells, keymap, TranscriptOverlayScope::FixedInspection);
+        overlay
+            .view
+            .open_review_browser(crate::history_cell::HistoryRenderMode::Rich);
+        Self::Transcript(overlay)
+    }
+
     pub(crate) fn new_static_with_lines(
         lines: Vec<Line<'static>>,
         title: String,
@@ -103,6 +116,14 @@ impl Overlay {
             Overlay::Transcript(o) => o.is_done(),
             Overlay::Static(o) => o.is_done(),
             Overlay::Analytics(o) => o.is_done,
+        }
+    }
+
+    /// Returns the transcript that mirrors the displayed thread, excluding fixed inspections.
+    pub(crate) fn active_transcript_mut(&mut self) -> Option<&mut TranscriptOverlay> {
+        match self {
+            Self::Transcript(transcript) if transcript.tracks_active_thread() => Some(transcript),
+            Self::Transcript(_) | Self::Static(_) | Self::Analytics(_) => None,
         }
     }
 }
@@ -275,6 +296,15 @@ mod tests {
 
     fn default_pager_keymap() -> crate::keymap::PagerKeymap {
         crate::keymap::RuntimeKeymap::defaults().pager
+    }
+
+    #[test]
+    fn inspection_transcript_is_fixed_while_review_transcript_tracks_active_thread() {
+        let mut active = Overlay::new_review_transcript(Vec::new(), default_pager_keymap());
+        let mut inspection = Overlay::new_inspection_transcript(Vec::new(), default_pager_keymap());
+
+        assert!(active.active_transcript_mut().is_some());
+        assert!(inspection.active_transcript_mut().is_none());
     }
 
     fn static_overlay(lines: Vec<Line<'static>>, title: &str) -> StaticOverlay {
