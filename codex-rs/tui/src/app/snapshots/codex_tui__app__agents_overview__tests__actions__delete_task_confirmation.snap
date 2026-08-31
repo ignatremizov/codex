@@ -1,6 +1,7 @@
 ---
 source: tui/src/app/agents_overview_actions_tests.rs
-expression: "normalize_agent_center_snapshot(render_bottom_popup(&app.chat_widget, 80))"
+assertion_line: 1254
+expression: rendered
 ---
   Agent command center  Group: Project  g
    All 1   Needs you 0   Working 0   Ready 1   Inactive 0
@@ -10,13 +11,13 @@ expression: "normalize_agent_center_snapshot(render_bottom_popup(&app.chat_widge
   › ○ Current task                                     Ready           2m ago
 
       Permanently delete “Current task”?
-      Tasks with saved side chats stay intact. Otherwise, deleting this
-      task stops its running work and permanently deletes its history and
-      its child agents’ history.
+      This permanently deletes the selected task and its saved side chats.
+      Spawned agents and unrelated threads are kept. This cannot be
+      undone.
 
 
     › 1. Cancel
-      2. Permanently delete task and child agents
+      2. Permanently delete task and saved side chats
 
       enter select · esc back
 

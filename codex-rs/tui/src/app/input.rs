@@ -193,6 +193,7 @@ impl App {
                 return Some(key_event);
             }
         }
+        let additional_action = self.active_additional_keymap_chord_action();
         let was_pending = self.key_chord_matcher.is_pending();
         if !was_pending
             && contexts.is_warnings()
@@ -220,10 +221,13 @@ impl App {
         {
             return Some(key_event);
         }
-        match self
-            .key_chord_matcher
-            .advance(key_event, &self.keymap.chords, contexts)
-        {
+        match self.key_chord_matcher.advance_with_additional_action(
+            key_event,
+            &self.keymap.chords,
+            contexts,
+            additional_action,
+            tokio::time::Instant::now(),
+        ) {
             crate::keymap::KeyChordMatch::PassThrough => {
                 if was_pending {
                     self.chat_widget.request_redraw();
@@ -256,7 +260,12 @@ impl App {
             self.cancel_pending_key_chord();
         }
         let contexts = self.key_chord_contexts(tui);
-        if self.key_chord_matcher.expire(contexts) {
+        let additional_action = self.active_additional_keymap_chord_action();
+        if self.key_chord_matcher.expire_with_additional_action(
+            contexts,
+            additional_action,
+            tokio::time::Instant::now(),
+        ) {
             self.chat_widget.request_redraw();
         }
     }
@@ -376,6 +385,13 @@ impl App {
             contexts
         };
         contexts.with_voice_toggle(&self.keymap)
+    }
+
+    fn active_additional_keymap_chord_action(&self) -> Option<crate::keymap::KeymapActionId> {
+        if self.overlay.is_some() {
+            return None;
+        }
+        self.chat_widget.additional_keymap_chord_action()
     }
 
     pub(super) async fn launch_external_editor(&mut self, tui: &mut tui::Tui) {

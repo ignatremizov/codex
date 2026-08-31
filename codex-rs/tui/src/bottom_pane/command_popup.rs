@@ -312,6 +312,7 @@ impl CommandPopup {
                 let unavailable = self.is_unavailable(&item);
                 GenericDisplayRow {
                     name,
+                    name_style: Default::default(),
                     name_prefix_spans: vec![if self.state.selected_idx == Some(index)
                         && !unavailable
                     {
@@ -398,15 +399,6 @@ impl CommandItem {
                 .to_string()
                 .into(),
             Self::BackgroundTerminal(terminal) => terminal.process_id.as_str().into(),
-        }
-    }
-
-    fn description(&self) -> &str {
-        match self {
-            Self::Builtin(command) => command.description(),
-            Self::ServiceTier(command) => &command.description,
-            Self::Mcp(completion) => completion.description(),
-            Self::BackgroundTerminal(terminal) => &terminal.command_display,
         }
     }
 }

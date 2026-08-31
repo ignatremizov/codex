@@ -9,6 +9,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::UserInput;
 use pretty_assertions::assert_eq;
+use std::collections::HashSet;
 
 fn turn(id: &str, status: TurnStatus, item_ids: &[&str]) -> Turn {
     Turn {
@@ -39,7 +40,10 @@ fn overlapping_history_keeps_live_turn_state_and_newer_items() {
         turn("old", TurnStatus::Completed, &["first"]),
         turn("shared", TurnStatus::Completed, &["before", "overlap"]),
     ];
-    merge_older_turns(&mut current, older);
+    assert_eq!(
+        reconcile_older_turns(&mut current, older, &HashSet::from(["shared".to_string()]),),
+        HashSet::from(["first".to_string(), "before".to_string()]),
+    );
     assert_eq!(
         current,
         vec![
@@ -49,6 +53,34 @@ fn overlapping_history_keeps_live_turn_state_and_newer_items() {
                 TurnStatus::InProgress,
                 &["before", "overlap", "live"]
             ),
+        ],
+    );
+}
+
+#[test]
+fn page_reconciliation_preserves_live_payloads_and_rejects_removed_turns() {
+    let mut current = vec![turn("live", TurnStatus::InProgress, &["newer"])];
+    let incoming = vec![
+        turn("older", TurnStatus::Completed, &["old"]),
+        turn("live", TurnStatus::Completed, &["older", "newer"]),
+        turn("removed", TurnStatus::Completed, &["stale"]),
+    ];
+
+    let inserted = reconcile_older_turns(
+        &mut current,
+        incoming,
+        &HashSet::from(["live".to_string(), "removed".to_string()]),
+    );
+
+    assert_eq!(
+        inserted,
+        HashSet::from(["old".to_string(), "older".to_string()])
+    );
+    assert_eq!(
+        current,
+        vec![
+            turn("older", TurnStatus::Completed, &["old"]),
+            turn("live", TurnStatus::InProgress, &["older", "newer"]),
         ],
     );
 }
@@ -364,4 +396,41 @@ async fn browsing_waits_for_a_prompt_outside_the_initial_history_window() -> Res
     );
     tui.set_owned_screen(/*owned*/ false)?;
     Ok(())
+}
+
+#[test]
+fn empty_page_preserves_live_state_when_view_not_loaded() {
+    page_hydrates_not_loaded_view_without_replacing_live_state(/*has_item*/ false)
+}
+
+#[test]
+fn older_page_preserves_live_state_when_view_not_loaded() {
+    page_hydrates_not_loaded_view_without_replacing_live_state(/*has_item*/ true)
+}
+
+fn page_hydrates_not_loaded_view_without_replacing_live_state(has_item: bool) {
+    let mut current = vec![turn("live", TurnStatus::InProgress, &["newer"])];
+    current[0].items_view = TurnItemsView::NotLoaded;
+    let older_ids = if has_item { vec!["older"] } else { Vec::new() };
+    let inserted = reconcile_older_turns(
+        &mut current,
+        vec![turn("live", TurnStatus::Completed, &older_ids)],
+        &HashSet::from(["live".to_string()]),
+    );
+    let expected_ids = if has_item {
+        vec!["older", "newer"]
+    } else {
+        vec!["newer"]
+    };
+    assert_eq!(
+        current,
+        vec![turn("live", TurnStatus::InProgress, &expected_ids)]
+    );
+    assert_eq!(
+        inserted,
+        older_ids
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<HashSet<_>>()
+    );
 }

@@ -272,6 +272,72 @@ async fn completed_global_chords_toggle_output_and_request_external_editor() -> 
 }
 
 #[tokio::test]
+async fn tab_transcript_chord_inspects_agent_without_opening_controls() -> Result<()> {
+    let (mut app, mut app_events, _op_rx) = make_test_app_with_channels().await;
+    let main_thread_id =
+        codex_protocol::ThreadId::from_string("00000000-0000-0000-0000-000000000001")?;
+    let child_thread_id =
+        codex_protocol::ThreadId::from_string("00000000-0000-0000-0000-000000000002")?;
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("Hume".to_string()),
+        Some("reviewer".to_string()),
+        /*is_closed*/ false,
+    );
+
+    let mut config = TuiKeymap::default();
+    config.global.open_transcript = Some(KeybindingsSpec::One(KeybindingSpec(
+        "tab ctrl-t".to_string(),
+    )));
+    config.composer.queue = Some(KeybindingsSpec::Many(Vec::new()));
+    let runtime =
+        RuntimeKeymap::from_config(&config).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    app.chat_widget.apply_keymap_update(config, &runtime);
+    app.keymap = runtime;
+
+    let params = app.agent_picker_selection_view_params(Some(child_thread_id));
+    assert_eq!(
+        params.footer_note.as_ref().map(ToString::to_string),
+        Some("tab ⌃t inspects transcript.".to_string())
+    );
+    assert!(
+        params
+            .items
+            .iter()
+            .all(|item| item.secondary_action.is_none())
+    );
+    app.chat_widget.show_selection_view(params);
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    assert_eq!(
+        app.route_key_chord_event(&mut tui, KeyCode::Tab.into()),
+        None
+    );
+    let dispatch_event = app
+        .route_key_chord_event(&mut tui, ctrl('t'))
+        .expect("second stroke should produce the transcript dispatch token");
+    app.chat_widget.handle_key_event(dispatch_event);
+
+    assert!(matches!(
+        app_events.try_recv(),
+        Ok(AppEvent::InspectAgentTranscript(thread_id)) if thread_id == child_thread_id
+    ));
+    assert!(
+        app_events.try_recv().is_err(),
+        "the Tab controls action must not also fire"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn wrong_second_stroke_passes_through_but_escape_is_consumed() -> Result<()> {
     let (mut app, mut tui, mut app_server) = chord_app().await?;
 
@@ -875,7 +941,7 @@ async fn physical_chords_route_list_and_mixed_request_input_modals() -> Result<(
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dashboard_chord_hint_survives_refresh_and_clears_on_cancel() -> Result<()> {
     let mut app = make_test_app().await;
     app.agents_overview
@@ -890,9 +956,13 @@ async fn dashboard_chord_hint_survives_refresh_and_clears_on_cancel() -> Result<
     let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
     app.chat_widget.show_bottom_pane_view(Box::new(view));
     let before = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    app.render_chat_widget_frame(
+        &mut tui,
+        ratatui::layout::Size::new(/*width*/ 80, /*height*/ 24),
+    )?;
+    let before_frame = tui.terminal.previous_buffer().clone();
     assert_eq!(app.route_key_chord_event(&mut tui, ctrl('x')), None);
     let _ = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
-    tokio::time::pause();
     tokio::time::advance(crate::keymap::CHORD_REVEAL_DELAY).await;
     app.render_chat_widget_frame(
         &mut tui,
@@ -903,6 +973,18 @@ async fn dashboard_chord_hint_survives_refresh_and_clears_on_cancel() -> Result<
         app.route_key_chord_event(&mut tui, KeyCode::Esc.into()),
         None
     );
+    assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 80), before);
+
+    assert_eq!(app.route_key_chord_event(&mut tui, ctrl('x')), None);
+    assert!(app.key_chord_matcher.is_pending());
+    tokio::time::advance(crate::keymap::KEY_CHORD_TIMEOUT).await;
+    app.expire_pending_key_chord(&tui);
+    assert!(!app.key_chord_matcher.is_pending());
+    app.render_chat_widget_frame(
+        &mut tui,
+        ratatui::layout::Size::new(/*width*/ 80, /*height*/ 24),
+    )?;
+    assert_eq!(tui.terminal.previous_buffer(), &before_frame);
     assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 80), before);
     Ok(())
 }

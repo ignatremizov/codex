@@ -1,5 +1,6 @@
 //! Load bounded history pages into the transcript before updating its owned or inline viewport.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -88,30 +89,54 @@ impl App {
             app_server.cancel_older_history_page(thread_id, cursor);
             return Ok(());
         };
-        let (cwd, mut turns) = {
+        let (cwd, snapshotted_turn_ids, mut turns) = {
             let store = store.lock().await;
             (
                 store
                     .session
                     .as_ref()
                     .map_or_else(|| self.config.cwd.clone(), |session| session.cwd.clone()),
-                store.turns.clone(),
+                store
+                    .turns
+                    .iter()
+                    .map(|turn| turn.id.clone())
+                    .collect::<HashSet<_>>(),
+                store
+                    .turns
+                    .iter()
+                    .map(|turn| Turn {
+                        id: turn.id.clone(),
+                        root_turn_id: turn.root_turn_id.clone(),
+                        items: Vec::new(),
+                        items_view: turn.items_view,
+                        status: turn.status.clone(),
+                        error: turn.error.clone(),
+                        started_at: turn.started_at,
+                        completed_at: turn.completed_at,
+                        duration_ms: turn.duration_ms,
+                    })
+                    .collect(),
             )
         };
         let items = app_server
             .apply_older_history_page(thread_id, cursor, page, &mut turns)
             .await?;
-        let hidden_item_ids = hidden_review_item_ids(&turns);
+        let mut locked_store = store.lock().await;
+        let inserted = reconcile_older_turns(&mut locked_store.turns, turns, &snapshotted_turn_ids);
+        let mut items = items;
+        items.retain(|item| inserted.contains(item.id()));
+        let turns = &locked_store.turns;
+        let hidden_item_ids = hidden_review_item_ids(turns);
         let visibility = if self.config.show_raw_agent_reasoning {
             RawReasoningVisibility::Visible
         } else {
             RawReasoningVisibility::Hidden
         };
         let width = tui.terminal.last_known_screen_size.width;
-        self.remove_hidden_review_cells(tui, &turns, &hidden_item_ids, thread_id, &cwd, visibility);
+        self.remove_hidden_review_cells(tui, turns, &hidden_item_ids, thread_id, &cwd, visibility);
         let cells = self.project_older_history_cells(
             items,
-            &turns,
+            turns,
             &hidden_item_ids,
             thread_id,
             &cwd,
@@ -127,7 +152,6 @@ impl App {
             } else {
                 TranscriptHistoryState::Complete
             };
-            merge_older_turns(&mut store.lock().await.turns, turns);
             tui.frame_requester().schedule_frame();
             return Ok(());
         }
@@ -135,7 +159,7 @@ impl App {
         self.transcript_view
             .history_loaded(&self.transcript_cells, inserted.clone());
         if !inserted.is_empty() {
-            self.join_older_activity_group(inserted.end, &turns);
+            self.join_older_activity_group(inserted.end, turns);
         }
         let metadata = crate::thread_transcript::collab_agent_metadata_from_items(
             turns.iter().flat_map(Turn::item_payloads),
@@ -160,16 +184,17 @@ impl App {
         }
         self.transcript_cells = refreshed_cells;
         for (thread_id, metadata) in metadata {
-            self.chat_widget.set_collab_agent_metadata(
-                thread_id,
-                metadata.agent_nickname,
-                metadata.agent_role,
-            );
+            self.chat_widget
+                .merge_collab_agent_metadata(thread_id, metadata);
         }
-        if labels_changed && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+        if labels_changed
+            && let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+        {
             overlay.replace_cells(self.transcript_cells.clone());
         }
-        merge_older_turns(&mut store.lock().await.turns, turns);
         self.scrollback_has_older_history = app_server.has_older_history(thread_id);
         if self.backtrack.overlay_preview_active
             && self.backtrack.nth_user_message == usize::MAX
@@ -276,7 +301,11 @@ impl App {
         self.transcript_view.restart_search();
         self.transcript_view
             .history_loaded(&self.transcript_cells, 0..0);
-        if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+        if let Some(overlay) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             overlay.replace_cells(self.transcript_cells.clone());
         }
     }
@@ -364,7 +393,11 @@ impl App {
                     .saturating_add(added_prompts)
             };
         }
-        let index = if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+        let index = if let Some(overlay) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             overlay.prepend(cells.clone())
         } else {
             history_prefix_len(&self.transcript_cells)
@@ -424,7 +457,11 @@ impl App {
         width: u16,
     ) {
         let mut continue_to_start = false;
-        if let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut() {
+        if let Some(overlay) = self
+            .overlay
+            .as_mut()
+            .and_then(Overlay::active_transcript_mut)
+        {
             let previous_state = overlay.set_history_state(if self.scrollback_has_older_history {
                 TranscriptHistoryState::Partial
             } else {
@@ -447,7 +484,10 @@ impl App {
         }
         if continue_to_start
             && self.request_older_history_page(app_server, thread_id)
-            && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+            && let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
         {
             overlay.set_history_state(TranscriptHistoryState::LoadingBeginning);
         }
@@ -524,26 +564,44 @@ fn hidden_transcript_indices(
     indices
 }
 
-/// Preserve events received while the request was in flight and deduplicate overlapping pages.
-fn merge_older_turns(current_turns: &mut Vec<Turn>, mut older_turns: Vec<Turn>) {
-    older_turns.retain_mut(|turn| {
-        let Some(current) = current_turns
-            .iter_mut()
-            .find(|current| current.id == turn.id)
-        else {
-            return true;
-        };
-        let items = std::mem::take(&mut turn.items)
-            .into_iter()
-            .filter(|item| !current.items.iter().any(|known| known.id() == item.id()))
-            .collect::<Vec<_>>();
-        if current.items_view == codex_app_server_protocol::TurnItemsView::NotLoaded {
-            current.items_view = turn.items_view;
+/// Merge only page items into the latest store, preserving live item payloads and turn state.
+fn reconcile_older_turns(
+    current: &mut Vec<Turn>,
+    incoming: Vec<Turn>,
+    snapshotted_turn_ids: &HashSet<String>,
+) -> HashSet<String> {
+    let indices = current
+        .iter()
+        .enumerate()
+        .map(|(index, turn)| (turn.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut inserted = HashSet::new();
+    let mut older = Vec::new();
+    for mut turn in incoming {
+        if snapshotted_turn_ids.contains(&turn.id) && !indices.contains_key(&turn.id) {
+            continue;
         }
-        current.items.splice(0..0, items);
-        false
-    });
-    current_turns.splice(0..0, older_turns);
+        if let Some(&index) = indices.get(&turn.id) {
+            let retained = &mut current[index];
+            if retained.items_view == codex_app_server_protocol::TurnItemsView::NotLoaded {
+                retained.items_view = turn.items_view;
+            }
+            let mut known = retained
+                .items
+                .iter()
+                .map(|item| item.id().to_string())
+                .collect::<HashSet<_>>();
+            turn.items
+                .retain(|item| known.insert(item.id().to_string()));
+            inserted.extend(turn.items.iter().map(|item| item.id().to_string()));
+            retained.items.splice(0..0, turn.items);
+        } else {
+            inserted.extend(turn.items.iter().map(|item| item.id().to_string()));
+            older.push(turn);
+        }
+    }
+    current.splice(0..0, older);
+    inserted
 }
 
 #[cfg(test)]

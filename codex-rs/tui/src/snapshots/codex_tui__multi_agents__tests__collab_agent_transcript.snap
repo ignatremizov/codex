@@ -5,18 +5,18 @@ expression: snapshot
 • Spawned Robie [explorer] (gpt-5 high) (no commentary · wake on completion)
   └ Compute 11! and reply with just the integer result.
 
-• Sent input to Robie [explorer] (receive commentary · no wake on completion · allow replies · queue turn + reply)
+• Sent input to Robie [explorer] (gpt-5 high) (receive commentary · no wake on completion · allow replies · queue turn + reply)
   └ Please continue and return the answer only.
 
-• Sent input to Robie [explorer] (no commentary · presentation only)
+• Sent input to Robie [explorer] (gpt-5 high) (no commentary · presentation only)
   └ Record this update without returning your final.
 
-• Waiting for Robie [explorer]
+• Waiting for Robie [explorer] (gpt-5 high)
 
 • Finished waiting
-  └ Robie [explorer]: Completed - 39916800
-    Bob [worker]: Error - tool timeout
+  └ Robie [explorer] (gpt-5 high): Completed - 39916800
+    Bob [worker] (gpt-5-mini medium): Error - tool timeout
 
-• Closed Robie [explorer] (no commentary · no wake on completion · queue turn + reply)
+• Closed Robie [explorer] (gpt-5 high) (no commentary · no wake on completion · queue turn + reply)
 
-• Closed Robie [explorer] (no commentary · presentation only)
+• Closed Robie [explorer] (gpt-5 high) (no commentary · presentation only)

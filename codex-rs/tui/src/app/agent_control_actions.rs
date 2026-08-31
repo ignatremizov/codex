@@ -2,6 +2,10 @@
 
 use codex_app_server_protocol::AgentAliasState;
 use codex_protocol::ThreadId;
+use ratatui::style::Stylize as _;
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Wrap;
 
 use super::App;
 use crate::app_event::AppEvent;
@@ -175,9 +179,18 @@ impl App {
         let label = self
             .agent_navigation
             .display_name(thread_id, agent_root_thread_id);
+        let nickname = entry
+            .agent_nickname
+            .as_deref()
+            .unwrap_or(if is_primary {
+                codex_protocol::MAIN_AGENT_NICKNAME
+            } else {
+                label.as_str()
+            })
+            .to_string();
         self.chat_widget
             .show_selection_view(agent_control_actions_view_params(
-                thread_id, &target, label, state,
+                thread_id, &target, label, nickname, state,
             ));
     }
 }
@@ -186,6 +199,7 @@ fn agent_control_actions_view_params(
     thread_id: ThreadId,
     target: &str,
     label: String,
+    nickname: String,
     state: AgentControlTargetState,
 ) -> SelectionViewParams {
     let items = AgentControlActionKind::ALL
@@ -212,10 +226,18 @@ fn agent_control_actions_view_params(
         })
         .collect();
 
+    let title = Line::from(vec![
+        "Controls: ".bold(),
+        label
+            .fg(crate::agent_color::nickname_color(&nickname))
+            .bold(),
+    ]);
     SelectionViewParams {
         view_id: Some(AGENT_ACTIONS_VIEW_ID),
-        title: Some(format!("Controls: {label}")),
-        subtitle: Some(thread_id.to_string()),
+        header: Box::new(
+            Paragraph::new(vec![title, thread_id.to_string().dim().into()])
+                .wrap(Wrap { trim: false }),
+        ),
         footer_note: Some(
             "Prepared commands return to the current composer for confirmation.".into(),
         ),

@@ -1,27 +1,25 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 3293
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
   Agents
   Select an agent to watch. ⌥← previous, ⌥→ next.
 
-
   Filter by ref, name, role, path, or UUID
+
 › • /root/review (approval)           00000000-0000-0000-0000-000000000002 ·
                                       running · approval pending
   2 • /root/worker (wake · approval)  00000000-0000-0000-0000-000000000123 ·
                                       running
-  • Main [default] (current)          00000000-0000-0000-0000-000000000001 ·
+  • Main [default]                    00000000-0000-0000-0000-000000000001 ·
                                       idle
+
 
   /root/review
   running
-
-  UUID
-  00000000-0000-0000-0000-000000000002
-
-  Path
-  /root/review
+  UUID: 00000000-0000-0000-0000-000000000002
+  Path: /root/review
 
   Response: none
   Queued: 0
@@ -29,6 +27,5 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Approval: pending
 
   Enter opens this thread
-
-  Tab opens controls for the selected agent.
+  ⌃t inspects transcript · Tab opens controls.
   Tab opens controls

@@ -218,8 +218,8 @@ impl App {
             ),
             AgentsOverviewAction::Delete => (
                 format!("Permanently delete “{name}”?"),
-                "Tasks with saved side chats stay intact. Otherwise, deleting this task stops its running work and permanently deletes its history and its child agents’ history.",
-                "Permanently delete task and child agents",
+                "This permanently deletes the selected task and its saved side chats. Spawned agents and unrelated threads are kept. This cannot be undone.",
+                "Permanently delete task and saved side chats",
             ),
         };
         self.chat_widget.show_selection_view(SelectionViewParams {
@@ -287,9 +287,10 @@ impl App {
         if self.windows_sandbox_blocks_thread_switch() {
             return Ok(());
         }
-        // Cloud archives only the selected thread; Local lifecycle actions include descendants.
-        let removes_subtree = action != AgentsOverviewAction::Archive
-            || app_server.thread_params_mode()
+        // Only local archive removes the spawned subtree. Delete separately cascades into
+        // verified saved side chats, never into arbitrary spawned or adopted descendants.
+        let removes_subtree = action == AgentsOverviewAction::Archive
+            && app_server.thread_params_mode()
                 != crate::app_server_session::ThreadParamsMode::Cloud;
         // The overview may lack intermediate ancestors, or even the primary's metadata.
         let mut removes_primary = self.primary_thread_id == Some(thread_id);
@@ -331,7 +332,11 @@ impl App {
                 attempted = true;
                 match action {
                     AgentsOverviewAction::Archive => app_server.thread_archive(thread_id).await,
-                    AgentsOverviewAction::Delete => app_server.thread_delete(thread_id).await,
+                    AgentsOverviewAction::Delete => {
+                        app_server
+                            .delete_thread_with_saved_side_chats(thread_id)
+                            .await
+                    }
                 }
             }
             .await;
