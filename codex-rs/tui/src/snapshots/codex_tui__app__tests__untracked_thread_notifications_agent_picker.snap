@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 2899
 expression: "format!(\"Archived:\\n{archived_picker}\\nUnarchived:\\n{}\",\nrender_bottom_popup(&app.chat_widget,\n80)).replace(&archived_thread_id.to_string(), \"[archived]\")"
 ---
 Archived:
