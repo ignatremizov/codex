@@ -3908,6 +3908,9 @@ impl ThreadRequestProcessor {
                     }
                 };
                 thread.session_id = session_configured.session_id.to_string();
+                // Every loaded thread remains directly interactive in this fork, including V1
+                // and V2 children restored by cold resume.
+                thread.can_accept_direct_input = Some(true);
                 thread.thread_source = codex_thread
                     .config_snapshot()
                     .await

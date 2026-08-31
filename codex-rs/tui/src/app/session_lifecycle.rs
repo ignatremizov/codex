@@ -13,7 +13,6 @@ use super::app_server_event_targets::server_request_thread_id;
 use super::*;
 use crate::app_server_session::source_agent_path;
 use crate::app_server_session::thread_parent_thread_id;
-use codex_config::types::ResumeCwdMode;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]

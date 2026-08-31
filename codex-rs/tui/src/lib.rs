@@ -109,9 +109,9 @@ mod app_server_approval_conversions;
 mod app_server_session;
 mod approval_events;
 mod ascii_animation;
-mod backend_banners;
 #[cfg(not(all(target_os = "linux", target_env = "musl")))]
 mod audio_device;
+mod backend_banners;
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 #[allow(dead_code)]
 mod audio_device {
@@ -1467,6 +1467,7 @@ async fn run_ratatui_app(
                 token_usage: crate::token_usage::TokenUsage::default(),
                 thread_id: None,
                 resume_hint: None,
+                disconnect_info: None,
                 update_action: None,
                 exit_reason: ExitReason::Fatal(
                     "`codex fork --source-home` and `--from-rollout` require a local app server"
@@ -1497,6 +1498,7 @@ async fn run_ratatui_app(
                         token_usage: crate::token_usage::TokenUsage::default(),
                         thread_id: None,
                         resume_hint: None,
+                        disconnect_info: None,
                         update_action: None,
                         exit_reason: ExitReason::Fatal(format!(
                             "No forkable session metadata found in rollout {}.",
@@ -1530,6 +1532,7 @@ async fn run_ratatui_app(
                             token_usage: crate::token_usage::TokenUsage::default(),
                             thread_id: None,
                             resume_hint: None,
+                            disconnect_info: None,
                             update_action: None,
                             exit_reason: ExitReason::Fatal(format!(
                                 "No saved session found with ID {id_str} under source home {}.",

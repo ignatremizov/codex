@@ -13,6 +13,7 @@ use super::disconnect::serve_reconnect_requests;
 async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> Result<()> {
     for (recovered_queue, edit_offline) in [(true, false), (false, false), (true, true)] {
         let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+        app.config.tui_auto_recap = true;
         let id = ThreadId::new();
         let cwd = app.config.cwd.clone();
         app.config.model = Some("gpt-test".into());

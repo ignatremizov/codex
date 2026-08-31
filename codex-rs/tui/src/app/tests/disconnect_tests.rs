@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::app_server_session::ThreadParamsMode;
+use crate::bottom_pane::SelectionItem;
+use crate::bottom_pane::SelectionViewParams;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCRequest;
 use futures::SinkExt;
