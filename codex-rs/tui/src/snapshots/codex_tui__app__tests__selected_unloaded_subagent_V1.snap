@@ -5,4 +5,4 @@ expression: "normalize_snapshot_paths(render_bottom_popup(&app.chat_widget, 80))
 ---
 › Ask Codex to do anything
 
-  gpt-6.1-sol default · /tmp/project · child-0 [worker]
+  loading default · /tmp/project · child-0 [worker]
