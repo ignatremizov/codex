@@ -1,6 +1,35 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[tokio::test]
+async fn unchanged_countdown_deadlines_do_not_schedule_another_frame() {
+    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+    let (mut chat, _rx, _ops) = make_chatwidget_manual_with_auth(
+        /*model_override*/ None,
+        /*has_chatgpt_account*/ false,
+        /*has_codex_backend_auth*/ false,
+        frame_requester,
+    )
+    .await;
+    chat.on_task_started();
+    while draw_rx.try_recv().is_ok() {}
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 10);
+    for (next, changed) in [
+        (None, false),
+        (Some(deadline), true),
+        (Some(deadline), false),
+        (None, true),
+        (None, false),
+    ] {
+        chat.bottom_pane.update_status_countdown_deadline(next);
+        assert_eq!(draw_rx.try_recv().is_ok(), changed);
+        assert!(matches!(
+            draw_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+}
+
 fn poll(chat: &mut ChatWidget, item_id: &str, process_id: &str, deadline_at_ms: Option<i64>) {
     chat.handle_server_notification(
         ServerNotification::TerminalInteraction(

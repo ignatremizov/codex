@@ -132,8 +132,8 @@ impl App {
             ),
             AgentsOverviewAction::Delete => (
                 format!("Permanently delete “{name}”?"),
-                "This stops any running work in this task and its child agents, then permanently deletes their history. This cannot be undone.",
-                "Permanently delete task and child agents",
+                "This stops any running work in the selected task and permanently deletes its history. Child agents are kept. This cannot be undone.",
+                "Permanently delete selected task",
             ),
         };
         self.chat_widget.show_selection_view(SelectionViewParams {
@@ -171,6 +171,7 @@ impl App {
         if self.windows_sandbox_blocks_thread_switch() {
             return Ok(());
         }
+        // Archive includes descendants, but delete removes only the selected thread.
         // The overview may lack intermediate ancestors, or even the primary's metadata.
         let mut removes_primary = self.primary_thread_id == Some(thread_id);
         let mut attempted = false;
@@ -178,9 +179,14 @@ impl App {
         let events = tui.event_stream();
         let operation = async {
             let result = async {
-                self.stop_voice_for_removed_thread(app_server, thread_id)
-                    .await?;
-                if let Some(primary) = primary_thread_id
+                if action == AgentsOverviewAction::Archive
+                    || self.voice_owner_thread_id() == Some(thread_id)
+                {
+                    self.stop_voice_for_removed_thread(app_server, thread_id)
+                        .await?;
+                }
+                if action == AgentsOverviewAction::Archive
+                    && let Some(primary) = primary_thread_id
                     && primary != thread_id
                 {
                     removes_primary = app_server

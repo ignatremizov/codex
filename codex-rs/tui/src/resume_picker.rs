@@ -1143,7 +1143,7 @@ impl PickerState {
         else {
             return;
         };
-        let mut overlay = Overlay::new_transcript(
+        let mut overlay = Overlay::new_inspection_transcript(
             cells.clone(),
             self.keymap.pager.clone(),
             self.copy_on_select,
@@ -5306,6 +5306,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(text.contains("BAtail"), "Find query: {text}");
+        insta::assert_debug_snapshot!("inspected_transcript_remapped_find", buffer);
     }
 
     #[tokio::test]

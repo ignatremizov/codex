@@ -1,6 +1,8 @@
 //! In-app session picker transitions, preserving per-thread input and the view on cancellation.
 
 use super::*;
+use crate::bottom_pane::SelectionItem;
+use crate::bottom_pane::SelectionViewParams;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 
 impl App {

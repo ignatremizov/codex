@@ -15,6 +15,12 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) {
+        if self.current_displayed_thread_id() == Some(thread_id) {
+            self.scrollback_has_older_history = app_server.has_older_history(thread_id);
+            self.open_transcript_overlay(tui);
+            return;
+        }
+
         let raw_reasoning_visibility = if self.config.show_raw_agent_reasoning {
             RawReasoningVisibility::Visible
         } else {
@@ -37,7 +43,16 @@ impl App {
         };
 
         let _ = tui.enter_alt_screen();
-        self.overlay = Some(Overlay::new_transcript(cells, self.keymap.pager.clone()));
+        let mut overlay = Overlay::new_inspection_transcript(
+            cells,
+            self.keymap.pager.clone(),
+            self.local_settings
+                .copy_on_select(&codex_terminal_detection::terminal_info()),
+        );
+        if let Overlay::Transcript(view) = &mut overlay {
+            view.set_keymap_bindings(&self.keymap);
+        }
+        self.overlay = Some(overlay);
         tui.frame_requester().schedule_frame();
     }
 }

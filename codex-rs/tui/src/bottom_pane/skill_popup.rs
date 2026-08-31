@@ -141,6 +141,7 @@ impl SkillPopup {
                         }
                         .into(),
                     ],
+                    name_style: Default::default(),
                     match_indices: indices,
                     display_shortcut: None,
                     description: mention

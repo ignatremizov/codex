@@ -3,7 +3,9 @@
 use super::TranscriptCells;
 use crate::multi_agents::AgentMetadata;
 use crate::multi_agents::CollabAgentHistoryCell;
+use crate::multi_agents::spawn_request_summary;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::UserAgentControlStatus;
 use codex_protocol::ThreadId;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,22 +19,55 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
 ) -> HashMap<ThreadId, AgentMetadata> {
     let mut metadata = HashMap::<ThreadId, AgentMetadata>::new();
     for item in items {
-        if let ThreadItem::CollabAgentToolCall {
-            receiver_agents, ..
-        } = item
-        {
-            for agent in receiver_agents {
-                let Ok(thread_id) = ThreadId::from_string(&agent.thread_id) else {
+        match item {
+            ThreadItem::CollabAgentToolCall {
+                receiver_agents,
+                receiver_thread_ids,
+                ..
+            } => {
+                for agent in receiver_agents {
+                    let Ok(thread_id) = ThreadId::from_string(&agent.thread_id) else {
+                        continue;
+                    };
+                    let entry = metadata.entry(thread_id).or_default();
+                    if agent.agent_nickname.is_some() {
+                        entry.agent_nickname.clone_from(&agent.agent_nickname);
+                    }
+                    if agent.agent_role.is_some() {
+                        entry.agent_role.clone_from(&agent.agent_role);
+                    }
+                }
+                if let Some(request) = spawn_request_summary(item) {
+                    for thread_id in receiver_thread_ids {
+                        if let Ok(thread_id) = ThreadId::from_string(thread_id) {
+                            metadata.entry(thread_id).or_default().spawn_request =
+                                Some(request.clone());
+                        }
+                    }
+                }
+            }
+            ThreadItem::UserAgentControl {
+                target_thread_id: Some(thread_id),
+                nickname,
+                role,
+                status: UserAgentControlStatus::Succeeded,
+                ..
+            } => {
+                let Ok(thread_id) = ThreadId::from_string(thread_id) else {
                     continue;
                 };
                 let entry = metadata.entry(thread_id).or_default();
-                if agent.agent_nickname.is_some() {
-                    entry.agent_nickname.clone_from(&agent.agent_nickname);
+                if nickname.is_some() {
+                    entry.agent_nickname.clone_from(nickname);
                 }
-                if agent.agent_role.is_some() {
-                    entry.agent_role.clone_from(&agent.agent_role);
+                if role.is_some() {
+                    entry.agent_role.clone_from(role);
+                }
+                if let Some(request) = spawn_request_summary(item) {
+                    entry.spawn_request = Some(request);
                 }
             }
+            _ => {}
         }
     }
     metadata

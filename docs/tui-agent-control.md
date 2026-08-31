@@ -522,6 +522,12 @@ Review work has no dedicated `/agent` verb or special lifecycle state. A user ca
 
 ## Lifecycle and race invariants
 
+Dashboard archive and delete have different scopes. Archive includes the selected
+task's descendants; delete stops and removes only the selected thread, retaining
+child agents and their histories. Deleting a root while viewing a surviving child
+must keep that child attached and running. Dashboard cache invalidation is not
+evidence that any related runtime was stopped.
+
 - Resolve the source, target, and source presentation before mutation.
 - Allocate a child alias and current parent edge in one durable transaction before publishing the child to the registry, TUI, app-server clients, or model tool result.
 - For a history-bearing root fork, import inherited ref and nickname reservations before publishing the fork through the loaded-thread map or thread-created notification. A concurrent first child must never claim an inherited selector.

@@ -11,6 +11,29 @@ use codex_protocol::protocol::sub_agent_completion_item;
 use codex_protocol::protocol::sub_agent_completion_item_with_visibility;
 use pretty_assertions::assert_eq;
 
+#[tokio::test]
+async fn partial_replayed_spawn_metadata_enriches_labels_without_erasing_navigation_identity() {
+    let (mut chat, _events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    let request = crate::multi_agents::SpawnRequestSummary {
+        model: Some("recorded-model".into()), reasoning_effort: None,
+    };
+    chat.set_collab_agent_metadata(thread_id, Some("Current name".into()), Some("reviewer".into()));
+    chat.merge_collab_agent_metadata(thread_id, AgentMetadata {
+        spawn_request: Some(request.clone()), ..Default::default()
+    });
+    assert_eq!(chat.collab_agent_metadata(thread_id), AgentMetadata {
+        agent_nickname: Some("Current name".into()), agent_role: Some("reviewer".into()),
+        spawn_request: Some(request.clone()),
+    });
+    chat.set_collab_agent_metadata(thread_id, Some("Renamed".into()), Some("reviewer".into()));
+    chat.merge_collab_agent_metadata(thread_id, AgentMetadata::default());
+    assert_eq!(chat.collab_agent_metadata(thread_id), AgentMetadata {
+        agent_nickname: Some("Renamed".into()), agent_role: Some("reviewer".into()),
+        spawn_request: Some(request),
+    });
+}
+
 fn publish(chat: &mut ChatWidget, item: AppServerThreadItem) {
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -21,6 +44,48 @@ fn publish(chat: &mut ChatWidget, item: AppServerThreadItem) {
         }),
         /*replay_kind*/ None,
     );
+}
+
+#[tokio::test]
+async fn failed_or_unknown_control_keeps_live_replayed_and_cold_agent_labels_consistent() {
+    let thread_id = ThreadId::new();
+    let confirmed: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+        "type": "userAgentControl", "id": "confirmed-spawn", "action": "spawn",
+        "targetThreadId": thread_id.to_string(), "nickname": "Confirmed name",
+        "role": "reviewer", "model": "confirmed-model", "reasoningEffort": "high",
+        "resumedTarget": false, "status": "succeeded",
+    }))
+    .expect("confirmed spawn metadata");
+    for status in ["failed", "unknown"] {
+        let unconfirmed: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+            "type": "userAgentControl", "id": "unconfirmed-control", "action": "spawn",
+            "targetThreadId": thread_id.to_string(), "nickname": "Requested name",
+            "role": "worker", "model": "requested-model", "reasoningEffort": "low",
+            "resumedTarget": false, "status": status,
+        }))
+        .expect("unconfirmed control audit");
+        let expected = crate::thread_transcript::collab_agent_metadata_from_items([&confirmed]);
+        assert_eq!(
+            crate::thread_transcript::collab_agent_metadata_from_items([&confirmed, &unconfirmed]),
+            expected,
+        );
+        for replay in [false, true] {
+            let (mut chat, _events, _operations) =
+                make_chatwidget_manual(/*model_override*/ None).await;
+            for item in [confirmed.clone(), unconfirmed.clone()] {
+                if replay {
+                    chat.replay_thread_item(
+                        item,
+                        "control-audit".into(),
+                        ReplayKind::ResumeInitialMessages,
+                    );
+                } else {
+                    publish(&mut chat, item);
+                }
+            }
+            assert_eq!(chat.collab_agent_metadata(thread_id), expected[&thread_id]);
+        }
+    }
 }
 
 #[tokio::test]
@@ -372,8 +437,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
                 agent_role: Some("default".to_string()),
             }],
             prompt: Some("Review the metadata presentation change.".to_string()),
-            model: None,
-            reasoning_effort: None,
+            model: Some("gpt-5.6-sol".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
             agents_states: HashMap::from([(
                 receiver_thread_id.to_string(),
                 AppServerCollabAgentState {
@@ -429,15 +494,15 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
     assert_snapshot!(
         rendered,
     @r"
-    • Spawned Herschel [default] (no commentary · no wake on completion)
+    • Spawned Herschel [default] (gpt-5.6-sol high) (no commentary · no wake on completion)
       └ Review the metadata presentation change.
 
 
-    • Sent input to Herschel [default] (no commentary · no wake on completion)
+    • Sent input to Herschel [default] (gpt-5.6-sol high) (no commentary · no wake on completion)
       └ Give me one random ingredient.
 
 
-    • Herschel [default] completed (● visible):
+    • Herschel [default] (gpt-5.6-sol high) completed (● visible):
       └ Cinnamon
     "
     );
