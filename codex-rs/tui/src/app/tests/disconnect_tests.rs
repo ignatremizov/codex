@@ -4,6 +4,8 @@ use super::*;
 use crate::app::reconnect::ReconnectPresentation;
 use crate::app::reconnect::reconnect;
 use crate::app_server_session::ThreadParamsMode;
+use crate::bottom_pane::SelectionItem;
+use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::tests::helpers::normalize_agent_center_snapshot;
 use codex_app_server_client::AppServerEvent;

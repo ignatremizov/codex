@@ -1061,13 +1061,19 @@ impl App {
     }
 
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
-        self.agent_navigation
+        // A failed archive can stop a saved side chat without removing it. Its
+        // retained sidebar entry must still allow the normal resume path.
+        self.thread_event_channels
             .get(&thread_id)
-            .is_some_and(|entry| entry.is_closed)
-            || self
-                .thread_event_channels
-                .get(&thread_id)
-                .is_none_or(|channel| channel.attachment() != ThreadEventAttachment::Live)
+            .is_none_or(|channel| channel.attachment() != ThreadEventAttachment::Live)
+            && self.agent_navigation.get(&thread_id).is_none_or(|entry| {
+                !entry.is_closed
+                    || self.thread_unavailable(thread_id)
+                    || self
+                        .side_threads
+                        .get(&thread_id)
+                        .is_some_and(|side| side.storage == SideChatStorage::Attached)
+            })
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
