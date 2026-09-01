@@ -63,7 +63,7 @@ async fn skill_sources_spend_the_same_remaining_budget() -> TestResult {
     let emitted =
         render_catalogs(&[("notes", "Hidden description.")], &omitted, &mut previous).await?;
     assert!(
-        emitted.contains("OR the task clearly matches a skill's name shown above, you must use that skill for that turn."),
+        emitted.contains("Follow a skill's instructions if the user names it (with `$SkillName` or plain text) or the task clearly matches its name shown above."),
         "{emitted}"
     );
     assert!(emitted.contains("- executor-notes: "), "{emitted}");
