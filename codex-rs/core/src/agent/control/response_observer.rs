@@ -783,6 +783,9 @@ impl AgentControl {
                 TerminalPresentationDelivery::Watcher,
                 || {},
             );
+            // This subscription was created after the target turn finished, so there is no
+            // ordered response event left to close an unanswered commentary admission.
+            self.mark_response_observer_terminal_processed(parent, child, &turn_id);
         }
         self.start_v1_response_watcher(
             watcher_registration,

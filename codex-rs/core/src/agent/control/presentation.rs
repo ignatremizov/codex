@@ -205,6 +205,12 @@ pub(crate) struct WatcherTerminalPresentation {
     pub(crate) presentation: AgentTerminalPresentation,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WatcherResponseEventStream {
+    Open,
+    Closed,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum SpawnedThreadRelease {
     Session(SessionPresentationId),
@@ -533,8 +539,47 @@ impl AgentControl {
         parent: SessionPresentationId,
         child: SessionPresentationId,
     ) -> Option<WatcherTerminalPresentation> {
+        self.take_watcher_terminal_presentation_if(parent, child, |_, _| true)
+    }
+
+    pub(crate) fn take_response_ordered_watcher_terminal_presentation(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        response_events: WatcherResponseEventStream,
+    ) -> Option<WatcherTerminalPresentation> {
+        self.take_watcher_terminal_presentation_if(parent, child, |state, terminal| {
+            let commentary_pending = state
+                .response_observation_by_observer_child
+                .get(&(parent, child))
+                .and_then(|relationship| relationship.turns.get(&terminal.turn_id))
+                .is_some_and(|observation| !observation.commentary_admissions.is_empty());
+            response_events == WatcherResponseEventStream::Closed
+                || !commentary_pending
+                || state.response_observer_terminal_turns.contains(&(
+                    parent,
+                    child,
+                    terminal.turn_id.clone(),
+                ))
+        })
+    }
+
+    fn take_watcher_terminal_presentation_if(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        is_ready: impl FnOnce(&PresentationState, &WatcherTerminalPresentation) -> bool,
+    ) -> Option<WatcherTerminalPresentation> {
         let mut state = self.wait_agent_presentations.state();
         let observer_child = (parent, child);
+        let ready = state
+            .watcher_terminals
+            .get(&observer_child)?
+            .front()
+            .is_some_and(|terminal| is_ready(&state, terminal));
+        if !ready {
+            return None;
+        }
         let (terminal, is_empty) = {
             let terminals = state.watcher_terminals.get_mut(&observer_child)?;
             (terminals.pop_front(), terminals.is_empty())

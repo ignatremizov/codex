@@ -130,6 +130,7 @@ impl Handler {
         }
 
         let deadline_at_ms = now_unix_timestamp_ms().checked_add(timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
         // Claim the final-outcome presentation before taking any status snapshot or subscription.
         // A child can complete during setup, and its watcher must already see this wait as the
         // owner.
@@ -246,7 +247,6 @@ impl Handler {
                 futures.push(wait_for_final_status(session, id, rx));
             }
             let mut results = Vec::new();
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
             loop {
                 match timeout_at(deadline, futures.next()).await {
                     Ok(Some(Some(result))) => {
@@ -289,8 +289,8 @@ impl Handler {
         let commentary = session
             .services
             .agent_control
-            .wait_commentary_before_terminal(session.presentation_id(), &claimed_target_turns)
-            .await;
+            .wait_commentary_before_terminal(session.presentation_id(), &claimed_target_turns);
+        let commentary = timeout_at(deadline, commentary).await.unwrap_or_default();
         for commentary in commentary {
             if !session
                 .services

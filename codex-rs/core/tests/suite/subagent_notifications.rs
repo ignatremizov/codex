@@ -6619,6 +6619,113 @@ async fn active_wait_delivers_subscribed_commentary_before_final_status(
     Ok(())
 }
 
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_wait_finishes_when_subscribed_commentary_is_omitted(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const CHILD_FOLLOW_UP: &str = "finish without a commentary response";
+    const FINAL: &str = "final response without commentary";
+    const SEND_CALL_ID: &str = "send-commentary-subscription-without-commentary";
+    const WAIT_CALL_ID: &str = "wait-after-omitted-commentary";
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, initial_child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "w": "x",
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        |builder| builder.with_history_mode(history_mode),
+    )
+    .await?;
+    let _ = wait_for_requests(&initial_child_request).await?;
+    let child_thread = test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+
+    let send_args = serde_json::to_string(&json!({
+        "target": spawned_id.clone(),
+        "message": CHILD_FOLLOW_UP,
+        "w": "c",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "send then wait without commentary"),
+        sse(vec![
+            ev_response_created("resp-send-without-commentary"),
+            ev_function_call_with_namespace(
+                SEND_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &send_args,
+            ),
+            ev_completed("resp-send-without-commentary"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, CHILD_FOLLOW_UP) && !body_contains(request, SEND_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-child-without-commentary"),
+            ev_assistant_message("msg-final-without-commentary", FINAL),
+            ev_completed("resp-child-without-commentary"),
+        ]))
+        .set_delay(Duration::from_millis(500)),
+    )
+    .await;
+    let wait_args = serde_json::to_string(&json!({
+        "targets": [spawned_id],
+        "timeout_ms": 10_000,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, SEND_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-wait-without-commentary"),
+            ev_function_call_with_namespace(
+                WAIT_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "wait_agent",
+                &wait_args,
+            ),
+            ev_completed("resp-wait-without-commentary"),
+        ]),
+    )
+    .await;
+    let after_wait = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, WAIT_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-after-wait-without-commentary"),
+            ev_assistant_message("msg-after-wait-without-commentary", "wait completed"),
+            ev_completed("resp-after-wait-without-commentary"),
+        ]),
+    )
+    .await;
+
+    timeout(
+        Duration::from_secs(5),
+        test.submit_turn("send then wait without commentary"),
+    )
+    .await??;
+
+    let request = wait_for_request_containing_text(&after_wait, WAIT_CALL_ID).await?;
+    assert!(request.body_contains_text(FINAL));
+    assert!(!request.body_contains_text("<subagent_commentary>"));
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn timed_out_wait_leaves_v1_final_wake_active() -> Result<()> {
     skip_if_no_network!(Ok(()));

@@ -1,5 +1,6 @@
 use super::presentation::ResponseObservationDeliveryKind;
 use super::presentation::ResponseObservationEventMatch;
+use super::presentation::WatcherResponseEventStream;
 use super::presentation::WatcherTerminalPresentation;
 use super::*;
 use crate::session::AgentResponseEvent;
@@ -79,7 +80,11 @@ impl AgentControl {
                     return WatcherTerminalPoll::Retry;
                 }
             }
-            if let Some(terminal) = self.take_watcher_terminal_presentation(parent, child) {
+            if let Some(terminal) = self.take_response_ordered_watcher_terminal_presentation(
+                parent,
+                child,
+                WatcherResponseEventStream::Open,
+            ) {
                 let Some(_lifecycle_guard) = self
                     .acquire_current_agent_lifecycle(child.thread_id, child_lifecycle_generation)
                     .await
@@ -111,10 +116,19 @@ impl AgentControl {
             } {
                 Some(response) => response,
                 None => {
-                    let Some(terminal) = self.take_watcher_terminal_presentation(parent, child)
-                    else {
+                    // A closed response stream has no earlier commentary left to process.
+                    let Some(terminal) = self.take_response_ordered_watcher_terminal_presentation(
+                        parent,
+                        child,
+                        WatcherResponseEventStream::Closed,
+                    ) else {
                         return WatcherTerminalPoll::Closed;
                     };
+                    self.mark_response_observer_terminal_processed(
+                        parent,
+                        child,
+                        &terminal.turn_id,
+                    );
                     let Some(_lifecycle_guard) = self
                         .acquire_current_agent_lifecycle(
                             child.thread_id,
