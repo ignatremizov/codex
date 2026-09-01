@@ -273,18 +273,17 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     - beta: Beta skill. (file: /Users/test/.codex/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/beta/SKILL.md)
     - gamma: Gamma skill. (file: /Users/test/.codex/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/gamma/SKILL.md)
     ### How to use skills
-    - Discovery: The list above is the skills available in this session (name + description + source locator). `file` entries live on the host filesystem, `executor package` and `orchestrator package` entries are accessed directly through `skills.read`, and `custom resource` entries use their provider's access mechanism.
-    - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+    - Trigger rules: Follow a skill's instructions if the user names it (with `$SkillName` or plain text) or the task clearly matches its description shown above.
     - Missing/blocked: If a named skill isn't in the list or its source can't be read, say so briefly and continue with the best fallback.
     - How to use a skill (progressive disclosure):
-      1) After deciding to use a skill, the main agent must read its `SKILL.md` completely before taking task actions. For a `file` entry, open the listed path. For an `executor package` or `orchestrator package`, pass the listed locator directly to `skills.read` as `package`; root aliases are resolved automatically. Omit `resource` to read `SKILL.md` directly without calling `skills.list`. If a read is paginated, follow `next_cursor` until EOF.
+      1) Read a skill's `SKILL.md` completely before taking task actions unless it has already been read in the current thread. Do not read the same skill again merely because a new turn started. When a read is needed, open the listed path for a `file` entry. For an `executor package` or `orchestrator package`, pass the listed locator directly to `skills.read` as `package`. Omit `resource` to read `SKILL.md` directly without calling `skills.list`. If a read is paginated, follow `next_cursor` until EOF.
       2) When `SKILL.md` references another resource, use the same access mechanism. For executor and orchestrator skills, pass the complete package-contained resource identifier with the same package to `skills.read`; do not treat `skill://` identifiers as filesystem paths.
-      3) If `SKILL.md` points to extra folders such as `references/`, use its routing instructions to identify the resources required for the task. The main agent must read each required instruction or reference file itself before acting on it. Do not delegate reading, summarizing, or interpreting skill instructions to a subagent. Subagents may still perform task work when the selected skill allows it.
+      3) If `SKILL.md` points to extra folders such as `references/`, use its routing instructions to identify the resources required for the task. Read each required instruction or reference file yourself before acting on it. Do not delegate reading, summarizing, or interpreting skill instructions to a subagent. Subagents may still perform task work when the selected skill allows it.
       4) For filesystem-backed skills, prefer running or patching provided scripts instead of retyping large code blocks. For executor and orchestrator skills, use `skills.read` and the available tools; do not invent a local path.
       5) Reuse provided assets or templates through the same source access mechanism instead of recreating them.
     - Coordination and sequencing:
       - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
-      - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
+      - Announce which skill(s) you are reading and why (one short line). If you skip an obvious skill, say why.
     - Context hygiene:
       - Progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file. Do not load unrelated references, scripts, or assets.
       - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
@@ -312,18 +311,17 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     - beta: Beta skill. (file: r0/beta/SKILL.md)
     - gamma: Gamma skill. (file: r0/gamma/SKILL.md)
     ### How to use skills
-    - Discovery: The list above is the skills available in this session (name + description + short path). Skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`.
-    - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+    - Trigger rules: Follow a skill's instructions if the user names it (with `$SkillName` or plain text) or the task clearly matches its description shown above.
     - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
     - How to use a skill (progressive disclosure):
-      1) After deciding to use a skill, the main agent must expand the listed short `path` with the matching alias from `### Skill roots`, then open and read its `SKILL.md` completely before taking task actions. If a read is truncated or paginated, continue until EOF.
+      1) Read a skill's `SKILL.md` completely before taking task actions unless it has already been read in the current thread. Do not read the same skill again merely because a new turn started. When a read is needed, expand the listed short `path` with the matching alias from `### Skill roots`, then open it. If a read is truncated or paginated, continue until EOF.
       2) When `SKILL.md` references relative paths (e.g., `scripts/foo.py`), resolve them relative to the directory containing that expanded `SKILL.md` first, and only consider other paths if needed.
-      3) If `SKILL.md` points to extra folders such as `references/`, use its routing instructions to identify the files required for the task. The main agent must read each required instruction or reference file itself before acting on it. Do not delegate reading, summarizing, or interpreting skill instructions to a subagent. Subagents may still perform task work when the selected skill allows it.
+      3) If `SKILL.md` points to extra folders such as `references/`, use its routing instructions to identify the files required for the task. Read each required instruction or reference file yourself before acting on it. Do not delegate reading, summarizing, or interpreting skill instructions to a subagent. Subagents may still perform task work when the selected skill allows it.
       4) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.
       5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
     - Coordination and sequencing:
       - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
-      - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
+      - Announce which skill(s) you are reading and why (one short line). If you skip an obvious skill, say why.
     - Context hygiene:
       - Progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file. Do not load unrelated references, scripts, or assets.
       - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
@@ -412,7 +410,7 @@ fn path_aliases_retain_every_skill_under_budget_pressure() {
     assert!(body.contains(&format!("- `r0` = `{root}`")));
     assert!(body.contains("(file: r0/skill-0/SKILL.md)"));
     assert!(body.contains("(file: r0/skill-11/SKILL.md)"));
-    assert!(body.contains("Skill bodies live on disk at the listed paths after expanding"));
+    assert!(body.contains("expand the listed short `path` with the matching alias"));
     assert!(!body.contains("additional skills omitted"));
 }
 
@@ -554,7 +552,7 @@ fn mixed_catalogs_keep_absolute_authority_aware_rendering_under_budget_pressure(
     assert!(!body.contains("### Skill roots"));
     assert!(body.contains(&format!("(file: {root}/skill-0/SKILL.md)")));
     assert!(body.contains("(executor package: executor-skill)"));
-    assert!(body.contains("For a `file` entry, open the listed path."));
+    assert!(body.contains("When a read is needed, open the listed path for a `file` entry."));
     assert!(!body.contains("additional skills omitted"));
 }
 
