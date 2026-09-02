@@ -572,7 +572,7 @@ macro_rules! default_bindings {
 }
 
 impl RuntimeKeymap {
-    /// Return built-in defaults.
+    /// Return resolved built-in defaults.
     ///
     /// This is a convenience for tests and bootstrapping UI state before user
     /// config has been loaded. It should not be used as a fallback after
@@ -583,9 +583,11 @@ impl RuntimeKeymap {
 
         DEFAULTS
             .get_or_init(|| {
-                Self::from_config(&TuiKeymap::default()).unwrap_or_else(|error| {
-                    panic!("built-in keymap defaults must be valid: {error}")
-                })
+                Self::from_config_with_features(
+                    &TuiKeymap::default(),
+                    RuntimeKeymapFeatures::default(),
+                )
+                .unwrap_or_else(|error| panic!("built-in keymap defaults must be valid: {error}"))
             })
             .clone()
     }
@@ -2031,7 +2033,7 @@ impl RuntimeKeymap {
         validate_no_reserved(
             "pager",
             context_bindings(KeymapContext::Pager),
-            TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS,
+            TRANSCRIPT_RESERVED_BINDINGS,
             [],
         )?;
 
@@ -2210,7 +2212,7 @@ const MAIN_RESERVED_BINDINGS: &[(&str, KeyBinding)] = &[
     ),
 ];
 
-const TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS: &[(&str, KeyBinding)] = &[
+const TRANSCRIPT_RESERVED_BINDINGS: &[(&str, KeyBinding)] = &[
     (
         "fixed.transcript_edit_previous",
         key_hint::plain(KeyCode::Esc),
@@ -2226,6 +2228,14 @@ const TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS: &[(&str, KeyBinding)] = &[
     (
         "fixed.transcript_confirm_edit",
         key_hint::plain(KeyCode::Enter),
+    ),
+    (
+        "fixed.transcript_loaded_window_top",
+        key_hint::ctrl(KeyCode::Up),
+    ),
+    (
+        "fixed.transcript_loaded_window_bottom",
+        key_hint::ctrl(KeyCode::Down),
     ),
 ];
 
@@ -2669,10 +2679,7 @@ mod tests {
             runtime.composer.history_search_next,
             vec![key_hint::ctrl(KeyCode::Char('s'))]
         );
-        assert_eq!(
-            runtime.composer.toggle_dictation,
-            vec![key_hint::alt(KeyCode::Char('m'))]
-        );
+        assert_eq!(runtime.composer.toggle_dictation, Vec::new());
         assert_eq!(runtime.editor.kill_whole_line, Vec::new());
     }
 
@@ -3555,7 +3562,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pager_bindings_that_collide_with_transcript_backtrack_keys() {
+    fn rejects_pager_bindings_that_collide_with_fixed_transcript_keys() {
         let mut keymap = TuiKeymap::default();
         keymap.pager.close = Some(one("left"));
 

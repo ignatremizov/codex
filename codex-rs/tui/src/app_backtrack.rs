@@ -142,27 +142,45 @@ impl App {
         if let TuiEvent::Key(key_event) = &event
             && let Some(Overlay::Transcript(overlay)) = self.overlay.as_ref()
             && overlay.tracks_active_thread()
-            && (overlay.should_load_older(*key_event)
+            && let Some(thread_id) = self.chat_widget.thread_id()
+        {
+            let load_from_start = overlay.should_load_from_start(*key_event);
+            let should_load_older = overlay.should_load_older(*key_event)
                 || (self.backtrack.overlay_preview_active
                     && self.backtrack.nth_user_message == 0
                     && matches!(key_event.code, KeyCode::Esc | KeyCode::Left)
-                    && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)))
-            && let Some(thread_id) = self.chat_widget.thread_id()
-            && app_server.has_older_history(thread_id)
-            && self.request_older_history_page(app_server, thread_id)
-        {
-            if let Some(overlay) = self
-                .overlay
-                .as_mut()
-                .and_then(Overlay::active_transcript_mut)
+                    && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat));
+            let has_older_history = app_server.has_older_history(thread_id);
+            if load_from_start
+                && let Some(overlay) = self
+                    .overlay
+                    .as_mut()
+                    .and_then(Overlay::active_transcript_mut)
             {
-                overlay.set_history_state(if overlay.should_load_from_start(*key_event) {
+                overlay.set_history_state(if has_older_history {
                     TranscriptHistoryState::LoadingBeginning
                 } else {
-                    TranscriptHistoryState::LoadingOlder
+                    TranscriptHistoryState::Complete
                 });
             }
-            tui.frame_requester().schedule_frame();
+            if should_load_older
+                && has_older_history
+                && self.request_older_history_page(app_server, thread_id)
+            {
+                if !load_from_start
+                    && let Some(overlay) = self
+                        .overlay
+                        .as_mut()
+                        .and_then(Overlay::active_transcript_mut)
+                {
+                    overlay.set_history_state(TranscriptHistoryState::LoadingOlder);
+                }
+                tui.frame_requester().schedule_frame();
+            } else if load_from_start {
+                // Record the absolute-jump intent even when another older-page request is already
+                // in flight. The completion path will continue paging until the true beginning.
+                tui.frame_requester().schedule_frame();
+            }
         }
         if self.backtrack.overlay_preview_active {
             match event {

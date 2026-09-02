@@ -213,8 +213,16 @@ fn transcript_overlay_scrolled_cells_and_live_tail_match_full_height_fallback() 
             )])),
             cell.clone(),
         ];
-        let mut actual = TranscriptOverlay::new(cells.clone(), RuntimeKeymap::defaults().pager);
-        let mut expected = TranscriptOverlay::new(cells, RuntimeKeymap::defaults().pager);
+        let mut actual = TranscriptOverlay::new(
+            cells.clone(),
+            RuntimeKeymap::defaults().pager,
+            crate::pager_overlay::TranscriptFlavor::LiveReviewBrowser,
+        );
+        let mut expected = TranscriptOverlay::new(
+            cells,
+            RuntimeKeymap::defaults().pager,
+            crate::pager_overlay::TranscriptFlavor::LiveReviewBrowser,
+        );
         for overlay in [&mut actual, &mut expected] {
             overlay.sync_live_tail(
                 width,
@@ -240,7 +248,7 @@ fn transcript_overlay_scrolled_cells_and_live_tail_match_full_height_fallback() 
             area.right().saturating_add(/*rhs*/ 1),
             area.bottom().saturating_add(/*rhs*/ 1),
         );
-        let total_height = actual.view.content_height(width);
+        let total_height = actual.view.content_height();
         for offset in [0, 1, 3, total_height.saturating_sub(/*rhs*/ 2), usize::MAX] {
             actual.view.scroll_offset = offset;
             expected.view.scroll_offset = offset;

@@ -1,3 +1,5 @@
+use super::super::TRANSCRIPT_RENDER_WINDOW_CELL_LIMIT;
+use super::super::TRANSCRIPT_RENDER_WINDOW_OVERLAP;
 use super::*;
 use std::collections::HashMap;
 use std::path::Path;
@@ -161,7 +163,7 @@ async fn inspection_overlay_supports_review_controls_and_escape_close() {
         ),
         @r"
     T R A N S C R I P T · R E V I E W
-     ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+     ↑/↓ to scroll   pgup/pgdn to page   home/end history   ctrl + ↑/ctrl + ↓ window
      q close   v detail   [ review prev   ] review next"
     );
 
@@ -172,7 +174,7 @@ async fn inspection_overlay_supports_review_controls_and_escape_close() {
             TuiEvent::Key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE)),
         )
         .expect("navigate review targets");
-    assert_eq!(Some(0), overlay.selected_review_target());
+    assert_eq!(Some(3), overlay.selected_review_target());
     overlay
         .handle_event(
             &mut tui,
@@ -354,6 +356,129 @@ async fn live_overlay_handles_mode_navigation_and_manual_scroll() {
         .expect("scroll");
     assert_eq!(None, overlay.selected_review_target());
     assert_eq!(None, overlay.view.pending_align_chunk_top);
+}
+
+#[tokio::test]
+async fn transcript_navigation_uses_global_ends_and_bounded_render_windows() {
+    let cell_count = TRANSCRIPT_RENDER_WINDOW_CELL_LIMIT + 44;
+    let cells = (0..cell_count)
+        .map(|index| {
+            Arc::new(PlainHistoryCell::new(vec![format!("cell {index}").into()]))
+                as Arc<dyn HistoryCell>
+        })
+        .collect();
+    let mut overlay = TranscriptOverlay::new(
+        cells,
+        crate::keymap::RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+    render_overlay_once(&mut overlay);
+
+    assert_eq!(
+        (
+            overlay.render_start,
+            overlay.render_end,
+            overlay.view.renderables.len(),
+        ),
+        (
+            /*render_start*/ 44,
+            /*render_end*/ cell_count,
+            TRANSCRIPT_RENDER_WINDOW_CELL_LIMIT,
+        )
+    );
+
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        )
+        .expect("jump to complete history start");
+    assert_eq!(
+        (
+            overlay.render_start,
+            overlay.render_end,
+            overlay.scroll_offset()
+        ),
+        (
+            /*render_start*/ 0,
+            /*render_end*/ TRANSCRIPT_RENDER_WINDOW_CELL_LIMIT,
+            /*scroll_offset*/ 0,
+        )
+    );
+
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)),
+        )
+        .expect("jump to loaded window bottom");
+    assert_eq!(overlay.scroll_offset(), usize::MAX);
+    assert_eq!(overlay.render_start, 0);
+
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        )
+        .expect("jump to complete history end");
+    assert_eq!(
+        (
+            overlay.render_start,
+            overlay.render_end,
+            overlay.scroll_offset()
+        ),
+        (
+            /*render_start*/ 44,
+            /*render_end*/ cell_count,
+            /*scroll_offset*/ usize::MAX,
+        )
+    );
+
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL)),
+        )
+        .expect("jump to loaded window top");
+    assert_eq!(overlay.scroll_offset(), 0);
+    assert_eq!(overlay.render_start, 44);
+
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        )
+        .expect("cross into previous bounded window");
+    assert_eq!(
+        (
+            overlay.render_start,
+            overlay.render_end,
+            overlay.scroll_offset()
+        ),
+        (
+            /*render_start*/ 0,
+            /*render_end*/ 44 + TRANSCRIPT_RENDER_WINDOW_OVERLAP,
+            /*scroll_offset*/ usize::MAX,
+        )
+    );
+
+    overlay
+        .handle_event(
+            &mut tui,
+            TuiEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        )
+        .expect("cross into next bounded window");
+    assert_eq!(
+        (
+            overlay.render_start,
+            overlay.render_end,
+            overlay.scroll_offset()
+        ),
+        (
+            /*render_start*/ 44, /*render_end*/ cell_count, /*scroll_offset*/ 0,
+        )
+    );
 }
 
 #[test]
@@ -772,7 +897,7 @@ fn live_review_overlay_snapshot_includes_mode_and_browser_hints() {
         ),
         @r"
     T R A N S C R I P T · R E V I E W
-     ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+     ↑/↓ to scroll   pgup/pgdn to page   home/end history   ctrl + ↑/ctrl + ↓ window
      q close   v detail   [ review prev   ] review next"
     );
 }
@@ -800,7 +925,7 @@ fn live_review_overlay_snapshot_keeps_pager_hints_during_backtrack() {
     assert_snapshot!(
         format!("{}\n{}", row(area.bottom() - 3), row(area.bottom() - 2)),
         @r"
-     ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+     ↑/↓ to scroll   pgup/pgdn to page   home/end history   ctrl + ↑/ctrl + ↓ window
      q to quit   esc/← to edit prev   → to edit next   enter to edit message"
     );
 }

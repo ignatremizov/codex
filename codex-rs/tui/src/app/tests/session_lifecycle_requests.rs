@@ -3323,7 +3323,10 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
     while app_event_rx.try_recv().is_ok() {}
     let initial_page_requests = recorded_params(&requests, "thread/items/list").len();
     app.open_transcript_overlay(&mut tui);
+    assert!(app.request_older_history_page(&mut app_server, thread_id));
 
+    // Home upgrades the already in-flight bounded request to an absolute-history jump. The
+    // response must therefore continue paging to the beginning instead of stopping after one page.
     app.handle_backtrack_overlay_event(
         &mut tui,
         &mut app_server,

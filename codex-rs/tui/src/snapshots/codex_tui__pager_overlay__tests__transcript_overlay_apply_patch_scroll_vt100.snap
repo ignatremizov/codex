@@ -11,5 +11,5 @@ expression: snapshot
     1 +hello
     2 +world
 ─────────────────────────────────────────────────────────────────────────── 0% ─
- ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+ ↑/↓ to scroll   pgup/pgdn to page   home/end history   ctrl + ↑/ctrl + ↓ window
  q close   v detail   [ review prev   ] review next

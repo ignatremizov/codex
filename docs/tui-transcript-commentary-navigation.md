@@ -153,6 +153,17 @@ when width permits:
 q close    v detail    [ review prev    ] review next
 ```
 
+`Home` and `End` address the absolute beginning and end of the retained
+transcript. On paginated history, `Home` keeps loading bounded older pages
+until the true beginning is available; pressing `End` cancels that continuation
+and returns to the latest history. `Ctrl+Up` and `Ctrl+Down` jump only within
+the currently materialized render window.
+
+The browser retains the complete loaded cell projection for exact review and
+backtrack identity, but materializes at most 256 committed cells at once.
+Ordinary scrolling crosses overlapping windows so per-frame wrapping and
+dynamic-layout checks remain bounded as more history pages are loaded.
+
 When backtrack preview is active, its existing edit hints replace browser
 actions on the second hint row. Pager navigation remains active.
 
@@ -288,7 +299,7 @@ and exercise prompt backtracking.
 - Navigation uses concrete history-cell types and canonical assistant phase,
   never rendered-text or command-name heuristics.
 - Mode changes preserve the logical transcript position.
-- Existing virtualization, Full rendering, live updates, hyperlinks,
+- Bounded render windows, Full rendering, live updates, hyperlinks,
   backtrack, and static pager behavior remain intact.
 - No pointer modes, per-entry trees, config schema, protocol surface, rollout
   format, or model-visible content changes.
