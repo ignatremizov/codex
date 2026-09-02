@@ -141,6 +141,10 @@ impl TranscriptView {
         self.search.mode == SearchMode::Editing
     }
 
+    pub(crate) fn is_search_active(&self) -> bool {
+        self.search.is_active()
+    }
+
     pub(super) fn handle_search_key(
         &mut self,
         key: KeyEvent,
