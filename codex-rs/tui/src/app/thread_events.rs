@@ -184,6 +184,7 @@ impl ThreadEventStore {
                 self.clear_pending_turn_start();
             }
         }
+        self.latest_turn_id = turns.last().map(|turn| turn.id.clone());
         self.turns = turns;
     }
 

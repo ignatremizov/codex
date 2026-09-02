@@ -22,22 +22,16 @@ impl ChatWidget {
                     .cloned()
                     .map(|(label, text)| (label, text, CopyFormat::PlainText)),
             );
-        } else if let Some(markdown) = self
+        } else if let Some((markdown, source)) = self
             .transcript
-            .last_agent_markdown
-            .as_deref()
-            .filter(|markdown| !markdown.is_empty())
+            .copyable_agent_message()
+            .filter(|(markdown, _)| !markdown.is_empty())
         {
             choices.push((
                 "Whole response".to_string(),
                 Arc::<str>::from(markdown),
                 CopyFormat::Markdown,
             ));
-            let source = self
-                .transcript
-                .last_agent_source
-                .as_deref()
-                .unwrap_or(markdown);
             choices.extend(
                 crate::markdown::extract_copy_targets(source)
                     .into_iter()

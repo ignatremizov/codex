@@ -17,7 +17,7 @@ async fn selection_clipboard_survives_overlay_close_and_later_terminal_requests(
 -> std::io::Result<()> {
     let mut tui = crate::tui::test_support::make_test_tui()?;
     for nested in [false, true] {
-        let mut overlay = Overlay::new_transcript(
+        let mut overlay = Overlay::new_review_transcript(
             vec![Arc::new(PlainHistoryCell::new(vec!["selected".into()]))],
             RuntimeKeymap::defaults().pager,
         );

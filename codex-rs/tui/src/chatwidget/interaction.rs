@@ -412,7 +412,11 @@ impl ChatWidget {
     ) {
         // The shortcut bypasses composer submission, which normally reveals local feedback.
         self.app_event_tx.send(AppEvent::FollowTranscript);
-        match self.transcript.last_agent_markdown.clone() {
+        match self
+            .transcript
+            .copyable_agent_message()
+            .map(|(markdown, _)| markdown.to_owned())
+        {
             Some(markdown) if !markdown.is_empty() => {
                 match self.write_clipboard(&markdown, copy_fn) {
                     Ok(status) => {

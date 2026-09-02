@@ -82,6 +82,10 @@ It remains the exact retained transcript:
 
 Pressing `v` returns to Review mode.
 
+### Copying completed messages
+
+`/copy` and the response-copy shortcut use the latest completed ordinary assistant message, including commentary completed during an active turn. Code and quote selections retain that message's original source. Commentary does not replace the final-answer state used for completion notifications, and a later final answer or proposed plan supersedes it for copying. Attributed inter-agent input and background completion notices remain separate from this response-copy source; their full contents are available through transcript copy and export.
+
 ### Review-target navigation
 
 `[` jumps to the previous review target and `]` jumps to the next review
@@ -157,6 +161,8 @@ when width permits:
 ```text
 q close    v detail    [ review prev    ] review next
 ```
+
+`Home` and `End` address the absolute beginning and end of the loaded transcript. On paginated history, `Home` keeps requesting older pages until the true beginning is available; `End` cancels that continuation and returns to the latest history. The shared `TranscriptView` keeps logical entry anchors and bounded layout caches, so loading more history does not introduce a second pager state machine.
 
 When backtrack preview is active, retain its edit hints and show only actions that are actually available. Do not hide working pager/browser controls or advertise confirmation before painted-content eligibility is established.
 
@@ -275,7 +281,7 @@ and exercise prompt backtracking.
 - Navigation uses concrete history-cell types and canonical assistant phase,
   never rendered-text or command-name heuristics.
 - Mode changes preserve the logical transcript position.
-- Existing virtualization, Full rendering, live updates, hyperlinks,
+- Bounded render windows, Full rendering, live updates, hyperlinks,
   backtrack, and static pager behavior remain intact.
 - No pointer modes, per-entry trees, config schema, protocol surface, rollout
   format, or model-visible content changes.

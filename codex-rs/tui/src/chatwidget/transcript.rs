@@ -41,10 +41,13 @@ pub(super) struct TranscriptState {
     pub(super) active_cell_revision: u64,
     /// One bounded entry shared by layout and paint across unchanged active-cell frames.
     pub(super) active_cell_layout: Cell<Option<ActiveCellLayoutCache>>,
-    /// Markdown of the most recently completed agent message for whole-response copying.
+    /// Markdown of the most recently completed final answer or proposed plan.
     pub(super) last_agent_markdown: Option<String>,
     /// Original source of that response, before display sanitization, for exact block copying.
     pub(super) last_agent_source: Option<String>,
+    /// A newer ordinary commentary message available for copying, without replacing the final answer.
+    /// The pair contains display markdown and its unsanitized source for exact block copying.
+    pub(super) last_commentary_copy_source: Option<(String, String)>,
     /// Latest `/status` card and fields, retained across copying until a later turn or command.
     pub(super) last_status_copy_targets: Option<StatusCopySource>,
     pub(super) last_completed_agent_message: Option<(String, String)>,
@@ -91,13 +94,27 @@ impl TranscriptState {
 
     pub(super) fn record_agent_markdown(&mut self, markdown: String, source: String) {
         self.last_status_copy_targets = None;
+        self.last_commentary_copy_source = None;
         self.last_agent_markdown = Some(markdown);
         self.last_agent_source = Some(source);
         self.saw_copy_source_this_turn = true;
     }
 
+    /// Return the latest completed ordinary message and its original source for clipboard actions.
+    pub(super) fn copyable_agent_message(&self) -> Option<(&str, &str)> {
+        if let Some((markdown, source)) = &self.last_commentary_copy_source {
+            return Some((markdown, source));
+        }
+        let markdown = self.last_agent_markdown.as_deref()?;
+        Some((
+            markdown,
+            self.last_agent_source.as_deref().unwrap_or(markdown),
+        ))
+    }
+
     pub(super) fn reset_copy_history(&mut self) {
         self.last_status_copy_targets = None;
+        self.last_commentary_copy_source = None;
         self.last_agent_markdown = None;
         self.last_agent_source = None;
         self.saw_copy_source_this_turn = false;

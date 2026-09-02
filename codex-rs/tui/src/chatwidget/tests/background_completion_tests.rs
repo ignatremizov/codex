@@ -99,6 +99,7 @@ async fn canonical_completion_live_resume_and_cold_pages_share_preview_and_raw_s
             ),
             (&None, &None),
         );
+        assert_eq!(chat.transcript.copyable_agent_message(), None);
         rendered.push(lines_to_single_string(&cold[0].display_lines(/*width*/ 80)));
     }
     assert_snapshot!(rendered.join("\n"), @r"

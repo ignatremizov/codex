@@ -49,10 +49,6 @@ pub(crate) enum Overlay {
     Analytics(Box<crate::analytics::AnalyticsView>),
 }
 impl Overlay {
-    pub(crate) fn new_transcript(cells: Vec<Arc<dyn HistoryCell>>, keymap: PagerKeymap) -> Self {
-        Self::Transcript(TranscriptOverlay::new(cells, keymap))
-    }
-
     pub(crate) fn new_review_transcript(
         cells: Vec<Arc<dyn HistoryCell>>,
         keymap: PagerKeymap,

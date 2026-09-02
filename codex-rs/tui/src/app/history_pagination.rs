@@ -130,10 +130,10 @@ impl App {
             RawReasoningVisibility::Hidden
         };
         let width = tui.terminal.last_known_screen_size.width;
-        self.remove_hidden_review_cells(tui, &turns, &hidden_item_ids, thread_id, &cwd, visibility);
+        self.remove_hidden_review_cells(tui, turns, &hidden_item_ids, thread_id, &cwd, visibility);
         let cells = self.project_older_history_cells(
             items,
-            &turns,
+            turns,
             &hidden_item_ids,
             thread_id,
             &cwd,
@@ -143,7 +143,7 @@ impl App {
         self.transcript_view
             .history_loaded(&self.transcript_cells, inserted.clone());
         if !inserted.is_empty() {
-            self.join_older_activity_group(inserted.end, &turns);
+            self.join_older_activity_group(inserted.end, turns);
         }
         let metadata = crate::thread_transcript::collab_agent_metadata_from_items(
             turns.iter().flat_map(|turn| &turn.items),

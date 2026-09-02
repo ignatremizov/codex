@@ -119,12 +119,14 @@ async fn agent_transcript_inspection_is_fixed_while_active_browser_tracks_app_up
     let active_cwd = app.config.cwd.to_path_buf();
     app.handle_consolidate_agent_message(
         &mut tui,
-        "active consolidated response".to_string(),
-        active_cwd,
-        /*inline_visualization_context*/ None,
-        /*phase*/ None,
-        ConsolidationScrollbackReflow::IfResizeReflowRan,
-        /*deferred_history_cell*/ None,
+        super::agent_message_consolidation::AgentMessageConsolidation {
+            source: "active consolidated response".to_string(),
+            cwd: active_cwd,
+            inline_visualization_context: None,
+            phase: None,
+            scrollback_reflow: ConsolidationScrollbackReflow::IfResizeReflowRan,
+            deferred_history_cell: None,
+        },
     )?;
     let inspected_after_updates = render_transcript_overlay(&mut app);
     assert_eq!(inspected_after_updates, inspected);

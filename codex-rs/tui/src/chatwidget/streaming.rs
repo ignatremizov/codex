@@ -474,8 +474,16 @@ impl ChatWidget {
             );
         }
         if !parsed.visible_markdown.is_empty() {
-            self.transcript
-                .record_agent_markdown(parsed.visible_markdown.clone(), message);
+            match phase {
+                Some(MessagePhase::Commentary) => {
+                    self.transcript.last_status_copy_targets = None;
+                    self.transcript.last_commentary_copy_source =
+                        Some((parsed.visible_markdown.clone(), message));
+                }
+                Some(MessagePhase::FinalAnswer) | None => self
+                    .transcript
+                    .record_agent_markdown(parsed.visible_markdown.clone(), message),
+            }
         }
         if !from_replay
             && let Some(cwd) = parsed.last_created_branch_cwd()
