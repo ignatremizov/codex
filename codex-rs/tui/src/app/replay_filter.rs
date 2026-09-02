@@ -31,16 +31,19 @@ pub(super) fn omit_resolved_misalignment_errors(
     snapshot: &mut ThreadEventSnapshot,
     latest_turn: &str,
 ) {
-    snapshot.events.retain(|event| !matches!(
-        event,
-        ThreadBufferedEvent::Notification(notification)
-            if matches!(notification.as_ref(), ServerNotification::Error(n)
-                if n.turn_id != latest_turn
-                    && n.error.codex_error_info == Some(CodexErrorInfo::MisalignmentPolicyViolation))
-    ));
+    snapshot.events.retain(|event| {
+        !matches!(
+            event,
+            ThreadBufferedEvent::Notification(notification)
+                if matches!(notification.as_ref(), ServerNotification::Error(notification)
+                    if notification.turn_id != latest_turn
+                        && notification.error.codex_error_info
+                            == Some(CodexErrorInfo::MisalignmentPolicyViolation))
+        )
+    });
     let completed_turns = snapshot.events.iter_mut().filter_map(|event| match event {
         ThreadBufferedEvent::Notification(notification) => match notification.as_mut() {
-            ServerNotification::TurnCompleted(n) => Some(&mut n.turn),
+            ServerNotification::TurnCompleted(notification) => Some(&mut notification.turn),
             _ => None,
         },
         _ => None,
@@ -57,8 +60,9 @@ pub(super) fn omit_resolved_misalignment_errors(
 }
 
 /// A completed item's full text replaces its earlier streaming deltas during replay.
+///
 /// Keep deltas without a later completion so an in-progress or truncated stream still renders.
-/// Other events are barriers: streaming text may need to flush before a tool or prompt.
+/// Other events are barriers because streaming text may need to flush before a tool or prompt.
 /// This only changes the replay snapshot; the live notification store remains untouched.
 pub(super) fn omit_completed_agent_deltas(events: &mut Vec<ThreadBufferedEvent>) {
     let mut completed = HashSet::new();
