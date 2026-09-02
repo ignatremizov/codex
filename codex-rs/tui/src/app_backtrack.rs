@@ -116,6 +116,56 @@ impl App {
         {
             overlay.invalidate_highlight_paint();
         }
+        if let TuiEvent::Key(key_event) = &event
+            && let Some(thread_id) = self.chat_widget.thread_id()
+        {
+            let backtrack_at_first_prompt = self.backtrack.overlay_preview_active
+                && self.backtrack.nth_user_message == 0
+                && matches!(key_event.code, KeyCode::Esc | KeyCode::Left)
+                && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat);
+            let (load_from_start, should_load_older) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+                .map(|overlay| {
+                    (
+                        overlay.should_load_from_start(*key_event),
+                        overlay.should_load_older(*key_event) || backtrack_at_first_prompt,
+                    )
+                })
+                .unwrap_or((false, false));
+            let has_older_history = app_server.has_older_history(thread_id);
+            if load_from_start
+                && let Some(overlay) = self
+                    .overlay
+                    .as_mut()
+                    .and_then(Overlay::active_transcript_mut)
+            {
+                overlay.set_history_state(if has_older_history {
+                    TranscriptHistoryState::LoadingBeginning
+                } else {
+                    TranscriptHistoryState::Complete
+                });
+            }
+            if should_load_older
+                && has_older_history
+                && self.request_older_history_page(app_server, thread_id)
+            {
+                if !load_from_start
+                    && let Some(overlay) = self
+                        .overlay
+                        .as_mut()
+                        .and_then(Overlay::active_transcript_mut)
+                {
+                    overlay.set_history_state(TranscriptHistoryState::LoadingOlder);
+                }
+                tui.frame_requester().schedule_frame();
+            } else if load_from_start {
+                // Record the absolute-jump intent even when another older-page request is already
+                // in flight. The completion path will continue paging until the true beginning.
+                tui.frame_requester().schedule_frame();
+            }
+        }
         if !matches!(self.overlay, Some(Overlay::Transcript(_))) {
             self.overlay_forward_event(tui, event)?;
             return Ok(true);

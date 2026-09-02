@@ -50,17 +50,6 @@ pub(crate) enum Overlay {
 }
 
 impl Overlay {
-    pub(crate) fn new_transcript(
-        cells: Vec<Arc<dyn HistoryCell>>,
-        keymap: PagerKeymap,
-        copy_on_select: bool,
-    ) -> Self {
-        let mut overlay = TranscriptOverlay::new(cells, keymap);
-        overlay.view.copy_on_select = copy_on_select;
-        overlay.view.primary_selection = crate::clipboard_copy::primary::available();
-        Self::Transcript(overlay)
-    }
-
     pub(crate) fn new_review_transcript(
         cells: Vec<Arc<dyn HistoryCell>>,
         keymap: PagerKeymap,

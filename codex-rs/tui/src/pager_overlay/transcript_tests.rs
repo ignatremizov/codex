@@ -331,6 +331,35 @@ fn jump_top_requests_older_history_from_the_bottom() {
 }
 
 #[tokio::test]
+async fn find_cursor_navigation_does_not_request_absolute_or_older_history() -> Result<()> {
+    let mut overlay = transcript_overlay(vec![Arc::new(TestCell {
+        lines: vec![Line::from("recent text")],
+    })]);
+    overlay.set_history_state(TranscriptHistoryState::Partial);
+    overlay.begin_search();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let home = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
+    let page_up = KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(
+        (
+            overlay.should_load_from_start(home),
+            overlay.should_load_older(page_up)
+        ),
+        (false, false),
+    );
+    overlay.handle_event(&mut tui, TuiEvent::Key(home))?;
+    assert_eq!(overlay.history_state(), TranscriptHistoryState::Partial);
+    assert!(overlay.is_search_active());
+    overlay.handle_event(
+        &mut tui,
+        TuiEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+    )?;
+    assert!(!overlay.is_search_active());
+    assert!(overlay.should_load_from_start(home));
+    Ok(())
+}
+
+#[tokio::test]
 async fn jump_top_holds_the_visible_page_until_all_history_arrives() -> Result<()> {
     let mut overlay = transcript_overlay(vec![Arc::new(TestCell {
         lines: (0..8).map(|index| format!("line {index}").into()).collect(),

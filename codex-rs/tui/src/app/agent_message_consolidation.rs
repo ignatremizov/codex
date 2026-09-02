@@ -23,17 +23,30 @@ use crate::inline_visualization::InlineVisualizationContext;
 use crate::pager_overlay::Overlay;
 use crate::tui;
 
+/// Finalized stream content and the presentation state that must move with it.
+pub(super) struct AgentMessageConsolidation {
+    pub(super) source: String,
+    pub(super) cwd: PathBuf,
+    pub(super) inline_visualization_context: Option<InlineVisualizationContext>,
+    pub(super) phase: Option<MessagePhase>,
+    pub(super) scrollback_reflow: ConsolidationScrollbackReflow,
+    pub(super) deferred_history_cell: Option<Box<dyn HistoryCell>>,
+}
+
 impl App {
     pub(super) fn handle_consolidate_agent_message(
         &mut self,
         tui: &mut tui::Tui,
-        source: String,
-        cwd: PathBuf,
-        inline_visualization_context: Option<InlineVisualizationContext>,
-        phase: Option<MessagePhase>,
-        scrollback_reflow: ConsolidationScrollbackReflow,
-        deferred_history_cell: Option<Box<dyn HistoryCell>>,
+        message: AgentMessageConsolidation,
     ) -> Result<()> {
+        let AgentMessageConsolidation {
+            source,
+            cwd,
+            inline_visualization_context,
+            phase,
+            scrollback_reflow,
+            deferred_history_cell,
+        } = message;
         // Some finalize paths must preserve a last provisional stream cell long
         // enough for queue ordering, then fold it into the canonical
         // source-backed cell during consolidation.

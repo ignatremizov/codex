@@ -398,8 +398,8 @@ impl ChatWidget {
     /// Capture the last response for the app to copy before processing another key.
     pub(super) fn prepare_last_response_copy(&mut self) -> KeyEventAction {
         self.app_event_tx.send(AppEvent::FollowTranscript);
-        let action = match self.transcript.last_agent_markdown.as_deref() {
-            Some(markdown) if !markdown.is_empty() => {
+        let action = match self.transcript.copyable_agent_message() {
+            Some((markdown, _)) if !markdown.is_empty() => {
                 KeyEventAction::CopyLastResponse(markdown.into())
             }
             _ => {

@@ -6,6 +6,47 @@ use crate::clipboard_copy::CopyFormat;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn commentary_copy_preserves_final_answer_and_source_in_live_and_replayed_history() {
+    let commentary = r#":codex-followup[Inspect next]{prompt="private"}"#;
+    for replay in [false, true] {
+        let (mut chat, _events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
+        for (id, phase, source, final_answer, copy_text) in [
+            ("final-first", MessagePhase::FinalAnswer, "First final", "First final", "First final"),
+            ("commentary", MessagePhase::Commentary, commentary, "First final", "Inspect next"),
+            ("final-last", MessagePhase::FinalAnswer, "Last final", "Last final", "Last final"),
+        ] {
+            if replay {
+                chat.replay_thread_item(
+                    AppServerThreadItem::AgentMessage {
+                        id: id.into(), text: source.into(), inter_agent_source: None,
+                        phase: Some(phase), memory_citation: None, delivery: None, questions: None,
+                    },
+                    "turn-1".into(),
+                    ReplayKind::ThreadSnapshot,
+                );
+            } else {
+                complete_assistant_message(&mut chat, id, source, Some(phase));
+            }
+            assert_eq!(
+                chat.transcript.last_agent_markdown.as_deref(),
+                Some(final_answer)
+            );
+            assert_eq!(
+                chat.transcript.copyable_agent_message(),
+                Some((copy_text, source))
+            );
+            let copied = match chat.prepare_last_response_copy() {
+                KeyEventAction::CopyLastResponse(text) => Some(text.to_string()),
+                _ => None,
+            };
+            assert_eq!(copied.as_deref(), Some(copy_text));
+        }
+        chat.transcript.reset_copy_history();
+        assert_eq!(chat.transcript.copyable_agent_message(), None);
+    }
+}
+
+#[tokio::test]
 async fn whole_response_copy_uses_followup_labels() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let directive = r#":codex-followup[**Inspect items[0]**]{prompt="private"}"#;
