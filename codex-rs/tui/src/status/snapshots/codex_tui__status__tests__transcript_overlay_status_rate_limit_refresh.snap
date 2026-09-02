@@ -30,7 +30,7 @@ before:
 ~
 ~
 ───────────────────────────────────────────────────────────────────────── 100% ─
- ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+ ↑/↓ to scroll   pgup/pgdn to page   home/end history   ctrl + ↑/ctrl + ↓ window
  q close   v detail   [ review prev   ] review next
 
 
@@ -62,5 +62,5 @@ next message
 ~
 ~
 ───────────────────────────────────────────────────────────────────────── 100% ─
- ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+ ↑/↓ to scroll   pgup/pgdn to page   home/end history   ctrl + ↑/ctrl + ↓ window
  q close   v detail   [ review prev   ] review next

@@ -17,13 +17,13 @@ impl HistoryCell for MeasuredCell {
         vec!["history".into()]
     }
 
-    fn raw_lines(&self) -> Vec<Line<'static>> {
-        vec!["history".into()]
+    fn display_hyperlink_lines(&self, _width: u16) -> Vec<HyperlinkLine> {
+        self.measurements.fetch_add(1, Ordering::Relaxed);
+        vec![HyperlinkLine::from("history")]
     }
 
-    fn desired_transcript_height(&self, _width: u16) -> u16 {
-        self.measurements.fetch_add(1, Ordering::Relaxed);
-        1
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        vec!["history".into()]
     }
 }
 
@@ -42,6 +42,7 @@ fn moving_highlight_preserves_unaffected_height_caches() {
             .map(|cell| cell.clone() as Arc<dyn HistoryCell>)
             .collect(),
         RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
     );
     let mut area = Rect::new(
         /*x*/ 0, /*y*/ 0, /*width*/ 40, /*height*/ 12,
@@ -83,11 +84,20 @@ fn moving_highlight_matches_full_rebuild_with_live_tail() {
                 text_elements: Vec::new(),
                 local_image_paths: Vec::new(),
                 remote_image_urls: Vec::new(),
+                source: None,
             }) as Arc<dyn HistoryCell>
         })
         .collect();
-    let mut actual = TranscriptOverlay::new(cells.clone(), RuntimeKeymap::defaults().pager);
-    let mut expected = TranscriptOverlay::new(cells, RuntimeKeymap::defaults().pager);
+    let mut actual = TranscriptOverlay::new(
+        cells.clone(),
+        RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
+    let mut expected = TranscriptOverlay::new(
+        cells,
+        RuntimeKeymap::defaults().pager,
+        TranscriptFlavor::LiveReviewBrowser,
+    );
     for overlay in [&mut actual, &mut expected] {
         overlay.sync_live_tail(
             /*width*/ 40,
@@ -103,9 +113,8 @@ fn moving_highlight_matches_full_rebuild_with_live_tail() {
     for width in [40, 24, 40] {
         for selection in [Some(0), Some(1), Some(1), None, Some(99), Some(0)] {
             actual.set_highlight_cell(selection);
-            let tail = expected.take_live_tail_renderable();
             expected.highlight_cell = selection;
-            expected.rebuild_renderables(tail);
+            expected.rebuild_renderables();
             if let Some(index) = selection {
                 expected.view.scroll_chunk_into_view(index);
             }

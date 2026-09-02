@@ -21,6 +21,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
+use super::TranscriptHistoryState;
 use super::TranscriptOverlay;
 use super::first_or_empty;
 
@@ -208,6 +209,12 @@ fn is_review_navigation_char(key_event: KeyEvent, character: char) -> bool {
         && key_event.code == KeyCode::Char(character)
 }
 
+fn is_loaded_window_jump(key_event: KeyEvent, key_code: KeyCode) -> bool {
+    matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        && key_event.modifiers == KeyModifiers::CONTROL
+        && key_event.code == key_code
+}
+
 pub(super) fn transcript_title(browser: TranscriptBrowserState) -> String {
     match browser.detail_mode() {
         TranscriptDetailMode::Review => "T R A N S C R I P T · R E V I E W".to_string(),
@@ -263,11 +270,12 @@ impl TranscriptOverlay {
     }
 
     fn toggle_detail_mode(&mut self) {
-        let anchor = self
-            .view
-            .pending_align_chunk_top
-            .unwrap_or_else(|| self.view.first_visible_chunk())
-            .min(self.cells.len().saturating_sub(1));
+        let anchor = self.render_start.saturating_add(
+            self.view
+                .pending_align_chunk_top
+                .unwrap_or_else(|| self.view.first_visible_chunk())
+                .min(self.rendered_cell_count().saturating_sub(1)),
+        );
         self.browser.toggle_detail_mode();
         let _ = self.take_live_tail_renderable();
         self.live_tail_key = None;
@@ -275,27 +283,32 @@ impl TranscriptOverlay {
         if !self.cells.is_empty()
             && self.view.pending_scroll_chunk.is_none()
             && self.view.pending_align_chunk_top.is_none()
+            && let Some(local_index) = anchor.checked_sub(self.render_start)
+            && local_index < self.rendered_cell_count()
         {
-            self.view.align_chunk_to_top(anchor);
+            self.view.align_chunk_to_top(local_index);
         }
     }
 
     fn navigate_review_target(&mut self, direction: TranscriptNavigationDirection) {
-        let first_visible = match direction {
+        let first_visible = self.render_start.saturating_add(match direction {
             TranscriptNavigationDirection::Previous => self
                 .view
                 .first_visible_chunk()
-                .min(self.cells.len().saturating_sub(1)),
+                .min(self.rendered_cell_count().saturating_sub(1)),
             TranscriptNavigationDirection::Next => self
                 .view
                 .first_chunk_starting_at_or_below_top()
-                .min(self.cells.len()),
-        };
+                .min(self.rendered_cell_count()),
+        });
         if let Some(target) =
             self.browser
                 .select_review_target(&self.cells, first_visible, direction)
         {
-            self.view.align_chunk_to_top(target);
+            self.show_window_containing(target);
+            if let Some(local_index) = target.checked_sub(self.render_start) {
+                self.view.align_chunk_to_top(local_index);
+            }
         }
     }
 
@@ -334,7 +347,14 @@ impl TranscriptOverlay {
                         &self.view.keymap.jump_bottom,
                     ))
                     .collect(),
-                "to jump",
+                "history",
+            ),
+            (
+                vec![
+                    key_hint::ctrl(KeyCode::Up).into(),
+                    key_hint::ctrl(KeyCode::Down).into(),
+                ],
+                "window",
             ),
         ];
         Clear.render(line1, buf);
@@ -396,16 +416,19 @@ impl TranscriptOverlay {
         self.render_history_state(top, buf);
         self.render_hints(bottom, buf);
         self.highlight_draw_pending = self.highlight_cell.is_some_and(|highlight_cell| {
-            let Some(&highlight_bottom) = self.view.chunk_bottoms.get(highlight_cell) else {
+            let Some(local_index) = highlight_cell.checked_sub(self.render_start) else {
                 return true;
             };
-            let highlight_top = highlight_cell
+            let Some(&highlight_bottom) = self.view.chunk_bottoms.get(local_index) else {
+                return true;
+            };
+            let highlight_top = local_index
                 .checked_sub(1)
                 .and_then(|index| self.view.chunk_bottoms.get(index))
                 .copied()
                 .unwrap_or(0);
             let highlight_content_top = highlight_top.saturating_add(usize::from(
-                highlight_cell > 0
+                local_index > 0
                     && self
                         .cells
                         .get(highlight_cell)
@@ -458,6 +481,33 @@ impl TranscriptOverlay {
                     tui.frame_requester().schedule_frame();
                     Ok(())
                 }
+                e if is_loaded_window_jump(e, KeyCode::Up) => {
+                    self.view.scroll_offset = 0;
+                    self.clear_pending_view_navigation();
+                    tui.frame_requester().schedule_frame();
+                    Ok(())
+                }
+                e if is_loaded_window_jump(e, KeyCode::Down) => {
+                    self.view.scroll_offset = usize::MAX;
+                    self.clear_pending_view_navigation();
+                    tui.frame_requester().schedule_frame();
+                    Ok(())
+                }
+                e if self.view.keymap.jump_top.is_pressed(e) => {
+                    self.show_loaded_start();
+                    self.browser.clear_review_target();
+                    tui.frame_requester().schedule_frame();
+                    Ok(())
+                }
+                e if self.view.keymap.jump_bottom.is_pressed(e) => {
+                    if self.history_state == TranscriptHistoryState::LoadingBeginning {
+                        self.set_history_state(TranscriptHistoryState::LoadingOlder);
+                    }
+                    self.show_loaded_end();
+                    self.browser.clear_review_target();
+                    tui.frame_requester().schedule_frame();
+                    Ok(())
+                }
                 other => {
                     if self.view.is_scroll_key(other) {
                         self.browser.clear_review_target();
@@ -466,6 +516,21 @@ impl TranscriptOverlay {
                             // proves that the highlighted target is still visible.
                             self.highlight_draw_pending = true;
                         }
+                    }
+                    let scrolls_up = self.view.keymap.scroll_up.is_pressed(other)
+                        || self.view.keymap.page_up.is_pressed(other)
+                        || self.view.keymap.half_page_up.is_pressed(other);
+                    if scrolls_up && self.view.scroll_offset == 0 && self.show_previous_window() {
+                        tui.frame_requester().schedule_frame();
+                        return Ok(());
+                    }
+                    let scrolls_down = self.view.keymap.scroll_down.is_pressed(other)
+                        || self.view.keymap.page_down.is_pressed(other)
+                        || self.view.keymap.half_page_down.is_pressed(other);
+                    if scrolls_down && self.view.is_scrolled_to_bottom() && self.show_next_window()
+                    {
+                        tui.frame_requester().schedule_frame();
+                        return Ok(());
                     }
                     self.view.handle_key_event(tui, other)
                 }

@@ -6,7 +6,7 @@
 
 use super::MAIN_RESERVED_BINDINGS;
 use super::RuntimeKeymap;
-use super::TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS;
+use super::TRANSCRIPT_RESERVED_BINDINGS;
 use super::bindings::KeymapActionId;
 use super::bindings::KeymapContext;
 use super::bindings::configured_binding_for_action;
@@ -541,7 +541,7 @@ Choose a different chord and retry.",
     }
 
     let reserved = match binding.action.context {
-        KeymapContext::Pager => TRANSCRIPT_BACKTRACK_RESERVED_BINDINGS,
+        KeymapContext::Pager => TRANSCRIPT_RESERVED_BINDINGS,
         KeymapContext::Global
         | KeymapContext::Chat
         | KeymapContext::Composer
