@@ -294,7 +294,7 @@ async fn empty_enter_returns_to_latest_with_contextual_hints() -> Result<()> {
     tui.set_owned_screen(/*owned*/ true)?;
     for (width, detailed) in [(80, false), (40, true)] {
         let size = Size::new(width, /*height*/ 12);
-        tui.terminal.resize(size)?;
+        tui.screen_size_for_event(&TuiEvent::Resize(size))?;
         app.transcript_view = Default::default();
         app.transcript_view
             .set_presentation(detailed, HistoryRenderMode::Rich);
@@ -523,7 +523,7 @@ async fn escape_returns_to_latest_without_changing_the_composer_draft() -> Resul
             "visible after resize".into(),
         ])));
     let large = Size::new(/*width*/ 80, /*height*/ 24);
-    tui.terminal.resize(large)?;
+    tui.screen_size_for_event(&TuiEvent::Resize(large))?;
     app.render_owned_transcript(&mut tui, large)?;
     let resized = screen(&tui);
     assert!(resized.contains("visible after resize"));

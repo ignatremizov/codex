@@ -79,7 +79,7 @@ async fn blocked_copy_allows_overlay_exit_rejects_backlog_and_wakes_completion()
         Ok(CopyStatus::Busy)
     );
     assert!(tui.clipboard.poll().is_none());
-    let mut overlay = Overlay::new_transcript(
+    let mut overlay = Overlay::new_review_transcript(
         vec![Arc::new(PlainHistoryCell::new(vec!["selected".into()]))],
         RuntimeKeymap::defaults().pager,
         /*copy_on_select*/ false,

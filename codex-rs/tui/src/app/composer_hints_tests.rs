@@ -82,7 +82,7 @@ async fn usage_notice_preserves_composer_geometry_on_recovery() -> Result<()> {
         let mut tui = crate::tui::test_support::make_test_tui()?;
         tui.set_owned_screen(/*owned*/ true)?;
         let size = Size::new(width, height);
-        tui.terminal.resize(size)?;
+        tui.screen_size_for_event(&TuiEvent::Resize(size))?;
         let before = app.render_owned_transcript(&mut tui, size)?;
         let cursor = tui.terminal.last_known_cursor_pos;
         let hint = app.composer_hint(width);
