@@ -151,6 +151,8 @@ when width permits:
 q close    v detail    [ review prev    ] review next
 ```
 
+`Home` and `End` address the absolute beginning and end of the loaded transcript. On paginated history, `Home` keeps requesting older pages until the true beginning is available; `End` cancels that continuation and returns to the latest history. The shared `TranscriptView` keeps logical entry anchors and bounded layout caches, so loading more history does not introduce a second pager state machine.
+
 When backtrack preview is active, retain its edit hints and show only actions that are actually available. Do not hide working pager/browser controls or advertise confirmation before painted-content eligibility is established.
 
 Respect modal, search, selection and disclosure ownership before routing browser keys. Plain `v` and plain brackets (including Windows AltGr bracket input) belong only to an explicitly open live browser; they must not intercept the composer or fixed historical preview. Within that browser, browser-local keys take priority over conflicting pager bindings. Static pagers retain configured bindings.
@@ -268,7 +270,7 @@ and exercise prompt backtracking.
 - Navigation uses concrete history-cell types and canonical assistant phase,
   never rendered-text or command-name heuristics.
 - Mode changes preserve the logical transcript position.
-- Existing virtualization, Full rendering, live updates, hyperlinks,
+- Bounded render windows, Full rendering, live updates, hyperlinks,
   backtrack, and static pager behavior remain intact.
 - No pointer modes, per-entry trees, config schema, protocol surface, rollout
   format, or model-visible content changes.

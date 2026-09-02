@@ -469,11 +469,13 @@ impl ChatWidget {
             self.request_redraw();
         } else {
             self.finalize_completed_assistant_message(
-                Some(parsed.visible_markdown.as_str()),
+                (!parsed.visible_markdown.is_empty()).then_some(parsed.visible_markdown.as_str()),
                 phase.clone(),
             );
         }
-        if !parsed.visible_markdown.is_empty() {
+        if matches!(phase, Some(MessagePhase::FinalAnswer) | None)
+            && !parsed.visible_markdown.is_empty()
+        {
             self.transcript
                 .record_agent_markdown(parsed.visible_markdown.clone(), message);
         }
