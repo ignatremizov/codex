@@ -157,13 +157,34 @@ impl App {
         app_server: &mut AppServerSession,
         request: Option<TranscriptHistoryState>,
     ) {
-        if let Some(state) = request
-            && let Some(thread_id) = self.chat_widget.thread_id()
-            && app_server.has_older_history(thread_id)
-            && self.request_older_history_page(app_server, thread_id)
-            && let Some(Overlay::Transcript(overlay)) = self.overlay.as_mut()
+        let (Some(state), Some(thread_id)) = (request, self.chat_widget.thread_id()) else {
+            return;
+        };
+        let has_older_history = app_server.has_older_history(thread_id);
+        if state == TranscriptHistoryState::LoadingBeginning
+            && let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
         {
-            overlay.set_history_state(state);
+            // Preserve absolute-jump intent even if a bounded request is already in flight.
+            overlay.set_history_state(if has_older_history {
+                TranscriptHistoryState::LoadingBeginning
+            } else {
+                TranscriptHistoryState::Complete
+            });
+            tui.frame_requester().schedule_frame();
+        }
+        if has_older_history
+            && self.request_older_history_page(app_server, thread_id)
+            && let Some(overlay) = self
+                .overlay
+                .as_mut()
+                .and_then(Overlay::active_transcript_mut)
+        {
+            if overlay.history_state() != TranscriptHistoryState::LoadingBeginning {
+                overlay.set_history_state(state);
+            }
             tui.frame_requester().schedule_frame();
         }
     }

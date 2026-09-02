@@ -674,7 +674,7 @@ macro_rules! default_bindings {
 }
 
 impl RuntimeKeymap {
-    /// Return built-in defaults.
+    /// Return resolved built-in defaults.
     ///
     /// This is a convenience for tests and bootstrapping UI state before user
     /// config has been loaded. It should not be used as a fallback after
@@ -3439,6 +3439,7 @@ mod tests {
             runtime.composer.history_search_next,
             vec![key_hint::ctrl(KeyCode::Char('s'))]
         );
+        assert_eq!(runtime.composer.toggle_dictation, Vec::new());
         assert_eq!(runtime.editor.kill_whole_line, Vec::new());
     }
 
