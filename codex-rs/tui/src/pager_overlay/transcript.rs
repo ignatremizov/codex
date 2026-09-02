@@ -284,6 +284,10 @@ impl TranscriptOverlay {
         self.view.is_search_editing()
     }
 
+    pub(crate) fn is_search_active(&self) -> bool {
+        self.view.is_search_active()
+    }
+
     pub(crate) fn owns_interaction_key(&self, key: KeyEvent) -> bool {
         self.view.owns_interaction_key(key)
     }
@@ -314,6 +318,9 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn should_load_older(&mut self, key: KeyEvent) -> bool {
+        if self.is_search_active() {
+            return false;
+        }
         self.should_load_from_start(key)
             || (self.view.needs_history(&self.cells)
                 && [
@@ -326,7 +333,7 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn should_load_from_start(&self, key: KeyEvent) -> bool {
-        self.keymap.jump_top.is_pressed(key)
+        !self.is_search_active() && self.keymap.jump_top.is_pressed(key)
     }
 
     pub(crate) fn insert_cell(&mut self, cell: Arc<dyn HistoryCell>) {
@@ -541,7 +548,7 @@ impl TranscriptOverlay {
                 .keymap
                 .close
                 .first()
-                .map(|key| key.display_label())
+                .map(crate::key_hint::KeyBinding::display_label)
                 .unwrap_or_default(),
         ) {
             Paragraph::new(footer.text).render(second, buf);

@@ -91,7 +91,7 @@ impl ChatWidget {
         true
     }
 
-    /// Flush prior activity before live or replayed assistant text.
+    /// Flush prior activity before assistant text; turn completion owns its trailing label.
     pub(super) fn prepare_assistant_message(&mut self) {
         self.flush_unified_exec_wait_streak();
         self.flush_active_cell();

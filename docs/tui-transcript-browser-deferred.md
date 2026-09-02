@@ -52,9 +52,7 @@ add transcript-specific bindings if users need customization.
 
 ### Cache and virtualization changes
 
-The transcript pager is already virtualized. Sparse/LRU wrapped-row caches or
-incremental range replacement should be driven by profiling, not bundled with
-the readability change.
+The shared transcript view already keeps exact loaded cell identity and bounded width-specific layout caches. Any later cache expansion should be driven by profiling and must preserve its logical anchors rather than adding a second pager or off-window renderable cache.
 
 ### Main scrollback interaction
 
