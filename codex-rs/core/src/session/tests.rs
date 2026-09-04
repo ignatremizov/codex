@@ -14438,8 +14438,7 @@ async fn queued_response_items_for_next_turn_move_into_next_active_turn() {
         sess.input_queue.get_pending_input(&sess.active_turn).await,
         (
             vec![TurnInput::ResponseItem(queued_item.into())],
-            None,
-            None,
+            TurnStartOptions::default(),
         )
     );
 }
@@ -14481,11 +14480,14 @@ async fn wake_result_queues_after_active_task_stops_accepting_pending_input() {
     );
     assert_eq!(
         sess.input_queue.take_queued_items_for_next_turn().await,
-        vec![TurnInput::ResponseItem(wake_item.into())]
+        (
+            vec![TurnInput::ResponseItem(wake_item.into())],
+            Some("user_shell_wake".to_string()),
+        )
     );
     assert_eq!(
         sess.input_queue.get_pending_input(&sess.active_turn).await,
-        (Vec::new(), None, None)
+        (Vec::new(), TurnStartOptions::default())
     );
 }
 

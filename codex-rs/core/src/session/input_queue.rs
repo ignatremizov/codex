@@ -213,7 +213,13 @@ pub(super) fn is_mcp_server_use_context_input_item(item: &TurnInput) -> bool {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox: Mutex<MailboxState>,
-    idle_pending_input: Mutex<Vec<TurnInput>>,
+    idle_pending_input: Mutex<QueuedTurnInput>,
+}
+
+#[derive(Default)]
+struct QueuedTurnInput {
+    items: Vec<TurnInput>,
+    turn_trigger: Option<String>,
 }
 
 struct PendingMailboxCommunication {
@@ -238,7 +244,7 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox: Mutex::new(MailboxState::default()),
-            idle_pending_input: Mutex::new(Vec::new()),
+            idle_pending_input: Mutex::new(QueuedTurnInput::default()),
         }
     }
 
@@ -318,12 +324,19 @@ impl InputQueue {
         {
             return true;
         }
-        if self.idle_pending_input.lock().await.iter().any(|input| {
-            matches!(
-                input,
-                TurnInput::InterAgentCommunication(communication) if matches(communication)
-            )
-        }) {
+        if self
+            .idle_pending_input
+            .lock()
+            .await
+            .items
+            .iter()
+            .any(|input| {
+                matches!(
+                    input,
+                    TurnInput::InterAgentCommunication(communication) if matches(communication)
+                )
+            })
+        {
             return true;
         }
         let mailbox = self.mailbox.lock().await;
@@ -422,7 +435,7 @@ impl InputQueue {
             let mut queued_input = self.idle_pending_input.lock().await;
             let mut completion_mails = Vec::new();
             let mut retained_input = Vec::new();
-            for input in std::mem::take(&mut *queued_input) {
+            for input in std::mem::take(&mut queued_input.items) {
                 match input {
                     TurnInput::InterAgentCommunication(communication)
                         if completion_context_response_item_id(&communication).is_some() =>
@@ -436,7 +449,10 @@ impl InputQueue {
                     input => retained_input.push(input),
                 }
             }
-            *queued_input = retained_input;
+            queued_input.items = retained_input;
+            if queued_input.items.is_empty() {
+                queued_input.turn_trigger = None;
+            }
             completion_mails
         };
         let mut mailbox = self.mailbox.lock().await;
@@ -635,25 +651,43 @@ impl InputQueue {
     }
 
     pub(crate) async fn queue_turn_inputs_for_next_turn(&self, items: Vec<TurnInput>) {
+        self.queue_turn_inputs_for_next_turn_with_trigger(items, /*turn_trigger*/ None)
+            .await;
+    }
+
+    pub(crate) async fn queue_turn_inputs_for_next_turn_with_trigger(
+        &self,
+        items: Vec<TurnInput>,
+        turn_trigger: Option<String>,
+    ) {
         if items.is_empty() {
             return;
         }
 
-        self.idle_pending_input.lock().await.extend(items);
+        let mut queued_input = self.idle_pending_input.lock().await;
+        queued_input.items.extend(items);
+        if queued_input.turn_trigger.is_none() {
+            queued_input.turn_trigger = turn_trigger;
+        }
     }
 
-    pub(crate) async fn take_queued_items_for_next_turn(&self) -> Vec<TurnInput> {
-        std::mem::take(&mut *self.idle_pending_input.lock().await)
+    pub(crate) async fn take_queued_items_for_next_turn(&self) -> (Vec<TurnInput>, Option<String>) {
+        let mut queued_input = self.idle_pending_input.lock().await;
+        (
+            std::mem::take(&mut queued_input.items),
+            queued_input.turn_trigger.take(),
+        )
     }
 
     pub(crate) async fn has_queued_turn_inputs(&self) -> bool {
-        !self.idle_pending_input.lock().await.is_empty()
+        !self.idle_pending_input.lock().await.items.is_empty()
     }
 
     pub(crate) async fn queued_response_items_for_next_turn(&self) -> Vec<ResponseItem> {
         self.idle_pending_input
             .lock()
             .await
+            .items
             .iter()
             .filter_map(|item| match item {
                 TurnInput::FunctionCallOutput(item) => Some(item.clone()),
@@ -670,6 +704,7 @@ impl InputQueue {
         self.idle_pending_input
             .lock()
             .await
+            .items
             .iter()
             .any(|item| {
                 matches!(
@@ -912,6 +947,7 @@ mod tests {
     use super::*;
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
+    use codex_protocol::models::ContentItem;
     use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
@@ -1477,13 +1513,55 @@ mod tests {
         assert!(!completion_drain.has_committing);
         assert_eq!(
             input_queue.take_queued_items_for_next_turn().await,
-            vec![TurnInput::ResponseItem(retained_item.into())]
+            (
+                vec![TurnInput::ResponseItem(retained_item.into())],
+                /*turn_trigger*/ None,
+            )
         );
         assert_eq!(
             input_queue.drain_mailbox_input_items().await,
             (
                 vec![TurnInput::InterAgentCommunication(ordinary)],
                 TurnStartOptions::default(),
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_turn_inputs_keep_the_trigger_that_first_requested_the_turn() {
+        let input_queue = InputQueue::new();
+        let response_item = |text: &str| {
+            TurnInput::ResponseItem(
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: text.to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            )
+        };
+        input_queue
+            .queue_turn_inputs_for_next_turn_with_trigger(
+                vec![response_item("first")],
+                Some("agent_wake".to_string()),
+            )
+            .await;
+        input_queue
+            .queue_turn_inputs_for_next_turn_with_trigger(
+                vec![response_item("second")],
+                Some("user_shell_wake".to_string()),
+            )
+            .await;
+
+        assert_eq!(
+            input_queue.take_queued_items_for_next_turn().await,
+            (
+                vec![response_item("first"), response_item("second")],
+                Some("agent_wake".to_string()),
             )
         );
     }
@@ -1575,13 +1653,7 @@ mod tests {
         };
 
         input_queue.clear_pending(&active_turn).await;
-        assert!(
-            input_queue
-                .drain_mailbox_input_items()
-                .await
-                .0
-                .is_empty()
-        );
+        assert!(input_queue.drain_mailbox_input_items().await.0.is_empty());
 
         input_queue
             .retry_completion_communication(&response_item_id)

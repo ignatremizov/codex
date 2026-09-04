@@ -434,9 +434,15 @@ impl Session {
             .await
             .clear_turn(&turn_context.sub_id);
 
-        let queued_items = self.input_queue.take_queued_items_for_next_turn().await;
+        let (queued_items, queued_turn_trigger) =
+            self.input_queue.take_queued_items_for_next_turn().await;
         let (mailbox_items, start_options) =
             self.input_queue.get_pending_input(&self.active_turn).await;
+        if let Some(turn_trigger) = queued_turn_trigger.or(start_options.turn_trigger.clone()) {
+            turn_context
+                .turn_metadata_state
+                .set_turn_trigger(turn_trigger);
+        }
         if let MailboxParentProvenance::Attribute = mailbox_parent_provenance {
             if let Some(id) = start_options.parent_turn_id {
                 if let Some(initiating_agent_path) = mailbox_items.iter().find_map(|item| {
@@ -693,6 +699,7 @@ impl Session {
                 .await
                 .and_then(|context| context.cyber_access_program);
         }
+        let turn_trigger = start_options.turn_trigger.take();
         let turn_context = self
             .new_turn_with_default_settings(
                 sub_id,
@@ -702,6 +709,11 @@ impl Session {
                 },
             )
             .await;
+        if let Some(turn_trigger) = turn_trigger {
+            turn_context
+                .turn_metadata_state
+                .set_turn_trigger(turn_trigger);
+        }
         if let Some(id) = start_options.parent_turn_id {
             if let Some(initiating_agent_path) = input.iter().find_map(|item| {
                 let TurnInput::InterAgentCommunication(communication) = item else {

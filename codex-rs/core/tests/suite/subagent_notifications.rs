@@ -3256,6 +3256,13 @@ async fn spawn_final_wake_starts_an_idle_parent_turn(
 
     let request =
         wait_for_request_containing_text(&wake_request, "<subagent_notification>").await?;
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        request
+            .header("x-codex-turn-metadata")
+            .as_deref()
+            .expect("wake request should include turn metadata"),
+    )?;
+    assert_eq!(turn_metadata["turn_trigger"].as_str(), Some("agent_wake"));
     assert!(request.body_contains_text("<subagent_notification>"));
     assert!(request.body_contains_text("wake result"));
     let notification = agent_message_text_containing(&request, "<subagent_notification>")
