@@ -466,9 +466,10 @@ impl Session {
             return false;
         }
         self.input_queue
-            .queue_turn_inputs_for_next_turn(vec![TurnInput::ResponseItem(
-                ResponseItemEnvelope::new(item),
-            )])
+            .queue_turn_inputs_for_next_turn_with_trigger(
+                vec![TurnInput::ResponseItem(ResponseItemEnvelope::new(item))],
+                Some("user_shell_wake".to_string()),
+            )
             .await;
         drop(active);
         true
