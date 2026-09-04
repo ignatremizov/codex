@@ -576,3 +576,7 @@ impl Drop for RecapState {
 #[cfg(test)]
 #[path = "recap_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "recap_test_support.rs"]
+pub(super) mod test_support;
