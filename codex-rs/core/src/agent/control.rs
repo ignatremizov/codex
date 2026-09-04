@@ -27,7 +27,6 @@ use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::default_thread_id_generator;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use crate::turn_timing::now_unix_timestamp_ms;
-use arc_swap::ArcSwapOption;
 use codex_agent_graph_store::AgentAlias;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
@@ -398,7 +397,6 @@ mod residency;
 mod response_delivery;
 mod response_observer;
 mod resume_registration;
-mod service_tier;
 mod scoped_messages;
 pub(crate) mod setup_cleanup;
 mod spawn;
@@ -532,8 +530,6 @@ pub(crate) struct AgentControl {
     wait_agent_presentations: Arc<WaitAgentPresentations>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
-    /// The user-selected root routing tier, shared by the entire agent tree.
-    root_service_tier: Arc<ArcSwapOption<String>>,
 }
 
 impl Default for AgentControl {
@@ -564,7 +560,6 @@ impl AgentControl {
             agent_execution_limiter: Arc::default(),
             wait_agent_presentations,
             rollout_budget: Arc::default(),
-            root_service_tier: Arc::new(ArcSwapOption::from(None)),
         };
         if let Some(rollout_budget) = rollout_budget {
             control.rollout_budget.configure(rollout_budget);

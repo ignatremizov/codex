@@ -2687,6 +2687,7 @@ mod tests {
             name: Some("Rollback thread".to_string()),
             model_provider: "openai".to_string(),
             model: None,
+            service_tier: None,
             reasoning_effort: None,
             created_at,
             updated_at: created_at,

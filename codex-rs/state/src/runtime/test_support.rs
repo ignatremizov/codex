@@ -58,6 +58,7 @@ pub(super) fn test_thread_metadata(
         agent_path: None,
         model_provider: "test-provider".to_string(),
         model: Some("gpt-5".to_string()),
+        service_tier: None,
         reasoning_effort: Some(ReasoningEffort::Medium),
         cwd,
         cli_version: "0.0.0".to_string(),

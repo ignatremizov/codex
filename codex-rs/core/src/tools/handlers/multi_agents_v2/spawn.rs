@@ -153,7 +153,13 @@ async fn handle_spawn_agent(
             .developer_instructions
             .clone_from(&turn.developer_instructions);
     }
-    apply_spawn_agent_service_tier(&session, &mut config, args.service_tier.as_deref()).await?;
+    apply_spawn_agent_service_tier(
+        &session,
+        &mut config,
+        turn.config.service_tier.as_deref(),
+        args.service_tier.as_deref(),
+    )
+    .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
 
     // Remember an applied configured default so cold reload reapplies its restrictions.

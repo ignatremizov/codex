@@ -3,6 +3,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::JsonSchemaPrimitiveType;
 use codex_tools::JsonSchemaType;
 use pretty_assertions::assert_eq;
@@ -318,7 +319,7 @@ fn spawn_agent_tool_keeps_model_controls_when_spawn_metadata_is_hidden() {
     assert!(!properties.contains_key("agent_type"));
     assert!(properties.contains_key("model"));
     assert!(properties.contains_key("reasoning_effort"));
-    assert!(!properties.contains_key("service_tier"));
+    assert!(properties.contains_key("service_tier"));
     assert!(description.contains(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE));
     assert!(description.contains("Available explicit model overrides"));
 }
