@@ -260,12 +260,14 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
             )
             .unwrap();
         let before_disconnect = Instant::now();
+        app.local_settings.tui.auto_recap = true;
         app.recap.note_focus_lost(before_disconnect);
         for _ in 0..3 {
             app.recap
                 .note_turn_finished(&TurnStatus::Completed, before_disconnect);
         }
         app.schedule_recap_check(id, Instant::now());
+        assert!(app.recap.scheduled_check.is_some());
         app.pending_managed_worktree_creation = true;
         app.agents_overview
             .view_state

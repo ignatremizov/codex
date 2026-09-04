@@ -411,6 +411,14 @@ async fn token_budget_history_notes_requires_capable_starting_model(
         .with_config(move |config| {
             config.model_provider.base_url = Some(backend_url);
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
+            if use_model_defaults {
+                // Enable the runtime feature without introducing a config table that would
+                // override the model-owned history/notes default under test.
+                config
+                    .features
+                    .enable(Feature::TokenBudget)
+                    .expect("test config should allow token budget");
+            }
         })
         .build_with_auto_env(&server)
         .await;
@@ -439,7 +447,47 @@ async fn token_budget_history_notes_requires_capable_starting_model(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn token_budget_uses_model_message_defaults() -> Result<()> {
+async fn model_defaults_do_not_activate_token_budget() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response = mount_sse_once(&server, sse_completed("resp-1")).await;
+    let mut model_defaults = model_token_budget_config();
+    model_defaults.enabled = true;
+    model_defaults.use_history_notes_extension = true;
+    let model_guidance = model_defaults.guidance_message.clone();
+    let test = test_codex()
+        .with_model_info_override("gpt-5.2", move |model_info| {
+            model_info.supports_experimental_context = true;
+            model_info
+                .model_messages
+                .as_mut()
+                .expect("bundled model should have model messages")
+                .token_budget = Some(model_defaults);
+        })
+        .with_config(|config| {
+            config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    test.submit_turn("do not activate hidden context management")
+        .await?;
+
+    let request = response.single_request();
+    assert_eq!(token_budget_contexts(&request), Vec::<String>::new());
+    assert!(
+        !tool_names(&request)
+            .iter()
+            .any(|name| name == "new_context")
+    );
+    assert!(!request.body_contains_text(&model_guidance));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enabled_token_budget_uses_model_message_defaults() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -459,6 +507,10 @@ async fn token_budget_uses_model_message_defaults() -> Result<()> {
         })
         .with_config(|config| {
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
+            config
+                .features
+                .enable(Feature::TokenBudget)
+                .expect("test config should allow token budget");
         })
         .build_with_auto_env(&server)
         .await?;

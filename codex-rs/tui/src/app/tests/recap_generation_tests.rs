@@ -35,6 +35,7 @@ fn render_chat_widget(app: &App) -> String {
 }
 
 async fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
+    app.local_settings.tui.auto_recap = true;
     app.active_thread_id = Some(thread_id);
     app.transcript_cells
         .push(Arc::new(crate::history_cell::UserHistoryCell {
@@ -54,6 +55,10 @@ async fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
     tokio::time::pause();
     tokio::time::advance(recap::RECAP_DELAY).await;
     tokio::time::resume();
+    assert!(
+        app.recap
+            .should_generate(tokio::time::Instant::now().into_std())
+    );
 }
 
 #[tokio::test]
@@ -366,6 +371,7 @@ async fn auto_recap_opt_out_blocks_requests_and_cleans_up_pending_start() -> Res
 
     app.local_settings.tui.auto_recap = true;
     app.request_recap(&app_server, thread_id, RecapTrigger::Automatic);
+    assert!(app.recap.in_flight_request.is_some());
     let started_event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), app_event_rx.recv())
         .await?
         .expect("recap start event");
@@ -404,6 +410,7 @@ async fn auto_recap_opt_out_blocks_requests_and_cleans_up_pending_start() -> Res
 #[tokio::test]
 async fn recap_generation_uses_remote_workspace_cwd() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.local_settings.tui.auto_recap = true;
     let remote_cwd = if cfg!(windows) {
         PathBuf::from(r"C:\remote\project")
     } else {

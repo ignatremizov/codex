@@ -2669,7 +2669,7 @@ fn resolve_update_plan_enabled(config_toml: &ConfigToml) -> bool {
         .tools
         .as_ref()
         .and_then(|tools| tools.update_plan.as_ref())
-        .is_some_and(|config| config.enabled)
+        .is_none_or(|config| config.enabled)
 }
 
 fn resolve_orchestrator_feature_enabled(
@@ -4396,7 +4396,11 @@ impl Config {
                 .as_ref()
                 .map(|t| t.show_server_version_notice)
                 .unwrap_or(true),
-            tui_auto_recap: cfg.tui.as_ref().map(|t| t.auto_recap).unwrap_or(/*default*/ true),
+            tui_auto_recap: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.auto_recap)
+                .unwrap_or_default(),
             model_availability_nux: cfg
                 .tui
                 .as_ref()
