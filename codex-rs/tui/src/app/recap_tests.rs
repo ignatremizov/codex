@@ -51,6 +51,7 @@ fn user_history_cell(message: &str) -> Arc<dyn HistoryCell> {
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
         remote_image_urls: Vec::new(),
+        source: None,
     })
 }
 
@@ -319,6 +320,7 @@ async fn scheduled_check_fires_at_recap_deadline() {
     let thread_id = ThreadId::new();
     let now = Instant::now();
     let mut app = make_test_app().await;
+    app.config.tui_auto_recap = true;
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     app.app_event_tx = AppEventSender::new(event_tx);
 
@@ -348,6 +350,7 @@ async fn rescheduling_check_cancels_the_earlier_timer() {
     let thread_id = ThreadId::new();
     let first_turn = Instant::now();
     let mut app = make_test_app().await;
+    app.config.tui_auto_recap = true;
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     app.app_event_tx = AppEventSender::new(event_tx);
 
@@ -621,6 +624,7 @@ fn track_in_flight_recap(app: &mut App, thread_id: ThreadId) -> (RecapRequest, T
 
 async fn app_with_visible_thread(thread_id: ThreadId) -> App {
     let mut app = make_test_app().await;
+    app.config.tui_auto_recap = true;
     app.active_thread_id = Some(thread_id);
     app
 }

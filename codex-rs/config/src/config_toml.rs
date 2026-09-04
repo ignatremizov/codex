@@ -645,7 +645,7 @@ pub struct ExperimentalRequestUserInput {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct UpdatePlanToolConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
 }
 

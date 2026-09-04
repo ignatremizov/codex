@@ -64,15 +64,13 @@ fn source_authority_survives_budget_and_objective_update_steering() {
     let mut budget_limited_goal = test_goal("Finish the feature.");
     budget_limited_goal.status = ThreadGoalStatus::BudgetLimited;
     budget_limited_goal.tokens_used = 10_100;
-    let budget_limit = response_item_text(steering::budget_limit_steering_item(
-        &budget_limited_goal,
-    ));
+    let budget_limit =
+        response_item_text(steering::budget_limit_steering_item(&budget_limited_goal));
     assert!(budget_limit.contains("without letting recent local artifacts redefine it"));
 
-    let objective_updated =
-        response_item_text(steering::objective_updated_steering_item(&test_goal(
-            "Finish the revised feature.",
-        )));
+    let objective_updated = response_item_text(steering::objective_updated_steering_item(
+        &test_goal("Finish the revised feature."),
+    ));
     assert!(objective_updated.contains("sources that are authoritative for the updated objective"));
     assert!(objective_updated.contains("their authority depends on their relevance"));
     assert!(objective_updated.contains("call get_goal to re-ground on the updated objective"));

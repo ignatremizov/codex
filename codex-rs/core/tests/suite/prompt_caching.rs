@@ -118,10 +118,10 @@ fn normalize_newlines(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
-#[test_case(None, false, false; "default with model instructions")]
+#[test_case(None, true, false; "default with model instructions")]
 #[test_case(Some(true), true, false; "enabled with model instructions")]
 #[test_case(Some(false), false, false; "disabled with model instructions")]
-#[test_case(None, false, true; "default with custom instructions")]
+#[test_case(None, true, true; "default with custom instructions")]
 #[test_case(Some(true), true, true; "enabled with custom instructions")]
 #[test_case(Some(false), false, true; "disabled with custom instructions")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

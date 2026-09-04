@@ -572,8 +572,8 @@ async fn load_config_resolves_non_prefixed_mcp_tool_servers() -> std::io::Result
 async fn load_config_resolves_update_plan_enabled() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     for (config_toml, expected_enabled) in [
-        ("", false),
-        ("[tools.update_plan]", false),
+        ("", true),
+        ("[tools.update_plan]", true),
         ("[tools.update_plan]\nenabled = false", false),
         ("[tools.update_plan]\nenabled = true", true),
     ] {
@@ -1229,7 +1229,7 @@ fn config_toml_deserializes_model_availability_nux() {
             user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
-            auto_recap: true,
+            auto_recap: false,
             disable_paste_burst: None,
             vim_mode_default: false,
             raw_output_mode: false,
@@ -1547,8 +1547,8 @@ async fn runtime_config_uses_tui_raw_output_mode() {
 #[tokio::test]
 async fn tui_auto_recap_defaults_and_cli_overrides() -> anyhow::Result<()> {
     for (toml, override_value, expected) in [
-        ("", None, true),
-        ("[tui]", None, true),
+        ("", None, false),
+        ("[tui]", None, false),
         ("[tui]\nauto_recap = true", None, true),
         ("[tui]\nauto_recap = false", None, false),
         ("[tui]\nauto_recap = true", Some(false), false),
@@ -4478,7 +4478,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             user_input_notification_preview_graphemes: 30,
             animations: true,
             show_tooltips: true,
-            auto_recap: true,
+            auto_recap: false,
             disable_paste_burst: None,
             vim_mode_default: false,
             raw_output_mode: false,
