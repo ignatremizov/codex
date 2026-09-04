@@ -558,6 +558,7 @@ mod thread_processor_behavior_tests {
             name: None,
             model_provider: "openai".to_string(),
             model: None,
+            service_tier: None,
             reasoning_effort: None,
             created_at: created_at.with_timezone(&Utc),
             updated_at: updated_at.with_timezone(&Utc),

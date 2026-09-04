@@ -78,9 +78,9 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageRecord;
-use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -5313,7 +5313,8 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
 
 #[tokio::test]
 async fn resume_thread_subagent_restores_stored_metadata() {
-    let (home, config) = test_config().await;
+    let (home, mut config) = test_config().await;
+    config.service_tier = Some("priority".to_string());
     let thread_store = Arc::new(InMemoryThreadStore::default());
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
     let manager = ThreadManager::new(
@@ -5411,6 +5412,7 @@ async fn resume_thread_subagent_restores_stored_metadata() {
                 && stored_thread.agent_nickname.is_some()
                 && stored_thread.agent_role.as_deref() == Some("explorer")
                 && stored_thread.agent_path.as_deref() == Some(agent_path.as_str())
+                && stored_thread.service_tier.as_deref() == Some("priority")
             {
                 break;
             }
@@ -5426,10 +5428,12 @@ async fn resume_thread_subagent_restores_stored_metadata() {
         .await
         .expect("child shutdown should submit");
 
+    let mut resume_config = harness.config.clone();
+    resume_config.service_tier = Some("default".to_string());
     let resumed_thread_id = harness
         .control
         .resume_agent_from_rollout(
-            harness.config.clone(),
+            resume_config,
             child_thread_id,
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -5467,6 +5471,11 @@ async fn resume_thread_subagent_restores_stored_metadata() {
     assert_eq!(resumed_agent_path, Some(agent_path));
     assert_eq!(resumed_nickname, Some(original_nickname));
     assert_eq!(resumed_role, Some("explorer".to_string()));
+    assert_eq!(
+        resumed_snapshot.service_tier,
+        Some("priority".to_string()),
+        "V1 resume must restore the child's persisted tier instead of the caller's current tier"
+    );
 
     let _ = harness
         .control

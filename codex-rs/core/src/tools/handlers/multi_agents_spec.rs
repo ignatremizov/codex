@@ -118,6 +118,7 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
     if !options.expose_spawn_agent_model_overrides {
         properties.remove("model");
         properties.remove("reasoning_effort");
+        properties.remove("service_tier");
     }
     properties.insert(
         "task_name".to_string(),
@@ -778,6 +779,7 @@ fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchem
     properties.remove("agent_type");
     properties.remove("model");
     properties.remove("reasoning_effort");
+    properties.remove("service_tier");
 }
 
 fn spawn_agent_tool_description(

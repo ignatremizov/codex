@@ -293,6 +293,7 @@ impl ThreadMetadataSync {
                     self.cwd_seen = true;
                     update.model = Some(settings.model.clone());
                     update.model_provider = Some(settings.model_provider_id.clone());
+                    update.service_tier = Some(settings.service_tier.clone());
                     update.reasoning_effort = Some(settings.reasoning_effort.clone());
                     update.cwd = Some(settings.cwd.clone().into_path_buf());
                     update.approval_mode = Some(settings.approval_policy);
@@ -377,6 +378,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.title.is_some()
         || update.model_provider.is_some()
         || update.model.is_some()
+        || update.service_tier.is_some()
         || update.reasoning_effort.is_some()
         || update.created_at.is_some()
         || update.advance_recency_at.is_some()
@@ -648,7 +650,7 @@ mod tests {
                 thread_settings: ThreadSettingsSnapshot {
                     model: "gpt-5.2-codex".to_string(),
                     model_provider_id: "updated-provider".to_string(),
-                    service_tier: None,
+                    service_tier: Some("fast".to_string()),
                     approval_policy: AskForApproval::Never,
                     approvals_reviewer: ApprovalsReviewer::User,
                     permission_profile: permission_profile.clone(),
@@ -678,6 +680,7 @@ mod tests {
             update.patch.model_provider.as_deref(),
             Some("updated-provider")
         );
+        assert_eq!(update.patch.service_tier, Some(Some("fast".to_string())));
         assert_eq!(
             update.patch.reasoning_effort,
             Some(Some(ReasoningEffort::Ultra))
@@ -690,6 +693,7 @@ mod tests {
             panic!("thread settings applied item");
         };
         event.thread_settings.reasoning_effort = None;
+        event.thread_settings.service_tier = None;
         event
             .thread_settings
             .collaboration_mode
@@ -699,6 +703,7 @@ mod tests {
         let update = sync
             .observe_appended_items(&[item])
             .expect("thread settings clear metadata update");
+        assert_eq!(update.patch.service_tier, Some(None));
         assert_eq!(update.patch.reasoning_effort, Some(None));
     }
 

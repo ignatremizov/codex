@@ -129,6 +129,7 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
             let settings = &event.thread_settings;
             metadata.model = Some(settings.model.clone());
             metadata.model_provider = settings.model_provider_id.clone();
+            metadata.service_tier = settings.service_tier.clone();
             metadata.reasoning_effort = settings.reasoning_effort.clone();
             metadata.cwd = settings.cwd.clone().into_path_buf();
             metadata.sandbox_policy =
@@ -612,7 +613,7 @@ mod tests {
                 thread_settings: ThreadSettingsSnapshot {
                     model: "gpt-5.2-codex".to_string(),
                     model_provider_id: "updated-provider".to_string(),
-                    service_tier: None,
+                    service_tier: Some("fast".to_string()),
                     approval_policy: AskForApproval::Never,
                     approvals_reviewer: ApprovalsReviewer::User,
                     permission_profile: permission_profile.clone(),
@@ -638,6 +639,7 @@ mod tests {
 
         assert_eq!(metadata.model.as_deref(), Some("gpt-5.2-codex"));
         assert_eq!(metadata.model_provider, "updated-provider");
+        assert_eq!(metadata.service_tier.as_deref(), Some("fast"));
         assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::Ultra));
         assert_eq!(metadata.cwd, cwd);
         assert_eq!(metadata.approval_mode, "never");
@@ -710,6 +712,7 @@ mod tests {
             agent_role: None,
             model_provider: "openai".to_string(),
             model: None,
+            service_tier: None,
             reasoning_effort: None,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),

@@ -358,13 +358,13 @@ async fn validate_spawn_agent_model_selection(
 pub(crate) async fn apply_spawn_agent_service_tier(
     session: &Session,
     config: &mut Config,
+    parent_service_tier: Option<&str>,
     requested_service_tier: Option<&str>,
 ) -> Result<(), FunctionCallError> {
-    let inherited_service_tier = session.services.agent_control.root_service_tier();
     let candidate_service_tiers = [
         requested_service_tier.map(str::to_string),
         config.service_tier.clone(),
-        inherited_service_tier,
+        parent_service_tier.map(str::to_string),
     ];
     if candidate_service_tiers.iter().all(Option::is_none) {
         config.service_tier = None;

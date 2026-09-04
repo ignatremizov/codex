@@ -856,6 +856,7 @@ impl AgentControl {
             .await?;
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
+        let stored_service_tier = stored_thread.service_tier.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
         let (stored_source, stored_parent_thread_id, initial_history) =
             match initial_history_override {
@@ -966,8 +967,8 @@ impl AgentControl {
                 "cannot restore persisted V2 child {thread_id} while agents are disabled"
             )));
         }
-        config.service_tier = self.root_service_tier();
         apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
+        config.service_tier = stored_service_tier;
         config.model_reasoning_effort = stored_reasoning_effort;
         let (inherited_environments, inherited_exec_policy, client_mcp_extensions_override) =
             if let Some((parent, parent_environments)) = parent_context.as_ref() {
@@ -2975,6 +2976,7 @@ impl AgentControl {
             .await?;
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
+        let stored_service_tier = stored_thread.service_tier.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
         let (
             resumed_agent_path,
@@ -3240,10 +3242,9 @@ impl AgentControl {
                 )));
             }
         }
-        if multi_agent_version == MultiAgentVersion::V2 {
-            apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
-            config.model_reasoning_effort = stored_reasoning_effort;
-        }
+        apply_restored_agent_model(&mut config, stored_model, stored_model_provider)?;
+        config.service_tier = stored_service_tier;
+        config.model_reasoning_effort = stored_reasoning_effort;
         let residency_slot = if resume_uses_v2_residency {
             Some(
                 self.reserve_v2_residency_slot(&state, &config, Some(thread_id))

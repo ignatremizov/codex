@@ -953,7 +953,7 @@ async fn multi_agent_v2_spawn_omitted_fork_turns_defaults_to_no_context() {
 }
 
 #[tokio::test]
-async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_support_it() {
+async fn spawn_agent_service_tier_uses_configured_preference_for_the_child_model() {
     let (_session, turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config.model = Some("gpt-5.4-mini".to_string());
@@ -969,10 +969,11 @@ async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_su
     apply_spawn_agent_service_tier(
         root.thread.session.as_ref(),
         &mut config,
+        /*parent_service_tier*/ None,
         /*requested_service_tier*/ None,
     )
-        .await
-        .expect("root preference should be resolved against the child model");
+    .await
+    .expect("configured preference should be resolved against the child model");
 
     assert_eq!(
         config.service_tier,

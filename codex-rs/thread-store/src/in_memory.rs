@@ -1591,6 +1591,9 @@ fn stored_thread_from_state(
             .and_then(|metadata| metadata.model_provider.clone())
             .unwrap_or_else(|| "test".to_string()),
         model: metadata.and_then(|metadata| metadata.model.clone()),
+        service_tier: metadata
+            .and_then(|metadata| metadata.service_tier.clone())
+            .flatten(),
         reasoning_effort: metadata
             .and_then(|metadata| metadata.reasoning_effort.clone())
             .flatten(),

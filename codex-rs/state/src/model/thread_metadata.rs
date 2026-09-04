@@ -149,6 +149,8 @@ pub struct ThreadMetadata {
     pub model_provider: String,
     /// The latest observed model for the thread.
     pub model: Option<String>,
+    /// The latest resolved service tier for the thread.
+    pub service_tier: Option<String>,
     /// The latest observed reasoning effort for the thread.
     pub reasoning_effort: Option<ReasoningEffort>,
     /// The working directory for the thread.
@@ -298,6 +300,7 @@ impl ThreadMetadataBuilder {
                 .clone()
                 .unwrap_or_else(|| default_provider.to_string()),
             model: None,
+            service_tier: None,
             reasoning_effort: None,
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone().unwrap_or_default(),
@@ -394,6 +397,9 @@ impl ThreadMetadata {
         if self.model != other.model {
             diffs.push("model");
         }
+        if self.service_tier != other.service_tier {
+            diffs.push("service_tier");
+        }
         if self.reasoning_effort != other.reasoning_effort {
             diffs.push("reasoning_effort");
         }
@@ -471,6 +477,7 @@ pub(crate) struct ThreadRow {
     agent_path: Option<String>,
     model_provider: String,
     model: Option<String>,
+    service_tier: Option<String>,
     reasoning_effort: Option<String>,
     cwd: String,
     cli_version: String,
@@ -509,6 +516,7 @@ impl ThreadRow {
             agent_path: row.try_get("agent_path")?,
             model_provider: row.try_get("model_provider")?,
             model: row.try_get("model")?,
+            service_tier: row.try_get("service_tier")?,
             reasoning_effort: row.try_get("reasoning_effort")?,
             cwd: row.try_get("cwd")?,
             cli_version: row.try_get("cli_version")?,
@@ -551,6 +559,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             agent_path,
             model_provider,
             model,
+            service_tier,
             reasoning_effort,
             cwd,
             cli_version,
@@ -607,6 +616,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             agent_path,
             model_provider,
             model,
+            service_tier,
             reasoning_effort: reasoning_effort
                 .and_then(|value| value.parse::<ReasoningEffort>().ok()),
             cwd: PathBuf::from(cwd),
@@ -717,6 +727,7 @@ mod tests {
             agent_path: None,
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
+            service_tier: None,
             reasoning_effort: reasoning_effort.map(str::to_string),
             cwd: "/tmp/workspace".to_string(),
             cli_version: "0.0.0".to_string(),
@@ -756,6 +767,7 @@ mod tests {
             agent_path: None,
             model_provider: "openai".to_string(),
             model: Some("gpt-5".to_string()),
+            service_tier: None,
             reasoning_effort,
             cwd: PathBuf::from("/tmp/workspace"),
             cli_version: "0.0.0".to_string(),
@@ -797,6 +809,17 @@ mod tests {
             metadata,
             expected_thread_metadata(Some(ReasoningEffort::Custom("future".to_string())))
         );
+    }
+
+    #[test]
+    fn thread_row_preserves_service_tier() {
+        let mut row = thread_row(/*reasoning_effort*/ None);
+        row.service_tier = Some("fast".to_string());
+        let metadata = ThreadMetadata::try_from(row).expect("thread metadata should parse");
+        let mut expected = expected_thread_metadata(/*reasoning_effort*/ None);
+        expected.service_tier = Some("fast".to_string());
+
+        assert_eq!(metadata, expected);
     }
 
     #[test]
