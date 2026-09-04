@@ -267,10 +267,12 @@ where
                 }
             };
             let update_plan_enabled = match self.thread_manager.upgrade() {
-                Some(thread_manager) => match thread_manager.get_thread(runtime.thread_id()).await {
-                    Ok(thread) => thread.config().await.update_plan_enabled,
-                    Err(_) => true,
-                },
+                Some(thread_manager) => {
+                    match thread_manager.get_thread(runtime.thread_id()).await {
+                        Ok(thread) => thread.config().await.update_plan_enabled,
+                        Err(_) => true,
+                    }
+                }
                 None => true,
             };
             PostCompactionContextContribution::with_lease(

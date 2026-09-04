@@ -1639,11 +1639,11 @@ text(output.output);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_does_not_expose_update_plan_by_default() -> Result<()> {
+async fn code_mode_does_not_expose_update_plan_when_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
+    let (_test, second_mock) = run_code_mode_turn_with_config(
         &server,
         "inspect the available tools",
         r#"
@@ -1652,6 +1652,7 @@ text(JSON.stringify({
   listed: ALL_TOOLS.some(({ name }) => name === "update_plan"),
 }));
 "#,
+        |config| config.update_plan_enabled = false,
     )
     .await?;
 

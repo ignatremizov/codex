@@ -117,8 +117,14 @@ pub(super) fn resolve_token_budget(
     Some(token_budget)
 }
 
-/// Applies model activation defaults before thread extensions are initialized.
+/// Applies model defaults before thread extensions are initialized when token budgeting is enabled.
 pub(super) fn apply_model_defaults(config: &mut Config, model_info: &ModelInfo) {
+    // Model metadata supplies defaults for an enabled token-budget feature, but must not activate
+    // hidden context-management work by itself.
+    if !config.features.enabled(Feature::TokenBudget) {
+        return;
+    }
+
     let Some(model_defaults) = model_info
         .model_messages
         .as_ref()
@@ -138,14 +144,6 @@ pub(super) fn apply_model_defaults(config: &mut Config, model_info: &ModelInfo) 
             .and_then(|features| features.get("token_budget"))
             .is_some();
     if has_explicit_config {
-        return;
-    }
-
-    if config.features.enable(Feature::TokenBudget).is_err() {
-        return;
-    }
-    // Managed requirements can pin the feature off even when enable() succeeds.
-    if !config.features.enabled(Feature::TokenBudget) {
         return;
     }
 

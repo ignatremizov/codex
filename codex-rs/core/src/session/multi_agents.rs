@@ -135,8 +135,8 @@ pub(crate) fn resolve_usage_hints(
             text.push_str("\n\n");
             text.push_str(
                 "Model and reasoning-effort overrides are independent of history inheritance. \
-                 Only set overrides when explicitly requested by the user, applicable `AGENTS.md` \
-                 instructions, or skill instructions.",
+                 Only set overrides when explicitly requested by the user, applicable instructions, \
+                 or a clear task-specific reason.",
             );
         }
 

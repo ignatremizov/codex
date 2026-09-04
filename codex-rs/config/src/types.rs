@@ -756,8 +756,8 @@ pub struct Tui {
     pub show_tooltips: bool,
 
     /// Generate automatic conversation recaps when the terminal is unfocused.
-    /// Defaults to `true`. Disabling this leaves `/recap` available on demand.
-    #[serde(default = "default_true")]
+    /// Defaults to `false`. `/recap` remains available on demand.
+    #[serde(default)]
     pub auto_recap: bool,
 
     /// When true, disables burst-paste detection for typed input entirely.

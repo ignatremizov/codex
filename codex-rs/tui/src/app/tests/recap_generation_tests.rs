@@ -41,6 +41,7 @@ fn prepare_eligible_recap(app: &mut App, thread_id: ThreadId) {
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }));
     let ready_at = Instant::now() - recap::RECAP_DELAY;
     app.recap.note_focus_lost(ready_at);
@@ -68,6 +69,7 @@ async fn recap_generation_uses_bounded_structured_request_and_inserts_result() -
     .collect();
     let (model_server, _completions) = start_streaming_sse_server(vec![chunks]).await;
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.config.tui_auto_recap = true;
     let codex_home = tempdir()?;
     std::fs::write(
         codex_home.path().join("config.toml"),
@@ -202,6 +204,7 @@ async fn manual_recap_works_when_auto_recap_disabled() -> Result<()> {
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }));
     let (mut app_server, _requests, proxy) = start_recording_remote_app_server(&app.config).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -367,6 +370,7 @@ async fn auto_recap_opt_out_blocks_requests_and_cleans_up_pending_start() -> Res
 #[tokio::test]
 async fn recap_generation_uses_remote_workspace_cwd() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.config.tui_auto_recap = true;
     let remote_cwd = if cfg!(windows) {
         PathBuf::from(r"C:\remote\project")
     } else {
@@ -381,6 +385,7 @@ async fn recap_generation_uses_remote_workspace_cwd() -> Result<()> {
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
             remote_image_urls: Vec::new(),
+            source: None,
         }));
 
     app.request_recap(&app_server, ThreadId::new(), RecapTrigger::Automatic);
