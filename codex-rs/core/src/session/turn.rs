@@ -193,6 +193,8 @@ pub(crate) async fn run_turn(
             if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {
                 return Err(err);
             }
+            run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
+                .await;
             let error = err.to_codex_protocol_error();
             sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                 .await;
