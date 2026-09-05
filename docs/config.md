@@ -120,6 +120,13 @@ one configured role, set `allow_history_forks = true` under `[agents]` in that
 role's config file. Explicit `/agent ... fork:` commands are user-controlled
 and do not require this setting.
 
+A configured role may also set `model_instructions_file`. Relative paths are
+resolved from the role TOML directory, and the non-empty file replaces inherited
+base instructions for new and resumed agents using that role. The role's
+`developer_instructions` remain a separate developer message. An explicit spawn
+model override changes the model without discarding the selected role's base
+instructions.
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.

@@ -10780,6 +10780,74 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_spawn_agent_role_model_instructions_replace_inherited_base() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const ROLE_BASE_INSTRUCTIONS: &str = "Role-owned base instructions.";
+    const ROLE_DEVELOPER_INSTRUCTIONS: &str = "Role-owned developer instructions.";
+
+    let server = start_mock_server().await;
+    let (_test, _spawned_id, child_request) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "agent_type": "custom",
+            "fork_context": false,
+            "model": REQUESTED_MODEL,
+        }),
+        ChildResponseTiming::Immediate,
+        /*wait_for_parent_notification*/ false,
+        |builder| {
+            builder.with_config(|config| {
+                let role_dir = config.codex_home.join("roles");
+                std::fs::create_dir_all(&role_dir).expect("create role directory");
+                std::fs::write(
+                    role_dir.join("base.md"),
+                    format!("  {ROLE_BASE_INSTRUCTIONS}  \n"),
+                )
+                .expect("write role base instructions");
+                let role_path = role_dir.join("custom.toml");
+                std::fs::write(
+                    &role_path,
+                    format!(
+                        "model = {INHERITED_MODEL:?}\nmodel_instructions_file = \"base.md\"\ndeveloper_instructions = {ROLE_DEVELOPER_INSTRUCTIONS:?}\n"
+                    ),
+                )
+                .expect("write role config");
+                config.agent_roles.insert(
+                    "custom".to_string(),
+                    AgentRoleConfig {
+                        description: Some("Custom role".to_string()),
+                        config_file: Some(role_path.to_path_buf()),
+                        nickname_candidates: None,
+                    },
+                );
+            })
+        },
+    )
+    .await?;
+    let child_request = wait_for_request_with_model(&child_request, REQUESTED_MODEL).await?;
+    assert_eq!(
+        (
+            child_request.body_json()["model"].as_str(),
+            child_request.instructions_text(),
+            child_request
+                .message_input_texts("developer")
+                .into_iter()
+                .filter(|text| text == ROLE_DEVELOPER_INSTRUCTIONS)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            Some(REQUESTED_MODEL),
+            ROLE_BASE_INSTRUCTIONS.to_string(),
+            vec![ROLE_DEVELOPER_INSTRUCTIONS.to_string()],
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_agent_requested_model_and_reasoning_override_role_defaults() -> Result<()> {
     skip_if_no_network!(Ok(()));
 

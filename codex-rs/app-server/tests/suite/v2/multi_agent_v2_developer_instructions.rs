@@ -49,6 +49,7 @@ const NAMESPACE: &str = "collaboration";
 const PARENT_INSTRUCTIONS: &str = "parent-only developer instructions";
 const CHILD_INSTRUCTIONS: &str = "child-only developer instructions";
 const ROLE_INSTRUCTIONS: &str = "configured role developer instructions";
+const ROLE_BASE_INSTRUCTIONS: &str = "configured role base instructions";
 
 /// V2 fork modes, roles, and unset/blank overrides expose their agreed instruction precedence.
 #[test_case("no history"; "no history")]
@@ -112,6 +113,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
             | "bounded implicit configured default"
             | "full fork applies default role"
     );
+    let role_has_base_instructions = case == "full history configured role";
     let expected = match case {
         "unset override" | "configured role without instructions" => Some(PARENT_INSTRUCTIONS),
         "blank override" => None,
@@ -202,6 +204,13 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     if role_has_instructions {
         role_config.push_str(&format!("developer_instructions = {ROLE_INSTRUCTIONS:?}\n"));
     }
+    if role_has_base_instructions {
+        std::fs::write(
+            codex_home.path().join("role-base.md"),
+            ROLE_BASE_INSTRUCTIONS,
+        )?;
+        role_config.push_str("model_instructions_file = \"role-base.md\"\n");
+    }
     std::fs::write(codex_home.path().join("role.toml"), role_config)?;
     config
         .with_extra_config(&feature_config)
@@ -257,6 +266,7 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     let child_texts = child_request.message_input_texts("developer");
     if case == "full history configured role" {
         assert_eq!(child_request.body_json()["model"], json!("gpt-5.5"));
+        assert_eq!(child_request.instructions_text(), ROLE_BASE_INSTRUCTIONS);
         assert!(
             child_request.body_contains_text(PARENT_PROMPT),
             "the child should inherit the parent's conversation history"
@@ -530,6 +540,8 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
     const WAIT_CALL_ID: &str = "wait-for-durable-instruction-worker";
     const FOLLOWUP_CALL_ID: &str = "followup-durable-instruction-worker";
     const DIRECT_RESUME_INSTRUCTIONS: &str = "direct resume must not replace worker instructions";
+    const INITIAL_ROLE_BASE_INSTRUCTIONS: &str = "initial role-owned base instructions";
+    const RESUMED_ROLE_BASE_INSTRUCTIONS: &str = "updated role-owned base instructions";
 
     let instruction_markers = [
         PARENT_INSTRUCTIONS,
@@ -633,11 +645,13 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
     };
     let codex_home = TempDir::new()?;
     let role_path = codex_home.path().join("worker.toml");
+    let role_base_instructions_path = codex_home.path().join("worker-base.md");
     if let Some(agent_type) = agent_type {
+        std::fs::write(&role_base_instructions_path, INITIAL_ROLE_BASE_INSTRUCTIONS)?;
         std::fs::write(
             &role_path,
             format!(
-                "developer_instructions = {ROLE_INSTRUCTIONS:?}\nmodel_reasoning_effort = \"low\"\nfeatures.shell_tool = false\n"
+                "model_instructions_file = \"worker-base.md\"\ndeveloper_instructions = {ROLE_INSTRUCTIONS:?}\nmodel_reasoning_effort = \"low\"\nfeatures.shell_tool = false\n"
             ),
         )?;
         feature_config.push_str(&format!(
@@ -683,6 +697,12 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
             .find(|request| !request.inputs_of_type("agent_message").is_empty())
             .expect("initial worker model request");
         assert_developer_instructions(&initial_child_request, "initial");
+        if agent_type.is_some() {
+            assert_eq!(
+                initial_child_request.instructions_text(),
+                INITIAL_ROLE_BASE_INSTRUCTIONS
+            );
+        }
         assert_eq!(
             initial_child_request.body_json()["reasoning"]["effort"],
             json!("low")
@@ -759,10 +779,12 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
     };
 
     if agent_type.is_some() {
+        std::fs::write(&role_base_instructions_path, RESUMED_ROLE_BASE_INSTRUCTIONS)?;
         std::fs::write(
             &role_path,
             format!(
-                r#"developer_instructions = {ROLE_INSTRUCTIONS:?}
+                r#"model_instructions_file = "worker-base.md"
+developer_instructions = {ROLE_INSTRUCTIONS:?}
 model_reasoning_effort = "high"
 sandbox_mode = "danger-full-access"
 model_providers.mock_provider.name = "Untrusted role provider"
@@ -1029,6 +1051,10 @@ features.shell_tool = false
     );
     if agent_type.is_some() {
         assert!(!has_shell_tool(&resumed_child_request));
+        assert_eq!(
+            resumed_child_request.instructions_text(),
+            RESUMED_ROLE_BASE_INSTRUCTIONS
+        );
     }
     assert_developer_instructions(&resumed_child_request, "resumed");
     assert!(
