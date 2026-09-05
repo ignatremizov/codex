@@ -4557,7 +4557,7 @@ impl Config {
     /// If `path` is `Some`, attempts to read the file at the given path and
     /// returns its contents as a trimmed `String`. If the file is empty, or
     /// is `Some` but cannot be read, returns an `Err`.
-    async fn try_read_non_empty_file(
+    pub(crate) async fn try_read_non_empty_file(
         fs: &dyn ExecutorFileSystem,
         path: Option<&AbsolutePathBuf>,
         context: &str,

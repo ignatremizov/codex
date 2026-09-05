@@ -14,6 +14,7 @@ use codex_config::ConfigLayerStack;
 use codex_config::McpServerConfig;
 use codex_config::SkillsConfig;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
+use codex_exec_server::LOCAL_FS;
 use codex_exec_server::read_sensitive_file_to_string;
 use codex_features::Feature;
 use codex_features::feature_for_key;
@@ -23,6 +24,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -42,8 +44,11 @@ pub(crate) struct AgentRoleApplication {
 
 #[derive(Default, Serialize)]
 struct AgentRoleOverrides {
+    #[serde(skip)]
+    base_instructions: Option<String>,
     developer_instructions: Option<String>,
     model: Option<String>,
+    model_instructions_file: Option<AbsolutePathBuf>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
     model_verbosity: Option<Verbosity>,
@@ -92,13 +97,23 @@ async fn apply_role_to_config_inner(
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
+    // Agent role files are host configuration, even when the child executes remotely. Read their
+    // relative instruction files through the local executor filesystem, matching ordinary config.
+    let base_instructions = Config::try_read_non_empty_file(
+        LOCAL_FS.as_ref(),
+        role_config.model_instructions_file.as_ref(),
+        "agent role model instructions file",
+    )
+    .await?;
     let application = AgentRoleApplication {
         overrides_model: role_config.model.is_some(),
         overrides_reasoning_effort: role_config.model_reasoning_effort.is_some(),
     };
     let mut overrides = AgentRoleOverrides {
+        base_instructions,
         developer_instructions: role_config.developer_instructions,
         model: role_config.model,
+        model_instructions_file: role_config.model_instructions_file,
         model_reasoning_effort: role_config.model_reasoning_effort,
         model_reasoning_summary: role_config.model_reasoning_summary,
         model_verbosity: role_config.model_verbosity,
@@ -264,7 +279,10 @@ mod role_overrides {
         let personality_changed = config.personality != next_config.personality
             || config.features.enabled(Feature::Personality)
                 != next_config.features.enabled(Feature::Personality);
-        if personality_changed
+        if let Some(instructions) = &overrides.base_instructions {
+            next_config.base_instructions = Some(instructions.clone());
+            next_config.base_instructions_provenance = Some(BaseInstructionsProvenance::Custom);
+        } else if personality_changed
             && matches!(
                 config.base_instructions_provenance,
                 Some(BaseInstructionsProvenance::Model { .. })

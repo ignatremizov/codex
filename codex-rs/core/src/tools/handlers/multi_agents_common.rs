@@ -268,6 +268,8 @@ pub(crate) async fn apply_spawn_agent_role_and_model_overrides(
     if role_application.overrides_model && !role_application.overrides_reasoning_effort {
         config.model_reasoning_effort = None;
     }
+    // A role's model is a default, but its custom base instructions define the selected role.
+    // An explicit model override changes the former without silently discarding the latter.
     apply_requested_spawn_agent_model_overrides(
         session,
         config,
