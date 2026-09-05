@@ -326,6 +326,7 @@ mod tests {
             phase: Some(codex_protocol::models::MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
         };
 
         assert_eq!(

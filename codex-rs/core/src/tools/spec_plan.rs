@@ -1230,7 +1230,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
             .model_info
             .experimental_supported_tools
             .iter()
-            .any(|tool| tool == "request_user_input_async")
+            .any(|tool| {
+                matches!(
+                    tool.as_str(),
+                    "request_user_input_async" | "send_user_message_async"
+                )
+            })
     {
         registry.add_with_exposure(
             RequestUserInputAsyncHandler {
