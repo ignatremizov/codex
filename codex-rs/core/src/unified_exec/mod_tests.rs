@@ -6,6 +6,8 @@ use crate::exec::ExecExpiration;
 use crate::sandboxing::ExecRequest;
 use crate::session::session::Session;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::update_current_turn_settings_for_test;
+use crate::session::tests::update_selected_settings_for_test;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::unified_exec::WriteStdinRequest;
@@ -326,7 +328,9 @@ async fn write_stdin(
         .write_stdin(
             &UnifiedExecContext::new(
                 Arc::clone(session),
-                crate::session::step_context::StepContext::for_test(Arc::clone(turn)),
+                crate::session::step_context::StepContext::for_test_with_current_settings(
+                    Arc::clone(turn),
+                ),
                 tokio_util::sync::CancellationToken::new(),
                 "write".to_string(),
             ),
@@ -908,7 +912,7 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
     use codex_protocol::protocol::ReviewDecision;
 
     skip_if_sandbox!(Ok(()));
-    let (session, mut turn, events) = make_session_and_context_with_auth_and_config_and_rx(
+    let (session, turn, events) = make_session_and_context_with_auth_and_config_and_rx(
         codex_login::CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         |config| {
@@ -972,8 +976,11 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         matches!(denied, Err(UnifiedExecError::StdinApproval(ToolError::Rejected(reason)))
         if reason.contains("select it before retrying"))
     );
-    Arc::make_mut(&mut Arc::get_mut(&mut turn).unwrap().config).approvals_reviewer =
-        ApprovalsReviewer::User;
+    update_current_turn_settings_for_test(&turn, |settings| {
+        update_selected_settings_for_test(settings, |selected| {
+            selected.approvals_reviewer = ApprovalsReviewer::User;
+        });
+    });
     assert!(matches!(
         write_stdin(&session, &turn, process_id, input, /*yield_time_ms*/ 250).await,
         Err(UnifiedExecError::StdinApproval(ToolError::Rejected(reason)))

@@ -5009,7 +5009,7 @@ impl Session {
             state.current_time_reminder.note_recorded_items(&items);
             state.record_items(
                 items.iter(),
-                turn_context.model_info.truncation_policy.into(),
+                turn_context.model_info().truncation_policy.into(),
             );
         }
         for image in image_preparations {
@@ -5171,7 +5171,7 @@ impl Session {
                         .note_recorded_items(&response_items);
                     state.history.record_annotated_items(
                         &items,
-                        turn_context.model_info.truncation_policy.into(),
+                        turn_context.model_info().truncation_policy.into(),
                     );
                 }
                 already_recorded
@@ -5448,7 +5448,7 @@ impl Session {
         let mut state = self.state.lock().await;
         state.record_items(
             items.iter(),
-            turn_context.model_info.truncation_policy.into(),
+            turn_context.model_info().truncation_policy.into(),
         );
     }
 

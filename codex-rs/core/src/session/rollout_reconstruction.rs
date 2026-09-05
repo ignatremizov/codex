@@ -637,7 +637,7 @@ impl Session {
                     {
                         history.record_items(
                             std::iter::once(&task_item),
-                            turn_context.model_info.truncation_policy.into(),
+                            turn_context.model_info().truncation_policy.into(),
                         );
                     }
                 }

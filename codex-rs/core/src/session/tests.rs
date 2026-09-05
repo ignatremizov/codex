@@ -251,6 +251,16 @@ pub(crate) fn update_turn_settings_for_test(
     turn.current_settings.store(settings);
 }
 
+/// Updates only the next-step view of a shared test turn context.
+pub(crate) fn update_current_turn_settings_for_test(
+    turn: &TurnContext,
+    update: impl FnOnce(&mut super::step_settings::ResolvedStepSettings),
+) {
+    let mut settings = turn.current_settings.load_full();
+    update(Arc::make_mut(&mut settings));
+    turn.current_settings.store(settings);
+}
+
 impl StepContext {
     pub(crate) fn for_test(turn: Arc<TurnContext>) -> Arc<Self> {
         let environments = turn.environments.clone();
@@ -287,6 +297,15 @@ impl StepContext {
             )),
             loaded_agents_md: None,
         })
+    }
+
+    pub(crate) fn for_test_with_current_settings(turn: Arc<TurnContext>) -> Arc<Self> {
+        let settings = turn.current_settings.load_full();
+        let mut step_context = Self::for_test(turn);
+        Arc::get_mut(&mut step_context)
+            .expect("fresh test step context")
+            .settings = settings;
+        step_context
     }
 
     pub(crate) fn with_tool_router_for_test(
@@ -15318,7 +15337,7 @@ async fn sample_rollout(
     let summary1 = "summary one";
     let snapshot1 = live_history
         .clone()
-        .for_prompt(&reconstruction_turn.model_info.input_modalities);
+        .for_prompt(&reconstruction_turn.model_info().input_modalities);
     let user_messages1 = collect_user_messages(&snapshot1);
     let rebuilt1 = compact::build_compacted_history(Vec::new(), &user_messages1, summary1);
     live_history.replace_annotated(rebuilt1);
@@ -15353,7 +15372,7 @@ async fn sample_rollout(
     let summary2 = "summary two";
     let snapshot2 = live_history
         .clone()
-        .for_prompt(&reconstruction_turn.model_info.input_modalities);
+        .for_prompt(&reconstruction_turn.model_info().input_modalities);
     let user_messages2 = collect_user_messages(&snapshot2);
     let rebuilt2 = compact::build_compacted_history(Vec::new(), &user_messages2, summary2);
     live_history.replace_annotated(rebuilt2);
