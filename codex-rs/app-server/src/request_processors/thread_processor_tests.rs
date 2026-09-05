@@ -83,6 +83,7 @@ mod legacy_exact_rollback_tests {
             phase: None,
             memory_citation: None,
             delivery: None,
+            questions: None,
         }))
     }
 }

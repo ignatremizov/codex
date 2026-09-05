@@ -56,7 +56,10 @@ impl ToolExecutor<ToolInvocation> for SendUserMessageAsyncHandler {
         })
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
                 session,
@@ -86,6 +89,7 @@ impl ToolExecutor<ToolInvocation> for SendUserMessageAsyncHandler {
                 phase: Some(MessagePhase::FinalAnswer),
                 memory_citation: None,
                 delivery: Some(AgentMessageDelivery::Async),
+                questions: None,
                 sub_agent_completion: None,
             });
             session.emit_turn_item_started(turn.as_ref(), &item).await;

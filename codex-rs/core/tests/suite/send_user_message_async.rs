@@ -91,6 +91,7 @@ async fn send_user_message_async_emits_item_and_does_not_end_the_turn() -> Resul
             phase: Some(MessagePhase::FinalAnswer),
             memory_citation: None,
             delivery: Some(AgentMessageDelivery::Async),
+            questions: None,
             sub_agent_completion: None,
         })?
     );

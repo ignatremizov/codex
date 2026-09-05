@@ -14371,6 +14371,7 @@ async fn steer_input_returns_the_response_boundary_captured_during_admission() {
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
+            questions: None,
             sub_agent_completion: None,
         }),
         started_at_ms: Some(0),

@@ -280,10 +280,11 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
             schema["items"]["properties"]["options"]["items"]["type"],
             "string"
         );
-        assert!(
+        assert_eq!(
             tools
                 .iter()
-                .all(|tool| tool["name"] != "send_user_message_async")
+                .any(|tool| tool["name"] == "send_user_message_async"),
+            catalog_tool_name == "send_user_message_async"
         );
     }
     assert_eq!(

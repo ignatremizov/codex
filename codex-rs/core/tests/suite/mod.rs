@@ -152,6 +152,7 @@ mod rollout_list_find;
 mod safety_buffering;
 mod safety_check_downgrade;
 mod search_tool;
+mod send_user_message_async;
 mod settings_commits;
 mod settings_constraints;
 mod shell_snapshot;
