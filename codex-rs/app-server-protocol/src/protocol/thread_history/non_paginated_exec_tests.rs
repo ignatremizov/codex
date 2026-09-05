@@ -20,6 +20,7 @@ fn turn_metadata(turn_id: &str) -> Option<InternalChatMessageMetadataPassthrough
         create_time: None,
         content_item_kinds: None,
         executed_tool_calls: None,
+        ..Default::default()
     })
 }
 

@@ -1665,7 +1665,7 @@ impl ThreadHistoryBuilder {
         self.record_changed_pending_turn(&turn);
         self.turn_rollout_start_indices
             .push(turn.rollout_start_index);
-        self.turns.push(Turn::from(turn));
+        self.turns.push(turn);
     }
 
     fn ensure_turn(&mut self) -> &mut PendingTurn {
@@ -2623,7 +2623,10 @@ mod tests {
             // Reuse IDs at different positions in the other turn.
             expected.reverse();
         }
-        builder.handle_thread_rollback(&ThreadRolledBackEvent { num_turns: 1 });
+        builder.handle_thread_rollback(&ThreadRolledBackEvent {
+            num_turns: 1,
+            ..Default::default()
+        });
         expected[0] = indexed_sleep_item("0", /*duration_ms*/ 2);
         builder.upsert_item_in_turn_id("retained", expected[0].clone());
         assert_eq!(builder.finish()[0].items, expected);
@@ -4656,6 +4659,7 @@ mod tests {
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: None,
+                ..Default::default()
             }),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-compact".into(),

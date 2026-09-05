@@ -1642,9 +1642,7 @@ async fn maybe_emit_raw_response_item_completed(
     if omit_notification_media {
         notification = without_notification_media(notification);
     }
-    outgoing
-        .send_server_notification(notification)
-        .await;
+    outgoing.send_server_notification(notification).await;
 }
 
 async fn find_and_remove_turn_summary(

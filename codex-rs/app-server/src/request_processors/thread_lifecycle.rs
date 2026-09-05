@@ -5,7 +5,6 @@ use codex_app_server_protocol::ThreadQueueChangedNotification;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::protocol::Event;
-use codex_protocol::protocol::ThreadHistoryMode;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
 
@@ -473,7 +472,10 @@ async fn process_thread_listener_event(
         } else {
             Vec::new()
         };
-        (thread_state.experimental_raw_events, transcript_item_changes)
+        (
+            thread_state.experimental_raw_events,
+            transcript_item_changes,
+        )
     };
     let suppress_raw_event = matches!(
         &event.msg,
