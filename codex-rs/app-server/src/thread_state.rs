@@ -362,6 +362,7 @@ mod tests {
         state.track_current_turn_event(
             "turn-a",
             &EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "model failed".to_string(),
                 codex_error_info: None,
             }),
@@ -375,6 +376,7 @@ mod tests {
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: TurnStatus::Failed,
                 error: Some(TurnError {
+                    misalignment: None,
                     message: "model failed".to_string(),
                     codex_error_info: None,
                     additional_details: None,
