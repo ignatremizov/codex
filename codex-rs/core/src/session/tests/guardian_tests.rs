@@ -6,6 +6,7 @@ use crate::guardian::GUARDIAN_REVIEWER_NAME;
 use crate::plugins::plugins_manager_for_config;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::step_context::StepContext;
+use crate::session::tests::update_current_turn_settings_for_test;
 use crate::session::tests::update_turn_settings_for_test;
 use crate::session::turn_context::NewTurnContextOptions;
 use crate::test_support::models_manager_with_provider;
@@ -114,6 +115,8 @@ async fn activate_turn_with_new_review_authority(session: &Arc<Session>) -> Arc<
                 kind: crate::state::TaskKind::Regular,
                 listen_to_cancellation_token: true,
             },
+            /*input_persisted*/ None,
+            crate::tasks::MailboxParentProvenance::Ignore,
         )
         .await;
 
@@ -751,6 +754,8 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
                 kind: crate::state::TaskKind::Regular,
                 listen_to_cancellation_token: true,
             },
+            /*input_persisted*/ None,
+            crate::tasks::MailboxParentProvenance::Ignore,
         )
         .await;
     // Inject later-step authority directly while live policy changes remain gated.
@@ -762,15 +767,15 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
             .task
             .as_ref()
             .expect("active task");
-        let mut settings = task.turn_context.current_settings.load_full();
-        update_selected_settings_for_test(Arc::make_mut(&mut settings), |selected| {
-            selected
-                .approval_policy
-                .set(AskForApproval::OnRequest)
-                .expect("update policy");
-            selected.approvals_reviewer = ApprovalsReviewer::User;
+        update_current_turn_settings_for_test(&task.turn_context, |settings| {
+            update_selected_settings_for_test(settings, |selected| {
+                selected
+                    .approval_policy
+                    .set(AskForApproval::OnRequest)
+                    .expect("update policy");
+                selected.approvals_reviewer = ApprovalsReviewer::User;
+            });
         });
-        task.turn_context.current_settings.store(settings);
     }
     let decision = session
         .services
