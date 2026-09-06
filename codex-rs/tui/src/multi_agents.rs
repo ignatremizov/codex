@@ -498,7 +498,7 @@ pub(crate) fn tool_call_history_cell(
             first_receiver.map(|receiver_thread_id| {
                 interaction_end(
                     receiver_thread_id,
-                    *status,
+                    status.clone(),
                     prompt,
                     response_observation,
                     agent_prompt_preview_lines,

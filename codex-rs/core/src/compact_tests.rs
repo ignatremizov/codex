@@ -1436,10 +1436,7 @@ fn persistent_agent_reply_routes_keep_one_latest_item_per_source() {
     ]);
 
     let reply_routes = persistent_agent_reply_routes(&history);
-    assert_eq!(
-        reply_routes,
-        annotated(vec![second.clone(), first_latest.clone()])
-    );
+    assert_eq!(reply_routes, annotated(vec![second, first_latest]));
 
     let summary = format!("{SUMMARY_PREFIX}\nsummary");
     let locally_compacted =
