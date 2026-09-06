@@ -196,7 +196,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
             ) {
                 match group {
                     PendingActivity::Computer(group) => group.group.push_detail(cell),
-                    PendingActivity::Exploration(group) => group.group.push_detail(cell),
+                    PendingActivity::Exploration(group) => group.push_detail(cell),
                 }
             }
             continue;
