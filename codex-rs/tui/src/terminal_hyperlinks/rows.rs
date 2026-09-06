@@ -3,10 +3,29 @@
 use std::collections::VecDeque;
 
 use crate::width::display_width;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Alignment;
+use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::StyledGrapheme;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
+use ratatui::widgets::Wrap;
+
+/// Paints already packed and aligned rows without changing their vertical positions.
+///
+/// Ratatui's word wrapper can retain a wide grapheme at the right edge even when only
+/// one cell remains. Its unwrapped line truncator drops that grapheme instead. Paint
+/// each cached row through the wrapping renderer in a one-row area to preserve the
+/// original buffer, without allowing another packing pass to shift later rows.
+pub(crate) fn render_line_rows(rows: &[Line<'_>], area: Rect, buf: &mut Buffer) {
+    for (line, row_area) in rows.iter().zip(area.rows()) {
+        Paragraph::new(line.clone())
+            .wrap(Wrap { trim: false })
+            .render(row_area, buf);
+    }
+}
 
 /// Materializes wrapped rows using the same `trim: false` word-packing rules as Ratatui's
 /// `WordWrapper`, but emits each completed row immediately instead of rendering every row into one
