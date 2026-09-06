@@ -709,27 +709,36 @@ impl InputQueue {
             turn_state.clear_pending_waiters();
             std::mem::take(&mut turn_state.pending_input)
         };
-        let completion_communications = pending_input.items.into_iter()
-                .filter_map(|input| match input {
-                    TurnInput::InterAgentCommunication(communication)
-                        if communication.id.as_ref().is_some_and(|id| {
-                            is_sub_agent_completion_context_response_item_id(id.as_str())
-                        }) =>
-                    {
-                        Some(communication)
-                    }
-                    TurnInput::UserInput { .. }
-                    | TurnInput::FunctionCallOutput(_)
-                    | TurnInput::AgentInput { .. }
-                    | TurnInput::ResponseItem(_)
-                    | TurnInput::UserShellContextReady
-                    | TurnInput::InterAgentCommunication(_) => None,
-                })
-                .collect::<Vec<_>>();
+        let mut completion_communications = Vec::new();
+        let mut persistent_context = Vec::new();
+        for input in pending_input.items {
+            match input {
+                TurnInput::InterAgentCommunication(communication)
+                    if communication.id.as_ref().is_some_and(|id| {
+                        is_sub_agent_completion_context_response_item_id(id.as_str())
+                    }) =>
+                {
+                    completion_communications.push(communication);
+                }
+                TurnInput::ResponseItem(envelope)
+                    if codex_history::persistent_agent_reply_route_source(&envelope).is_some() =>
+                {
+                    persistent_context.push(TurnInput::ResponseItem(envelope));
+                }
+                TurnInput::UserInput { .. }
+                | TurnInput::FunctionCallOutput(_)
+                | TurnInput::AgentInput { .. }
+                | TurnInput::ResponseItem(_)
+                | TurnInput::UserShellContextReady
+                | TurnInput::InterAgentCommunication(_) => {}
+            }
+        }
         let restored = {
             let mut mailbox = self.mailbox.lock().await;
             Self::restore_completion_communications(&mut mailbox, completion_communications)
         };
+        self.queue_turn_inputs_for_next_turn(persistent_context, TurnStartOptions::default())
+            .await;
         if restored {
             self.activity_tx.send_replace(InputQueueActivity::Mailbox);
         }
@@ -995,8 +1004,12 @@ mod mcp_boundary_tests;
 mod tests {
     use super::*;
     use crate::PendingAgentMessage;
+    use crate::context::AgentContextIdentity;
+    use crate::context::AgentReplyRoute;
+    use crate::context::ContextualUserFragment;
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::ContentItem;
     use codex_protocol::protocol::new_sub_agent_completion_context_response_item_id;
     use codex_protocol::user_input::UserInput;
@@ -1417,6 +1430,39 @@ mod tests {
                 vec![TurnInput::InterAgentCommunication(completion.into())],
                 TurnStartOptions::default(),
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_pending_preserves_one_persistent_agent_reply_route() {
+        let input_queue = InputQueue::new();
+        let active_turn = ActiveTurn::default();
+        let route = ContextualUserFragment::into(AgentReplyRoute::until_disabled(
+            AgentContextIdentity::V1 {
+                agent_id: ThreadId::new(),
+                agent_ref: Some(1),
+                nickname: Some("Main".to_string()),
+            },
+        ));
+        input_queue
+            .extend_pending_input_for_turn_state(
+                active_turn.turn_state.as_ref(),
+                vec![TurnInput::ResponseItem(route.clone().into())],
+            )
+            .await;
+
+        input_queue.clear_pending(&active_turn).await;
+
+        assert_eq!(
+            input_queue.take_queued_items_for_next_turn().await,
+            (
+                vec![TurnInput::ResponseItem(route.into())],
+                TurnStartOptions::default(),
+            )
+        );
+        assert_eq!(
+            input_queue.take_queued_items_for_next_turn().await,
+            (Vec::new(), TurnStartOptions::default())
         );
     }
 
