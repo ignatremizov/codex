@@ -171,6 +171,7 @@ pub enum UserAgentControlAction {
     Interrupt,
     Close,
     Observe,
+    ReplyRoute,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
