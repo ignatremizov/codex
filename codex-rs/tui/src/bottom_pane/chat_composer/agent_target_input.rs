@@ -71,12 +71,11 @@ impl ChatComposer {
         };
         let advances_to_action_target = completion.scope == AgentTargetCompletionScope::Any
             && is_agent_target_action(&target.selector);
-        let advances_to_observation_mode = completion.scope
-            == AgentTargetCompletionScope::ExistingTarget
-            && completion.action == Some("observe");
+        let advances_to_mode = completion.scope == AgentTargetCompletionScope::ExistingTarget
+            && matches!(completion.action, Some("observe" | "replies"));
         self.insert_agent_target(completion.range, &target.selector);
         self.popups.active = ActivePopup::None;
-        if advances_to_action_target || advances_to_observation_mode {
+        if advances_to_action_target || advances_to_mode {
             self.sync_popups();
         } else {
             self.popups.dismissed_agent_target = Some((completion.scope, target.selector));

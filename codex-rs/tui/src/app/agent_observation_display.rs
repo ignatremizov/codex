@@ -55,7 +55,6 @@ impl From<AgentFinalResponseHandling> for AgentFinalResponseDisplay {
 pub(super) struct AgentResponseObservationDisplay {
     pub(super) binding: AgentResponseObservationBinding,
     pub(super) commentary: bool,
-    pub(super) target_messages: bool,
     pub(super) queue_delivery: bool,
     pub(super) final_response: AgentFinalResponseDisplay,
 }
@@ -74,7 +73,6 @@ impl AgentResponseObservationDisplay {
         Self {
             binding,
             commentary: response_handling.commentary,
-            target_messages: response_handling.target_messages,
             queue_delivery: response_handling.queue_input,
             final_response: response_handling.final_response.into(),
         }
@@ -87,9 +85,6 @@ impl AgentResponseObservationDisplay {
         }
         if self.final_response != AgentFinalResponseDisplay::None {
             labels.push(self.final_response.label());
-        }
-        if self.target_messages {
-            labels.push("replies");
         }
         if self.queue_delivery {
             labels.push("queued");
@@ -109,7 +104,6 @@ impl AgentResponseObservationDisplay {
         Self {
             binding: self.binding,
             commentary: self.commentary || other.commentary,
-            target_messages: self.target_messages || other.target_messages,
             queue_delivery: self.queue_delivery || other.queue_delivery,
             final_response: self.final_response.strongest(other.final_response),
         }
@@ -122,9 +116,24 @@ pub(super) struct AgentResponseObservationState {
         (ThreadId, ThreadId, AgentResponseObservationBinding),
         AgentResponseObservationDisplay,
     >,
+    /// Acknowledged live relationship settings, independent of turn observation.
+    reply_routes: HashMap<(ThreadId, ThreadId), bool>,
 }
 
 impl AgentResponseObservationState {
+    pub(super) fn replace_reply_route(
+        &mut self,
+        observer: ThreadId,
+        target: ThreadId,
+        enabled: bool,
+    ) {
+        self.reply_routes.insert((observer, target), enabled);
+    }
+
+    pub(super) fn reply_route(&self, observer: ThreadId, target: ThreadId) -> Option<bool> {
+        self.reply_routes.get(&(observer, target)).copied()
+    }
+
     pub(super) fn mark_target_running(&mut self, target_thread_id: ThreadId) {
         let pending = self
             .observations
@@ -186,19 +195,11 @@ impl AgentResponseObservationState {
             .observations
             .get(&key)
             .is_some_and(|observation| observation.commentary);
-        let target_messages = self
-            .observations
-            .get(&key)
-            .is_some_and(|observation| observation.target_messages);
         let queue_delivery = self
             .observations
             .get(&key)
             .is_some_and(|observation| observation.queue_delivery);
-        if final_response == AgentFinalResponseDisplay::None
-            && !commentary
-            && !target_messages
-            && !queue_delivery
-        {
+        if final_response == AgentFinalResponseDisplay::None && !commentary && !queue_delivery {
             self.observations.remove(&key);
             return;
         }
@@ -207,7 +208,6 @@ impl AgentResponseObservationState {
             AgentResponseObservationDisplay {
                 binding,
                 commentary,
-                target_messages,
                 queue_delivery,
                 final_response,
             },
@@ -257,10 +257,13 @@ impl AgentResponseObservationState {
     pub(super) fn remove_thread(&mut self, thread_id: ThreadId) {
         self.observations
             .retain(|(observer, target, _), _| *observer != thread_id && *target != thread_id);
+        self.reply_routes
+            .retain(|(observer, target), _| *observer != thread_id && *target != thread_id);
     }
 
     pub(super) fn clear(&mut self) {
         self.observations.clear();
+        self.reply_routes.clear();
     }
 }
 

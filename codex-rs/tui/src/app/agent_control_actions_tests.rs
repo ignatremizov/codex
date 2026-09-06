@@ -97,6 +97,7 @@ fn action_availability_snapshot() {
     Interrupt turn: enabled
     Resume agent: Agent is already open.
     Observe response: enabled
+    Reply route: enabled
     Close agent: enabled
 
     closed child:
@@ -106,6 +107,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Agent is closed.
     Resume agent: enabled
     Observe response: Resume the closed agent first.
+    Reply route: Resume the closed agent first.
     Close agent: Agent is already closed.
 
     current main:
@@ -115,6 +117,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Use the normal interrupt shortcut for the current agent.
     Resume agent: Agent is already open.
     Observe response: An agent cannot observe itself.
+    Reply route: An agent cannot observe itself.
     Close agent: Main cannot be closed.
 
     transferred child:
@@ -124,6 +127,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Agent is not controlled by this root.
     Resume agent: enabled
     Observe response: Agent is not controlled by this root.
+    Reply route: Agent is not controlled by this root.
     Close agent: Agent is not controlled by this root.
 
     side thread:
@@ -133,6 +137,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Switch to the side conversation to interrupt it.
     Resume agent: Side conversations use the normal TUI lifecycle.
     Observe response: Side conversations do not use agent response observation.
+    Reply route: Side conversations do not use agent response observation.
     Close agent: Side conversations use the normal TUI lifecycle.
     ");
 }
@@ -165,7 +170,8 @@ fn contextual_controls_render_labels_disabled_reasons_and_confirmation_hint() {
     4. Interrupt turn Stop the active turn, optionally with a follow-up
     Resume agent (disabled) Reopen this controlled agent (disabled: Agent is already open.)
     5. Observe response Choose passive, wake, or presentation delivery
-    6. Close agent End the agent runtime and revoke observation
+    6. Reply route Allow or block attributed replies from this agent
+    7. Close agent End the agent runtime and revoke observation
     Prepared commands return to the current composer for confirmation.
     Press enter to confirm or esc to go back
     ");

@@ -67,11 +67,13 @@ impl ExactRollbackProjection {
                     item @ (RolloutItem::AgentResponseObservation(_)
                     | RolloutItem::InterAgentCommunicationMetadata { .. }) => item,
                     RolloutItem::ResponseItem(envelope)
-                        if envelope.id().is_some_and(|id| {
-                            id.as_str().starts_with("amsg_")
-                                || is_sub_agent_completion_context_response_item_id(id.as_str())
-                                || is_user_agent_task_context_response_item_id(id.as_str())
-                        }) =>
+                        if codex_history::persistent_agent_reply_route_source(&envelope)
+                            .is_some()
+                            || envelope.id().is_some_and(|id| {
+                                id.as_str().starts_with("amsg_")
+                                    || is_sub_agent_completion_context_response_item_id(id.as_str())
+                                    || is_user_agent_task_context_response_item_id(id.as_str())
+                            }) =>
                     {
                         RolloutItem::ResponseItem(envelope)
                     }

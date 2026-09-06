@@ -11,7 +11,7 @@ use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn checkpoint_replacements_require_exact_acknowledged_task_envelopes() {
-    let (mut session, _, _) = make_session_and_context_with_rx().await;
+    let (mut session, turn, _) = make_session_and_context_with_rx().await;
     attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
     let target_thread_id = codex_protocol::ThreadId::new();
     let mut task =
@@ -33,6 +33,8 @@ async fn checkpoint_replacements_require_exact_acknowledged_task_envelopes() {
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -75,8 +77,8 @@ async fn checkpoint_replacements_require_exact_acknowledged_task_envelopes() {
                 changed.clone().into(),
                 unacknowledged.clone().into(),
             ],
-            /*reference_context_item*/ None,
-            /*world_state_baseline*/ None,
+            turn.to_turn_context_item(),
+            WorldStateSnapshot::default(),
             Default::default(),
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
@@ -90,10 +92,12 @@ async fn checkpoint_replacements_require_exact_acknowledged_task_envelopes() {
                 compaction_response_id: None,
                 compaction_model_hash: None,
                 reviewer_compaction_hash: None,
-            },
+            }
+            .into(),
         )
         .await
-        .expect("publish normalized replacement");
+        .expect("publish normalized replacement")
+        .expect("install normalized replacement");
     assert_eq!(installed.len(), 3);
     for envelope in &installed[1..] {
         assert!(
@@ -134,7 +138,7 @@ async fn checkpoint_replacements_require_exact_acknowledged_task_envelopes() {
 #[tokio::test]
 async fn checkpoint_attribution_preserves_acknowledged_task_source(replacement_owned: bool) {
     use codex_thread_store::ThreadStore;
-    let (mut session, _, _) = make_session_and_context_with_rx().await;
+    let (mut session, turn, _) = make_session_and_context_with_rx().await;
     let store =
         attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
     let target_thread_id = codex_protocol::ThreadId::new();
@@ -157,6 +161,8 @@ async fn checkpoint_attribution_preserves_acknowledged_task_source(replacement_o
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -209,8 +215,8 @@ async fn checkpoint_attribution_preserves_acknowledged_task_source(replacement_o
     let installed = session
         .publish_compacted_history(
             expected.clone(),
-            /*reference_context_item*/ None,
-            /*world_state_baseline*/ None,
+            turn.to_turn_context_item(),
+            WorldStateSnapshot::default(),
             Default::default(),
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
@@ -224,10 +230,12 @@ async fn checkpoint_attribution_preserves_acknowledged_task_source(replacement_o
                 compaction_response_id: None,
                 compaction_model_hash: None,
                 reviewer_compaction_hash: None,
-            },
+            }
+            .into(),
         )
         .await
-        .expect("checkpoint preserves the source envelope");
+        .expect("publish checkpoint with the source envelope")
+        .expect("install checkpoint with the source envelope");
     if replacement_owned {
         expected[0].metadata = Some(codex_history::CodexHarnessMetadata {
             history_sequence: Some(2),

@@ -523,6 +523,8 @@ fn exact_projection_preserves_only_adjacent_committed_observations() {
                 .into(),
             );
             let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+                reply_route_enabled: None,
+                reply_route_context_installed: false,
                 observer_thread_id: ThreadId::new(),
                 target_thread_id: ThreadId::new(),
                 target_turn_id: Some("target-turn".into()),
@@ -624,6 +626,8 @@ fn exact_projection_checks_promoted_task_proofs_and_conflicting_checkpoints() {
         let promoted = AgentResponsePromotedTaskContext::from_response_item(&task.item)
             .expect("task DTO shape");
         let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             observer_thread_id: ThreadId::new(),
             target_thread_id: ThreadId::new(),
             target_turn_id: Some("target-turn".into()),
@@ -725,6 +729,105 @@ fn exact_projection_checks_promoted_task_proofs_and_conflicting_checkpoints() {
         assert_eq!(
             (projection.contains_exact_marker, projection.removed_offsets),
             (true, expected)
+        );
+    }
+}
+
+#[test]
+fn exact_projection_retains_only_classified_non_client_reply_route_context() {
+    for (client_authored, classified, mixed) in [
+        (false, true, false),  // Harness singleton.
+        (true, true, false),   // Client-authored lookalike.
+        (false, false, false), // Unclassified lookalike.
+        (false, true, true),   // Mixed prompt must not be promoted.
+    ] {
+        let source = ThreadId::new();
+        let mut content = vec![codex_protocol::models::ContentItem::InputText {
+            text: format!(
+                "<agent_reply_route>\n{{\"agent_id\":\"{source}\",\"send_input\":\"allowed_until_disabled\"}}\n</agent_reply_route>"
+            ),
+        }];
+        if mixed {
+            content.push(codex_protocol::models::ContentItem::InputText {
+                text: "ordinary user instructions must not be pinned".to_string(),
+            });
+        }
+        let route = codex_history::ResponseItemEnvelope {
+            item: codex_protocol::models::ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content,
+                status: None,
+                phase: None,
+                encrypted_content: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    codex_protocol::models::InternalChatMessageMetadataPassthrough {
+                        content_item_kinds: classified.then(|| {
+                            vec![codex_protocol::models::ContentItemKind(
+                                codex_protocol::protocol::PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND
+                                    .to_string(),
+                            )]
+                        }),
+                        ..Default::default()
+                    },
+                ),
+            },
+            metadata: Some(codex_history::CodexHarnessMetadata {
+                client_authored,
+                ..Default::default()
+            }),
+        };
+        let trusted = classified && !client_authored && !mixed;
+        assert_eq!(
+            codex_history::persistent_agent_reply_route_source(&route),
+            trusted.then_some(source)
+        );
+        let items = vec![
+            turn_started("kept"),
+            user_message("kept prompt"),
+            RolloutItem::ResponseItem(route),
+            user_message("removed prompt"),
+            turn_completed("kept"),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: Some(2),
+            })),
+        ];
+        let mask = codex_rollout::exact_rollback_removed_items(&items);
+        assert_eq!(mask[2], !trusted);
+        assert!(mask[3]);
+        let mut bytes = Vec::new();
+        let mut offsets = Vec::new();
+        for item in &items {
+            offsets.push(u64::try_from(bytes.len()).expect("record offset"));
+            serde_json::to_writer(
+                &mut bytes,
+                &RolloutLine {
+                    timestamp: "2026-11-15T00:00:00Z".to_string(),
+                    ordinal: None,
+                    item: item.clone(),
+                },
+            )
+            .expect("encode canonical record");
+            bytes.push(b'\n');
+        }
+        let projection = super::super::rollback::ExactRollbackProjection::read(
+            &mut std::io::Cursor::new(bytes),
+            /*start_offset*/ 0,
+            || false,
+        )
+        .expect("exact projection");
+        assert_eq!(
+            (projection.contains_exact_marker, projection.removed_offsets),
+            (
+                true,
+                offsets
+                    .into_iter()
+                    .zip(mask)
+                    .filter_map(|(offset, removed)| removed.then_some(offset))
+                    .collect(),
+            )
         );
     }
 }

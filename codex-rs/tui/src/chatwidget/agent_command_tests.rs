@@ -286,6 +286,20 @@ fn parses_lifecycle_actions() {
             mode: AgentObservationMode::Presentation,
         })
     );
+    assert_eq!(
+        parse_agent_command("replies 2 enable"),
+        Ok(AgentCommand::ReplyRoute {
+            selector: selector(AgentSelectorKind::Ref(2), "2"),
+            mode: AgentReplyRouteMode::Enabled,
+        })
+    );
+    assert_eq!(
+        parse_agent_command("2 replies disable"),
+        Ok(AgentCommand::ReplyRoute {
+            selector: selector(AgentSelectorKind::Ref(2), "2"),
+            mode: AgentReplyRouteMode::Disabled,
+        })
+    );
 }
 
 #[test]
@@ -370,6 +384,7 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
             "`close` accepts response handling but not a prompt",
         ),
         ("observe 2 maybe", "Invalid observation mode `maybe`"),
+        ("replies 2 maybe", "Invalid reply-route mode `maybe`"),
         ("nick:\"unterminated", "Unterminated double quote"),
         ("nick:\"bad\\q\"", "Unsupported escape `\\q`"),
     ] {
