@@ -46,7 +46,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::RolloutItem;
-use codex_rollout::RolloutLine;
 use codex_rollout::find_thread_path_by_id_str;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
@@ -470,7 +469,7 @@ async fn thread_rollback_drops_last_turns_and_persists_to_rollout() -> Result<()
     let rollback_event = rollout
         .lines()
         .rev()
-        .filter_map(|line| serde_json::from_str::<RolloutLine>(line).ok())
+        .filter_map(|line| codex_rollout::parse_rollout_line(line).ok())
         .find_map(|line| match line.item {
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(event)) => Some(event),
             _ => None,

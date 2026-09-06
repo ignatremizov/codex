@@ -19,7 +19,6 @@ use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::RolloutItem;
-use codex_history::RolloutLine;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -117,7 +116,7 @@ fn seed_first_checkpoint_harness_metadata(path: &Path, retained_text: &str) -> R
     let mut lines = std::fs::read_to_string(path)?
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<Result<Vec<_>, _>>()?;
     let replacement_history = lines
         .iter_mut()
@@ -150,7 +149,7 @@ fn assert_latest_checkpoint_retains_harness_metadata(
     let replacement_history = std::fs::read_to_string(path)?
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .rev()

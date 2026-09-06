@@ -19,7 +19,6 @@ use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
-use codex_history::RolloutLine;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::SessionId;
@@ -366,7 +365,7 @@ fn read_test_rollout_items(test: &TestCodex) -> Result<Vec<RolloutItem>> {
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            serde_json::from_str::<RolloutLine>(line)
+            codex_rollout::parse_rollout_line(line)
                 .map(|rollout_line| rollout_line.item)
                 .map_err(Into::into)
         })
