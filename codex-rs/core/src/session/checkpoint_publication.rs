@@ -36,6 +36,20 @@ impl Session {
         self.check_history_publication()?;
         let state = self.state.lock().await;
         let source = state.history.annotated_items();
+        // The current canonical source wins over stale compaction requests. A replacement may
+        // neither multiply a route singleton nor introduce another source's harness guidance.
+        let mut route_sources = HashSet::new();
+        let mut reply_routes = source
+            .iter()
+            .rev()
+            .filter(|item| {
+                codex_history::persistent_agent_reply_route_source(item)
+                    .is_some_and(|source| route_sources.insert(source))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        reply_routes.reverse();
+        items.retain(|item| codex_history::persistent_agent_reply_route_source(item).is_none());
         let source_mcp = source
             .iter()
             .filter(|envelope| {
@@ -46,6 +60,7 @@ impl Session {
         // The accepted source is authoritative, including equal text at distinct positions.
         // Retain any genuinely new replacement envelope as well, never deduplicate the source.
         let mut retained = source_mcp.clone();
+        retained.extend(reply_routes);
         items.retain(|envelope| {
             if !crate::context::McpServerUseInstructions::matches_response_item(&envelope.item) {
                 return true;

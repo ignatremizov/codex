@@ -97,6 +97,7 @@ The TUI must not approximate this by independently chaining `thread/resume` and 
 /agent <target> close
 /agent resume <target> [w:<w-mode>] [<prompt>]
 /agent observe <target> <passive|wake|presentation>
+/agent replies <target> <enable|disable> /agent <target> replies <enable|disable>
 ```
 
 Selectors accept compact unprefixed forms and explicit namespaces:
@@ -414,6 +415,15 @@ Replacement semantics are separate from per-dispatch `w`. The explicit command i
 
 Promoting a presentation-only user task to passive or wake delivery records its compact hidden task linkage before the replacement becomes deliverable. The source model therefore receives the question as well as the eventual answer; demotion to presentation-only does not attempt to retract context that was already committed.
 
+Reply permission is a separate, user-authored relationship setting:
+
+```text
+/agent replies <target> enable
+/agent replies <target> disable
+```
+
+Enabling it adds one source-relative `<agent_reply_route>` item to the target's model context and authorizes attributed `send_input` calls from all later target turns. Repeating `enable` is idempotent: the route appears only once in model context, including after a disable/re-enable cycle, and is not repeated on each turn. Compaction carries that singleton into replacement history, and rollback treats it as out-of-band relationship context rather than a user turn. Disabling it revokes future admission and clears uncommitted route-owned wake reservations without trying to remove the already recorded context item. Input already accepted into a queued turn remains accepted and runs under its captured response policy; disabling the route does not silently retract auditable work. An explicit disable wins over a later model-authored `w:m`; enabling makes repeated `m` context redundant. The setting lasts for the live control relationship and is revoked by close, ownership transfer, process shutdown, cold resume, or fork. V2 targets retain their native inter-agent communication contract and reject this V1 route action.
+
 ## User input and attribution
 
 The target must receive app-server `UserInput`, including text elements, images, skills, plugin mentions, and connected-app mentions. The command must not fabricate a model-authored `send_input` tool call or convert structured input to a plain string.
@@ -430,7 +440,7 @@ agent/control {
   authoredSelector?,
   action: {
     type: "spawn" | "prompt" | "reservedPrompt" | "queuedPrompt"
-        | "resume" | "interrupt" | "close" | "observe",
+        | "resume" | "interrupt" | "close" | "observe" | "replyRoute",
     target,
     input?, // spawn, prompt, queued prompt, or interrupt follow-up
     responseHandling?
@@ -603,7 +613,7 @@ The following inventory includes both current and deferred contracts. Cases invo
 7. An exact role name wins over a colliding ordinary nickname, while the existing agent remains addressable by ref, UUID, or `nick:`; the reserved `Main` target wins over an unprefixed role named `main`, which remains available through `role:main`.
 8. `w:f` wakes the displayed source exactly once.
 9. `w:x` produces presentation-only completion on a new turn.
-10. `w:m` exposes an attributed reply route for one target turn, permits one idle source wake, and rejects later wake attempts or UUID-only bypass.
+10. `w:m` exposes an attributed reply route for one target turn, permits one idle source wake, and rejects later wake attempts or UUID-only bypass; `/agent replies` enables the same attributed route across later turns with one context installation, and explicit disable overrides `m`.
 11. Existing `f` remains authoritative when a later active-turn dispatch requests `x`.
 12. Source switch after dispatch does not move observation ownership.
 13. Child-to-sibling dispatch binds the child as observer.

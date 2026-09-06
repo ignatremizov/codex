@@ -22,12 +22,13 @@ const AGENT_TARGET_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
     ColumnWidthMode::AutoAllRows,
     /*name_column_width*/ None,
 );
-pub(crate) const AGENT_TARGET_ACTION_CHOICES: [(&str, &str); 5] = [
+pub(crate) const AGENT_TARGET_ACTION_CHOICES: [(&str, &str); 6] = [
     ("queue", "Queue a follow-up for an agent"),
     ("interrupt", "Interrupt an agent"),
     ("close", "Close an agent"),
     ("resume", "Resume or adopt an agent"),
     ("observe", "Change response observation"),
+    ("replies", "Allow or block replies from an agent"),
 ];
 pub(crate) const AGENT_OBSERVATION_MODE_CHOICES: [(&str, &str); 3] = [
     ("passive", "Deliver the final response without waking"),
@@ -36,6 +37,10 @@ pub(crate) const AGENT_OBSERVATION_MODE_CHOICES: [(&str, &str); 3] = [
         "presentation",
         "Keep the final response out of model context",
     ),
+];
+pub(crate) const AGENT_REPLY_ROUTE_MODE_CHOICES: [(&str, &str); 2] = [
+    ("enable", "Allow replies until disabled"),
+    ("disable", "Block replies until enabled"),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +55,7 @@ pub(crate) enum AgentTargetCompletionScope {
     Any,
     ExistingTarget,
     ObservationMode,
+    ReplyRouteMode,
     Model,
     ReasoningEffort,
 }
@@ -153,7 +159,11 @@ impl AgentTargetPopup {
             .filter(|target| {
                 (self.scope != AgentTargetCompletionScope::ExistingTarget
                     || target.thread_id.is_some())
-                    && if self.scope == AgentTargetCompletionScope::ObservationMode {
+                    && if matches!(
+                        self.scope,
+                        AgentTargetCompletionScope::ObservationMode
+                            | AgentTargetCompletionScope::ReplyRouteMode
+                    ) {
                         query.is_empty()
                             || target.selector.to_ascii_lowercase().starts_with(&query)
                             || target.label.to_ascii_lowercase().contains(&query)
@@ -213,6 +223,7 @@ impl WidgetRef for AgentTargetPopup {
                 AgentTargetCompletionScope::ObservationMode => {
                     "no matching response observation modes"
                 }
+                AgentTargetCompletionScope::ReplyRouteMode => "no matching reply-route modes",
                 AgentTargetCompletionScope::Model => "no matching models",
                 AgentTargetCompletionScope::ReasoningEffort => "no matching reasoning efforts",
             },
@@ -277,9 +288,11 @@ pub(crate) fn agent_target_completion(
         });
     }
 
-    if action != "observe" {
-        return None;
-    }
+    let scope = match action {
+        "observe" => AgentTargetCompletionScope::ObservationMode,
+        "replies" => AgentTargetCompletionScope::ReplyRouteMode,
+        _ => return None,
+    };
     let target_tail = &first_line[target_end..];
     if !target_tail.starts_with(char::is_whitespace) {
         return None;
@@ -296,7 +309,7 @@ pub(crate) fn agent_target_completion(
     Some(AgentTargetCompletion {
         query: first_line[range.clone()].to_string(),
         range,
-        scope: AgentTargetCompletionScope::ObservationMode,
+        scope,
         action: Some(action),
     })
 }

@@ -312,6 +312,8 @@ The experimental `agentAlias/list` method lists durable aliases in a root-scoped
 
 The `spawn` action accepts optional `model` and `reasoningEffort` overrides. Explicit values take precedence over role settings and configured subagent defaults; omitted values follow the normal child configuration resolution. The durable `userAgentControl` item records the requested model and reasoning values separately from the canonical target and outcome. Existing history-fork and lifecycle authorization rules still apply.
 
+The `replyRoute` action enables or disables a V1 target's attributed replies to the source across later turns of that live runtime. Enabling adds route guidance to the target's model context once; disabling rejects new replies even when a model-authored send uses `m`. Already accepted human prompts keep their queued input and captured response policy. Unsupported V2 targets reject `replyRoute` before mutation. Saved context alone does not restore live reply authority after a cold resume or fork. An indeterminate route update is audited as `unknown` and must be reconciled rather than retried.
+
 The experimental `agentQueue/list` and `agentQueue/delete` methods expose and cancel pending target-owned FIFO entries. Queue acceptance is not target-turn admission: queued entries have no synthetic turn ID, and their start metadata records the source and response policy once a target turn actually begins.
 
 ## User shell commands

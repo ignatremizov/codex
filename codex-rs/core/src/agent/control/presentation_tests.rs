@@ -539,6 +539,8 @@ fn close_after_claim_yields_inert_exact_turn_committed_tombstone() {
             task_preview: None,
             promoted_task_context: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             pending_commentary: false,

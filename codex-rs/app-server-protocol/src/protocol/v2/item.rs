@@ -248,6 +248,7 @@ pub enum UserAgentControlAction {
     Interrupt,
     Close,
     Observe,
+    ReplyRoute,
 }
 
 impl From<CoreUserAgentControlAction> for UserAgentControlAction {
@@ -260,6 +261,7 @@ impl From<CoreUserAgentControlAction> for UserAgentControlAction {
             CoreUserAgentControlAction::Interrupt => Self::Interrupt,
             CoreUserAgentControlAction::Close => Self::Close,
             CoreUserAgentControlAction::Observe => Self::Observe,
+            CoreUserAgentControlAction::ReplyRoute => Self::ReplyRoute,
         }
     }
 }

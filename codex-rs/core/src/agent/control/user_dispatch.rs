@@ -236,8 +236,12 @@ impl LocalAgentControl {
             return Err(CodexErr::ThreadNotFound(request.observer.thread_id));
         }
         observer.session.submission_admission.check_ready()?;
+        let accepted_queue = matches!(&request.dispatch, UserDispatch::Queued(_));
         if let UserObservation::Install(policy) = &request.observation {
             self.ensure_scoped_reply_route_supported(thread, *policy)?;
+            if !accepted_queue {
+                self.ensure_target_message_route_allowed(thread, request.observer, *policy)?;
+            }
         }
         self.ensure_execution_capacity_for_turn_start(thread)
             .await?;
@@ -299,9 +303,17 @@ impl LocalAgentControl {
         };
         let last_task_message =
             non_empty_task_message(render_input_preview(request.input.presentation()));
-        let input = self
-            .with_agent_reply_route(thread, request.observer, policy, request.input)
-            .await?;
+        // The forward prompt was already accepted. Preserve its policy/receipt without publishing
+        // new reverse authority or misleading route guidance after an explicit user disable.
+        let input = if accepted_queue
+            && self.target_message_route_mode(request.observer, child)
+                == Some(TargetMessageRouteMode::Disabled)
+        {
+            request.input
+        } else {
+            self.with_agent_reply_route(thread, request.observer, policy, request.input)
+                .await?
+        };
         let input = input.into_request().on_start(request.start_options);
         let admitted = match queue_metadata {
             Some(metadata) => {

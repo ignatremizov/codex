@@ -25,6 +25,17 @@ fn fork_removes_trusted_reply_routes_but_preserves_client_authored_copies() {
 }
 
 #[test]
+fn fork_does_not_inherit_persistent_route_guidance() {
+    let item = ContextualUserFragment::into(AgentReplyRoute::until_disabled(
+        crate::context::AgentContextIdentity::Canonical {
+            agent_id: codex_protocol::ThreadId::new(),
+        },
+    ));
+    let mut envelope = ResponseItemEnvelope::new(item);
+    assert!(!retain_without_notification_context(&mut envelope));
+}
+
+#[test]
 fn notification_filter_requires_runtime_annotation() {
     let notification = ContextualUserFragment::into(SubagentNotification::new(
         "/root/worker",

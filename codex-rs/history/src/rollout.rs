@@ -110,6 +110,9 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
 fn is_sub_agent_completion_artifact(items: &[RolloutItem], index: usize) -> bool {
     match &items[index] {
         RolloutItem::ResponseItem(item) => {
+            if crate::persistent_agent_reply_route_source(item).is_some() {
+                return true;
+            }
             let Some(response_item_id) = item.id() else {
                 return false;
             };

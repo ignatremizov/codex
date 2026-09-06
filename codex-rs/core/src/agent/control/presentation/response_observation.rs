@@ -10,7 +10,9 @@ mod delivery;
 mod runtime;
 mod snapshot;
 mod user_policy;
+mod user_reply_route;
 pub(in crate::agent) use user_policy::ReplacedFinalResponseObservationBinding;
+pub(crate) use user_reply_route::TargetMessageRouteMode;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ResponseTurnObservation {
@@ -99,6 +101,8 @@ pub(in crate::agent::control) struct ResponseObserverRelationship {
     pub(super) revoked: bool,
     pub(super) persistence: ResponseObservationPersistence,
     pub(super) baseline_final_response: FinalResponseObservation,
+    pub(super) reply_route: Option<TargetMessageRouteMode>,
+    pub(super) reply_route_context_installed: bool,
     pub(super) pending_next_turn: Option<ResponseTurnObservation>,
     pub(super) pending_admissions: HashMap<Uuid, ResponseTurnObservation>,
     pub(super) turns: HashMap<String, ResponseTurnObservation>,
@@ -110,6 +114,8 @@ impl Default for ResponseObserverRelationship {
             revoked: false,
             persistence: ResponseObservationPersistence::RuntimeOnly,
             baseline_final_response: FinalResponseObservation::None,
+            reply_route: None,
+            reply_route_context_installed: false,
             pending_next_turn: None,
             pending_admissions: HashMap::new(),
             turns: HashMap::new(),
@@ -297,18 +303,39 @@ impl LocalAgentControl {
     ) -> CodexResult<TargetMessageAdmission> {
         let may_steer = mode == TargetMessageAdmissionMode::SteerOrWake;
         let mut state = self.wait_agent_presentations.state();
-        let observation = state
+        let relationship = state
             .response_observation_by_observer_child
             .get_mut(&(observer, target))
             .filter(|relationship| !relationship.revoked)
-            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
-            .filter(|observation| observation.target_messages)
             .ok_or_else(|| {
                 CodexErr::InvalidRequest(format!(
                     "agent {} has no message route to {} for turn {target_turn_id}",
                     target.thread_id, observer.thread_id
                 ))
             })?;
+        if relationship.reply_route == Some(TargetMessageRouteMode::Disabled) {
+            return Err(CodexErr::InvalidRequest(
+                "agent replies are disabled by the user".into(),
+            ));
+        }
+        let persistent = relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+        if persistent && may_steer && observer_active_turn_id.is_some() {
+            return Ok(TargetMessageAdmission::Steer);
+        }
+        let observation = if persistent {
+            relationship
+                .turns
+                .entry(target_turn_id.to_string())
+                .or_default()
+        } else {
+            relationship
+                .turns
+                .get_mut(target_turn_id)
+                .filter(|observation| observation.target_messages)
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest("no reply route for this target turn".into())
+                })?
+        };
         if observation.message_wake_reservation_id.is_some() {
             return if observer_active_turn_id.is_some() && may_steer {
                 Ok(TargetMessageAdmission::Steer)
@@ -357,10 +384,11 @@ impl LocalAgentControl {
             .is_some_and(|relationship| {
                 // Only input already being admitted can bind a route for a running sender.
                 // A next-turn reservation cannot authorize that sender's current turn.
-                relationship
-                    .pending_admissions
-                    .values()
-                    .any(|observation| observation.target_messages)
+                relationship.reply_route != Some(TargetMessageRouteMode::Disabled)
+                    && relationship
+                        .pending_admissions
+                        .values()
+                        .any(|observation| observation.target_messages)
             })
     }
 
@@ -378,7 +406,7 @@ impl LocalAgentControl {
             .get_mut(&(observer, target))
             .filter(|relationship| !relationship.revoked)
             .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
-            .filter(|observation| observation.target_messages)
+        // An accepted queued wake retains its exact reservation through disable.
         else {
             return false;
         };
@@ -438,13 +466,19 @@ impl LocalAgentControl {
             }
             let mut changed = false;
             for observation in relationship.turns.values_mut() {
-                if observation.target_messages
-                    && observation.message_wake_turn_id.as_deref() == Some(wake_turn_id)
-                {
+                if observation.message_wake_turn_id.as_deref() == Some(wake_turn_id) {
                     observation.target_messages = false;
                     observation.message_wake_reservation_id = None;
+                    if relationship.reply_route.is_some() {
+                        observation.message_wake_turn_id = None;
+                    }
                     changed = true;
                 }
+            }
+            if relationship.reply_route.is_some() {
+                relationship
+                    .turns
+                    .retain(|_, observation| observation != &ResponseTurnObservation::default());
             }
             if changed {
                 changed_children.push(*child);
@@ -505,6 +539,7 @@ impl ResponseWatcherRegistration {
             .get(&(self.parent, self.child))
             .is_some_and(|relationship| {
                 relationship.baseline_final_response != FinalResponseObservation::None
+                    || relationship.reply_route.is_some()
                     || relationship.pending_next_turn.is_some()
                     || !relationship.pending_admissions.is_empty()
                     || relationship.turns.values().any(|turn| {

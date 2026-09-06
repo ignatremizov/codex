@@ -36,6 +36,7 @@ pub(super) fn retain_without_notification_context(envelope: &mut ResponseItemEnv
                         kind.0.as_str(),
                         "multi_agent.subagent_notification"
                             | "multi_agent.agent_reply_route"
+                            | "multi_agent.persistent_agent_reply_route"
                             | "multi_agent.attributed_agent_message"
                     )
                 })
@@ -52,7 +53,9 @@ pub(super) fn retain_without_notification_context(envelope: &mut ResponseItemEnv
         };
         match fragment.kind().0.as_str() {
             "multi_agent.subagent_notification" => !SubagentNotification::matches_text(text),
-            "multi_agent.agent_reply_route" => !AgentReplyRoute::matches_text(text),
+            "multi_agent.agent_reply_route" | "multi_agent.persistent_agent_reply_route" => {
+                !AgentReplyRoute::matches_text(text)
+            }
             "multi_agent.attributed_agent_message" => !AttributedAgentMessage::matches_text(text),
             _ => true,
         }

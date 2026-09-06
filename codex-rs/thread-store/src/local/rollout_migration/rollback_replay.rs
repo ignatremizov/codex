@@ -68,7 +68,10 @@ impl ModelReplayPlanner {
             RolloutItem::TurnContext(context) => ReplayRecord::TurnContext(context.turn_id.clone()),
             RolloutItem::EventMsg(EventMsg::UserMessage(_))
             | RolloutItem::InterAgentCommunication(_) => ReplayRecord::UserBoundary,
-            RolloutItem::ResponseItem(response) if rollback::counts_as_boundary(&response.item) => {
+            RolloutItem::ResponseItem(response)
+                if codex_history::persistent_agent_reply_route_source(response).is_none()
+                    && rollback::counts_as_boundary(&response.item) =>
+            {
                 ReplayRecord::UserBoundary
             }
             RolloutItem::SessionMeta(_)

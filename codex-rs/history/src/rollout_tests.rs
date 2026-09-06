@@ -10,12 +10,15 @@ use codex_protocol::items::UserAgentControlAction;
 use codex_protocol::items::UserAgentControlItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -94,6 +97,31 @@ fn user_agent_task_context_message(text: &str) -> RolloutItem {
             }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    )
+}
+
+fn persistent_agent_reply_route() -> RolloutItem {
+    let agent_id = ThreadId::new();
+    RolloutItem::ResponseItem(
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!(
+                    "<agent_reply_route>\n{{\"agent_id\":\"{agent_id}\",\"send_input\":\"allowed_until_disabled\"}}\n</agent_reply_route>"
+                ),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    content_item_kinds: Some(vec![ContentItemKind(
+                        PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND.to_string(),
+                    )]),
+                    ..Default::default()
+                },
+            ),
         }
         .into(),
     )
@@ -377,6 +405,8 @@ fn exact_rollback_preserves_committed_observed_agent_responses() {
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -427,6 +457,8 @@ fn exact_rollback_rejects_untrusted_observation_links() {
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -489,6 +521,8 @@ fn exact_rollback_preserves_trusted_user_agent_task_context() {
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -516,6 +550,64 @@ fn exact_rollback_preserves_trusted_user_agent_task_context() {
         serde_json::to_value(vec![metadata, trusted_task, observation])
             .expect("serialize expected rollout")
     );
+}
+
+#[test]
+fn exact_rollback_preserves_persistent_agent_reply_route() {
+    let route = persistent_agent_reply_route();
+    let items = vec![
+        turn_started("turn-1"),
+        message("rolled back prompt"),
+        route.clone(),
+        turn_complete("turn-1"),
+        exact_rollback(0),
+    ];
+
+    assert_eq!(
+        exact_rollback_removed_items(&items),
+        vec![true, true, false, true, true]
+    );
+    assert_eq!(
+        serde_json::to_value(rollout_without_exact_rollback_ranges(&items))
+            .expect("serialize normalized rollout"),
+        serde_json::to_value(vec![route]).expect("serialize expected rollout")
+    );
+}
+
+#[test]
+fn route_classification_does_not_pin_client_authored_or_mixed_user_input() {
+    let RolloutItem::ResponseItem(route) = persistent_agent_reply_route() else {
+        panic!("route envelope");
+    };
+    let mut quoted = route.clone();
+    quoted.metadata = Some(crate::CodexHarnessMetadata {
+        client_authored: true,
+        ..Default::default()
+    });
+    let mut mixed = route.clone();
+    if let ResponseItem::Message { content, .. } = &mut mixed.item {
+        content.push(ContentItem::InputText {
+            text: "ordinary user prompt".into(),
+        });
+    }
+    let mut marker = route;
+    if let ResponseItem::Message {
+        internal_chat_message_metadata_passthrough,
+        ..
+    } = &mut marker.item
+    {
+        *internal_chat_message_metadata_passthrough = None;
+    }
+    for envelope in [quoted, mixed, marker] {
+        assert_eq!(crate::persistent_agent_reply_route_source(&envelope), None);
+        let items = vec![
+            turn_started("turn-1"),
+            RolloutItem::ResponseItem(envelope),
+            turn_complete("turn-1"),
+            exact_rollback(0),
+        ];
+        assert_eq!(exact_rollback_removed_items(&items), vec![true; 4]);
+    }
 }
 
 #[test]
