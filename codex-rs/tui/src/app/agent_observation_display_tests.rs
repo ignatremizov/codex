@@ -10,6 +10,42 @@ fn thread_id(value: &str) -> ThreadId {
 }
 
 #[test]
+fn live_reply_settings_outlast_turn_observation_and_end_with_the_relationship() {
+    let observer = thread_id("00000000-0000-0000-0000-000000000101");
+    let target = thread_id("00000000-0000-0000-0000-000000000102");
+    let other = thread_id("00000000-0000-0000-0000-000000000103");
+    let mut state = AgentResponseObservationState::default();
+    state.replace_reply_route(observer, target, /*enabled*/ true);
+    state.replace_reply_route(observer, other, /*enabled*/ false);
+    state.note(
+        observer,
+        target,
+        AgentResponseObservationBinding::Bound,
+        Some(AgentResponseHandling::Wake),
+    );
+    state.mark_target_stopped(target);
+    state.remove(observer, target);
+    assert_eq!(
+        (
+            state.get(observer, target),
+            state.reply_route(observer, target),
+            state.reply_route(observer, other),
+        ),
+        (None, Some(true), Some(false)),
+    );
+    state.remove_thread(target);
+    assert_eq!(
+        (
+            state.reply_route(observer, target),
+            state.reply_route(observer, other),
+        ),
+        (None, Some(false)),
+    );
+    state.clear();
+    assert_eq!(state.reply_route(observer, other), None);
+}
+
+#[test]
 fn bound_observation_precedes_and_preserves_next_turn_policy() {
     let observer = thread_id("00000000-0000-0000-0000-000000000101");
     let target = thread_id("00000000-0000-0000-0000-000000000102");
@@ -33,7 +69,6 @@ fn bound_observation_precedes_and_preserves_next_turn_policy() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: true,
-            target_messages: false,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Presentation,
         })
@@ -46,7 +81,6 @@ fn bound_observation_precedes_and_preserves_next_turn_policy() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::NextTurn,
             commentary: false,
-            target_messages: false,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Wake,
         })
@@ -79,7 +113,6 @@ fn removing_completed_binding_preserves_next_turn_policy() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::NextTurn,
             commentary: false,
-            target_messages: false,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Wake,
         })
@@ -115,7 +148,6 @@ fn explicit_observation_replacement_can_weaken_final_delivery() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: true,
-            target_messages: true,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Presentation,
         })
@@ -133,44 +165,10 @@ fn explicit_observation_replacement_can_weaken_final_delivery() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: true,
-            target_messages: true,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::None,
         })
     );
-}
-
-#[test]
-fn scoped_reply_route_is_visible_without_implying_final_delivery() {
-    let observer = thread_id("00000000-0000-0000-0000-000000000101");
-    let target = thread_id("00000000-0000-0000-0000-000000000102");
-    let mut state = AgentResponseObservationState::default();
-    state.note(
-        observer,
-        target,
-        AgentResponseObservationBinding::Bound,
-        Some(AgentResponseHandling::new(
-            /*commentary*/ false,
-            AgentFinalResponseHandling::None,
-            /*target_messages*/ true,
-            /*queue_input*/ false,
-        )),
-    );
-
-    let observation = state
-        .get(observer, target)
-        .expect("scoped reply route should be visible");
-    assert_eq!(
-        observation,
-        AgentResponseObservationDisplay {
-            binding: AgentResponseObservationBinding::Bound,
-            commentary: false,
-            target_messages: true,
-            queue_delivery: false,
-            final_response: AgentFinalResponseDisplay::None,
-        }
-    );
-    assert_eq!(observation.compact_label(), "replies");
 }
 
 #[test]
@@ -198,7 +196,6 @@ fn queued_delivery_is_visible_after_target_turn_admission() {
         AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: false,
-            target_messages: false,
             queue_delivery: true,
             final_response: AgentFinalResponseDisplay::Passive,
         }

@@ -1114,6 +1114,18 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                     }),
                                     None,
                                 )),
+                                codex_app_server_protocol::AgentControlAction::ReplyRoute {
+                                    target,
+                                    mode,
+                                } => Some(agent_control_success(
+                                    serde_json::json!({
+                                        "type": "replyRouteChanged",
+                                        "targetThreadId": target,
+                                        "previousMode": null,
+                                        "mode": mode,
+                                    }),
+                                    None,
+                                )),
                             },
                             _ => None,
                         };
@@ -1597,7 +1609,6 @@ async fn explicit_observe_updates_only_the_authoritative_binding(
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: expected_binding,
                 commentary: false,
-                target_messages: false,
                 queue_delivery: false,
                 final_response: expected_final,
             }
@@ -1772,7 +1783,14 @@ async fn unknown_agent_input_is_retained_for_manual_reconciliation() -> Result<(
 }
 
 #[tokio::test]
-async fn agent_control_admission_preserves_current_and_saved_provider_quarantine() {
+async fn agent_control_admission_preserves_current_and_saved_provider_quarantine() -> Result<()> {
+    let (fixture_app, _fixture_events, _fixture_ops) = make_test_app_with_channels().await;
+    let (mut app_server, requests, proxy) = start_recording_app_server(
+        &fixture_app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
     for (block_target, saved, selection_in_transition) in [
         (false, false, false),
         (true, false, false),
@@ -1826,6 +1844,19 @@ async fn agent_control_admission_preserves_current_and_saved_provider_quarantine
             assert!(app.chat_widget.direct_input_is_blocked());
         }
 
+        app.set_agent_reply_route_from_selector(
+            &mut app_server,
+            source,
+            AgentSelector {
+                kind: AgentSelectorKind::Id(target),
+                authored: target.to_string(),
+            },
+            codex_app_server_protocol::AgentReplyRouteMode::Enabled,
+        )
+        .await;
+        assert!(recorded_params(&requests, "agent/control").is_empty());
+        assert_eq!(app.agent_navigation.reply_route(source, target), None);
+
         let error = app
             .ensure_agent_control_admission(source, Some(target))
             .await
@@ -1838,6 +1869,9 @@ async fn agent_control_admission_preserves_current_and_saved_provider_quarantine
             "an unrelated conversation must not inherit another thread's provider error",
         );
     }
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
 }
 
 #[tokio::test]

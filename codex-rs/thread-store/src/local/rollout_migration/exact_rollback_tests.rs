@@ -380,6 +380,8 @@ async fn task_proofs_keep_physical_adjacency_before_mask_and_planner_replay() {
                         commentary_after_sequences: Vec::new(),
                         commentary_admissions: Vec::new(),
                         commentary_delivery: None,
+                        reply_route_enabled: None,
+                        reply_route_context_installed: false,
                         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
                         final_delivery: AgentResponseFinalDelivery::Wake,
                         final_delivery_response_item_id: None,

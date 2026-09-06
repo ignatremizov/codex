@@ -54,6 +54,11 @@ fn targets() -> Vec<AgentPromptTarget> {
         },
         AgentPromptTarget {
             thread_id: None,
+            selector: "replies".to_string(),
+            label: "Allow or block replies from an agent".to_string(),
+        },
+        AgentPromptTarget {
+            thread_id: None,
             selector: "reviewer".to_string(),
             label: "New reviewer agent".to_string(),
         },
@@ -147,6 +152,15 @@ fn action_target_completion_only_covers_existing_target_argument() {
             query: "presentation".to_string(),
             scope: AgentTargetCompletionScope::ObservationMode,
             action: Some("observe"),
+        })
+    );
+    assert_eq!(
+        completion("/agent replies 2 enable", "/agent replies 2 enable".len()),
+        Some(AgentTargetCompletion {
+            range: "/agent replies 2 ".len().."/agent replies 2 enable".len(),
+            query: "enable".to_string(),
+            scope: AgentTargetCompletionScope::ReplyRouteMode,
+            action: Some("replies"),
         })
     );
     assert_eq!(
@@ -281,6 +295,23 @@ fn observation_mode_popup_snapshot() {
       passive       Deliver the final response without waking
       wake          Deliver the final response and wake
       presentation  Keep the final response out of model context
+    ");
+}
+
+#[test]
+fn reply_route_mode_popup_snapshot() {
+    let targets = AGENT_REPLY_ROUTE_MODE_CHOICES
+        .map(|(selector, label)| AgentPromptTarget {
+            thread_id: None,
+            selector: selector.to_string(),
+            label: label.to_string(),
+        })
+        .to_vec();
+    let popup = AgentTargetPopup::new(targets, "", AgentTargetCompletionScope::ReplyRouteMode);
+
+    insta::assert_snapshot!(render_popup(&popup), @r"
+      enable   Allow replies until disabled
+      disable  Block replies until enabled
     ");
 }
 

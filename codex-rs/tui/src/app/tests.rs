@@ -1444,7 +1444,6 @@ async fn queued_start_merges_entry_handling_with_next_turn_reservation() -> Resu
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
-                target_messages: false,
                 queue_delivery: true,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Wake,
@@ -1502,7 +1501,6 @@ async fn degraded_queued_start_still_consumes_next_turn_reservation() -> Result<
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
-                target_messages: false,
                 queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Wake,
@@ -2924,7 +2922,6 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
-                target_messages: false,
                 queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
@@ -2949,13 +2946,18 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
         crate::app::agent_observation_display::AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: false,
-            target_messages: true,
             queue_delivery: false,
             final_response:
                 crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
         }
     );
-    insta::assert_snapshot!(observation.compact_label(), @"passive · replies");
+    insta::assert_snapshot!(observation.compact_label(), @"passive");
+    assert_eq!(
+        app.agent_navigation
+            .reply_route(observer_thread_id, receiver_thread_id),
+        None,
+        "persisted per-turn reply metadata must not synthesize an acknowledged live route",
+    );
     app.agent_navigation
         .clear_response_observation(observer_thread_id, receiver_thread_id);
 
@@ -2974,7 +2976,6 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: true,
-                target_messages: false,
                 queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Presentation,
