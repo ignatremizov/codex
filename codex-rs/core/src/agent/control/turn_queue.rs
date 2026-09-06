@@ -49,7 +49,7 @@ impl LocalAgentControl {
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         self.require_current_agent_ownership(agent_id).await?;
         let thread = state.get_thread(agent_id).await?;
-        self.ensure_scoped_reply_route_supported(&thread, response_observation)?;
+        self.ensure_target_message_route_allowed(&thread, observer, response_observation)?;
         let observer_thread = state.get_thread(observer.thread_id).await?;
         if observer_thread.session.presentation_id() != observer {
             return Err(CodexErr::ThreadNotFound(observer.thread_id));

@@ -38,6 +38,20 @@ impl Session {
         let (compacted_item, world_state_snapshot, observation_artifacts, mcp_revision) = {
             let state = self.state.lock().await;
             let source = state.history.annotated_items();
+            // Retained canonical routes win over stale replacement histories. Keep one complete
+            // envelope per source, without turning text or replacement metadata into live permission.
+            let mut route_sources = HashSet::new();
+            let mut reply_routes = source
+                .iter()
+                .rev()
+                .filter(|item| {
+                    codex_history::persistent_agent_reply_route_source(item)
+                        .is_some_and(|source| route_sources.insert(source))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            reply_routes.reverse();
+            items.retain(|item| codex_history::persistent_agent_reply_route_source(item).is_none());
             let source_mcp = source
                 .iter()
                 .filter(|envelope| {
@@ -48,8 +62,10 @@ impl Session {
             // The accepted source is authoritative, including equal text at distinct positions.
             // Retain any genuinely new replacement envelope as well, never deduplicate the source.
             let mut retained = source_mcp.clone();
+            retained.extend(reply_routes);
             items.retain(|envelope| {
-                if !crate::context::McpServerUseInstructions::matches_response_item(&envelope.item) {
+                if !crate::context::McpServerUseInstructions::matches_response_item(&envelope.item)
+                {
                     return true;
                 }
                 if !source_mcp.contains(envelope) {
@@ -124,14 +140,14 @@ impl Session {
                 }
             }
             let boundary = items
-                .iter()
-                .position(|envelope| {
-                    matches!(
-                        &envelope.item,
-                        ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-                    ) || matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user")
-                })
-                .unwrap_or(items.len());
+            .iter()
+            .position(|envelope| {
+                matches!(
+                    &envelope.item,
+                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+                ) || matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user")
+            })
+            .unwrap_or(items.len());
             // Attribute a replacement-owned item, not an accepted inventory envelope.
             // Retained MCP/skills records keep their original metadata and identities.
             let mcp_revision = self
@@ -193,7 +209,8 @@ impl Session {
                         trigger_turn: false,
                     });
                     observation_artifacts.push(RolloutItem::ResponseItem(task.item));
-                    observation_artifacts.push(RolloutItem::AgentResponseObservation(task.observation));
+                    observation_artifacts
+                        .push(RolloutItem::AgentResponseObservation(task.observation));
                 }
             }
             for completion in &state.acknowledged_completion_contexts {
@@ -271,8 +288,9 @@ impl Session {
                     let previous = state.history.world_state_checkpoint()?;
                     let mut retained = serde_json::Map::new();
                     for contributor in self.services.extensions.context_contributors() {
-                        retained
-                            .extend(contributor.retain_world_state_after_compaction(&previous.state));
+                        retained.extend(
+                            contributor.retain_world_state_after_compaction(&previous.state),
+                        );
                     }
                     (!retained.is_empty()).then(|| WorldStateSnapshot::from(&retained))
                 });

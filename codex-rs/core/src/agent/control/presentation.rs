@@ -31,6 +31,7 @@ pub(crate) use response_observation::ResponseObservationEventMatch;
 pub(crate) use response_observation::ResponseObservationPersistence;
 use response_observation::ResponseObserverRelationship;
 pub(crate) use response_observation::ResponseWatcherRegistration;
+pub(crate) use response_observation::TargetMessageRouteMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SessionPresentationId {

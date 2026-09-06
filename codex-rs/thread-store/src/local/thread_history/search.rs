@@ -363,6 +363,7 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
                 UserAgentControlAction::Interrupt => "interrupt",
                 UserAgentControlAction::Close => "close",
                 UserAgentControlAction::Observe => "observe",
+                UserAgentControlAction::ReplyRoute => "reply route",
             };
             let status = match status {
                 UserAgentControlStatus::Succeeded => "succeeded",

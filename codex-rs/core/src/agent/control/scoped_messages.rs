@@ -20,6 +20,32 @@ impl LocalAgentControl {
         Ok(())
     }
 
+    pub(super) fn ensure_target_message_route_allowed(
+        &self,
+        target_thread: &CodexThread,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+    ) -> CodexResult<()> {
+        self.ensure_scoped_reply_route_supported(target_thread, response_observation)?;
+        if response_observation.target_messages()
+            && target_thread.session.presentation_id().thread_id == observer.thread_id
+        {
+            return Err(CodexErr::InvalidRequest(
+                "an agent cannot grant a reply route to itself".to_string(),
+            ));
+        }
+        if response_observation.target_messages()
+            && self.target_message_route_mode(observer, target_thread.session.presentation_id())
+                == Some(TargetMessageRouteMode::Disabled)
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "agent replies to {} are disabled by the user",
+                observer.thread_id
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) async fn acquire_target_message_admission_after_binding(
         &self,
         observer_thread: &CodexThread,

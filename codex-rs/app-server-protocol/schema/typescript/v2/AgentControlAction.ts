@@ -4,6 +4,7 @@
 import type { ReasoningEffort } from "../ReasoningEffort";
 import type { AgentForkMode } from "./AgentForkMode";
 import type { AgentObservationMode } from "./AgentObservationMode";
+import type { AgentReplyRouteMode } from "./AgentReplyRouteMode";
 import type { AgentResponseHandling } from "./AgentResponseHandling";
 import type { UserInput } from "./UserInput";
 
@@ -67,4 +68,4 @@ responseHandling: AgentResponseHandling | null, } | { "type": "close", target: s
 /**
  * Controls replay of an undelivered completion after close.
  */
-responseHandling: AgentResponseHandling | null, } | { "type": "observe", target: string, responseHandling: AgentObservationMode, } ;
+responseHandling: AgentResponseHandling | null, } | { "type": "observe", target: string, responseHandling: AgentObservationMode, } | { "type": "replyRoute", target: string, mode: AgentReplyRouteMode, } ;

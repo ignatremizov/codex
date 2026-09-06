@@ -59,6 +59,11 @@ impl LocalAgentControl {
         let _lifecycle = state.acquire_live_agent_lifecycle(child_thread_id).await?;
         let child = state.get_thread(child_thread_id).await?;
         let observer = state.get_thread(parent_id).await?;
+        self.ensure_target_message_route_allowed(
+            &child,
+            observer.session.presentation_id(),
+            policy,
+        )?;
         let _transaction = self
             .acquire_response_observation_transaction(observer.session.presentation_id())
             .await;

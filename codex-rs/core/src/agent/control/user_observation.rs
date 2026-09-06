@@ -40,6 +40,7 @@ impl LocalAgentControl {
                 .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".into()))?;
             observer.session.submission_admission.check_ready()?;
             let parent = observer.session.presentation_id();
+            control.ensure_target_message_route_allowed(&target, parent, policy)?;
             let transaction = control
                 .acquire_response_observation_transaction(parent)
                 .await;
