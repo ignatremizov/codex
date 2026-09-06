@@ -16,6 +16,7 @@ use codex_protocol::items::parse_hook_prompt_fragment;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::is_persistent_agent_reply_route_context_response_item;
 use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 
 /// Match the rollback boundaries used by non-paginated history reconstruction without
@@ -27,6 +28,9 @@ pub(super) fn counts_as_boundary(response: &ResponseItem) -> bool {
     if matches!(response, ResponseItem::AgentMessage { .. }) {
         return true;
     }
+    if is_persistent_agent_reply_route_context_response_item(response) {
+        return false;
+    }
     let ResponseItem::Message { role, content, .. } = response else {
         return false;
     };
@@ -35,6 +39,9 @@ pub(super) fn counts_as_boundary(response: &ResponseItem) -> bool {
 }
 
 pub(super) fn is_pre_turn_context_update(response: &ResponseItem) -> bool {
+    if is_persistent_agent_reply_route_context_response_item(response) {
+        return false;
+    }
     let ResponseItem::Message { role, content, .. } = response else {
         return false;
     };
@@ -78,10 +85,11 @@ pub(super) fn drop_last_n_user_turns<T>(
         .iter()
         .filter(|item| {
             let response: &ResponseItem = (*item).borrow();
-            response.id().is_some_and(|id| {
-                is_user_agent_task_context_response_item_id(id.as_str())
-                    || committed_response_item_ids.contains(id)
-            })
+            is_persistent_agent_reply_route_context_response_item(response)
+                || response.id().is_some_and(|id| {
+                    is_user_agent_task_context_response_item_id(id.as_str())
+                        || committed_response_item_ids.contains(id)
+                })
         })
         .cloned()
         .collect::<Vec<_>>();

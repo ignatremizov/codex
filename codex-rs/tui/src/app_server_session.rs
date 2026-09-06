@@ -1933,6 +1933,27 @@ impl AppServerSession {
             .wrap_err("agent/control observe failed in TUI")
     }
 
+    pub(crate) async fn set_agent_reply_route(
+        &mut self,
+        source_thread_id: ThreadId,
+        target: String,
+        authored_selector: String,
+        mode: codex_app_server_protocol::AgentReplyRouteMode,
+    ) -> Result<AgentControlResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: source_thread_id.to_string(),
+                    authored_selector: Some(authored_selector),
+                    action: AgentControlAction::ReplyRoute { target, mode },
+                },
+            })
+            .await
+            .wrap_err("agent/control reply-route change failed in TUI")
+    }
+
     pub(crate) async fn review_start(
         &mut self,
         thread_id: ThreadId,

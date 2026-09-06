@@ -398,6 +398,13 @@ pub(crate) enum AppEvent {
         response_handling: codex_app_server_protocol::AgentObservationMode,
     },
 
+    /// Enable or disable the target's attributed reply route to the source.
+    SetAgentReplyRoute {
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+        mode: codex_app_server_protocol::AgentReplyRouteMode,
+    },
+
     /// Fork the current thread into a transient side conversation.
     StartSide {
         parent_thread_id: ThreadId,

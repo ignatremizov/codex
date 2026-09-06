@@ -1,6 +1,13 @@
 use super::*;
 use crate::context::AgentReplyRoute;
 use crate::context::AttributedAgentMessage;
+use crate::session::SteerInputError;
+
+#[derive(Clone, Copy)]
+enum AgentReplyRouteLifetime {
+    CurrentTurn,
+    UntilDisabled,
+}
 
 impl AgentControl {
     pub(super) fn ensure_scoped_reply_route_supported(
@@ -18,6 +25,25 @@ impl AgentControl {
         Ok(())
     }
 
+    pub(super) fn ensure_target_message_route_allowed(
+        &self,
+        target_thread: &CodexThread,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+    ) -> CodexResult<()> {
+        self.ensure_scoped_reply_route_supported(target_thread, response_observation)?;
+        if response_observation.target_messages()
+            && self.target_message_route_mode(observer, target_thread.session.presentation_id())
+                == Some(TargetMessageRouteMode::Disabled)
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "agent replies to {} are disabled by the user",
+                observer.thread_id
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) async fn with_agent_reply_route(
         &self,
         target_thread: &CodexThread,
@@ -28,7 +54,41 @@ impl AgentControl {
         if !response_observation.target_messages() {
             return Ok(input);
         }
-        self.ensure_scoped_reply_route_supported(target_thread, response_observation)?;
+        self.ensure_target_message_route_allowed(target_thread, observer, response_observation)?;
+        let target = target_thread.session.presentation_id();
+        match self.target_message_route_mode(observer, target) {
+            Some(TargetMessageRouteMode::Disabled) => unreachable!(
+                "disabled reply routes are rejected before constructing target context"
+            ),
+            Some(TargetMessageRouteMode::Enabled) => return Ok(input),
+            None => {}
+        }
+        let route = self
+            .agent_reply_route_item(
+                target_thread,
+                observer,
+                AgentReplyRouteLifetime::CurrentTurn,
+            )
+            .await?;
+        let ResponseItem::Message { content, .. } = route else {
+            unreachable!("agent reply routes are contextual user messages")
+        };
+        let Some(ContentItem::InputText { text }) = content.into_iter().next() else {
+            unreachable!("agent reply routes contain one text item")
+        };
+        input.push_internal_context(UserInput::Text {
+            text,
+            text_elements: Vec::new(),
+        });
+        Ok(input)
+    }
+
+    async fn agent_reply_route_item(
+        &self,
+        target_thread: &CodexThread,
+        observer: SessionPresentationId,
+        lifetime: AgentReplyRouteLifetime,
+    ) -> CodexResult<ResponseItem> {
         if target_thread.session.presentation_id().thread_id == observer.thread_id {
             return Err(CodexErr::InvalidRequest(
                 "an agent cannot grant a reply route to itself".to_string(),
@@ -46,11 +106,89 @@ impl AgentControl {
         let agent = self
             .model_visible_agent_identity(&observer_thread, observer.thread_id)
             .await?;
-        input.push_internal_context(UserInput::Text {
-            text: AgentReplyRoute::new(agent).render(),
-            text_elements: Vec::new(),
-        });
-        Ok(input)
+        Ok(match lifetime {
+            AgentReplyRouteLifetime::CurrentTurn => {
+                ContextualUserFragment::into(AgentReplyRoute::new(agent))
+            }
+            AgentReplyRouteLifetime::UntilDisabled => {
+                ContextualUserFragment::into(AgentReplyRoute::until_disabled(agent))
+            }
+        })
+    }
+
+    pub(super) async fn inject_agent_reply_route(
+        &self,
+        target_thread: &CodexThread,
+        observer: SessionPresentationId,
+        target_turn_id: &str,
+    ) -> CodexResult<()> {
+        match self.target_message_route_mode(observer, target_thread.session.presentation_id()) {
+            Some(TargetMessageRouteMode::Disabled) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "agent replies to {} are disabled by the user",
+                    observer.thread_id
+                )));
+            }
+            Some(TargetMessageRouteMode::Enabled) => return Ok(()),
+            None => {}
+        }
+        let response_observation = ResponseObservationPolicy::from_turn_parts(
+            /*commentary*/ false,
+            FinalResponseObservation::None,
+            /*target_messages*/ true,
+            /*queue_input*/ false,
+        );
+        let route = self
+            .with_agent_reply_route(
+                target_thread,
+                observer,
+                response_observation,
+                AgentControlInput::User(Vec::new()),
+            )
+            .await?;
+        let Op::AgentInput {
+            items,
+            presentation,
+        } = route.into_op()
+        else {
+            unreachable!("reply-route context is core-authored agent input")
+        };
+        target_thread
+            .session
+            .steer_internal_agent_input(items, presentation, target_turn_id)
+            .await
+            .map(|_| ())
+            .map_err(|err| {
+                let message = match err {
+                    SteerInputError::NoActiveTurn(_) => {
+                        "target turn completed before the reply route was delivered".to_string()
+                    }
+                    SteerInputError::ActiveTurnPresent { actual } => {
+                        format!("unexpected active target turn `{actual}`")
+                    }
+                    SteerInputError::ExpectedTurnMismatch { expected, actual } => {
+                        format!("expected target turn `{expected}` but found `{actual}`")
+                    }
+                    SteerInputError::ActiveTurnNotSteerable { .. } => {
+                        "target turn does not accept reply-route input".to_string()
+                    }
+                    SteerInputError::EmptyInput => "reply-route input was empty".to_string(),
+                };
+                CodexErr::InvalidRequest(message)
+            })
+    }
+
+    pub(super) async fn prepare_persistent_agent_reply_route(
+        &self,
+        target_thread: &CodexThread,
+        observer: SessionPresentationId,
+    ) -> CodexResult<ResponseItem> {
+        self.agent_reply_route_item(
+            target_thread,
+            observer,
+            AgentReplyRouteLifetime::UntilDisabled,
+        )
+        .await
     }
 
     pub(super) async fn acquire_target_message_admission_after_binding(

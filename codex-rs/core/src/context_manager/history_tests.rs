@@ -1,5 +1,7 @@
 use super::*;
 use crate::context::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
+use crate::context::AgentContextIdentity;
+use crate::context::AgentReplyRoute;
 use crate::context::CompactedImageOmission;
 use crate::context::UserInstructions;
 use crate::context::world_state::WorldState;
@@ -1241,6 +1243,22 @@ fn drop_last_n_user_turns_preserves_trusted_user_agent_task_context() {
         raw_items(&history),
         vec![user_msg("u1"), assistant_msg("a1"), task]
     );
+}
+
+#[test]
+fn drop_last_n_user_turns_preserves_persistent_agent_reply_route() {
+    let route =
+        ContextualUserFragment::into(AgentReplyRoute::until_disabled(AgentContextIdentity::V1 {
+            agent_id: codex_protocol::ThreadId::new(),
+            agent_ref: Some(1),
+            nickname: Some("Main".to_string()),
+        }));
+    let mut history =
+        create_history_with_items(vec![user_msg("u1"), assistant_msg("a1"), route.clone()]);
+
+    history.drop_last_n_user_turns(/*num_turns*/ 1);
+
+    assert_eq!(raw_items(&history), vec![route]);
 }
 
 #[test]

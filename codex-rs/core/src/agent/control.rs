@@ -104,6 +104,7 @@ pub(crate) use self::presentation::SessionPresentationId;
 use self::presentation::SpawnedThreadRelease;
 pub(crate) use self::presentation::TargetMessageAdmission;
 pub(crate) use self::presentation::TargetMessageAdmissionMode;
+pub(crate) use self::presentation::TargetMessageRouteMode;
 pub(crate) use self::presentation::TerminalPresentationDelivery;
 pub(crate) use self::presentation::WaitAgentPresentations;
 use self::presentation::WaitCommentaryDelivery;
@@ -456,6 +457,7 @@ fn response_observations_have_work(
             || !observation.commentary_admissions.is_empty()
             || observation.commentary_delivery.is_some()
             || observation.target_messages
+            || observation.reply_route_enabled.is_some()
             || observation.final_delivery
                 != codex_protocol::protocol::AgentResponseFinalDelivery::None
             || observation.baseline_final_delivery

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::is_persistent_agent_reply_route_context_response_item;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 
@@ -13,9 +14,9 @@ use crate::RolloutItem;
 /// cutoff through the marker are removed together, except that a terminal event is retained when
 /// its matching turn start survives the range and durable out-of-band agent artifacts are retained
 /// regardless of their position. These include accepted subagent responses, their presentation
-/// state, trusted user-agent task links, and source-side user-agent control audit. A terminal
-/// `wait_agent` item is one such artifact when that durable item owns completion presentation
-/// instead of a background row.
+/// state, trusted user-agent task links, persistent reply routes, and source-side user-agent
+/// control audit. A terminal `wait_agent` item is one such artifact when that durable item owns
+/// completion presentation instead of a background row.
 /// Computing all ranges before replay also ensures that rollback markers inside a newer removed
 /// range cannot affect the surviving history.
 pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
@@ -94,10 +95,11 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
         }
     }
 
-    // Subagent completion context and presentation are out-of-band arrivals, not output owned by
-    // the user turn whose raw range happens to contain them. Once accepted and durably appended,
-    // later exact rollback must not erase them. Preserve inter-agent delivery metadata immediately
-    // preceding a committed response item as part of the same durable pair.
+    // Subagent completion context, presentation, and persistent reply routes are out-of-band
+    // state, not output owned by the user turn whose raw range happens to contain them. Once
+    // accepted and durably appended, later exact rollback must not erase them. Preserve inter-agent
+    // delivery metadata immediately preceding a committed response item as part of the same durable
+    // pair.
     for index in 0..items.len() {
         if !removed[index] || !is_durable_agent_artifact(items, index) {
             continue;
@@ -118,6 +120,9 @@ pub fn exact_rollback_removed_items(items: &[RolloutItem]) -> Vec<bool> {
 fn is_durable_agent_artifact(items: &[RolloutItem], index: usize) -> bool {
     match &items[index] {
         RolloutItem::ResponseItem(item) => {
+            if is_persistent_agent_reply_route_context_response_item(&item.item) {
+                return true;
+            }
             let Some(response_item_id) = item.id() else {
                 return false;
             };

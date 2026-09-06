@@ -7,11 +7,14 @@ use codex_protocol::items::UserAgentControlAction;
 use codex_protocol::items::UserAgentControlItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::new_user_agent_task_context_response_item_id;
@@ -36,6 +39,108 @@ fn agent_observation_context_is_not_a_rollback_turn_boundary() {
 
     assert!(!rollback::counts_as_boundary(&response));
     assert!(rollback::is_pre_turn_context_update(&response));
+}
+
+#[test]
+fn persistent_agent_reply_route_survives_rollback_as_out_of_band_context() {
+    let route = persistent_agent_reply_route();
+    assert!(!rollback::counts_as_boundary(&route));
+    assert!(!rollback::is_pre_turn_context_update(&route));
+
+    let kept_user = line(RolloutItem::ResponseItem(
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "kept question".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    ));
+    let removed_user = line(RolloutItem::ResponseItem(
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "removed question".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    ));
+    let route = line(RolloutItem::ResponseItem(route.into()));
+    let rollback = line(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: Some(1),
+            rollback_start_index: None,
+        },
+    )));
+    let lines = [kept_user.clone(), removed_user, route.clone(), rollback];
+    let mut planner = RollbackPlanner::new();
+    for line in &lines {
+        planner.observe(line).expect("observe rollout line");
+    }
+    let plan = planner.finish();
+    let retained = lines
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, line)| plan.apply(index, line).expect("apply rollback plan"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        serde_json::to_value(retained).expect("serialize retained rollout"),
+        serde_json::to_value([kept_user, route]).expect("serialize expected rollout"),
+    );
+}
+
+#[test]
+fn persistent_agent_reply_route_survives_rewritten_compaction_checkpoint_once() {
+    let route = persistent_agent_reply_route();
+    let compaction = line(RolloutItem::Compacted(CompactedItem {
+        message: "checkpoint".to_string(),
+        replacement_history: Some(vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "removed question".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }
+            .into(),
+            route.clone().into(),
+        ]),
+        ..Default::default()
+    }));
+    let rollback = line(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: Some(1),
+            rollback_start_index: None,
+        },
+    )));
+    let lines = [compaction, rollback];
+    let mut planner = RollbackPlanner::new();
+    for line in &lines {
+        planner.observe(line).expect("observe rollout line");
+    }
+    let plan = planner.finish();
+    let replacement_history = lines
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, line)| plan.apply(index, line).expect("apply rollback plan"))
+        .find_map(|line| match line.item {
+            RolloutItem::Compacted(item) => item.replacement_history,
+            _ => None,
+        })
+        .expect("retained compaction");
+
+    assert_eq!(replacement_history, vec![route.into()]);
 }
 
 #[test]
@@ -160,6 +265,8 @@ fn agent_response_observation_survives_rollback_of_surrounding_turn() {
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -233,6 +340,8 @@ fn committed_agent_response_pair_survives_historical_rollback() {
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -323,6 +432,8 @@ fn late_observation_preserves_committed_response_in_rewritten_compaction() {
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -371,6 +482,7 @@ fn compaction_rollback_retains_committed_response_at_cut() {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     };
+    let reply_route = persistent_agent_reply_route();
     let mut history = vec![
         kept_user.clone(),
         committed_response.clone(),
@@ -383,6 +495,7 @@ fn compaction_rollback_retains_committed_response_at_cut() {
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         },
+        reply_route.clone(),
     ];
 
     rollback::drop_last_n_user_turns(
@@ -391,7 +504,27 @@ fn compaction_rollback_retains_committed_response_at_cut() {
         &HashSet::from([response_item_id]),
     );
 
-    assert_eq!(history, vec![kept_user, committed_response]);
+    assert_eq!(history, vec![kept_user, committed_response, reply_route]);
+}
+
+fn persistent_agent_reply_route() -> ResponseItem {
+    let agent_id = ThreadId::new();
+    ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: format!(
+                "<agent_reply_route>\n{{\"agent_id\":\"{agent_id}\",\"send_input\":\"allowed_until_disabled\"}}\n</agent_reply_route>"
+            ),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            content_item_kinds: Some(vec![ContentItemKind(
+                PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND.to_string(),
+            )]),
+            ..Default::default()
+        }),
+    }
 }
 
 fn line(item: RolloutItem) -> RolloutLine {

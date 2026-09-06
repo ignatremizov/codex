@@ -101,6 +101,8 @@ fn compact_task_preview(task_preview: Option<String>) -> Option<String> {
 pub(in crate::agent::control) struct ResponseObserverRelationship {
     pub(super) persistence: ResponseObservationPersistence,
     pub(super) baseline_final_response: FinalResponseObservation,
+    pub(super) reply_route: Option<TargetMessageRouteMode>,
+    pub(in crate::agent::control) reply_route_context_installed: bool,
     pub(super) pending_next_turn: Option<ResponseTurnObservation>,
     pub(super) pending_admissions: HashMap<Uuid, ResponseTurnObservation>,
     pub(super) turns: HashMap<String, ResponseTurnObservation>,
@@ -111,6 +113,8 @@ impl Default for ResponseObserverRelationship {
         Self {
             persistence: ResponseObservationPersistence::RuntimeOnly,
             baseline_final_response: FinalResponseObservation::None,
+            reply_route: None,
+            reply_route_context_installed: false,
             pending_next_turn: None,
             pending_admissions: HashMap::new(),
             turns: HashMap::new(),
@@ -168,6 +172,24 @@ pub(in crate::agent::control) struct PreparedFinalResponseObservationReplacement
     pub(in crate::agent::control) task_preview: Option<String>,
     pub(in crate::agent::control) previous_relationship: ResponseObserverRelationship,
     pub(in crate::agent::control) replacement_relationship: ResponseObserverRelationship,
+}
+
+pub(in crate::agent::control) struct PreparedTargetMessageRouteReplacement {
+    pub(in crate::agent::control) previous: Option<TargetMessageRouteMode>,
+    pub(in crate::agent::control) previous_relationship: Option<ResponseObserverRelationship>,
+    pub(in crate::agent::control) replacement_relationship: ResponseObserverRelationship,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TargetMessageRouteMode {
+    Enabled,
+    Disabled,
+}
+
+impl TargetMessageRouteMode {
+    pub(crate) fn is_enabled(self) -> bool {
+        self == Self::Enabled
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -270,17 +292,42 @@ impl AgentControl {
     ) -> CodexResult<TargetMessageAdmission> {
         let may_steer = mode == TargetMessageAdmissionMode::SteerOrWake;
         let mut state = self.wait_agent_presentations.state();
-        let observation = state
+        let relationship = state
             .response_observation_by_observer_child
             .get_mut(&(observer, target))
-            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
-            .filter(|observation| observation.target_messages)
             .ok_or_else(|| {
                 CodexErr::InvalidRequest(format!(
                     "agent {} has no message route to {} for turn {target_turn_id}",
                     target.thread_id, observer.thread_id
                 ))
             })?;
+        if relationship.reply_route == Some(TargetMessageRouteMode::Disabled) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "agent replies to {} are disabled by the user",
+                observer.thread_id
+            )));
+        }
+        let persistent_route = relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+        if persistent_route && observer_active_turn_id.is_some() && may_steer {
+            return Ok(TargetMessageAdmission::Steer);
+        }
+        let observation = if persistent_route {
+            relationship
+                .turns
+                .entry(target_turn_id.to_string())
+                .or_default()
+        } else {
+            relationship
+                .turns
+                .get_mut(target_turn_id)
+                .filter(|observation| observation.target_messages)
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest(format!(
+                        "agent {} has no message route to {} for turn {target_turn_id}",
+                        target.thread_id, observer.thread_id
+                    ))
+                })?
+        };
         if observation.message_wake_reservation_id.is_some() {
             return if observer_active_turn_id.is_some() && may_steer {
                 Ok(TargetMessageAdmission::Steer)
@@ -326,15 +373,28 @@ impl AgentControl {
             .response_observation_by_observer_child
             .get(&(observer, target))
             .is_some_and(|relationship| {
-                relationship
-                    .pending_next_turn
-                    .as_ref()
-                    .is_some_and(|observation| observation.target_messages)
-                    || relationship
-                        .pending_admissions
-                        .values()
-                        .any(|observation| observation.target_messages)
+                relationship.reply_route != Some(TargetMessageRouteMode::Disabled)
+                    && (relationship
+                        .pending_next_turn
+                        .as_ref()
+                        .is_some_and(|observation| observation.target_messages)
+                        || relationship
+                            .pending_admissions
+                            .values()
+                            .any(|observation| observation.target_messages))
             })
+    }
+
+    pub(crate) fn target_message_route_mode(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+    ) -> Option<TargetMessageRouteMode> {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+            .and_then(|relationship| relationship.reply_route)
     }
 
     pub(crate) fn response_observation_changed(&self) -> &Notify {
@@ -350,14 +410,19 @@ impl AgentControl {
         wake_turn_id: &str,
     ) -> bool {
         let mut state = self.wait_agent_presentations.state();
-        let Some(observation) = state
+        let Some(relationship) = state
             .response_observation_by_observer_child
             .get_mut(&(observer, target))
-            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
-            .filter(|observation| observation.target_messages)
         else {
             return false;
         };
+        let persistent_route = relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+        let Some(observation) = relationship.turns.get_mut(target_turn_id) else {
+            return false;
+        };
+        if !persistent_route && !observation.target_messages {
+            return false;
+        }
         if observation.message_wake_reservation_id != Some(reservation_id) {
             return false;
         }
@@ -386,14 +451,30 @@ impl AgentControl {
         reservation_id: Uuid,
     ) {
         let mut state = self.wait_agent_presentations.state();
-        let changed = if let Some(observation) = state
+        let changed = if let Some(relationship) = state
             .response_observation_by_observer_child
             .get_mut(&(observer, target))
-            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
-            && observation.message_wake_reservation_id == Some(reservation_id)
         {
-            observation.message_wake_reservation_id = None;
-            true
+            let remove_turn =
+                relationship
+                    .turns
+                    .get_mut(target_turn_id)
+                    .is_some_and(|observation| {
+                        if observation.message_wake_reservation_id != Some(reservation_id) {
+                            return false;
+                        }
+                        observation.message_wake_reservation_id = None;
+                        true
+                    });
+            if remove_turn
+                && relationship
+                    .turns
+                    .get(target_turn_id)
+                    .is_some_and(|observation| observation == &ResponseTurnObservation::default())
+            {
+                relationship.turns.remove(target_turn_id);
+            }
+            remove_turn
         } else {
             false
         };
@@ -416,13 +497,30 @@ impl AgentControl {
             if *parent != observer {
                 continue;
             }
+            let persistent_route =
+                relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+            let mut empty_turns = Vec::new();
             for observation in relationship.turns.values_mut() {
                 if observation.message_wake_turn_id.as_deref() == Some(wake_turn_id)
-                    && observation.target_messages
+                    && (persistent_route || observation.target_messages)
                 {
                     observation.target_messages = false;
                     observation.message_wake_reservation_id = None;
+                    if persistent_route {
+                        observation.message_wake_turn_id = None;
+                    }
                     changed_children.push(*child);
+                }
+            }
+            if persistent_route {
+                empty_turns.extend(relationship.turns.iter().filter_map(
+                    |(turn_id, observation)| {
+                        (observation == &ResponseTurnObservation::default())
+                            .then_some(turn_id.clone())
+                    },
+                ));
+                for turn_id in empty_turns {
+                    relationship.turns.remove(&turn_id);
                 }
             }
         }
@@ -659,6 +757,63 @@ impl AgentControl {
             .notify_waiters();
         true
     }
+
+    pub(in crate::agent::control) fn prepare_target_message_route_replacement(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        mode: TargetMessageRouteMode,
+    ) -> PreparedTargetMessageRouteReplacement {
+        let state = self.wait_agent_presentations.state();
+        let previous_relationship = state
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .cloned();
+        let mut replacement_relationship = previous_relationship.clone().unwrap_or_default();
+        let previous = replacement_relationship.reply_route;
+        replacement_relationship.persistence = ResponseObservationPersistence::Durable;
+        replacement_relationship.reply_route = Some(mode);
+        if mode == TargetMessageRouteMode::Disabled {
+            for observation in replacement_relationship
+                .pending_next_turn
+                .iter_mut()
+                .chain(replacement_relationship.pending_admissions.values_mut())
+                .chain(replacement_relationship.turns.values_mut())
+            {
+                observation.message_wake_reservation_id = None;
+                observation.message_wake_turn_id = None;
+            }
+        }
+        PreparedTargetMessageRouteReplacement {
+            previous,
+            previous_relationship,
+            replacement_relationship,
+        }
+    }
+
+    pub(in crate::agent::control) fn commit_target_message_route_replacement(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        prepared: &PreparedTargetMessageRouteReplacement,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        if state
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            != prepared.previous_relationship.as_ref()
+        {
+            return false;
+        }
+        state
+            .response_observation_by_observer_child
+            .insert((parent, child), prepared.replacement_relationship.clone());
+        drop(state);
+        self.wait_agent_presentations
+            .response_observation_changed
+            .notify_waiters();
+        true
+    }
 }
 
 fn replace_final_response_observation_in_relationship(
@@ -834,6 +989,14 @@ impl AgentControl {
             .entry((parent, child))
             .or_default();
         relationship.baseline_final_response = observation.baseline_final_delivery.into();
+        if let Some(reply_route_enabled) = observation.reply_route_enabled {
+            relationship.reply_route = Some(if reply_route_enabled {
+                TargetMessageRouteMode::Enabled
+            } else {
+                TargetMessageRouteMode::Disabled
+            });
+        }
+        relationship.reply_route_context_installed |= observation.reply_route_context_installed;
         let turn_observation = match observation.target_turn_id.as_deref() {
             Some(turn_id) => relationship.turns.get_mut(turn_id),
             None => match binding {

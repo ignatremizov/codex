@@ -6,9 +6,11 @@ use codex_core::UserAgentSpawnOptions;
 use conversion::agent_control_error;
 use conversion::agent_final_response_handling;
 use conversion::agent_observation_binding;
+use conversion::agent_reply_route_mode;
 use conversion::observation_mode_final_response_handling;
 use conversion::user_agent_control_item;
 use conversion::user_agent_final_response_handling;
+use conversion::user_agent_reply_route_mode;
 use conversion::user_agent_response_handling;
 
 pub(super) mod conversion;
@@ -320,6 +322,24 @@ impl ThreadRequestProcessor {
                         binding: agent_observation_binding(binding),
                     })
                 }
+                AgentControlAction::ReplyRoute { target, mode } => {
+                    let core_mode = user_agent_reply_route_mode(mode);
+                    let (target_thread_id, previous_mode) = source_thread
+                        .set_agent_reply_route(&target, core_mode)
+                        .await
+                        .map_err(agent_control_error)?;
+                    self.try_attach_thread_listener(
+                        target_thread_id,
+                        vec![request_id.connection_id],
+                    )
+                    .await;
+                    audit_item.target_thread_id = Some(target_thread_id);
+                    Ok(AgentControlOutcome::ReplyRouteChanged {
+                        target_thread_id: target_thread_id.to_string(),
+                        previous_mode: previous_mode.map(agent_reply_route_mode),
+                        mode,
+                    })
+                }
             }
         }
         .await;
@@ -394,6 +414,7 @@ fn agent_control_action_target(action: &AgentControlAction) -> Option<&str> {
         | AgentControlAction::Resume { target, .. }
         | AgentControlAction::Interrupt { target, .. }
         | AgentControlAction::Close { target, .. }
-        | AgentControlAction::Observe { target, .. } => Some(target),
+        | AgentControlAction::Observe { target, .. }
+        | AgentControlAction::ReplyRoute { target, .. } => Some(target),
     }
 }

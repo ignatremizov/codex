@@ -3033,6 +3033,19 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::SetAgentReplyRoute {
+                source_thread_id,
+                selector,
+                mode,
+            } => {
+                self.set_agent_reply_route_from_selector(
+                    app_server,
+                    source_thread_id,
+                    selector,
+                    mode,
+                )
+                .await;
+            }
             AppEvent::StartSide {
                 parent_thread_id,
                 user_message,

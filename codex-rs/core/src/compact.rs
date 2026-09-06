@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,6 +12,7 @@ use crate::compacted_history_retention::RetainedMessageTruncation;
 use crate::compacted_history_retention::contains_atomic_compacted_media;
 use crate::compacted_history_retention::truncate_retained_message_to_token_budget;
 use crate::compacted_history_retention::truncate_text_to_approx_token_budget;
+use crate::context::AgentReplyRoute;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
 use crate::context::compacted_image_omission_text;
@@ -111,25 +113,44 @@ pub(crate) async fn build_compaction_initial_context(
     sess: &Session,
     initial_context_injection: &InitialContextInjection,
 ) -> (Vec<ResponseItemEnvelope>, Option<Arc<WorldState>>) {
+    let history = sess.clone_history().await;
+    let reply_routes = persistent_agent_reply_routes(history.annotated_items());
+
     // Return the rendered state with its items so history and its baseline stay identical.
     match initial_context_injection {
         InitialContextInjection::BeforeLastUserMessage {
             world_state,
             step_context,
         } => {
-            let items = sess
+            let mut items = sess
                 .build_initial_context_with_world_state(
                     step_context.turn.as_ref(),
                     world_state.as_ref(),
                 )
-                .await;
-            (
-                items.into_iter().map(ResponseItemEnvelope::new).collect(),
-                Some(Arc::clone(world_state)),
-            )
+                .await
+                .into_iter()
+                .map(ResponseItemEnvelope::new)
+                .collect::<Vec<_>>();
+            items.extend(reply_routes);
+            (items, Some(Arc::clone(world_state)))
         }
-        InitialContextInjection::DoNotInject => (Vec::new(), None),
+        InitialContextInjection::DoNotInject => (reply_routes, None),
     }
+}
+
+fn persistent_agent_reply_routes(history: &[ResponseItemEnvelope]) -> Vec<ResponseItemEnvelope> {
+    let mut seen = HashSet::new();
+    let mut routes = history
+        .iter()
+        .rev()
+        .filter_map(|item| {
+            AgentReplyRoute::persistent_agent_id(&item.item)
+                .filter(|agent_id| seen.insert(*agent_id))
+                .map(|_| item.clone())
+        })
+        .collect::<Vec<_>>();
+    routes.reverse();
+    routes
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
@@ -650,6 +671,9 @@ fn compacted_user_message(
     item: &ResponseItem,
     harness_metadata: Option<CodexHarnessMetadata>,
 ) -> Option<CompactedUserMessage> {
+    if AgentReplyRoute::persistent_agent_id(item).is_some() {
+        return None;
+    }
     let Some(TurnItem::UserMessage(user)) = crate::event_mapping::parse_turn_item(item) else {
         return None;
     };
@@ -747,6 +771,17 @@ pub(crate) fn insert_initial_context_before_last_real_user_or_summary(
     mut compacted_history: Vec<ResponseItemEnvelope>,
     initial_context: Vec<ResponseItemEnvelope>,
 ) -> Vec<ResponseItemEnvelope> {
+    let persistent_reply_route_sources = initial_context
+        .iter()
+        .filter_map(|item| AgentReplyRoute::persistent_agent_id(&item.item))
+        .collect::<HashSet<_>>();
+    if !persistent_reply_route_sources.is_empty() {
+        compacted_history.retain(|item| {
+            AgentReplyRoute::persistent_agent_id(&item.item)
+                .is_none_or(|source| !persistent_reply_route_sources.contains(&source))
+        });
+    }
+
     let mut last_user_or_summary_index = None;
     let mut last_real_user_index = None;
     for (i, item) in compacted_history.iter().enumerate().rev() {

@@ -343,6 +343,31 @@
           ],
           "title": "ObserveAgentControlAction",
           "type": "object"
+        },
+        {
+          "description": "Enable or disable the target's attributed reply route back to the source.",
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "replyRoute"
+              ],
+              "title": "ReplyRouteAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "target",
+            "type"
+          ],
+          "title": "ReplyRouteAgentControlAction",
+          "type": "object"
         }
       ]
     },
@@ -465,6 +490,14 @@
         "passive",
         "wake",
         "presentation"
+      ],
+      "type": "string"
+    },
+    "AgentReplyRouteMode": {
+      "description": "User-authored state for a target's attributed reply route.",
+      "enum": [
+        "enabled",
+        "disabled"
       ],
       "type": "string"
     },

@@ -86,11 +86,32 @@ fn detects_user_agent_task_fragment() {
 
 #[test]
 fn detects_scoped_agent_route_and_attributed_message_fragments() {
-    let route = AgentReplyRoute::new(v1_agent_identity()).render();
+    let identity = v1_agent_identity();
+    let agent_id = match &identity {
+        AgentContextIdentity::V1 { agent_id, .. }
+        | AgentContextIdentity::V2 { agent_id, .. }
+        | AgentContextIdentity::Canonical { agent_id } => *agent_id,
+    };
+    let route_fragment = AgentReplyRoute::new(identity.clone());
+    let route = route_fragment.render();
+    let persistent_route_fragment = AgentReplyRoute::until_disabled(identity);
+    let persistent_route = persistent_route_fragment.render();
     let message =
         AttributedAgentMessage::new(v1_agent_identity(), "turn-1", "Question for Main.").render();
 
-    for text in [route, message] {
+    assert!(route.contains("\"send_input\":\"allowed_this_turn\""));
+    assert!(persistent_route.contains("\"send_input\":\"allowed_until_disabled\""));
+    assert_eq!(
+        AgentReplyRoute::persistent_agent_id(&ContextualUserFragment::into(route_fragment)),
+        None
+    );
+    assert_eq!(
+        AgentReplyRoute::persistent_agent_id(&ContextualUserFragment::into(
+            persistent_route_fragment
+        )),
+        Some(agent_id)
+    );
+    for text in [route, persistent_route, message] {
         assert!(is_contextual_user_fragment(&ContentItem::InputText {
             text
         }));
