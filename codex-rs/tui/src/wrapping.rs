@@ -1356,7 +1356,7 @@ mod tests {
             "界é ".red(),
             "https://example.com/".blue().underlined(),
             "路径".green().underlined(),
-            " fin".yellow(),
+            " fin".magenta(),
         ]);
         let opts = RtOptions::new(/*width*/ 8)
             .initial_indent(Line::from("> ".dim()))
@@ -1370,7 +1370,7 @@ mod tests {
                     "https://example.com/".blue().underlined(),
                     "路径".green().underlined(),
                 ]),
-                Line::from(vec!["  ".cyan(), "fin".yellow()]),
+                Line::from(vec!["  ".cyan(), "fin".magenta()]),
             ],
         );
     }
