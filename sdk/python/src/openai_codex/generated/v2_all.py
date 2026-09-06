@@ -230,6 +230,11 @@ class AgentPath(RootModel[str]):
     root: str
 
 
+class AgentReplyRouteMode(Enum):
+    enabled = "enabled"
+    disabled = "disabled"
+
+
 class AgentResponseFinalDelivery(Enum):
     none = "none"
     presentation_only = "presentation_only"
@@ -6805,6 +6810,7 @@ class UserAgentControlAction(Enum):
     interrupt = "interrupt"
     close = "close"
     observe = "observe"
+    reply_route = "reply_route"
 
 
 
@@ -7293,13 +7299,22 @@ class ObserveAgentControlAction(BaseModel):
     type: Annotated[Literal["observe"], Field(title="ObserveAgentControlActionType")]
 
 
+class ReplyRouteAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    target: str
+    type: Annotated[Literal["replyRoute"], Field(title="ReplyRouteAgentControlActionType")]
+
+
 class AgentControlAction(
-    RootModel[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction]
+    RootModel[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction | ReplyRouteAgentControlAction]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction, Field(description='A user-authored multi-agent control operation.')]
+    root: Annotated[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction | ReplyRouteAgentControlAction, Field(description='A user-authored multi-agent control operation.')]
 
 
 class SpawnedAgentControlOutcome(BaseModel):
@@ -7403,13 +7418,25 @@ class ObservedAgentControlOutcome(BaseModel):
     type: Annotated[Literal["observed"], Field(title="ObservedAgentControlOutcomeType")]
 
 
+class ReplyRouteChangedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    previous_mode: AgentReplyRouteMode | None = None
+    target_thread_id: str
+    type: Annotated[
+        Literal["replyRouteChanged"], Field(title="ReplyRouteChangedAgentControlOutcomeType")
+    ]
+
+
 class AgentControlOutcome(
-    RootModel[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome]
+    RootModel[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome | ReplyRouteChangedAgentControlOutcome]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome, Field(description='Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.')]
+    root: Annotated[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome | ReplyRouteChangedAgentControlOutcome, Field(description='Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.')]
 
 
 class AgentQueueEntry(BaseModel):

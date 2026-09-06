@@ -98,6 +98,8 @@ pub(crate) fn historical_tool_fallback(item: &ThreadItem) -> Option<PlainHistory
                 | CollabAgentTool::ResumeAgent
                 | CollabAgentTool::Wait),
             status,
+            target_messages,
+            queue_input,
             ..
         } if *status != CollabAgentToolCallStatus::Completed => {
             let status = match status {
@@ -106,7 +108,21 @@ pub(crate) fn historical_tool_fallback(item: &ThreadItem) -> Option<PlainHistory
                 CollabAgentToolCallStatus::Interrupted => "Interrupted",
                 CollabAgentToolCallStatus::Completed => "Completed",
             };
-            vec![format!("agent tool: {tool:?} · {status}").dim().into()]
+            let replies = match target_messages {
+                Some(true) => " · allow replies",
+                Some(false) => " · no replies",
+                None => "",
+            };
+            let queued = if *queue_input == Some(true) {
+                " · queued turn + reply"
+            } else {
+                ""
+            };
+            vec![
+                format!("agent tool: {tool:?} · {status}{replies}{queued}")
+                    .dim()
+                    .into(),
+            ]
         }
         _ => return None,
     };
