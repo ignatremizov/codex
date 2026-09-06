@@ -5,7 +5,6 @@ use super::refresh_collab_agent_metadata;
 use super::thread_items_to_transcript_cells_with_metadata;
 use super::thread_items_with_sources_to_transcript_cells;
 use super::thread_to_transcript_cells;
-use crate::history_cell::HistoryCell;
 use crate::history_cell::UserHistoryCell;
 use codex_app_server_protocol::CollabAgentRef;
 use codex_app_server_protocol::CollabAgentTool;

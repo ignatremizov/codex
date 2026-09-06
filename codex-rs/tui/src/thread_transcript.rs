@@ -35,7 +35,6 @@ use codex_app_server_protocol::Turn;
 use codex_protocol::ThreadId;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
-use ratatui::text::Line;
 
 pub(crate) type TranscriptCells = Vec<Arc<dyn HistoryCell>>;
 pub(crate) type CollabAgentMetadataMap = HashMap<ThreadId, AgentMetadata>;
@@ -381,6 +380,7 @@ fn fallback_transcript_cell(
             })
             .collect::<Vec<_>>(),
         ThreadItem::CommandExecution {
+            id,
             command,
             status,
             user_shell_response_handling,
