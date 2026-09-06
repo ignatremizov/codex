@@ -28,6 +28,7 @@ pub(super) fn user_agent_control_item(
         AgentControlAction::Interrupt { .. } => CoreUserAgentControlAction::Interrupt,
         AgentControlAction::Close { .. } => CoreUserAgentControlAction::Close,
         AgentControlAction::Observe { .. } => CoreUserAgentControlAction::Observe,
+        AgentControlAction::ReplyRoute { .. } => CoreUserAgentControlAction::ReplyRoute,
     });
     match action {
         AgentControlAction::Spawn {
@@ -135,6 +136,10 @@ pub(super) fn user_agent_control_item(
                 AgentObservationMode::Presentation => AgentResponseFinalDelivery::PresentationOnly,
             });
         }
+        AgentControlAction::ReplyRoute { target, mode } => {
+            item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
+            item.target_messages = Some(matches!(mode, AgentReplyRouteMode::Enabled));
+        }
     }
     item
 }
@@ -211,6 +216,24 @@ pub(super) fn user_agent_response_handling(
         response_handling.target_messages,
         response_handling.queue_input,
     )
+}
+
+pub(super) fn user_agent_reply_route_mode(
+    mode: AgentReplyRouteMode,
+) -> codex_core::UserAgentReplyRouteMode {
+    match mode {
+        AgentReplyRouteMode::Enabled => codex_core::UserAgentReplyRouteMode::Enabled,
+        AgentReplyRouteMode::Disabled => codex_core::UserAgentReplyRouteMode::Disabled,
+    }
+}
+
+pub(super) fn agent_reply_route_mode(
+    mode: codex_core::UserAgentReplyRouteMode,
+) -> AgentReplyRouteMode {
+    match mode {
+        codex_core::UserAgentReplyRouteMode::Enabled => AgentReplyRouteMode::Enabled,
+        codex_core::UserAgentReplyRouteMode::Disabled => AgentReplyRouteMode::Disabled,
+    }
 }
 
 pub(in crate::request_processors::thread_processor) fn agent_response_handling(

@@ -131,6 +131,8 @@ its current durable owner, or under its persisted root identity when it has no o
 /agent <target> close [w:<w-mode>]
 /agent resume <target> [w:<w-mode>] [<prompt>]
 /agent observe <target> <passive|wake|presentation>
+/agent replies <target> <enable|disable>
+/agent <target> replies <enable|disable>
 ```
 
 Selectors accept compact unprefixed forms and explicit namespaces:
@@ -667,6 +669,24 @@ no reserved completion, the command reports that there is no observation to repl
 the next dispatch or resume instead. It replaces final-response handling only and does not add,
 remove, or replay first-commentary observation.
 
+Reply permission is a separate, user-authored relationship setting:
+
+```text
+/agent replies <target> enable
+/agent replies <target> disable
+```
+
+Enabling it adds one source-relative `<agent_reply_route>` item to the target's model context and
+authorizes attributed `send_input` calls from all later target turns. Repeating `enable` is
+idempotent: the route appears only once in model context, including after a disable/re-enable
+cycle, and is not repeated on each turn. Compaction carries that singleton into replacement
+history, and rollback treats it as out-of-band relationship context rather than a user turn.
+Disabling it revokes admission and cancels a pending route-owned wake without trying to remove the
+already recorded context item. An explicit disable wins over a later model-authored `w:m`;
+enabling makes repeated `m` context redundant. The setting lasts for the live control relationship
+and is revoked by close, ownership transfer, process shutdown, cold resume, or fork. V2 targets
+retain their native inter-agent communication contract and reject this V1 route action.
+
 Promoting a presentation-only user task to passive or wake delivery records its compact hidden
 task linkage before the replacement becomes deliverable. The source model therefore receives the
 question as well as the eventual answer; demotion to presentation-only does not attempt to retract
@@ -696,7 +716,7 @@ agent/control {
   authoredSelector?,
   action: {
     type: "spawn" | "prompt" | "reservedPrompt" | "queuedPrompt"
-        | "resume" | "interrupt" | "close" | "observe",
+        | "resume" | "interrupt" | "close" | "observe" | "replyRoute",
     target,
     input?, // spawn, prompt, queued prompt, or interrupt follow-up
     responseHandling?
@@ -969,6 +989,8 @@ must not silently weaken input provenance, observation, ownership, fork, or audi
   next admitted turn under the existing next-turn policy.
 - `observe` explicitly replaces source-relative response handling when replacement remains
   possible.
+- `replies` enables or disables one persistent V1 reply route for the selected agent. Enabling
+  installs the source identity exactly once; later target turns reuse the same context item.
 - `w:m` grants only the resulting target turn a reverse-message route to the displayed source;
   `w:q` carries every other selected flag with the future queued turn and queues its model-visible
   final response for the source's next turn.
@@ -995,7 +1017,8 @@ Integration and TUI coverage should include:
 8. `w:f` wakes the displayed source exactly once.
 9. `w:x` produces presentation-only completion on a new turn.
 10. `w:m` exposes an attributed reply route for one target turn, permits one idle source wake, and
-    rejects later wake attempts or UUID-only bypass.
+    rejects later wake attempts or UUID-only bypass; `/agent replies` enables the same attributed
+    route across later turns with one context installation, and explicit disable overrides `m`.
 11. Existing `f` remains authoritative when a later active-turn dispatch requests `x`.
 12. Source switch after dispatch does not move observation ownership.
 13. Child-to-sibling dispatch binds the child as observer.

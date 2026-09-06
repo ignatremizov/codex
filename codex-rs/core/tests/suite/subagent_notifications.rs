@@ -3,6 +3,7 @@ use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::UserAgentForkMode;
+use codex_core::UserAgentReplyRouteMode;
 use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_core::config::AgentRoleConfig;
@@ -5118,6 +5119,324 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
         wait_for_request_containing_text(&parent_with_message, CHILD_MESSAGE).await?;
     assert!(parent_request.body_contains_text("<agent_message>"));
     assert!(parent_request.body_contains_text(&child_thread_id.to_string()));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_reply_route_persists_across_turns_with_one_context_item(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const INITIAL_TASK: &str = "initialize the user-controlled reply-route child";
+    const BLOCKED_PROMPT: &str = "try the disabled reply route";
+    const BLOCKED_MESSAGE: &str = "this disabled reply must not reach Main";
+    const BLOCKED_CALL_ID: &str = "use-disabled-user-reply-route";
+    const REENABLED_PROMPT: &str = "confirm the reply-route context remains a singleton";
+
+    let server = start_mock_server().await;
+    let initial_child = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, INITIAL_TASK),
+        sse(vec![
+            ev_response_created("resp-user-reply-route-initial"),
+            ev_assistant_message("msg-user-reply-route-initial", "ready"),
+            ev_completed("resp-user-reply-route-initial"),
+        ]),
+    )
+    .await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should enable V1 agents");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("test config should disable V2 agents");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let child_thread_id = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions {
+            input: Some(vec![UserInput::Text {
+                text: INITIAL_TASK.to_string(),
+                text_elements: Vec::new(),
+            }]),
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
+        .await?
+        .target_thread_id;
+    let _ = wait_for_requests(&initial_child).await?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Enabled,
+            )
+            .await?,
+        (child_thread_id, None)
+    );
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Enabled,
+            )
+            .await?,
+        (child_thread_id, Some(UserAgentReplyRouteMode::Enabled),),
+        "repeating enable should be idempotent and must not install another context item"
+    );
+    child_thread.flush_rollout().await?;
+    let child_history = child_thread
+        .load_history(/*include_archived*/ false)
+        .await?;
+    assert_eq!(
+        child_history
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::ResponseItem(envelope)
+                        if matches!(
+                            &envelope.item,
+                            ResponseItem::Message { content, .. }
+                                if content.iter().any(|item| {
+                                    matches!(
+                                        item,
+                                        ContentItem::InputText { text }
+                                            if text.contains("<agent_reply_route>")
+                                    )
+                                })
+                        )
+                )
+            })
+            .count(),
+        1,
+        "repeated enable should leave exactly one route item in canonical child history"
+    );
+
+    for index in 1..=2 {
+        let prompt = format!("use the persistent reply route on child turn {index}");
+        let message = format!("persistent child reply {index}");
+        let call_id = format!("use-persistent-user-reply-route-{index}");
+        let child_prompt = prompt.clone();
+        let child_call_id = call_id.clone();
+        let child_turn = mount_response_once_match(
+            &server,
+            move |request: &wiremock::Request| {
+                body_contains(request, &child_prompt) && !body_contains(request, &child_call_id)
+            },
+            sse_response(sse(vec![
+                ev_response_created(&format!("resp-user-reply-route-child-{index}")),
+                ev_function_call_with_namespace(
+                    &call_id,
+                    MULTI_AGENT_V1_NAMESPACE,
+                    "send_input",
+                    &serde_json::to_string(&json!({
+                        "target": "Main",
+                        "message": message.clone(),
+                        "w": "x",
+                    }))?,
+                ),
+                ev_completed(&format!("resp-user-reply-route-child-{index}")),
+            ])),
+        )
+        .await;
+        let child_after_call_id = call_id.clone();
+        let child_after_reply = mount_sse_once_match(
+            &server,
+            move |request: &wiremock::Request| body_contains(request, &child_after_call_id),
+            sse(vec![
+                ev_response_created(&format!("resp-user-reply-route-child-done-{index}")),
+                ev_assistant_message(
+                    &format!("msg-user-reply-route-child-done-{index}"),
+                    &format!("child reply {index} sent"),
+                ),
+                ev_completed(&format!("resp-user-reply-route-child-done-{index}")),
+            ]),
+        )
+        .await;
+        let root_message = message.clone();
+        let root_wake = mount_sse_once_match(
+            &server,
+            move |request: &wiremock::Request| {
+                body_contains(request, "<agent_message>") && body_contains(request, &root_message)
+            },
+            sse(vec![
+                ev_response_created(&format!("resp-user-reply-route-root-{index}")),
+                ev_assistant_message(
+                    &format!("msg-user-reply-route-root-{index}"),
+                    &format!("root received reply {index}"),
+                ),
+                ev_completed(&format!("resp-user-reply-route-root-{index}")),
+            ]),
+        )
+        .await;
+
+        test.codex
+            .prompt_live_agent(
+                &child_thread_id.to_string(),
+                vec![UserInput::Text {
+                    text: prompt.clone(),
+                    text_elements: Vec::new(),
+                }],
+                UserAgentResponseHandling::Presentation,
+            )
+            .await?;
+
+        let child_request = wait_for_request_containing_text(&child_turn, &prompt).await?;
+        assert_eq!(
+            child_request
+                .message_input_texts("user")
+                .iter()
+                .filter(|text| text.contains("<agent_reply_route>"))
+                .count(),
+            1,
+            "the persistent route should be installed once and reused from history"
+        );
+        let _ = wait_for_request_containing_text(&child_after_reply, &call_id).await?;
+        let _ = wait_for_request_containing_text(&root_wake, &message).await?;
+        let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+        let _ = wait_for_terminal_status(test.codex.as_ref()).await?;
+    }
+
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Disabled,
+            )
+            .await?,
+        (child_thread_id, Some(UserAgentReplyRouteMode::Enabled),)
+    );
+
+    let blocked_turn = mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, BLOCKED_PROMPT) && !body_contains(request, BLOCKED_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-disabled-user-reply-route"),
+            ev_function_call_with_namespace(
+                BLOCKED_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &serde_json::to_string(&json!({
+                    "target": "Main",
+                    "message": BLOCKED_MESSAGE,
+                    "w": "x",
+                }))?,
+            ),
+            ev_completed("resp-disabled-user-reply-route"),
+        ])),
+    )
+    .await;
+    let blocked_result = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, BLOCKED_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-disabled-user-reply-route-result"),
+            ev_assistant_message(
+                "msg-disabled-user-reply-route-result",
+                "reply route was disabled",
+            ),
+            ev_completed("resp-disabled-user-reply-route-result"),
+        ]),
+    )
+    .await;
+    let unexpected_root_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<agent_message>") && body_contains(request, BLOCKED_MESSAGE)
+        },
+        sse(vec![
+            ev_response_created("resp-unexpected-disabled-user-reply"),
+            ev_completed("resp-unexpected-disabled-user-reply"),
+        ]),
+    )
+    .await;
+
+    test.codex
+        .prompt_live_agent(
+            &child_thread_id.to_string(),
+            vec![UserInput::Text {
+                text: BLOCKED_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let blocked_request = wait_for_request_containing_text(&blocked_turn, BLOCKED_PROMPT).await?;
+    assert_eq!(
+        blocked_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<agent_reply_route>"))
+            .count(),
+        1,
+        "disabling the route should not add another model-context fragment"
+    );
+    let blocked_result = wait_for_request_containing_text(&blocked_result, BLOCKED_CALL_ID).await?;
+    assert!(blocked_result.body_contains_text("disabled by the user"));
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    assert!(unexpected_root_wake.requests().is_empty());
+
+    let reenabled_turn = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, REENABLED_PROMPT),
+        sse(vec![
+            ev_response_created("resp-reenabled-user-reply-route"),
+            ev_assistant_message(
+                "msg-reenabled-user-reply-route",
+                "reply route remains available",
+            ),
+            ev_completed("resp-reenabled-user-reply-route"),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Enabled,
+            )
+            .await?,
+        (child_thread_id, Some(UserAgentReplyRouteMode::Disabled),)
+    );
+    test.codex
+        .prompt_live_agent(
+            &child_thread_id.to_string(),
+            vec![UserInput::Text {
+                text: REENABLED_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let reenabled_request =
+        wait_for_request_containing_text(&reenabled_turn, REENABLED_PROMPT).await?;
+    assert_eq!(
+        reenabled_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<agent_reply_route>"))
+            .count(),
+        1,
+        "disable and re-enable must not duplicate the persistent context item"
+    );
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
     Ok(())
 }
 

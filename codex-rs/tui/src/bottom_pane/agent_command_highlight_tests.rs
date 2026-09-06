@@ -88,6 +88,24 @@ fn highlights_action_first_and_target_first_agent_commands() {
             ("fork:none", AgentCommandHighlightKind::Option),
         ]
     );
+    assert_eq!(
+        highlighted_tokens("/agent replies 2 enable"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("replies", AgentCommandHighlightKind::Action),
+            ("2", AgentCommandHighlightKind::KnownTarget),
+            ("enable", AgentCommandHighlightKind::Option),
+        ]
+    );
+    assert_eq!(
+        highlighted_tokens("/agent Sagan replies disable"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("Sagan", AgentCommandHighlightKind::KnownTarget),
+            ("replies", AgentCommandHighlightKind::Action),
+            ("disable", AgentCommandHighlightKind::Option),
+        ]
+    );
 }
 
 #[test]
@@ -159,6 +177,14 @@ fn distinguishes_unresolved_targets_and_rejects_invalid_options() {
         vec![
             ("/agent", AgentCommandHighlightKind::Command),
             ("observe", AgentCommandHighlightKind::Action),
+            ("2", AgentCommandHighlightKind::KnownTarget),
+        ]
+    );
+    assert_eq!(
+        highlighted_tokens("/agent replies 2 maybe"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("replies", AgentCommandHighlightKind::Action),
             ("2", AgentCommandHighlightKind::KnownTarget),
         ]
     );

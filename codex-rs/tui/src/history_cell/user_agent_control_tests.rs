@@ -236,6 +236,53 @@ fn renders_successful_close_with_queued_response_replay() {
 }
 
 #[test]
+fn renders_user_reply_route_changes() {
+    let render = |enabled| {
+        let cell = new_user_agent_control(ThreadItem::UserAgentControl {
+            id: format!("control-replies-{enabled}"),
+            action: UserAgentControlAction::ReplyRoute,
+            authored_selector: Some("2".to_string()),
+            target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+            previous_owner_session_id: None,
+            new_owner_session_id: None,
+            agent_ref: Some("2".to_string()),
+            nickname: Some("Anscombe".to_string()),
+            role: Some("reviewer".to_string()),
+            model: None,
+            reasoning_effort: None,
+            prompt_preview: None,
+            resumed_target: false,
+            fork_mode: None,
+            observe_commentary: None,
+            final_response: None,
+            target_messages: Some(enabled),
+            queue_input: None,
+            status: UserAgentControlStatus::Succeeded,
+            error: None,
+        })
+        .expect("control item should render");
+        cell.display_lines(/*width*/ 80)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let enabled = render(true);
+    let disabled = render(false);
+    insta::assert_snapshot!(
+        format!("enabled:\n{enabled}\n\ndisabled:\n{disabled}"),
+        @r"
+    enabled:
+    • User changed reply route for Anscombe [reviewer] (ref 2) (allow replies)
+
+    disabled:
+    • User changed reply route for Anscombe [reviewer] (ref 2) (no replies)
+    "
+    );
+}
+
+#[test]
 fn renders_failed_user_agent_spawn() {
     let cell = new_user_agent_control(ThreadItem::UserAgentControl {
         id: "control-2".to_string(),

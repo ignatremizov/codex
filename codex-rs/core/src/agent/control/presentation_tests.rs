@@ -190,6 +190,139 @@ fn target_message_grant_allows_one_idle_wake_and_only_steers_that_wake_turn() {
     ));
 }
 
+#[test]
+fn user_reply_route_authorizes_later_turns_without_repeated_grants() {
+    let control = AgentControl::default();
+    let observer = session_presentation_id(ThreadId::new());
+    let target = session_presentation_id(ThreadId::new());
+    let prepared = control.prepare_target_message_route_replacement(
+        observer,
+        target,
+        TargetMessageRouteMode::Enabled,
+    );
+
+    assert_eq!(prepared.previous, None);
+    assert_eq!(
+        control.target_message_route_mode(observer, target),
+        None,
+        "preparing the durable change must not publish it"
+    );
+    let prepared_snapshots = control.prepared_response_observation_replacement_snapshots(
+        observer,
+        target,
+        &prepared.replacement_relationship,
+    );
+    assert_eq!(prepared_snapshots.len(), 1);
+    assert_eq!(prepared_snapshots[0].reply_route_enabled, Some(true));
+    assert!(control.commit_target_message_route_replacement(observer, target, &prepared));
+
+    assert_eq!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn-1",
+                Some("active-observer-turn"),
+                /*observer_last_terminal_turn_id*/ None,
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("persistent route should steer an active observer"),
+        TargetMessageAdmission::Steer
+    );
+    let TargetMessageAdmission::Wake(first_reservation) = control
+        .target_message_admission(
+            observer,
+            target,
+            "target-turn-1",
+            /*observer_active_turn_id*/ None,
+            /*observer_last_terminal_turn_id*/ None,
+            TargetMessageAdmissionMode::SteerOrWake,
+        )
+        .expect("persistent route should reserve an idle wake")
+    else {
+        panic!("persistent route should reserve an idle wake");
+    };
+    assert!(control.commit_target_message_wake(
+        observer,
+        target,
+        "target-turn-1",
+        first_reservation,
+        "observer-wake-1",
+    ));
+    control.finish_target_message_wake(observer, "observer-wake-1");
+
+    assert!(matches!(
+        control
+            .target_message_admission(
+                observer,
+                target,
+                "target-turn-2",
+                /*observer_active_turn_id*/ None,
+                Some("observer-wake-1"),
+                TargetMessageAdmissionMode::SteerOrWake,
+            )
+            .expect("persistent route should authorize a later target turn"),
+        TargetMessageAdmission::Wake(_)
+    ));
+    assert_eq!(
+        control
+            .response_observation_snapshots(observer, target)
+            .first()
+            .and_then(|snapshot| snapshot.reply_route_enabled),
+        Some(true)
+    );
+}
+
+#[test]
+fn user_disabled_reply_route_overrides_exact_turn_grant() {
+    let control = AgentControl::default();
+    let observer = session_presentation_id(ThreadId::new());
+    let target = session_presentation_id(ThreadId::new());
+    let admission = Arc::new(SubmissionAdmission::default());
+    let _registration = control
+        .register_response_watcher_with_admission(
+            target,
+            observer,
+            &admission,
+            ResponseObservationPolicy::from_turn_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::None,
+                /*target_messages*/ true,
+                /*queue_input*/ false,
+            ),
+            /*retain_passive_completion_relationship*/ false,
+            Some("target-turn".to_string()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+        )
+        .expect("target-message watcher");
+    let prepared = control.prepare_target_message_route_replacement(
+        observer,
+        target,
+        TargetMessageRouteMode::Disabled,
+    );
+    assert!(control.commit_target_message_route_replacement(observer, target, &prepared));
+
+    let error = control
+        .target_message_admission(
+            observer,
+            target,
+            "target-turn",
+            Some("active-observer-turn"),
+            /*observer_last_terminal_turn_id*/ None,
+            TargetMessageAdmissionMode::SteerOrWake,
+        )
+        .expect_err("user denial must override model-authored m");
+    assert!(error.to_string().contains("disabled by the user"));
+    assert_eq!(
+        control
+            .response_observation_snapshots(observer, target)
+            .first()
+            .and_then(|snapshot| snapshot.reply_route_enabled),
+        Some(false)
+    );
+}
+
 #[tokio::test]
 async fn active_targeted_wait_commits_terminal_presentation() {
     let control = AgentControl::default();
@@ -1516,8 +1649,11 @@ fn prepared_user_observation_does_not_change_live_policy_before_commit() {
         control.response_observation_snapshots(parent, child),
         before
     );
-    let prepared_snapshots =
-        control.prepared_response_observation_replacement_snapshots(parent, child, &prepared);
+    let prepared_snapshots = control.prepared_response_observation_replacement_snapshots(
+        parent,
+        child,
+        &prepared.replacement_relationship,
+    );
     assert_eq!(
         prepared_snapshots
             .iter()
@@ -1890,6 +2026,8 @@ async fn idle_turn_reservation_rechecks_a_wake_bound_after_idle_detection() {
                 commentary_admissions: Vec::new(),
                 commentary_delivery: None,
                 target_messages: false,
+                reply_route_enabled: None,
+                reply_route_context_installed: false,
                 queue_delivery: false,
                 message_wake_turn_id: None,
                 baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
@@ -2005,6 +2143,8 @@ fn fire_and_forget_audit_snapshot_records_canonical_target_without_a_watcher() {
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,

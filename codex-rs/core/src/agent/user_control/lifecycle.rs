@@ -10,6 +10,7 @@ use super::UserAgentObservationBinding;
 use super::UserAgentObservationMode;
 use super::UserAgentOwnershipTransfer;
 use super::UserAgentPromptResult;
+use super::UserAgentReplyRouteMode;
 use super::UserAgentResponseHandling;
 use super::UserAgentResumeResult;
 use super::child_session_source;
@@ -20,6 +21,7 @@ use crate::agent::AgentStatus;
 use crate::agent::control::AgentResumeOwnership;
 use crate::agent::control::InputTurnAdmissionMode;
 use crate::agent::control::ResumeUserInputAdmission;
+use crate::agent::control::TargetMessageRouteMode;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::config::Config;
@@ -91,6 +93,48 @@ impl CodexThread {
             replaced.previous.into(),
             replaced.binding.into(),
         ))
+    }
+
+    /// Enable or disable the target's attributed reply route back to this source.
+    pub async fn set_agent_reply_route(
+        &self,
+        target: &str,
+        mode: UserAgentReplyRouteMode,
+    ) -> CodexResult<(ThreadId, Option<UserAgentReplyRouteMode>)> {
+        let source_thread_id = self.session.thread_id();
+        let agent_control = &self.session.services.agent_control;
+        let target_thread_id = agent_control
+            .resolve_controlled_agent_target(target)
+            .await?;
+        if target_thread_id == source_thread_id {
+            return Err(CodexErr::InvalidRequest(
+                "an agent cannot grant itself a reply route".to_string(),
+            ));
+        }
+        if matches!(
+            agent_control.get_status(target_thread_id).await,
+            AgentStatus::NotFound
+        ) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "agent {target_thread_id} is closed"
+            )));
+        }
+        let replacement = match mode {
+            UserAgentReplyRouteMode::Enabled => TargetMessageRouteMode::Enabled,
+            UserAgentReplyRouteMode::Disabled => TargetMessageRouteMode::Disabled,
+        };
+        let replaced = agent_control
+            .replace_durable_target_message_route(
+                target_thread_id,
+                self.session.presentation_id(),
+                replacement,
+            )
+            .await?;
+        let previous = replaced.previous.map(|mode| match mode {
+            TargetMessageRouteMode::Enabled => UserAgentReplyRouteMode::Enabled,
+            TargetMessageRouteMode::Disabled => UserAgentReplyRouteMode::Disabled,
+        });
+        Ok((replaced.target_thread_id, previous))
     }
 
     pub(super) async fn resume_agent_inner(

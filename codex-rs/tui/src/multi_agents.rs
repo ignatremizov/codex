@@ -498,6 +498,7 @@ pub(crate) fn tool_call_history_cell(
             first_receiver.map(|receiver_thread_id| {
                 interaction_end(
                     receiver_thread_id,
+                    *status,
                     prompt,
                     response_observation,
                     agent_prompt_preview_lines,
@@ -680,13 +681,20 @@ fn spawn_end(
 
 fn interaction_end(
     receiver_thread_id: ThreadId,
+    status: CollabAgentToolCallStatus,
     prompt: &str,
     response_observation: V1ResponseObservation,
     agent_prompt_preview_lines: usize,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> CollabAgentHistoryCell {
+    let prefix = match status {
+        CollabAgentToolCallStatus::InProgress => "Sending input to",
+        CollabAgentToolCallStatus::Completed => "Sent input to",
+        CollabAgentToolCallStatus::Failed => "Failed to send input to",
+        CollabAgentToolCallStatus::Interrupted => "Interrupted input to",
+    };
     let title = lifecycle_title_with_agent(
-        "Sent input to",
+        prefix,
         agent_label(receiver_thread_id, &agent_metadata(receiver_thread_id)),
         /*spawn_request*/ None,
         response_observation,

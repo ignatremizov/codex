@@ -5706,3 +5706,52 @@ fn agent_control_response_uses_camel_case_variant_fields() {
         response
     );
 }
+
+#[test]
+fn agent_reply_route_control_uses_camel_case_wire_shape() {
+    let action = AgentControlAction::ReplyRoute {
+        target: "2".to_string(),
+        mode: AgentReplyRouteMode::Enabled,
+    };
+    let action_json = json!({
+        "type": "replyRoute",
+        "target": "2",
+        "mode": "enabled"
+    });
+    assert_eq!(
+        serde_json::to_value(&action).expect("serialize reply-route action"),
+        action_json
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentControlAction>(action_json)
+            .expect("deserialize reply-route action"),
+        action
+    );
+
+    let response = AgentControlResponse {
+        outcome: AgentControlOutcome::ReplyRouteChanged {
+            target_thread_id: "thread-2".to_string(),
+            previous_mode: None,
+            mode: AgentReplyRouteMode::Enabled,
+        },
+        audit_warning: None,
+    };
+    let response_json = json!({
+        "outcome": {
+            "type": "replyRouteChanged",
+            "targetThreadId": "thread-2",
+            "previousMode": null,
+            "mode": "enabled"
+        },
+        "auditWarning": null
+    });
+    assert_eq!(
+        serde_json::to_value(&response).expect("serialize reply-route response"),
+        response_json
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentControlResponse>(response_json)
+            .expect("deserialize reply-route response"),
+        response
+    );
+}

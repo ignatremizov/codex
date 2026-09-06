@@ -48,6 +48,11 @@ delivery state separate:
   source-relative reply route for the exact admitted target turn. Upward and peer input must use
   such a live route; accepted messages become attributed agent communication rather than fabricated
   user input.
+- `/agent replies <target> enable` installs a user-authored route for the live relationship and
+  adds its source-relative address to target context exactly once. Later target turns retain that
+  singleton from history; Core does not inject it again per turn. It survives interruption,
+  compaction, and rollback, and disable/re-enable does not install another copy. `disable` revokes
+  admission and overrides any model-authored exact-turn `m` grant.
 - `q` stores complete structured input and its target-turn policy in one process-lifetime FIFO.
   Admission to the target, response observation, and any `m` grant occur together only when that
   queued entry starts its own turn.
@@ -348,6 +353,10 @@ The grant ends when any of these occurs:
 - source or target is explicitly closed;
 - source or target ownership changes;
 - the live process shuts down, or either thread is cold-resumed or forked.
+
+The user-authored `/agent replies` route differs only in turn scope: it is not consumed when one
+target or source wake turn completes. It remains until explicitly disabled or one of the
+relationship lifecycle boundaries above revokes it.
 
 Lifecycle and response-observation cleanup must revoke the exact grant generation without deleting
 a newer grant for the same thread IDs. TUI and rollout audit state should retain who granted the

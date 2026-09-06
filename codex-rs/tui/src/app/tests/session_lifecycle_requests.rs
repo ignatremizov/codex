@@ -486,6 +486,18 @@ async fn start_recording_app_server_with_history(
                                     }),
                                     None,
                                 )),
+                                codex_app_server_protocol::AgentControlAction::ReplyRoute {
+                                    target,
+                                    mode,
+                                } => Some(agent_control_success(
+                                    serde_json::json!({
+                                        "type": "replyRouteChanged",
+                                        "targetThreadId": target,
+                                        "previousMode": null,
+                                        "mode": mode,
+                                    }),
+                                    None,
+                                )),
                             },
                             _ => None,
                         };

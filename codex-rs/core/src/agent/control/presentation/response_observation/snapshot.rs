@@ -23,13 +23,9 @@ impl AgentControl {
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
-        prepared: &PreparedFinalResponseObservationReplacement,
+        replacement_relationship: &ResponseObserverRelationship,
     ) -> Vec<AgentResponseObservation> {
-        response_observation_snapshots_for_relationship(
-            parent,
-            child,
-            &prepared.replacement_relationship,
-        )
+        response_observation_snapshots_for_relationship(parent, child, replacement_relationship)
     }
 
     pub(crate) fn response_observation_snapshots_for_parent(
@@ -74,6 +70,8 @@ impl AgentControl {
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
@@ -156,6 +154,8 @@ impl AgentControl {
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
@@ -224,6 +224,10 @@ fn response_observation_snapshots_for_relationship(
         commentary_admissions: pending.commentary_admissions.clone(),
         commentary_delivery: pending.commentary_delivery.clone(),
         target_messages: pending.target_messages,
+        reply_route_enabled: relationship
+            .reply_route
+            .map(TargetMessageRouteMode::is_enabled),
+        reply_route_context_installed: relationship.reply_route_context_installed,
         queue_delivery: pending.queue_delivery,
         message_wake_turn_id: pending.message_wake_turn_id.clone(),
         baseline_final_delivery: relationship.baseline_final_response.into(),
@@ -233,31 +237,31 @@ fn response_observation_snapshots_for_relationship(
     });
     let mut turns = relationship.turns.iter().collect::<Vec<_>>();
     turns.sort_by_key(|(turn_id, _)| *turn_id);
-    snapshots.extend(
-        turns
-            .into_iter()
-            .map(|(turn_id, observation)| AgentResponseObservation {
-                observer_thread_id: parent.thread_id,
-                target_thread_id: child.thread_id,
-                target_turn_id: Some(turn_id.clone()),
-                task_preview: observation.task_preview.clone(),
-                promoted_task_context: None,
-                pending_commentary: !observation.commentary_admissions.is_empty(),
-                commentary_after_sequences: Vec::new(),
-                commentary_admissions: observation.commentary_admissions.clone(),
-                commentary_delivery: observation.commentary_delivery.clone(),
-                target_messages: observation.target_messages,
-                queue_delivery: observation.queue_delivery,
-                message_wake_turn_id: observation.message_wake_turn_id.clone(),
-                baseline_final_delivery: relationship.baseline_final_response.into(),
-                final_delivery: observation.final_response.into(),
-                final_delivery_response_item_id: observation
-                    .final_delivery_response_item_id
-                    .clone(),
-                committed_delivery_response_item_ids: observation
-                    .committed_delivery_response_item_ids
-                    .clone(),
-            }),
-    );
+    snapshots.extend(turns.into_iter().map(|(turn_id, observation)| {
+        AgentResponseObservation {
+            observer_thread_id: parent.thread_id,
+            target_thread_id: child.thread_id,
+            target_turn_id: Some(turn_id.clone()),
+            task_preview: observation.task_preview.clone(),
+            promoted_task_context: None,
+            pending_commentary: !observation.commentary_admissions.is_empty(),
+            commentary_after_sequences: Vec::new(),
+            commentary_admissions: observation.commentary_admissions.clone(),
+            commentary_delivery: observation.commentary_delivery.clone(),
+            target_messages: observation.target_messages,
+            reply_route_enabled: relationship
+                .reply_route
+                .map(TargetMessageRouteMode::is_enabled),
+            reply_route_context_installed: relationship.reply_route_context_installed,
+            queue_delivery: observation.queue_delivery,
+            message_wake_turn_id: observation.message_wake_turn_id.clone(),
+            baseline_final_delivery: relationship.baseline_final_response.into(),
+            final_delivery: observation.final_response.into(),
+            final_delivery_response_item_id: observation.final_delivery_response_item_id.clone(),
+            committed_delivery_response_item_ids: observation
+                .committed_delivery_response_item_ids
+                .clone(),
+        }
+    }));
     snapshots
 }

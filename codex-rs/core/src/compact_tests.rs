@@ -1,9 +1,12 @@
 use super::*;
+use crate::context::AgentContextIdentity;
+use crate::context::AgentReplyRoute;
 use crate::context::ContextualUserFragment;
 use crate::context::McpServerUseInstructions;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
@@ -90,6 +93,14 @@ fn assistant_message(text: &str) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+fn persistent_agent_reply_route(agent_id: ThreadId, nickname: &str) -> ResponseItem {
+    ContextualUserFragment::into(AgentReplyRoute::until_disabled(AgentContextIdentity::V1 {
+        agent_id,
+        agent_ref: Some(2),
+        nickname: Some(nickname.to_string()),
+    }))
 }
 
 fn compacted_user_message(text: &str) -> CompactedUserMessage {
@@ -1408,6 +1419,41 @@ fn compaction_output_token_limit_is_half_context_window() {
     assert_eq!(1, compaction_output_token_limit_for_window(2));
     assert_eq!(16, compaction_output_token_limit_for_window(32));
     assert_eq!(128, compaction_output_token_limit_for_window(256));
+}
+
+#[test]
+fn persistent_agent_reply_routes_keep_one_latest_item_per_source() {
+    let first_agent_id = ThreadId::new();
+    let second_agent_id = ThreadId::new();
+    let first_old = persistent_agent_reply_route(first_agent_id, "Old name");
+    let second = persistent_agent_reply_route(second_agent_id, "Second");
+    let first_latest = persistent_agent_reply_route(first_agent_id, "Current name");
+    let history = annotated(vec![
+        first_old,
+        user_message("ordinary prompt"),
+        second.clone(),
+        first_latest.clone(),
+    ]);
+
+    let reply_routes = persistent_agent_reply_routes(&history);
+    assert_eq!(
+        reply_routes,
+        annotated(vec![second.clone(), first_latest.clone()])
+    );
+
+    let summary = format!("{SUMMARY_PREFIX}\nsummary");
+    let locally_compacted =
+        build_local_compacted_history(&history, /*compacted_prefix_len*/ 0, &summary);
+    let compacted = insert_initial_context_before_last_real_user_or_summary(
+        locally_compacted,
+        reply_routes.clone(),
+    );
+    let mut expected = reply_routes;
+    expected.extend(annotated(vec![
+        user_message("ordinary prompt"),
+        compaction_summary_message(&summary),
+    ]));
+    assert_eq!(compacted, expected);
 }
 
 #[test]

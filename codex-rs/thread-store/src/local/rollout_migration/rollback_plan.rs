@@ -15,6 +15,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_protocol::protocol::is_persistent_agent_reply_route_context_response_item;
 use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
 use codex_rollout::CompactedItem;
 use codex_rollout::RolloutItem;
@@ -164,6 +165,10 @@ impl RollbackPlanner {
                 {
                     // A user-authored agent task is out-of-band context paired with durable child
                     // work, not part of whichever source-model turn happened to surround it.
+                    self.record_boundaries[index] = None;
+                } else if is_persistent_agent_reply_route_context_response_item(&response.item) {
+                    // Reply permission is durable relationship state, not part of whichever
+                    // model turn happened to surround its one-time context installation.
                     self.record_boundaries[index] = None;
                 } else if rollback::counts_as_boundary(&response.item) {
                     let boundary = self.start_boundary(index);
@@ -321,8 +326,10 @@ impl RollbackPlanner {
                     let replacement_history =
                         frame.item.replacement_history.get_or_insert_default();
                     replacement_history.retain(|item| {
-                        item.id()
-                            .is_some_and(|id| committed_delivery_response_item_ids.contains(id))
+                        is_persistent_agent_reply_route_context_response_item(item)
+                            || item
+                                .id()
+                                .is_some_and(|id| committed_delivery_response_item_ids.contains(id))
                     });
                     return Some((frame.record_index, frame.item));
                 }

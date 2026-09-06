@@ -475,6 +475,8 @@ fn fallback_transcript_cell(
             status,
             observe_commentary,
             wake_on_completion,
+            target_messages,
+            queue_input,
             ..
         } => {
             let commentary = match observe_commentary {
@@ -487,8 +489,18 @@ fn fallback_transcript_cell(
                 Some(false) => " · no wake on completion",
                 None => "",
             };
+            let replies = match target_messages {
+                Some(true) => " · allow replies",
+                Some(false) => " · no replies",
+                None => "",
+            };
+            let queued = if *queue_input == Some(true) {
+                " · queued turn + reply"
+            } else {
+                ""
+            };
             vec![
-                format!("agent tool: {tool:?} · {status:?}{commentary}{wake}")
+                format!("agent tool: {tool:?} · {status:?}{commentary}{wake}{replies}{queued}")
                     .dim()
                     .into(),
             ]

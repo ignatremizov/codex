@@ -22,6 +22,7 @@ mod response_observation;
 
 pub(in crate::agent::control) use self::response_observation::CommentaryDeliveryRoute;
 pub(in crate::agent::control) use self::response_observation::FinalResponseObservationReplacement;
+pub(in crate::agent::control) use self::response_observation::PreparedTargetMessageRouteReplacement;
 pub(crate) use self::response_observation::ReplacedFinalResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBindingPublication;
@@ -31,6 +32,7 @@ pub(crate) use self::response_observation::ResponseObservationEventMatch;
 pub(crate) use self::response_observation::ResponseObservationPersistence;
 pub(crate) use self::response_observation::ResponseObservationTurnBinding;
 pub(in crate::agent::control) use self::response_observation::ResponseObserverRelationship;
+pub(crate) use self::response_observation::TargetMessageRouteMode;
 
 #[derive(Default)]
 pub(crate) struct WaitAgentPresentations {
@@ -1045,6 +1047,7 @@ impl CompletionWatcherRegistration {
 
 fn response_observer_relationship_has_work(relationship: &ResponseObserverRelationship) -> bool {
     relationship.baseline_final_response != FinalResponseObservation::None
+        || relationship.reply_route.is_some()
         || relationship.pending_next_turn.is_some()
         || !relationship.pending_admissions.is_empty()
         || !relationship.turns.is_empty()

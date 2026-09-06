@@ -3346,6 +3346,31 @@ pub enum AgentResponseFinalDelivery {
     Wake,
 }
 
+/// Harness-owned content classification for the singleton persistent agent reply route.
+pub const PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND: &str =
+    "multi_agent.persistent_agent_reply_route";
+
+/// Returns whether `item` carries the harness-owned persistent agent reply-route classification.
+pub fn is_persistent_agent_reply_route_context_response_item(item: &ResponseItem) -> bool {
+    let ResponseItem::Message {
+        role,
+        internal_chat_message_metadata_passthrough,
+        ..
+    } = item
+    else {
+        return false;
+    };
+    role == "user"
+        && internal_chat_message_metadata_passthrough
+            .as_ref()
+            .and_then(|metadata| metadata.content_item_kinds.as_ref())
+            .is_some_and(|kinds| {
+                kinds
+                    .iter()
+                    .any(|kind| kind.0 == PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND)
+            })
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
 pub struct AgentResponseObservation {
     pub observer_thread_id: ThreadId,
@@ -3368,6 +3393,19 @@ pub struct AgentResponseObservation {
     /// The target turn may send attributed input back to this observer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub target_messages: bool,
+    /// User-authored reply-route override for this observer/target relationship.
+    ///
+    /// `None` leaves exact-turn `w:m` grants authoritative, while `Some(true)` enables replies
+    /// across target turns and `Some(false)` denies them until the user changes the setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reply_route_enabled: Option<bool>,
+    /// Whether the persistent reply-route instruction was installed in target model context.
+    ///
+    /// This remains true after the route is disabled so a later re-enable does not install a
+    /// second copy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reply_route_context_installed: bool,
     /// Deliver the final response as next-turn input instead of an active-turn steer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub queue_delivery: bool,

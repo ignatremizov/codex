@@ -179,6 +179,15 @@ pub enum UserAgentObservationMode {
     Presentation,
 }
 
+/// User-authored state for a target's attributed reply route.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserAgentReplyRouteMode {
+    /// Permit attributed input from every later target turn.
+    Enabled,
+    /// Reject attributed input until the user enables the route again.
+    Disabled,
+}
+
 /// Exact target work whose final-response handling was replaced.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserAgentObservationBinding {

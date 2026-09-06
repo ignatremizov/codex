@@ -374,6 +374,70 @@ impl App {
         }
     }
 
+    pub(super) async fn set_agent_reply_route_from_selector(
+        &mut self,
+        app_server: &mut AppServerSession,
+        source_thread_id: ThreadId,
+        selector: AgentSelector,
+        mode: codex_app_server_protocol::AgentReplyRouteMode,
+    ) {
+        let target = match selector.control_target() {
+            Ok(target) => target,
+            Err(message) => {
+                self.chat_widget.add_error_message(message);
+                return;
+            }
+        };
+        let result = app_server
+            .set_agent_reply_route(
+                source_thread_id,
+                target,
+                selector.authored().to_string(),
+                mode,
+            )
+            .await;
+        let codex_app_server_protocol::AgentControlResponse {
+            outcome,
+            audit_warning,
+        } = match result {
+            Ok(response) => response,
+            Err(error) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to change agent reply route: {error:#}"));
+                return;
+            }
+        };
+        match outcome {
+            codex_app_server_protocol::AgentControlOutcome::ReplyRouteChanged {
+                target_thread_id,
+                previous_mode: _,
+                mode,
+            } => {
+                if let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id) {
+                    self.refresh_primary_agent_aliases(app_server).await;
+                    self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
+                        .await;
+                    self.agent_navigation.replace_user_reply_route(
+                        source_thread_id,
+                        target_thread_id,
+                        mode == codex_app_server_protocol::AgentReplyRouteMode::Enabled,
+                    );
+                }
+                if let Some(audit_warning) = audit_warning {
+                    self.chat_widget.add_error_message(format!(
+                        "Reply route for agent {target_thread_id} changed, but its source audit \
+                         failed; do not retry the change: {audit_warning}"
+                    ));
+                }
+            }
+            _ => {
+                self.chat_widget.add_error_message(
+                    "Agent reply-route change returned an unexpected response.".to_string(),
+                );
+            }
+        }
+    }
+
     pub(super) async fn resume_agent_from_selector(
         &mut self,
         app_server: &mut AppServerSession,

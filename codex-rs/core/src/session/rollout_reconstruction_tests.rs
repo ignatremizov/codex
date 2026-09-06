@@ -141,6 +141,8 @@ async fn reconstruction_restores_promoted_task_from_atomic_observation_snapshot(
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::PresentationOnly,

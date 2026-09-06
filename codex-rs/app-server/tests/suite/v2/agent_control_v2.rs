@@ -17,6 +17,7 @@ use codex_app_server_protocol::AgentQueueEntry;
 use codex_app_server_protocol::AgentQueueListParams;
 use codex_app_server_protocol::AgentQueueListResponse;
 use codex_app_server_protocol::AgentQueueTurnMetadata;
+use codex_app_server_protocol::AgentReplyRouteMode;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -186,6 +187,165 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it_in_v1_and_v2() ->
     for multi_agent_v2 in [false, true] {
         child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2).await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_reply_route_changes_are_persistent_and_audited_for_v1() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .disable_feature(Feature::MultiAgentV2)
+        .write(codex_home.path())?;
+    write_models_cache(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let root = app.start_thread(ThreadStartParams::default()).await?;
+    let spawned: AgentControlResponse = app
+        .request(|request_id| ClientRequest::AgentControl {
+            request_id,
+            params: AgentControlParams {
+                source_thread_id: root.thread.id.clone(),
+                authored_selector: Some("new".to_string()),
+                action: AgentControlAction::Spawn {
+                    role: None,
+                    model: None,
+                    reasoning_effort: None,
+                    input: None,
+                    fork_mode: AgentForkMode::None,
+                    response_handling: Some(AgentResponseHandling::Presentation),
+                },
+            },
+        })
+        .await?;
+    let AgentControlOutcome::Spawned {
+        target_thread_id, ..
+    } = agent_control_outcome(spawned)
+    else {
+        panic!("user control should spawn an idle V1 child");
+    };
+
+    for (mode, previous_mode, expected_target_messages) in [
+        (AgentReplyRouteMode::Enabled, None, true),
+        (
+            AgentReplyRouteMode::Disabled,
+            Some(AgentReplyRouteMode::Enabled),
+            false,
+        ),
+    ] {
+        let response: AgentControlResponse = app
+            .request(|request_id| ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: root.thread.id.clone(),
+                    authored_selector: Some("2".to_string()),
+                    action: AgentControlAction::ReplyRoute {
+                        target: target_thread_id.clone(),
+                        mode,
+                    },
+                },
+            })
+            .await?;
+        assert_eq!(
+            agent_control_outcome(response),
+            AgentControlOutcome::ReplyRouteChanged {
+                target_thread_id: target_thread_id.clone(),
+                previous_mode,
+                mode,
+            }
+        );
+
+        let audit = timeout(DEFAULT_READ_TIMEOUT, async {
+            loop {
+                let completed: ItemCompletedNotification =
+                    app.read_notification("item/completed").await?;
+                if matches!(
+                    &completed.item,
+                    ThreadItem::UserAgentControl {
+                        action: AuditAgentControlAction::ReplyRoute,
+                        target_thread_id: Some(audit_target),
+                        target_messages: Some(audit_target_messages),
+                        ..
+                    } if audit_target == &target_thread_id
+                        && *audit_target_messages == expected_target_messages
+                ) {
+                    return Ok::<_, anyhow::Error>(completed);
+                }
+            }
+        })
+        .await??;
+        assert!(matches!(
+            audit.item,
+            ThreadItem::UserAgentControl {
+                status: UserAgentControlStatus::Succeeded,
+                ..
+            }
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_reply_route_rejects_v2_targets_before_mutation() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::MultiAgentV2)
+        .write(codex_home.path())?;
+    write_models_cache(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let root = app.start_thread(ThreadStartParams::default()).await?;
+    let spawned: AgentControlResponse = app
+        .request(|request_id| ClientRequest::AgentControl {
+            request_id,
+            params: AgentControlParams {
+                source_thread_id: root.thread.id.clone(),
+                authored_selector: Some("new".to_string()),
+                action: AgentControlAction::Spawn {
+                    role: None,
+                    model: None,
+                    reasoning_effort: None,
+                    input: None,
+                    fork_mode: AgentForkMode::None,
+                    response_handling: Some(AgentResponseHandling::Presentation),
+                },
+            },
+        })
+        .await?;
+    let AgentControlOutcome::Spawned {
+        target_thread_id, ..
+    } = agent_control_outcome(spawned)
+    else {
+        panic!("user control should spawn an idle V2 child");
+    };
+
+    let request_id = app
+        .send_raw_request(
+            "agent/control",
+            Some(serde_json::to_value(AgentControlParams {
+                source_thread_id: root.thread.id,
+                authored_selector: Some("2".to_string()),
+                action: AgentControlAction::ReplyRoute {
+                    target: target_thread_id,
+                    mode: AgentReplyRouteMode::Enabled,
+                },
+            })?),
+        )
+        .await?;
+    let error = app
+        .read_stream_until_error_message(RequestId::Integer(request_id))
+        .await?;
+    assert!(
+        error
+            .error
+            .message
+            .contains("V2 targets use native inter-agent messaging")
+    );
     Ok(())
 }
 

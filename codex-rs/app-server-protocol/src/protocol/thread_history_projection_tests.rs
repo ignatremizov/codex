@@ -426,6 +426,8 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             target_messages: false,
+            reply_route_enabled: None,
+            reply_route_context_installed: false,
             queue_delivery: false,
             message_wake_turn_id: None,
             baseline_final_delivery: AgentResponseFinalDelivery::Passive,

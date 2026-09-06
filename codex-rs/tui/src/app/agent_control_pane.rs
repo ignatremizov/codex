@@ -176,6 +176,8 @@ impl App {
                     self.agent_navigation
                         .response_observation(observer, thread_id)
                 });
+                let reply_route = displayed_thread_id
+                    .and_then(|observer| self.agent_navigation.reply_route(observer, thread_id));
                 let has_pending_approval =
                     self.thread_event_channels
                         .get(&thread_id)
@@ -216,6 +218,13 @@ impl App {
                 let mut state_labels = Vec::new();
                 if let Some(observation) = response_observation {
                     state_labels.push(observation.compact_label());
+                }
+                if let Some(reply_route) = reply_route {
+                    state_labels.push(if reply_route {
+                        "replies enabled".to_string()
+                    } else {
+                        "replies disabled".to_string()
+                    });
                 }
                 if has_pending_approval {
                     state_labels.push("approval".to_string());
@@ -329,6 +338,19 @@ impl App {
                     ]);
                 } else {
                     detail_lines.push(vec!["Response: ".bold(), "none".dim()].into());
+                }
+                if let Some(reply_route) = reply_route {
+                    detail_lines.push(
+                        vec![
+                            "Replies: ".bold(),
+                            if reply_route {
+                                "enabled".green()
+                            } else {
+                                "disabled".dim()
+                            },
+                        ]
+                        .into(),
+                    );
                 }
                 detail_lines.push(vec!["Queued: ".bold(), queued.to_string().into()].into());
                 if let Some(queue) = self.queued_agent_prompts.get(&thread_id) {

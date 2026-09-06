@@ -41,7 +41,7 @@ impl AgentControl {
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         self.require_current_agent_ownership(agent_id).await?;
         let thread = state.get_thread_including_pending(agent_id).await?;
-        self.ensure_scoped_reply_route_supported(&thread, response_observation)?;
+        self.ensure_target_message_route_allowed(&thread, observer, response_observation)?;
         let observer_thread = state
             .get_thread_including_pending(observer.thread_id)
             .await?;
@@ -92,8 +92,11 @@ impl AgentControl {
         receiver_control
             .require_current_agent_ownership(receiver_thread_id)
             .await?;
-        receiver_control
-            .ensure_scoped_reply_route_supported(&receiver_thread, response_observation)?;
+        receiver_control.ensure_target_message_route_allowed(
+            &receiver_thread,
+            sender,
+            response_observation,
+        )?;
         let sender_thread = state.get_thread_including_pending(sender.thread_id).await?;
         let admission = receiver_control
             .acquire_target_message_admission_after_binding(

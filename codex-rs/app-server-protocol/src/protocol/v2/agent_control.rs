@@ -91,6 +91,11 @@ pub enum AgentControlAction {
         target: String,
         response_handling: AgentObservationMode,
     },
+    /// Enable or disable the target's attributed reply route back to the source.
+    ReplyRoute {
+        target: String,
+        mode: AgentReplyRouteMode,
+    },
 }
 
 /// Final-response handling selected by an explicit user observation replacement.
@@ -192,6 +197,15 @@ pub enum AgentObservationMode {
     Presentation,
 }
 
+/// User-authored state for a target's attributed reply route.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum AgentReplyRouteMode {
+    Enabled,
+    Disabled,
+}
+
 /// Exact target work whose final-response handling was replaced.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -285,5 +299,10 @@ pub enum AgentControlOutcome {
         previous_response_handling: AgentFinalResponseHandling,
         response_handling: AgentFinalResponseHandling,
         binding: AgentObservationBinding,
+    },
+    ReplyRouteChanged {
+        target_thread_id: String,
+        previous_mode: Option<AgentReplyRouteMode>,
+        mode: AgentReplyRouteMode,
     },
 }

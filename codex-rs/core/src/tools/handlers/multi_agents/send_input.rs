@@ -176,13 +176,18 @@ impl Handler {
             .agent_control
             .get_status(receiver_thread_id)
             .await;
+        let tool_call_status = if result.is_ok() {
+            collab_tool_call_status(&status, Some(receiver_thread_id))
+        } else {
+            CollabAgentToolCallStatus::Failed
+        };
         session
             .emit_turn_item_completed(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                     id: call_id,
                     tool: CollabAgentTool::SendInput,
-                    status: collab_tool_call_status(&status, Some(receiver_thread_id)),
+                    status: tool_call_status,
                     observe_commentary: Some(args.w.commentary()),
                     wake_on_completion: args.w.wake_on_completion_item_value(),
                     target_messages: Some(args.w.target_messages()),

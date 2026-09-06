@@ -453,6 +453,20 @@ impl AgentNavigationState {
         );
     }
 
+    pub(crate) fn replace_user_reply_route(
+        &mut self,
+        observer: ThreadId,
+        target: ThreadId,
+        enabled: bool,
+    ) {
+        self.response_observations
+            .replace_reply_route(observer, target, enabled);
+    }
+
+    pub(crate) fn reply_route(&self, observer: ThreadId, target: ThreadId) -> Option<bool> {
+        self.response_observations.reply_route(observer, target)
+    }
+
     #[cfg(test)]
     pub(crate) fn has_wake_subscription(&self, observer: ThreadId, target: ThreadId) -> bool {
         self.response_observations.has_wake(observer, target)
