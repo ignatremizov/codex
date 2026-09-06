@@ -681,11 +681,13 @@ authorizes attributed `send_input` calls from all later target turns. Repeating 
 idempotent: the route appears only once in model context, including after a disable/re-enable
 cycle, and is not repeated on each turn. Compaction carries that singleton into replacement
 history, and rollback treats it as out-of-band relationship context rather than a user turn.
-Disabling it revokes admission and cancels a pending route-owned wake without trying to remove the
-already recorded context item. An explicit disable wins over a later model-authored `w:m`;
-enabling makes repeated `m` context redundant. The setting lasts for the live control relationship
-and is revoked by close, ownership transfer, process shutdown, cold resume, or fork. V2 targets
-retain their native inter-agent communication contract and reject this V1 route action.
+Disabling it revokes future admission and clears uncommitted route-owned wake reservations without
+trying to remove the already recorded context item. Input already accepted into a queued turn
+remains accepted and runs under its captured response policy; disabling the route does not silently
+retract auditable work. An explicit disable wins over a later model-authored `w:m`; enabling makes
+repeated `m` context redundant. The setting lasts for the live control relationship and is revoked
+by close, ownership transfer, process shutdown, cold resume, or fork. V2 targets retain their
+native inter-agent communication contract and reject this V1 route action.
 
 Promoting a presentation-only user task to passive or wake delivery records its compact hidden
 task linkage before the replacement becomes deliverable. The source model therefore receives the

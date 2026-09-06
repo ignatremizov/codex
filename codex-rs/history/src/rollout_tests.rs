@@ -10,11 +10,14 @@ use codex_protocol::items::UserAgentControlAction;
 use codex_protocol::items::UserAgentControlItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -93,6 +96,31 @@ fn user_agent_task_context_message(text: &str) -> RolloutItem {
             }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
+        }
+        .into(),
+    )
+}
+
+fn persistent_agent_reply_route() -> RolloutItem {
+    let agent_id = ThreadId::new();
+    RolloutItem::ResponseItem(
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!(
+                    "<agent_reply_route>\n{{\"agent_id\":\"{agent_id}\",\"send_input\":\"allowed_until_disabled\"}}\n</agent_reply_route>"
+                ),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    content_item_kinds: Some(vec![ContentItemKind(
+                        PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND.to_string(),
+                    )]),
+                    ..Default::default()
+                },
+            ),
         }
         .into(),
     )
@@ -401,6 +429,28 @@ fn exact_rollback_preserves_trusted_user_agent_task_context() {
         serde_json::to_value(rollout_without_exact_rollback_ranges(&items))
             .expect("serialize normalized rollout"),
         serde_json::to_value(vec![trusted_task]).expect("serialize expected rollout")
+    );
+}
+
+#[test]
+fn exact_rollback_preserves_persistent_agent_reply_route() {
+    let route = persistent_agent_reply_route();
+    let items = vec![
+        turn_started("turn-1"),
+        message("rolled back prompt"),
+        route.clone(),
+        turn_complete("turn-1"),
+        exact_rollback(0),
+    ];
+
+    assert_eq!(
+        exact_rollback_removed_items(&items),
+        vec![true, true, false, true, true]
+    );
+    assert_eq!(
+        serde_json::to_value(rollout_without_exact_rollback_ranges(&items))
+            .expect("serialize normalized rollout"),
+        serde_json::to_value(vec![route]).expect("serialize expected rollout")
     );
 }
 

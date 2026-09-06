@@ -5125,7 +5125,7 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn user_reply_route_persists_across_turns_with_one_context_item(
+async fn user_reply_route_survives_rollback_and_persists_across_turns(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -5226,6 +5226,14 @@ async fn user_reply_route_persists_across_turns_with_one_context_item(
         1,
         "repeated enable should leave exactly one route item in canonical child history"
     );
+
+    child_thread
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event_match(child_thread.as_ref(), |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_)).then_some(())
+    })
+    .await;
 
     for index in 1..=2 {
         let prompt = format!("use the persistent reply route on child turn {index}");

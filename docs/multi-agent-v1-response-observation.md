@@ -52,7 +52,8 @@ delivery state separate:
   adds its source-relative address to target context exactly once. Later target turns retain that
   singleton from history; Core does not inject it again per turn. It survives interruption,
   compaction, and rollback, and disable/re-enable does not install another copy. `disable` revokes
-  admission and overrides any model-authored exact-turn `m` grant.
+  future admission and overrides any model-authored exact-turn `m` grant. Input already accepted
+  into a queued turn remains admitted and runs under the response policy captured by that entry.
 - `q` stores complete structured input and its target-turn policy in one process-lifetime FIFO.
   Admission to the target, response observation, and any `m` grant occur together only when that
   queued entry starts its own turn.
