@@ -2,6 +2,7 @@ mod live_output;
 mod model;
 mod preview;
 mod render;
+mod render_cache;
 mod transcript;
 
 pub(crate) use live_output::LiveCommandOutput;

@@ -6,6 +6,7 @@ use super::model::ActiveExecCall;
 use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
+use super::render_cache::RenderMode;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryRenderMode;
@@ -14,6 +15,7 @@ use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
 use crate::render::highlight::highlight_bash_to_lines;
+use crate::render::highlight::syntax_theme_revision;
 use crate::render::line_utils::line_to_static;
 use crate::style::accent_color;
 use crate::terminal_hyperlinks::HyperlinkLine;
@@ -279,11 +281,19 @@ impl HistoryCell for ExecCell {
     }
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        if self.is_exploring_cell() && self.is_active() {
-            self.exploring_display_lines(width)
-        } else {
-            self.command_display_lines(width)
-        }
+        self.render_cache.render(
+            RenderMode::Review,
+            width,
+            syntax_theme_revision(),
+            || self.is_active(),
+            || {
+                if self.is_exploring_cell() && self.is_active() {
+                    self.exploring_display_lines(width)
+                } else {
+                    self.command_display_lines(width)
+                }
+            },
+        )
     }
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -291,7 +301,13 @@ impl HistoryCell for ExecCell {
     }
 
     fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        self.detailed_hyperlink_lines(width, HistoryRenderMode::Rich)
+        self.render_cache.render(
+            RenderMode::Full,
+            width,
+            syntax_theme_revision(),
+            || self.is_active(),
+            || self.detailed_hyperlink_lines(width, HistoryRenderMode::Rich),
+        )
     }
 
     fn activity_ids(&self) -> Vec<String> {
