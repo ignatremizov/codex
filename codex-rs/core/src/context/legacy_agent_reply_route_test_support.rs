@@ -1,24 +1,48 @@
-use codex_protocol::models::ContentItemKind;
-use serde_json::Value;
+//! Fixtures for notices emitted by older versions; production has no route-notice writer.
 
 use super::AgentContextIdentity;
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::protocol::PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND;
+use serde_json::Value;
 
-/// Test fixture for a route notice emitted by older versions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct AgentReplyRoute {
     agent: AgentContextIdentity,
+    scope: Scope,
+}
+
+#[derive(Clone, Copy)]
+enum Scope {
+    CurrentTurn,
+    UntilDisabled,
 }
 
 impl AgentReplyRoute {
     pub(crate) fn new(agent: AgentContextIdentity) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            scope: Scope::CurrentTurn,
+        }
+    }
+
+    pub(crate) fn until_disabled(agent: AgentContextIdentity) -> Self {
+        Self {
+            agent,
+            scope: Scope::UntilDisabled,
+        }
     }
 }
 
 impl ContextualUserFragment for AgentReplyRoute {
     fn content_kind(&self) -> ContentItemKind {
-        ContentItemKind("multi_agent.agent_reply_route".to_string())
+        ContentItemKind(
+            match self.scope {
+                Scope::CurrentTurn => "multi_agent.agent_reply_route",
+                Scope::UntilDisabled => PERSISTENT_AGENT_REPLY_ROUTE_CONTENT_KIND,
+            }
+            .to_string(),
+        )
     }
 
     fn role(&self) -> &'static str {
@@ -35,10 +59,11 @@ impl ContextualUserFragment for AgentReplyRoute {
 
     fn body(&self) -> String {
         let mut fields = self.agent.json_fields();
-        fields.insert(
-            "send_input".to_string(),
-            Value::String("allowed_this_turn".to_string()),
-        );
+        let scope = match self.scope {
+            Scope::CurrentTurn => "allowed_this_turn",
+            Scope::UntilDisabled => "allowed_until_disabled",
+        };
+        fields.insert("send_input".to_string(), Value::String(scope.to_string()));
         format!("\n{}\n", Value::Object(fields))
     }
 }

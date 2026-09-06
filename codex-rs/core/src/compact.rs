@@ -13,6 +13,7 @@ use crate::compacted_history_retention::truncate_text_to_approx_token_budget;
 use crate::context::BaseInstructionsFragment;
 use crate::context::CompactionSummary;
 use crate::context::ContextualUserFragment;
+use crate::context::LegacyAgentReplyRoute;
 use crate::context::McpServerUseInstructions;
 use crate::context::compacted_image_omission_text;
 use crate::context::standalone_compacted_image_omission_message;
@@ -125,6 +126,11 @@ pub(crate) async fn build_compaction_replacement_history(
     world_state: &WorldState,
     compacted_history: Vec<ResponseItemEnvelope>,
 ) -> (Vec<ResponseItemEnvelope>, WorldStateSnapshot) {
+    let history = sess.clone_history().await;
+    let compacted_history = insert_initial_context_before_last_real_user_or_summary(
+        compacted_history,
+        persistent_agent_reply_routes(history.annotated_items()),
+    );
     let (updates, snapshot) = sess
         .build_initial_context_with_world_state(step_context, world_state)
         .await;
@@ -150,6 +156,21 @@ fn assemble_compaction_history(
         .map(ResponseItemEnvelope::new)
         .chain(history)
         .collect()
+}
+
+fn persistent_agent_reply_routes(history: &[ResponseItemEnvelope]) -> Vec<ResponseItemEnvelope> {
+    let mut seen = HashSet::new();
+    let mut routes = history
+        .iter()
+        .rev()
+        .filter_map(|item| {
+            codex_history::persistent_agent_reply_route_source(item)
+                .filter(|agent_id| seen.insert(*agent_id))
+                .map(|_| item.clone())
+        })
+        .collect::<Vec<_>>();
+    routes.reverse();
+    routes
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
@@ -709,6 +730,11 @@ fn compacted_user_message<'a>(
     item: &'a ResponseItem,
     harness_metadata: Option<&'a CodexHarnessMetadata>,
 ) -> Option<CompactedUserMessage<'a>> {
+    if harness_metadata.is_none_or(|metadata| !metadata.client_authored)
+        && LegacyAgentReplyRoute::persistent_agent_id(item).is_some()
+    {
+        return None;
+    }
     let Some(TurnItem::UserMessage(user)) = crate::event_mapping::parse_turn_item(item) else {
         return None;
     };
@@ -756,6 +782,17 @@ pub(crate) fn insert_initial_context_before_last_real_user_or_summary(
     mut compacted_history: Vec<ResponseItemEnvelope>,
     initial_context: Vec<ResponseItemEnvelope>,
 ) -> Vec<ResponseItemEnvelope> {
+    let persistent_reply_route_sources = initial_context
+        .iter()
+        .filter_map(codex_history::persistent_agent_reply_route_source)
+        .collect::<HashSet<_>>();
+    if !persistent_reply_route_sources.is_empty() {
+        compacted_history.retain(|item| {
+            codex_history::persistent_agent_reply_route_source(item)
+                .is_none_or(|source| !persistent_reply_route_sources.contains(&source))
+        });
+    }
+
     let mut last_user_or_summary_index = None;
     let mut last_real_user_index = None;
     for (i, item) in compacted_history.iter().enumerate().rev() {

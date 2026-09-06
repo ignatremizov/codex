@@ -31,6 +31,8 @@ fn observation_control_records_do_not_become_memory_evidence() -> anyhow::Result
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,

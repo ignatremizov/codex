@@ -3110,7 +3110,8 @@
         "resume",
         "interrupt",
         "close",
-        "observe"
+        "observe",
+        "reply_route"
       ],
       "type": "string"
     },

@@ -242,8 +242,12 @@ impl LocalAgentControl {
             return Err(CodexErr::ThreadNotFound(request.observer.thread_id));
         }
         observer.session.submission_admission.check_ready()?;
+        let accepted_queue = matches!(&request.dispatch, UserDispatch::Queued(_));
         if let UserObservation::Install(policy) = &request.observation {
             self.ensure_scoped_reply_route_supported(thread, *policy)?;
+            if !accepted_queue {
+                self.ensure_target_message_route_allowed(thread, request.observer, *policy)?;
+            }
         }
         thread
             .ensure_execution_capacity_for_turn_start(
@@ -308,19 +312,24 @@ impl LocalAgentControl {
         };
         let last_task_message =
             non_empty_task_message(render_input_preview(request.input.presentation()));
-        if policy.target_messages() {
-            self.ensure_scoped_reply_route_supported(thread, policy)?;
-            if thread.session.presentation_id().thread_id == request.observer.thread_id {
-                return Err(CodexErr::InvalidRequest(
-                    "an agent cannot grant a reply route to itself".to_string(),
-                ));
-            }
-            if state
-                .get_thread(request.observer.thread_id)
-                .await?
-                .session
-                .presentation_id()
-                != request.observer
+        // Accepted forward prompts keep their captured policy after a reverse-route disable.
+        // Other admissions recheck permission under the transaction, without adding notices.
+        if !accepted_queue
+            || self.target_message_route_mode(request.observer, child)
+                != Some(TargetMessageRouteMode::Disabled)
+        {
+            self.ensure_target_message_route_allowed(thread, request.observer, policy)?;
+            // Scoped permission must still belong to the original live observer after waits.
+            if policy.target_messages()
+                && self
+                    .target_message_route_mode(request.observer, child)
+                    .is_none()
+                && state
+                    .get_thread(request.observer.thread_id)
+                    .await?
+                    .session
+                    .presentation_id()
+                    != request.observer
             {
                 return Err(CodexErr::InvalidRequest(
                     "agent response observer is no longer current".to_string(),

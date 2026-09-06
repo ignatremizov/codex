@@ -4,6 +4,7 @@
 import type { AgentFinalResponseHandling } from "./AgentFinalResponseHandling";
 import type { AgentInputOutcome } from "./AgentInputOutcome";
 import type { AgentObservationBinding } from "./AgentObservationBinding";
+import type { AgentReplyRouteMode } from "./AgentReplyRouteMode";
 
 /**
  * Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.
@@ -34,4 +35,4 @@ postCommitWarning: string | null, } | { "type": "interrupted", targetThreadId: s
 /**
  * Non-retryable degradation after follow-up input admission or uncertain routing.
  */
-postAdmissionWarning: string | null, } | { "type": "closed", targetThreadId: string, } | { "type": "observed", targetThreadId: string, previousResponseHandling: AgentFinalResponseHandling, responseHandling: AgentFinalResponseHandling, binding: AgentObservationBinding, } ;
+postAdmissionWarning: string | null, } | { "type": "closed", targetThreadId: string, } | { "type": "observed", targetThreadId: string, previousResponseHandling: AgentFinalResponseHandling, responseHandling: AgentFinalResponseHandling, binding: AgentObservationBinding, } | { "type": "replyRouteChanged", targetThreadId: string, previousMode: AgentReplyRouteMode | null, mode: AgentReplyRouteMode, } ;
