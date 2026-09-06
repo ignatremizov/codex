@@ -11,6 +11,7 @@ mod source;
 pub(crate) use paragraph::HyperlinkParagraph;
 pub(crate) use paragraph::HyperlinkRows;
 pub(crate) use paragraph::HyperlinkText;
+pub(crate) use rows::render_line_rows;
 pub(crate) use rows::wrap_line_rows;
 pub(crate) use source::LineWrapPolicy;
 pub(crate) use source::LogicalLineSource;
