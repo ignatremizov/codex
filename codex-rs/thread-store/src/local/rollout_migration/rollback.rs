@@ -12,7 +12,6 @@ use codex_protocol::items::parse_hook_prompt_fragment;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
-use std::borrow::Borrow;
 
 /// Match the rollback boundaries used by legacy history reconstruction without
 /// treating every persisted lifecycle as a user turn. This intentionally stays
@@ -51,17 +50,21 @@ pub(super) fn is_pre_turn_context_update(response: &ResponseItem) -> bool {
 /// Apply the same response-history cut used by legacy cold resume to a persisted
 /// compaction checkpoint. The migration adapter uses a frozen contextual-fragment
 /// matcher because thread-store cannot depend on core's runtime fragment registry.
-pub(super) fn drop_last_n_user_turns<T>(history: &mut Vec<T>, num_turns: u32)
-where
-    T: Borrow<ResponseItem>,
-{
+pub(super) fn drop_last_n_user_turns(
+    history: &mut Vec<codex_history::ResponseItemEnvelope>,
+    num_turns: u32,
+) {
     if num_turns == 0 {
         return;
     }
     let user_positions = history
         .iter()
         .enumerate()
-        .filter_map(|(index, item)| counts_as_boundary(item.borrow()).then_some(index))
+        .filter_map(|(index, item)| {
+            (codex_history::persistent_agent_reply_route_source(item).is_none()
+                && counts_as_boundary(&item.item))
+            .then_some(index)
+        })
         .collect::<Vec<_>>();
     let Some(&first_turn_index) = user_positions.first() else {
         return;
@@ -73,7 +76,8 @@ where
         user_positions[user_positions.len() - count]
     };
     while cut_index > first_turn_index
-        && is_pre_turn_context_update(history[cut_index - 1].borrow())
+        && codex_history::persistent_agent_reply_route_source(&history[cut_index - 1]).is_none()
+        && is_pre_turn_context_update(&history[cut_index - 1].item)
     {
         cut_index -= 1;
     }

@@ -174,6 +174,32 @@ fn scoped_reply_route_is_visible_without_implying_final_delivery() {
 }
 
 #[test]
+fn user_reply_route_survives_turn_observation_cleanup_until_thread_removal() {
+    let observer = thread_id("00000000-0000-0000-0000-000000000101");
+    let target = thread_id("00000000-0000-0000-0000-000000000102");
+    let mut state = AgentResponseObservationState::default();
+
+    state.replace_reply_route(observer, target, /*enabled*/ true);
+    state.note(
+        observer,
+        target,
+        AgentResponseObservationBinding::Bound,
+        Some(AgentResponseHandling::Wake),
+    );
+    state.mark_target_stopped(target);
+
+    assert_eq!(state.get(observer, target), None);
+    assert_eq!(state.reply_route(observer, target), Some(true));
+
+    state.replace_reply_route(observer, target, /*enabled*/ false);
+    state.remove(observer, target);
+    assert_eq!(state.reply_route(observer, target), Some(false));
+
+    state.remove_thread(target);
+    assert_eq!(state.reply_route(observer, target), None);
+}
+
+#[test]
 fn queued_delivery_is_visible_after_target_turn_admission() {
     let observer = thread_id("00000000-0000-0000-0000-000000000101");
     let target = thread_id("00000000-0000-0000-0000-000000000102");

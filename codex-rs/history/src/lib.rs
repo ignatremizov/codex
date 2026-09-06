@@ -10,6 +10,9 @@ pub use compaction_resume_metadata::CompactionResumeMetadata;
 pub use compaction_resume_metadata::PreviousTurnSettings;
 pub use compaction_resume_metadata::resume_multi_agent_version;
 
+mod agent_reply_route;
+pub use agent_reply_route::persistent_agent_reply_route_source;
+
 mod compaction_checkpoint;
 pub use compaction_checkpoint::CompactionCheckpoint;
 

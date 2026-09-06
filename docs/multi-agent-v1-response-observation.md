@@ -22,6 +22,14 @@ This is a compatible v1 extension, not a new multi-agent v3 contract. It keeps t
 
 ## Implementation
 
+### User-controlled persistent reply routes
+
+`/agent replies <target> enable` (or the app-server `replyRoute` action) permits attributed replies across later target turns within the same valid live relationship. An unset override preserves exact-turn `m`; explicit `disable` vetoes new reverse admissions, including later model-authored `m`. Already accepted forward queue entries retain their input and captured observation/receipt policy: dequeue neither drops their prompts nor silently re-enables reverse permission. Accepted reverse queue entries retain their exact admission reservation.
+
+Enabling first acknowledges one harness-classified route singleton in the target's canonical history, then acknowledges the source policy snapshot, then compare-installs the narrow live permission. The owned worker survives cancellation of its waiter. There is no cross-journal atomicity guarantee: a later source failure can leave inert target guidance. A missing or ambiguous publication receipt quarantines the affected history and is never repaired by automatically repeating the append.
+
+Repeated enable and disable/re-enable reuse verified singleton context rather than injecting it each turn. Typed, non-client-authored guidance survives interruption, compaction, rollback, and history migration; marker text alone is not retention evidence. Saved context and observation snapshots never authorize replies after close, ownership transfer, process shutdown, cold resume, or fork. V2 targets reject this V1 control before mutation and continue using native inter-agent messaging.
+
 The implementation keeps the wire policy, runtime observation state, and durable audit and delivery state separate:
 
 - `core/src/agent/response_observation.rs` parses the shared `w` field into a named target-turn policy whose response observation, reverse-message capability, and input admission are separate typed parts.

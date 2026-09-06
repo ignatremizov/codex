@@ -6,6 +6,7 @@ use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_core::UserAgentForkMode;
 use codex_core::UserAgentInputOutcome;
+use codex_core::UserAgentReplyRouteMode;
 use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_core::config::AgentRoleConfig;
@@ -84,6 +85,7 @@ use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_once_match_with_delay;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::namespace_child_tool;
+use core_test_support::responses::request_body_bytes;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
@@ -126,8 +128,9 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use super::direct_tool_metadata::tool_call_metadata;
-use wiremock::Respond;
-use wiremock::ResponseTemplate;
+
+#[path = "subagent_reply_route_tests.rs"]
+mod reply_route_tests;
 
 #[path = "spawn_settings_tests.rs"]
 mod spawn_settings_tests;
@@ -197,16 +200,6 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
     decoded_body(req)
         .and_then(|body| String::from_utf8(body).ok())
         .is_some_and(|body| body.contains(text))
-}
-
-fn request_agent_name_is(req: &wiremock::Request, expected_agent_name: &str) -> bool {
-    let Ok(body) = req.body_json::<Value>() else {
-        return false;
-    };
-    body.pointer("/client_metadata/x-codex-turn-metadata")
-        .and_then(Value::as_str)
-        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .is_some_and(|metadata| metadata["agent_name"] == expected_agent_name)
 }
 
 fn ev_commentary_message(id: &str, text: &str) -> Value {
@@ -663,16 +656,10 @@ async fn assert_observation_failure_requires_reload(
     .context("observation failure did not quarantine canonical history")?;
     let error = test
         .codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "quarantined history must reject new input".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "quarantined history must reject new input".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await
         .expect_err("ambiguous observation publication must quarantine submission admission");
     assert_eq!(
@@ -806,16 +793,10 @@ async fn resume_in_memory_thread_from_store(
 
 async fn submit_turn_on_thread(codex: &codex_core::CodexThread, prompt: &str) -> Result<()> {
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: prompt.to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: prompt.to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let turn_id = wait_for_event_match(codex, |event| match event {
         EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
@@ -1832,7 +1813,7 @@ async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
     let child_thread_id = ThreadId::from_string(&wait_for_spawned_thread_id(&initial).await?)?;
     let child_thread = initial.thread_manager.get_thread(child_thread_id).await?;
     let _ = wait_for_requests(&child_request).await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
     initial
         .codex
         .submit(Op::ThreadRollback { num_turns: 1 })
@@ -1841,7 +1822,7 @@ async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("child done".to_string()))
     );
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
 
     let completion = wait_for_completion_after_rollback(&initial.codex).await;
     assert_eq!(
@@ -2102,23 +2083,24 @@ async fn v1_subagent_notification_survives_an_active_parent_turn_abort() -> Resu
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
                 text: TURN_1_PROMPT.to_string(),
                 text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
-                model: Some(test.session_configured.model.clone()),
-                ..Default::default()
-            },
-        })
+            }])
+            .with_thread_settings(
+                codex_protocol::protocol::ThreadSettingsOverrides {
+                    environments: Some(
+                        test.default_environment_selections(test.config.cwd.clone()),
+                    ),
+                    approval_policy: Some(AskForApproval::Never),
+                    sandbox_policy: Some(sandbox_policy),
+                    permission_profile,
+                    model: Some(test.session_configured.model.clone()),
+                    ..Default::default()
+                },
+            ),
+        )
         .await?;
     let _ = wait_for_requests(&blocked_parent).await?;
     let _ = wait_for_requests(&child_request).await?;
@@ -2392,7 +2374,7 @@ async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Resul
         .thread_manager
         .get_thread(ThreadId::from_string(&spawned_id)?)
         .await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
     let completion_barriers_before = store.calls().await.append_completion_items_and_flush;
     store
         .fail_next_operation(InMemoryThreadStoreFailure::ThreadRollbackFlush)
@@ -2409,7 +2391,7 @@ async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Resul
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("child done".to_string()))
     );
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
 
     wait_for_event_match(&initial.codex, |event| match event {
         EventMsg::Error(error)
@@ -2624,7 +2606,7 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
         .thread_manager
         .get_thread(ThreadId::from_string(&spawned_id)?)
         .await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
 
     initial
         .codex
@@ -2637,7 +2619,7 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("child done".to_string()))
     );
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
 
     let completion = wait_for_completion_after_rollback(&initial.codex).await;
     assert_eq!(
@@ -3441,16 +3423,10 @@ async fn interrupted_wait_preserves_full_history_spawn_final_wake(
         .await;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "wait before interrupting forked child".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "wait before interrupting forked child".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     wait_for_event_match(&test.codex, |event| {
         matches!(
@@ -4409,7 +4385,7 @@ async fn send_input_x_presents_the_target_turn_without_injecting_it(
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let (test, spawned_id, initial_child_request) = setup_turn_one_with_custom_spawned_child(
+    let (test, spawned_id, _initial_child_request) = setup_turn_one_with_custom_spawned_child(
         &server,
         json!({
             "message": CHILD_PROMPT,
@@ -5256,6 +5232,332 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
         wait_for_request_containing_text(&parent_with_message, CHILD_MESSAGE).await?;
     assert!(parent_request.body_contains_text("<agent_message>"));
     assert!(parent_request.body_contains_text(&child_thread_id.to_string()));
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_reply_route_survives_rollback_and_persists_across_turns(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const INITIAL_TASK: &str = "initialize the user-controlled reply-route child";
+    const BLOCKED_PROMPT: &str = "try the disabled reply route";
+    const BLOCKED_MESSAGE: &str = "this disabled reply must not reach Main";
+    const BLOCKED_CALL_ID: &str = "use-disabled-user-reply-route";
+    const REENABLED_PROMPT: &str = "confirm the reply-route context remains a singleton";
+
+    let server = start_mock_server().await;
+    let initial_child = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, INITIAL_TASK),
+        sse(vec![
+            ev_response_created("resp-user-reply-route-initial"),
+            ev_assistant_message("msg-user-reply-route-initial", "ready"),
+            ev_completed("resp-user-reply-route-initial"),
+        ]),
+    )
+    .await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should enable V1 agents");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("test config should disable V2 agents");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let child_thread_id = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions {
+            input: Some(vec![UserInput::Text {
+                text: INITIAL_TASK.to_string(),
+                text_elements: Vec::new(),
+            }]),
+            fork_mode: UserAgentForkMode::None,
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
+        .await?
+        .target_thread_id;
+    let _ = wait_for_requests(&initial_child).await?;
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Enabled,
+            )
+            .await?,
+        (child_thread_id, None)
+    );
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Enabled,
+            )
+            .await?,
+        (child_thread_id, Some(UserAgentReplyRouteMode::Enabled),),
+        "repeating enable should be idempotent and must not install another context item"
+    );
+    child_thread.flush_rollout().await?;
+    let child_history = child_thread
+        .load_history(/*include_archived*/ false)
+        .await?;
+    assert_eq!(
+        child_history
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::ResponseItem(envelope)
+                        if matches!(
+                            &envelope.item,
+                            ResponseItem::Message { content, .. }
+                                if content.iter().any(|item| {
+                                    matches!(
+                                        item,
+                                        ContentItem::InputText { text }
+                                            if text.contains("<agent_reply_route>")
+                                    )
+                                })
+                        )
+                )
+            })
+            .count(),
+        1,
+        "repeated enable should leave exactly one route item in canonical child history"
+    );
+
+    child_thread
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event_match(child_thread.as_ref(), |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_)).then_some(())
+    })
+    .await;
+
+    for index in 1..=2 {
+        let prompt = format!("use the persistent reply route on child turn {index}");
+        let message = format!("persistent child reply {index}");
+        let call_id = format!("use-persistent-user-reply-route-{index}");
+        let child_prompt = prompt.clone();
+        let child_call_id = call_id.clone();
+        let child_turn = mount_response_once_match(
+            &server,
+            move |request: &wiremock::Request| {
+                body_contains(request, &child_prompt) && !body_contains(request, &child_call_id)
+            },
+            sse_response(sse(vec![
+                ev_response_created(&format!("resp-user-reply-route-child-{index}")),
+                ev_function_call_with_namespace(
+                    &call_id,
+                    MULTI_AGENT_V1_NAMESPACE,
+                    "send_input",
+                    &serde_json::to_string(&json!({
+                        "target": "Main",
+                        "message": message.clone(),
+                        "w": "x",
+                    }))?,
+                ),
+                ev_completed(&format!("resp-user-reply-route-child-{index}")),
+            ])),
+        )
+        .await;
+        let child_after_call_id = call_id.clone();
+        let child_after_reply = mount_sse_once_match(
+            &server,
+            move |request: &wiremock::Request| body_contains(request, &child_after_call_id),
+            sse(vec![
+                ev_response_created(&format!("resp-user-reply-route-child-done-{index}")),
+                ev_assistant_message(
+                    &format!("msg-user-reply-route-child-done-{index}"),
+                    &format!("child reply {index} sent"),
+                ),
+                ev_completed(&format!("resp-user-reply-route-child-done-{index}")),
+            ]),
+        )
+        .await;
+        let root_message = message.clone();
+        let root_wake = mount_sse_once_match(
+            &server,
+            move |request: &wiremock::Request| {
+                body_contains(request, "<agent_message>") && body_contains(request, &root_message)
+            },
+            sse(vec![
+                ev_response_created(&format!("resp-user-reply-route-root-{index}")),
+                ev_assistant_message(
+                    &format!("msg-user-reply-route-root-{index}"),
+                    &format!("root received reply {index}"),
+                ),
+                ev_completed(&format!("resp-user-reply-route-root-{index}")),
+            ]),
+        )
+        .await;
+
+        test.codex
+            .prompt_live_agent(
+                &child_thread_id.to_string(),
+                vec![UserInput::Text {
+                    text: prompt.clone(),
+                    text_elements: Vec::new(),
+                }],
+                UserAgentResponseHandling::Presentation,
+            )
+            .await?;
+
+        let child_request = wait_for_request_containing_text(&child_turn, &prompt).await?;
+        assert_eq!(
+            child_request
+                .message_input_texts("user")
+                .iter()
+                .filter(|text| text.contains("<agent_reply_route>"))
+                .count(),
+            1,
+            "the persistent route should be installed once and reused from history"
+        );
+        let _ = wait_for_request_containing_text(&child_after_reply, &call_id).await?;
+        let _ = wait_for_request_containing_text(&root_wake, &message).await?;
+        let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+        let _ = wait_for_terminal_status(test.codex.as_ref()).await?;
+    }
+
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Disabled,
+            )
+            .await?,
+        (child_thread_id, Some(UserAgentReplyRouteMode::Enabled),)
+    );
+
+    let blocked_turn = mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, BLOCKED_PROMPT) && !body_contains(request, BLOCKED_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-disabled-user-reply-route"),
+            ev_function_call_with_namespace(
+                BLOCKED_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &serde_json::to_string(&json!({
+                    "target": "Main",
+                    "message": BLOCKED_MESSAGE,
+                    "w": "x",
+                }))?,
+            ),
+            ev_completed("resp-disabled-user-reply-route"),
+        ])),
+    )
+    .await;
+    let blocked_result = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, BLOCKED_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-disabled-user-reply-route-result"),
+            ev_assistant_message(
+                "msg-disabled-user-reply-route-result",
+                "reply route was disabled",
+            ),
+            ev_completed("resp-disabled-user-reply-route-result"),
+        ]),
+    )
+    .await;
+    let unexpected_root_wake = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "<agent_message>") && body_contains(request, BLOCKED_MESSAGE)
+        },
+        sse(vec![
+            ev_response_created("resp-unexpected-disabled-user-reply"),
+            ev_completed("resp-unexpected-disabled-user-reply"),
+        ]),
+    )
+    .await;
+
+    test.codex
+        .prompt_live_agent(
+            &child_thread_id.to_string(),
+            vec![UserInput::Text {
+                text: BLOCKED_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let blocked_request = wait_for_request_containing_text(&blocked_turn, BLOCKED_PROMPT).await?;
+    assert_eq!(
+        blocked_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<agent_reply_route>"))
+            .count(),
+        1,
+        "disabling the route should not add another model-context fragment"
+    );
+    let blocked_result = wait_for_request_containing_text(&blocked_result, BLOCKED_CALL_ID).await?;
+    assert!(blocked_result.body_contains_text("disabled by the user"));
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    assert!(unexpected_root_wake.requests().is_empty());
+
+    let reenabled_turn = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, REENABLED_PROMPT),
+        sse(vec![
+            ev_response_created("resp-reenabled-user-reply-route"),
+            ev_assistant_message(
+                "msg-reenabled-user-reply-route",
+                "reply route remains available",
+            ),
+            ev_completed("resp-reenabled-user-reply-route"),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        test.codex
+            .set_agent_reply_route(
+                &child_thread_id.to_string(),
+                UserAgentReplyRouteMode::Enabled,
+            )
+            .await?,
+        (child_thread_id, Some(UserAgentReplyRouteMode::Disabled),)
+    );
+    test.codex
+        .prompt_live_agent(
+            &child_thread_id.to_string(),
+            vec![UserInput::Text {
+                text: REENABLED_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let reenabled_request =
+        wait_for_request_containing_text(&reenabled_turn, REENABLED_PROMPT).await?;
+    assert_eq!(
+        reenabled_request
+            .message_input_texts("user")
+            .iter()
+            .filter(|text| text.contains("<agent_reply_route>"))
+            .count(),
+        1,
+        "disable and re-enable must not duplicate the persistent context item"
+    );
+    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
     Ok(())
 }
 
@@ -6329,6 +6631,7 @@ async fn send_input_final_observation_wakes_an_idle_parent(
             RolloutItem::SessionMeta(_)
             | RolloutItem::ResponseItem(_)
             | RolloutItem::Compacted(_)
+            | RolloutItem::RetainedContext(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::AgentResponseObservation(_)
@@ -7058,7 +7361,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     let child_thread = initial.thread_manager.get_thread(spawned_id).await?;
     let _ = wait_for_requests(&initial_parent_followup).await?;
     let _ = wait_for_terminal_status(initial.codex.as_ref()).await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
     assert_eq!(
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("durable child final".to_string()))
@@ -7090,7 +7393,16 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         .thread_manager
         .remove_thread(&parent_thread_id)
         .await;
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
+    // Registry removal retires observers but does not release the live canonical writers.
+    // Drain both old runtimes before reopening the same persisted identities.
+    timeout(Duration::from_secs(/*secs*/ 10), async {
+        tokio::try_join!(
+            initial.codex.shutdown_and_wait(),
+            child_thread.shutdown_and_wait(),
+        )
+    })
+    .await??;
 
     let automatic_delivery = mount_sse_once_match(
         &server,
@@ -7238,10 +7550,8 @@ async fn fork_requires_explicit_agent_reconfiguration(
         .thread_manager
         .fork_legacy_thread(
             codex_core::ForkSnapshot::Interrupted,
-            initial.config.clone(),
+            StartThreadOptions::new(initial.config.clone()),
             rollout_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await?;
     assert_ne!(forked.thread_id, source_parent_id);
@@ -10448,16 +10758,10 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
     test.submit_turn(TURN_1_PROMPT).await?;
     let _ = wait_for_requests(&child_request).await?;
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: TURN_2_NO_WAIT_PROMPT.to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: TURN_2_NO_WAIT_PROMPT.to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let mut turn_id = None;
     let mut wait_started = false;
