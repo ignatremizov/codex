@@ -875,6 +875,7 @@ fn word_wrap_flattened_line<'a>(
         .word_splitter(rt_opts.word_splitter);
 
     let mut out: Vec<Line<'a>> = Vec::new();
+    let mut span_cursor = span_bounds.iter().enumerate().peekable();
 
     // Compute first line range with reduced width due to initial indent.
     let initial_width_available = opts
@@ -889,7 +890,7 @@ fn word_wrap_flattened_line<'a>(
     // Build first wrapped line with initial indent.
     let mut first_line = rt_opts.initial_indent.clone().style(line.style);
     {
-        let sliced = slice_line_spans(line, span_bounds, first_line_range);
+        let sliced = slice_line_spans(line, &mut span_cursor, first_line_range);
         let mut spans = first_line.spans;
         spans.append(
             &mut sliced
@@ -910,14 +911,32 @@ fn word_wrap_flattened_line<'a>(
         .width
         .saturating_sub(line_width(&rt_opts.subsequent_indent))
         .max(1);
-    let remaining_wrapped = wrap_ranges_trim(&flat[base..], opts.width(subsequent_width_available));
+    // First-fit decisions are local when both rows have the same width. Reuse the
+    // already computed suffix only at a space-separated word boundary where it
+    // starts exactly where rewrapping would. Keep the old path for split words,
+    // paragraph boundaries, projected text, and globally optimized wrapping.
+    let reuse_initial = initial_width_available == subsequent_width_available
+        && base > first_line_range.end
+        && matches!(opts.wrap_algorithm, textwrap::WrapAlgorithm::FirstFit)
+        && !flat.contains(['\r', '\n', '\u{FF9E}', '\u{FF9F}'])
+        && initial_wrapped
+            .get(1)
+            .is_some_and(|range| range.start == base);
+    let (remaining_wrapped, range_base) = if reuse_initial {
+        (initial_wrapped.into_iter().skip(1).collect::<Vec<_>>(), 0)
+    } else {
+        (
+            wrap_ranges_trim(&flat[base..], opts.width(subsequent_width_available)),
+            base,
+        )
+    };
     for r in &remaining_wrapped {
         if r.is_empty() {
             continue;
         }
         let mut subsequent_line = rt_opts.subsequent_indent.clone().style(line.style);
-        let offset_range = (r.start + base)..(r.end + base);
-        let sliced = slice_line_spans(line, span_bounds, &offset_range);
+        let offset_range = (r.start + range_base)..(r.end + range_base);
+        let sliced = slice_line_spans(line, &mut span_cursor, &offset_range);
         let mut spans = subsequent_line.spans;
         spans.append(
             &mut sliced
@@ -962,6 +981,7 @@ fn mixed_url_wrap_line<'a>(
     let ranges = mixed_url_wrap_ranges(flat, initial_width_available, subsequent_width_available);
 
     let mut out = Vec::new();
+    let mut span_cursor = span_bounds.iter().enumerate().peekable();
     for (idx, range) in ranges.iter().enumerate() {
         let mut wrapped_line = if idx == 0 {
             rt_opts.initial_indent.clone()
@@ -969,7 +989,7 @@ fn mixed_url_wrap_line<'a>(
             rt_opts.subsequent_indent.clone()
         }
         .style(line.style);
-        let sliced = slice_line_spans(line, span_bounds, range);
+        let sliced = slice_line_spans(line, &mut span_cursor, range);
         let mut spans = wrapped_line.spans;
         spans.extend(
             sliced
@@ -1229,18 +1249,24 @@ where
     out
 }
 
-fn slice_line_spans<'a>(
+/// Slices ascending, non-overlapping byte ranges without revisiting consumed spans.
+/// A span crossing a row boundary stays at the cursor until its final slice.
+fn slice_line_spans<'a, 'b, I>(
     original: &'a Line<'a>,
-    span_bounds: &[(Range<usize>, ratatui::style::Style)],
+    span_cursor: &mut std::iter::Peekable<I>,
     range: &Range<usize>,
-) -> Line<'a> {
+) -> Line<'a>
+where
+    I: Iterator<Item = (usize, &'b (Range<usize>, ratatui::style::Style))>,
+{
     let start_byte = range.start;
     let end_byte = range.end;
     let mut acc: Vec<Span<'a>> = Vec::new();
-    for (i, (range, style)) in span_bounds.iter().enumerate() {
-        let s = range.start;
-        let e = range.end;
+    while let Some((i, bound)) = span_cursor.peek().copied() {
+        let s = bound.0.start;
+        let e = bound.0.end;
         if e <= start_byte {
+            span_cursor.next();
             continue;
         }
         if s >= end_byte {
@@ -1254,9 +1280,12 @@ fn slice_line_spans<'a>(
             let content = original.spans[i].content.as_ref();
             let slice = &content[local_start..local_end];
             acc.push(Span {
-                style: *style,
+                style: bound.1,
                 content: std::borrow::Cow::Borrowed(slice),
             });
+        }
+        if e <= end_byte {
+            span_cursor.next();
         }
         if e >= end_byte {
             break;
@@ -1283,6 +1312,131 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>()
+    }
+
+    #[test]
+    fn ascending_slices_visit_each_span_once_as_rows_grow() {
+        for count in [16, 64, 256, 1024] {
+            // Empty spans, skipped whitespace, and spans shared by adjacent rows
+            // all exercise cursor advancement independently of byte width.
+            let line = Line::from(
+                (0..count)
+                    .flat_map(|_| vec!["".into(), "界é".red(), " ".blue()])
+                    .collect::<Vec<Span<'_>>>(),
+            );
+            let (_, bounds) = flatten_line(&line);
+            let visits = std::cell::Cell::new(0);
+            let mut cursor = bounds
+                .iter()
+                .enumerate()
+                .inspect(|_| visits.set(visits.get() + 1))
+                .peekable();
+            for row in 0..count {
+                let start = row * "界é ".len();
+                assert_eq!(
+                    slice_line_spans(&line, &mut cursor, &(start..start + "界".len())),
+                    Line::from("界".red()),
+                );
+                assert_eq!(
+                    slice_line_spans(
+                        &line,
+                        &mut cursor,
+                        &(start + "界".len()..start + "界é".len()),
+                    ),
+                    Line::from("é".red()),
+                );
+            }
+            assert_eq!(visits.get(), count * 3 - 1);
+        }
+    }
+
+    #[test]
+    fn styled_unicode_and_url_rows_preserve_exact_spans_and_indents() {
+        let line = Line::from(vec![
+            "界é ".red(),
+            "https://example.com/".blue().underlined(),
+            "路径".green().underlined(),
+            " fin".yellow(),
+        ]);
+        let opts = RtOptions::new(/*width*/ 8)
+            .initial_indent(Line::from("> ".dim()))
+            .subsequent_indent(Line::from("  ".cyan()));
+        assert_eq!(
+            adaptive_wrap_line(&line, opts),
+            vec![
+                Line::from(vec!["> ".dim(), "界é".red()]),
+                Line::from(vec![
+                    "  ".cyan(),
+                    "https://example.com/".blue().underlined(),
+                    "路径".green().underlined(),
+                ]),
+                Line::from(vec!["  ".cyan(), "fin".yellow()]),
+            ],
+        );
+    }
+
+    #[test]
+    fn equal_width_wrapping_matches_rewrapped_suffix() {
+        for text in [
+            "alpha beta gamma delta",
+            "alpha   beta    gamma ",
+            "abcdefghijklmnop qrstuvwxyz",
+            "alpha-beta-gamma delta-epsilon",
+            "界é 世界 café e\u{301}lan",
+            "https://example.com/path another word",
+            "first\nsecond third",
+            "ｶﾞｷﾞｸﾞ next words",
+        ] {
+            let line = Line::from(
+                text.chars()
+                    .enumerate()
+                    .map(|(index, ch)| {
+                        if index % 2 == 0 {
+                            ch.to_string().red()
+                        } else {
+                            ch.to_string().blue().bold()
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let (flat, bounds) = flatten_line(&line);
+            for width in [1, 2, 5, 8, 16] {
+                let options = Options::new(width).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
+                let initial = wrap_ranges_trim(&flat, options.clone());
+                let first = initial.first().unwrap();
+                let base = first.end
+                    + flat[first.end..]
+                        .chars()
+                        .take_while(|ch| *ch == ' ')
+                        .count();
+                let suffix = wrap_ranges_trim(&flat[base..], options);
+                let ranges = std::iter::once(first.clone()).chain(
+                    suffix
+                        .into_iter()
+                        .filter(|range| !range.is_empty())
+                        .map(|range| range.start + base..range.end + base),
+                );
+                let expected = ranges
+                    .enumerate()
+                    .map(|(index, range)| {
+                        let mut row = if index == 0 {
+                            Line::from("> ".dim())
+                        } else {
+                            Line::from("  ".cyan())
+                        };
+                        // Fresh traversal is the pre-optimization slicing behavior.
+                        let mut cursor = bounds.iter().enumerate().peekable();
+                        row.spans
+                            .extend(slice_line_spans(&line, &mut cursor, &range).spans);
+                        row
+                    })
+                    .collect::<Vec<_>>();
+                let opts = RtOptions::new(width + 2)
+                    .initial_indent(Line::from("> ".dim()))
+                    .subsequent_indent(Line::from("  ".cyan()));
+                assert_eq!(word_wrap_line(&line, opts), expected, "{text:?}, {width}");
+            }
+        }
     }
 
     #[test]

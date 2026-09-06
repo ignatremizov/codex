@@ -1,6 +1,7 @@
 //! Render persisted thread turns into history-cell building blocks.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ use crate::multi_agents::parse_thread_id;
 use crate::multi_agents::sub_agent_activity_summary;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::Turn;
 use codex_protocol::ThreadId;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
@@ -42,6 +44,28 @@ pub(crate) type CollabAgentMetadataMap = HashMap<ThreadId, AgentMetadata>;
 pub(crate) enum RawReasoningVisibility {
     Hidden,
     Visible,
+}
+
+/// Review boundaries can arrive on an older page after their duplicated user inputs.
+pub(crate) fn hidden_review_item_ids(turns: &[Turn]) -> HashSet<String> {
+    let mut hidden = HashSet::new();
+    let mut review_mode = false;
+    for (index, turn) in turns.iter().enumerate() {
+        let nested = index.checked_sub(/*rhs*/ 1).is_some_and(|previous| {
+            crate::app_backtrack::is_hidden_nested_review_turn(&turns[previous], turn)
+        });
+        for item in &turn.items {
+            match item {
+                ThreadItem::EnteredReviewMode { .. } => review_mode = true,
+                ThreadItem::ExitedReviewMode { .. } => review_mode = false,
+                ThreadItem::UserMessage { .. } if review_mode || nested => {
+                    hidden.insert(item.id().to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    hidden
 }
 
 pub(crate) async fn load_session_transcript(

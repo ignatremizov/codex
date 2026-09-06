@@ -18,6 +18,10 @@
 #[cfg(test)]
 #[path = "pager_overlay/highlight_tests.rs"]
 mod highlight_tests;
+mod retention;
+#[cfg(test)]
+#[path = "pager_overlay/retention_tests.rs"]
+mod retention_tests;
 mod transcript;
 mod window;
 
@@ -31,7 +35,6 @@ use self::transcript::transcript_title;
 use crate::chatwidget::ActiveCellTranscriptKey;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::SessionInfoCell;
-use crate::history_cell::UserHistoryCell;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
 use crate::key_hint::ShortcutHint;
@@ -39,7 +42,6 @@ use crate::keymap::PagerKeymap;
 use crate::render::Insets;
 use crate::render::renderable::InsetRenderable;
 use crate::render::renderable::Renderable;
-use crate::style::user_message_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::mark_buffer_hyperlinks_in_rows;
 use crate::terminal_hyperlinks::visible_lines;
@@ -936,6 +938,8 @@ pub(crate) struct TranscriptOverlay {
     cells: Vec<Arc<dyn HistoryCell>>,
     render_start: usize,
     render_end: usize,
+    /// Shared cell renderers for exactly the current window, independent of edge spacing.
+    retained_cells: Vec<retention::RetainedCell>,
     browser: TranscriptBrowserState,
     highlight_cell: Option<usize>,
     highlight_draw_pending: bool,
@@ -975,21 +979,11 @@ impl TranscriptOverlay {
         let render_end = transcript_cells.len();
         let render_start = render_end.saturating_sub(TRANSCRIPT_RENDER_WINDOW_CELL_LIMIT);
         let mut overlay = Self {
-            view: PagerView::new(
-                Self::render_cells(
-                    &transcript_cells[render_start..render_end],
-                    render_start,
-                    /*highlight_cell*/ None,
-                    TranscriptHistoryState::Idle,
-                    browser.detail_mode(),
-                ),
-                transcript_title(browser),
-                usize::MAX,
-                keymap,
-            ),
+            view: PagerView::new(Vec::new(), transcript_title(browser), usize::MAX, keymap),
             cells: transcript_cells,
             render_start,
             render_end,
+            retained_cells: Vec::new(),
             browser,
             highlight_cell: None,
             highlight_draw_pending: false,
@@ -997,6 +991,8 @@ impl TranscriptOverlay {
             history_state: TranscriptHistoryState::Idle,
             is_done: false,
         };
+        // Register the initial window through the same bounded retention path as later shifts.
+        overlay.reconcile_renderables();
         overlay.update_scroll_percentage_visibility();
         overlay
     }
@@ -1027,68 +1023,6 @@ impl TranscriptOverlay {
         previous
     }
 
-    fn render_cells(
-        cells: &[Arc<dyn HistoryCell>],
-        global_start: usize,
-        highlight_cell: Option<usize>,
-        history_state: TranscriptHistoryState,
-        detail_mode: TranscriptDetailMode,
-    ) -> Vec<Box<dyn Renderable>> {
-        cells
-            .iter()
-            .enumerate()
-            .map(|(local_index, cell)| {
-                Self::render_cell(
-                    cell,
-                    local_index,
-                    global_start.saturating_add(local_index),
-                    highlight_cell,
-                    history_state,
-                    detail_mode,
-                )
-            })
-            .collect()
-    }
-
-    fn render_cell(
-        cell: &Arc<dyn HistoryCell>,
-        local_index: usize,
-        global_index: usize,
-        highlight_cell: Option<usize>,
-        history_state: TranscriptHistoryState,
-        detail_mode: TranscriptDetailMode,
-    ) -> Box<dyn Renderable> {
-        if cell.as_any().is::<SessionInfoCell>()
-            && let Some(placeholder) = history_state.session_header_placeholder()
-        {
-            return Box::new(Line::from(placeholder).dim());
-        }
-        let style = if cell.as_any().is::<UserHistoryCell>() {
-            if highlight_cell == Some(global_index) {
-                user_message_style().reversed()
-            } else {
-                user_message_style()
-            }
-        } else {
-            Style::default()
-        };
-        let cell_renderable = CellRenderable::new(cell.clone(), style, detail_mode);
-        let mut cell_renderable: Box<dyn Renderable> = if cell.has_stable_transcript_height() {
-            Box::new(CachedRenderable::new(cell_renderable))
-        } else {
-            Box::new(cell_renderable)
-        };
-        if !cell.is_stream_continuation() && local_index > 0 {
-            cell_renderable = Box::new(InsetRenderable::new(
-                cell_renderable,
-                Insets::tlbr(
-                    /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
-                ),
-            ));
-        }
-        cell_renderable
-    }
-
     /// Insert a committed history cell while keeping the bounded window and cached live tail.
     ///
     /// This expects `cell` to be a committed transcript cell (not the in-flight active cell). If
@@ -1099,19 +1033,14 @@ impl TranscriptOverlay {
         let followed_loaded_end = self.renders_loaded_end();
         let follow_bottom = followed_loaded_end && self.view.is_scrolled_to_bottom();
         let tail_renderable = self.take_live_tail_renderable();
-        let global_index = self.cells.len();
         self.cells.push(cell);
 
         if followed_loaded_end && rendered_cell_count < TRANSCRIPT_RENDER_WINDOW_CELL_LIMIT {
             self.render_end = self.cells.len();
-            self.view.push_renderable(Self::render_cell(
-                &self.cells[global_index],
-                rendered_cell_count,
-                global_index,
-                self.highlight_cell,
-                self.history_state,
-                self.browser.detail_mode(),
-            ));
+            let retained = self.retained_cell(self.render_end - 1);
+            self.view
+                .push_renderable(retained.renderable(rendered_cell_count));
+            self.retained_cells.push(retained);
             if let Some(tail) = tail_renderable {
                 let tail = if rendered_cell_count == 0
                     && self
@@ -1385,8 +1314,9 @@ impl TranscriptOverlay {
 
     /// Sync the active-cell live tail with the current width and cell state.
     ///
-    /// Recomputes the tail only when the cache key changes, preserving scroll
-    /// position and dropping the tail if there is nothing to render.
+    /// Recomputes the tail only when the cache key changes and the viewport reaches it,
+    /// preserving scroll position and dropping the tail if there is nothing to render.
+    /// Offscreen revisions remain unacknowledged so returning to the tail gets current output.
     ///
     /// The overlay owns committed transcript cells while the live tail is derived from the current
     /// active cell, which can mutate in place while streaming. `App` calls this during
@@ -1402,6 +1332,11 @@ impl TranscriptOverlay {
         active_key: Option<ActiveCellTranscriptKey>,
         compute_lines: impl FnOnce(u16) -> Option<Vec<HyperlinkLine>>,
     ) {
+        if self.renders_loaded_end() && !self.live_tail_is_visible(width) {
+            // Keep the old key and geometry until navigation reaches the tail. In particular,
+            // do not acknowledge a revision whose lines have not been materialized.
+            return;
+        }
         let next_key = self.renders_loaded_end().then(|| {
             active_key.map(|key| LiveTailKey {
                 width,
@@ -1456,18 +1391,13 @@ impl TranscriptOverlay {
                 else {
                     continue;
                 };
-                if let Some(cell) = self.cells.get(global_index) {
+                if self.cells.get(global_index).is_some() {
                     // Highlighting only changes style, so the cached heights and chunk bottoms
                     // remain valid. Replacing just the affected cells preserves wrapping caches
                     // for the rest of the transcript, including other cells in the viewport.
-                    self.view.renderables[local_index] = Self::render_cell(
-                        cell,
-                        local_index,
-                        global_index,
-                        self.highlight_cell,
-                        self.history_state,
-                        self.browser.detail_mode(),
-                    );
+                    let retained = self.retained_cell(global_index);
+                    self.view.renderables[local_index] = retained.renderable(local_index);
+                    self.retained_cells[local_index] = retained;
                 }
             }
             if let Some(global_index) = self.highlight_cell
@@ -1514,13 +1444,7 @@ impl TranscriptOverlay {
             .view
             .pending_align_chunk_top
             .map(|index| self.render_start.saturating_add(index));
-        self.view.replace_renderables(Self::render_cells(
-            &self.cells[self.render_start..self.render_end],
-            self.render_start,
-            self.highlight_cell,
-            self.history_state,
-            self.browser.detail_mode(),
-        ));
+        self.reconcile_renderables();
         if self.renders_loaded_end()
             && let Some(tail) = tail_renderable
         {
@@ -1701,6 +1625,7 @@ mod tests {
     use crate::exec_cell::CommandOutput;
     use crate::history_cell;
     use crate::history_cell::HistoryCell;
+    use crate::history_cell::UserHistoryCell;
     use crate::history_cell::new_patch_event;
     use codex_protocol::parse_command::ParsedCommand;
     use ratatui::Terminal;

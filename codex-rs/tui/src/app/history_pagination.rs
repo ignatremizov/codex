@@ -11,6 +11,7 @@ use crate::history_cell::UserHistoryCell;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::collab_agent_metadata_from_items;
+use crate::thread_transcript::hidden_review_item_ids;
 use crate::thread_transcript::refresh_collab_agent_metadata;
 use crate::thread_transcript::thread_items_with_sources_to_transcript_cells;
 use codex_app_server_protocol::ClientRequest;
@@ -78,39 +79,42 @@ impl App {
             app_server.cancel_older_history_page(thread_id);
             return Ok(());
         };
-        let (cwd, mut turns) = {
+        let (cwd, snapshotted_turn_ids, mut turns) = {
             let store = store.lock().await;
             (
                 store
                     .session
                     .as_ref()
                     .map_or_else(|| self.config.cwd.clone(), |session| session.cwd.clone()),
-                store.turns.clone(),
+                store
+                    .turns
+                    .iter()
+                    .map(|turn| turn.id.clone())
+                    .collect::<HashSet<_>>(),
+                store
+                    .turns
+                    .iter()
+                    .map(|turn| Turn {
+                        id: turn.id.clone(),
+                        items: Vec::new(),
+                        items_view: turn.items_view,
+                        status: turn.status.clone(),
+                        error: turn.error.clone(),
+                        started_at: turn.started_at,
+                        completed_at: turn.completed_at,
+                        duration_ms: turn.duration_ms,
+                    })
+                    .collect(),
             )
         };
         let mut items = app_server
             .apply_older_history_page(thread_id, cursor, page, &mut turns)
             .await?;
-        let mut hidden_item_ids = HashSet::new();
-        let mut review_mode = false;
-        for (index, turn) in turns.iter().enumerate() {
-            let hidden_nested_review_turn = index
-                .checked_sub(/*rhs*/ 1)
-                .and_then(|previous| turns.get(previous))
-                .is_some_and(|previous| {
-                    crate::app_backtrack::is_hidden_nested_review_turn(previous, turn)
-                });
-            for item in &turn.items {
-                match item {
-                    ThreadItem::EnteredReviewMode { .. } => review_mode = true,
-                    ThreadItem::ExitedReviewMode { .. } => review_mode = false,
-                    ThreadItem::UserMessage { .. } if review_mode || hidden_nested_review_turn => {
-                        hidden_item_ids.insert(item.id());
-                    }
-                    _ => {}
-                }
-            }
-        }
+        let mut locked_store = store.lock().await;
+        let inserted = reconcile_older_turns(&mut locked_store.turns, turns, &snapshotted_turn_ids);
+        items.retain(|item| inserted.contains(item.id()));
+        let turns = &locked_store.turns;
+        let hidden_item_ids = hidden_review_item_ids(turns);
         let visibility = if self.config.show_raw_agent_reasoning {
             RawReasoningVisibility::Visible
         } else {
@@ -118,22 +122,33 @@ impl App {
         };
         let collab_agent_metadata =
             collab_agent_metadata_from_items(turns.iter().flat_map(|turn| turn.items.iter()));
+        let page_item_ids = items.iter().map(ThreadItem::id).collect::<HashSet<_>>();
         let item_turn_ids = turns
             .iter()
             .flat_map(|turn| {
                 turn.items
                     .iter()
+                    .filter(|item| {
+                        page_item_ids.contains(item.id())
+                            || (!hidden_item_ids.is_empty()
+                                && matches!(item, ThreadItem::UserMessage { .. }))
+                    })
                     .map(move |item| (item.id().to_string(), turn.id.clone()))
             })
             .collect::<HashMap<_, _>>();
         let width = tui.terminal.last_known_screen_size.width;
-        if !hidden_item_ids.is_empty() {
-            let user_items = turns
+        let user_items = if hidden_item_ids.is_empty() {
+            Vec::new()
+        } else {
+            turns
                 .iter()
                 .flat_map(|turn| turn.items.iter())
                 .filter(|item| matches!(item, ThreadItem::UserMessage { .. }))
                 .map(|item| (item.id().to_string(), item.clone()))
-                .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        };
+        drop(locked_store);
+        if !hidden_item_ids.is_empty() {
             let projected_user_cells = thread_items_with_sources_to_transcript_cells(
                 Some(thread_id),
                 &cwd,
@@ -211,22 +226,6 @@ impl App {
             overlay.replace_cells(self.transcript_cells.clone());
         }
         items.retain(|item| !hidden_item_ids.contains(item.id()));
-        {
-            let mut store = store.lock().await;
-            turns.retain_mut(|turn| {
-                let Some(current) = store.turns.iter_mut().find(|current| current.id == turn.id)
-                else {
-                    return true;
-                };
-                let items = std::mem::take(&mut turn.items)
-                    .into_iter()
-                    .filter(|item| !current.items.iter().any(|known| known.id() == item.id()))
-                    .collect::<Vec<_>>();
-                current.items.splice(0..0, items);
-                false
-            });
-            store.turns.splice(0..0, turns);
-        }
         let cells = thread_items_with_sources_to_transcript_cells(
             Some(thread_id),
             &cwd,
@@ -299,3 +298,48 @@ impl App {
         Ok(())
     }
 }
+
+/// Merge only page items into the latest store, preserving live item payloads and turn state.
+fn reconcile_older_turns(
+    current: &mut Vec<Turn>,
+    incoming: Vec<Turn>,
+    snapshotted_turn_ids: &HashSet<String>,
+) -> HashSet<String> {
+    let indices = current
+        .iter()
+        .enumerate()
+        .map(|(index, turn)| (turn.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut inserted = HashSet::new();
+    let mut older = Vec::new();
+    for mut turn in incoming {
+        if snapshotted_turn_ids.contains(&turn.id) && !indices.contains_key(&turn.id) {
+            // A live rollback or replacement removed this snapshotted turn while the page loaded.
+            continue;
+        }
+        if turn.items.is_empty() && indices.contains_key(&turn.id) {
+            continue;
+        }
+        if let Some(&index) = indices.get(&turn.id) {
+            let retained = &mut current[index];
+            let mut known = retained
+                .items
+                .iter()
+                .map(|item| item.id().to_string())
+                .collect::<HashSet<_>>();
+            turn.items
+                .retain(|item| known.insert(item.id().to_string()));
+            inserted.extend(turn.items.iter().map(|item| item.id().to_string()));
+            retained.items.splice(0..0, turn.items);
+        } else {
+            inserted.extend(turn.items.iter().map(|item| item.id().to_string()));
+            older.push(turn);
+        }
+    }
+    current.splice(0..0, older);
+    inserted
+}
+
+#[cfg(test)]
+#[path = "history_pagination_tests.rs"]
+mod tests;

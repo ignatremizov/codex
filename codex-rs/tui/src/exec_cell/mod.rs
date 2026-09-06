@@ -1,6 +1,7 @@
 mod live_output;
 mod model;
 mod render;
+mod render_cache;
 
 pub(crate) use model::ActiveExecCall;
 pub(crate) use model::CommandOutput;

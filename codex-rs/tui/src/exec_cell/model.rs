@@ -6,10 +6,12 @@
 //! example, an orphan end that should render as a separate history entry).
 
 use std::borrow::Cow;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
 use super::live_output::LiveCommandOutput;
+use super::render_cache::RenderCache;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_protocol::parse_command::ParsedCommand;
@@ -22,6 +24,8 @@ pub(crate) struct CommandOutput {
     aggregated_output: String,
     /// The live preview while command-output deltas are still arriving.
     live_output: Option<LiveCommandOutput>,
+    /// Final output is immutable; streamed output uses its own incremental counters instead.
+    finalized_line_count: OnceLock<usize>,
 }
 
 impl CommandOutput {
@@ -30,6 +34,7 @@ impl CommandOutput {
             exit_code,
             aggregated_output,
             live_output: None,
+            finalized_line_count: OnceLock::new(),
         }
     }
 
@@ -38,7 +43,9 @@ impl CommandOutput {
         match self.live_output.as_ref() {
             Some(output) => (output.total_lines(), output.retained_lines()),
             None => {
-                let total = self.aggregated_output.lines().count();
+                let total = *self
+                    .finalized_line_count
+                    .get_or_init(|| self.aggregated_output.lines().count());
                 (total, total)
             }
         }
@@ -86,7 +93,9 @@ pub(crate) struct ExecCall {
 
 #[derive(Debug)]
 pub(crate) struct ExecCell {
-    pub(crate) calls: Vec<ExecCall>,
+    // Mutations must stay in this module so every content/status update clears the layout cache.
+    pub(super) calls: Vec<ExecCall>,
+    pub(super) render_cache: RenderCache,
     animations_enabled: bool,
     output_preview_lines: usize,
     user_shell_output_preview_lines: usize,
@@ -102,6 +111,7 @@ impl ExecCell {
     pub(crate) fn new(call: ExecCall, animations_enabled: bool) -> Self {
         Self {
             calls: vec![call],
+            render_cache: RenderCache::default(),
             animations_enabled,
             output_preview_lines: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
             user_shell_output_preview_lines:
@@ -115,6 +125,7 @@ impl ExecCell {
     ) -> Self {
         self.output_preview_lines = limits.command;
         self.user_shell_output_preview_lines = limits.user_shell;
+        self.render_cache = RenderCache::default();
         self
     }
 
@@ -139,6 +150,7 @@ impl ExecCell {
             interaction_input,
         };
         if self.is_exploring_cell() && Self::is_exploring_call(&call) {
+            self.render_cache = RenderCache::default();
             self.calls.push(call);
             true
         } else {
@@ -163,6 +175,7 @@ impl ExecCell {
         call.output = Some(output);
         call.duration = Some(duration);
         call.start_time = None;
+        self.render_cache = RenderCache::default();
         true
     }
 
@@ -179,6 +192,7 @@ impl ExecCell {
     }
 
     pub(crate) fn mark_failed(&mut self) {
+        self.render_cache = RenderCache::default();
         for call in self.calls.iter_mut() {
             if call.duration.is_none() {
                 let elapsed = call
@@ -237,6 +251,7 @@ impl ExecCell {
             .live_output
             .get_or_insert_with(LiveCommandOutput::default)
             .push_str(chunk);
+        self.render_cache = RenderCache::default();
         true
     }
 
@@ -263,3 +278,7 @@ impl ExecCall {
         matches!(self.source, ExecCommandSource::UnifiedExecInteraction)
     }
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

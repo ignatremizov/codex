@@ -5,6 +5,7 @@ use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
 use super::model::OutputPreviewLineLimits;
+use super::render_cache::RenderMode;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
@@ -12,6 +13,7 @@ use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
 use crate::render::highlight::highlight_bash_to_lines;
+use crate::render::highlight::syntax_theme_revision;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
 use crate::ui_consts::TRANSCRIPT_HINT;
@@ -254,16 +256,41 @@ fn activity_marker(start_time: Option<Instant>, animations_enabled: bool) -> Spa
 
 impl HistoryCell for ExecCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if self.calls.len() > 1 && (!self.is_exploring_cell() || !self.is_active()) {
-            self.grouped_command_display_lines(width)
-        } else if self.is_exploring_cell() {
-            self.exploring_display_lines(width)
-        } else {
-            self.command_display_lines(width)
-        }
+        self.render_cache.render(
+            RenderMode::Review,
+            width,
+            syntax_theme_revision(),
+            || self.is_active(),
+            || {
+                if self.calls.len() > 1 && (!self.is_exploring_cell() || !self.is_active()) {
+                    self.grouped_command_display_lines(width)
+                } else if self.is_exploring_cell() {
+                    self.exploring_display_lines(width)
+                } else {
+                    self.command_display_lines(width)
+                }
+            },
+        )
     }
 
     fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.render_cache.render(
+            RenderMode::Full,
+            width,
+            syntax_theme_revision(),
+            || self.is_active(),
+            || self.uncached_transcript_lines(width),
+        )
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        plain_lines(self.transcript_lines(u16::MAX))
+    }
+}
+
+impl ExecCell {
+    // Keep the established Full renderer intact: caching must not change hydration or audit detail.
+    fn uncached_transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = vec![];
         for (i, call) in self.iter_calls().enumerate() {
             if i > 0 {
@@ -307,10 +334,6 @@ impl HistoryCell for ExecCell {
             }
         }
         lines
-    }
-
-    fn raw_lines(&self) -> Vec<Line<'static>> {
-        plain_lines(self.transcript_lines(u16::MAX))
     }
 }
 

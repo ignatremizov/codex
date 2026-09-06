@@ -24,7 +24,66 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::MessagePhase;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
+use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+
+#[test]
+fn older_review_boundaries_hide_nested_inputs_without_hiding_following_prompts() {
+    let user = |id: &str, text: &str| ThreadItem::UserMessage {
+        id: id.to_string(),
+        client_id: None,
+        content: vec![UserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+    };
+    let turn = |id: &str, items| Turn {
+        id: id.to_string(),
+        items,
+        items_view: TurnItemsView::Full,
+        status: TurnStatus::Completed,
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+    };
+    let nested = Turn {
+        status: TurnStatus::Interrupted,
+        ..turn(
+            "nested",
+            vec![user("nested-1", "review"), user("nested-2", "review")],
+        )
+    };
+    let later = turn("later", vec![user("later-user", "real prompt")]);
+    let mut turns = vec![nested, later];
+    assert!(super::hidden_review_item_ids(&turns).is_empty());
+    turns.insert(
+        0,
+        turn(
+            "review",
+            vec![
+                user("review-prompt", "start review"),
+                ThreadItem::EnteredReviewMode {
+                    id: "entered".to_string(),
+                    review: "review".to_string(),
+                },
+                user("inline-input", "review"),
+                ThreadItem::ExitedReviewMode {
+                    id: "exited".to_string(),
+                    review: "done".to_string(),
+                },
+            ],
+        ),
+    );
+    assert_eq!(
+        super::hidden_review_item_ids(&turns),
+        std::collections::HashSet::from([
+            "inline-input".to_string(),
+            "nested-1".to_string(),
+            "nested-2".to_string(),
+        ]),
+    );
+}
 
 fn thread_items_to_transcript_cells(
     thread_id: Option<ThreadId>,
