@@ -6,6 +6,7 @@ use codex_protocol::openai_models::ModelPreset;
 
 use super::agent_spawn_option_completion;
 use super::agent_target_popup::AGENT_OBSERVATION_MODE_CHOICES;
+use super::agent_target_popup::AGENT_REPLY_ROUTE_MODE_CHOICES;
 use super::agent_target_popup::AgentPromptTarget;
 use super::agent_target_popup::is_agent_target_action;
 use super::agent_target_popup::token_end;
@@ -71,16 +72,16 @@ pub(super) fn agent_command_highlights(
     } else {
         spawn_options_allowed = is_spawn_role_selector(first, targets);
         highlights.push(target_highlight(first_line, first_range.clone(), targets));
-        if token_ranges
-            .get(index)
-            .is_some_and(|range| &first_line[range.clone()] == "close")
-        {
+        if let Some(target_first_action) = token_ranges.get(index).and_then(|range| {
+            let action = &first_line[range.clone()];
+            matches!(action, "close" | "replies").then_some(action)
+        }) {
             let range = token_ranges[index].clone();
             highlights.push(AgentCommandHighlight {
                 range,
                 kind: AgentCommandHighlightKind::Action,
             });
-            action = Some("close");
+            action = Some(target_first_action);
             spawn_options_allowed = false;
             index += 1;
         }
@@ -95,6 +96,10 @@ pub(super) fn agent_command_highlights(
                     || is_effort_option(token, selected_model)))
             || (action == Some("observe")
                 && AGENT_OBSERVATION_MODE_CHOICES
+                    .iter()
+                    .any(|(mode, _description)| token == *mode))
+            || (action == Some("replies")
+                && AGENT_REPLY_ROUTE_MODE_CHOICES
                     .iter()
                     .any(|(mode, _description)| token == *mode));
         if !recognized {

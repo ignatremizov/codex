@@ -1,4 +1,6 @@
 use super::*;
+use crate::context::AgentContextIdentity;
+use crate::context::AgentReplyRoute;
 use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolPayload;
@@ -10,6 +12,7 @@ use codex_history::ResponseItemEnvelope;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -404,6 +407,36 @@ fn developer_message(text: String) -> ResponseItem {
     }
 }
 
+fn persistent_agent_reply_route(agent_id: ThreadId, nickname: &str) -> ResponseItem {
+    ContextualUserFragment::into(AgentReplyRoute::until_disabled(AgentContextIdentity::V1 {
+        agent_id,
+        agent_ref: Some(2),
+        nickname: Some(nickname.to_string()),
+    }))
+}
+
+#[test]
+fn persistent_route_compaction_keeps_one_latest_envelope_without_pinning_client_text() {
+    let source = ThreadId::new();
+    let old = persistent_agent_reply_route(source, "Old");
+    let current = persistent_agent_reply_route(source, "Current");
+    let mut quoted = ResponseItemEnvelope::new(current.clone());
+    quoted.metadata = Some(CodexHarnessMetadata {
+        client_authored: true,
+        ..Default::default()
+    });
+    let history = vec![old.clone().into(), current.clone().into(), quoted.clone()];
+    let routes = persistent_agent_reply_routes(&history);
+    assert_eq!(routes, vec![ResponseItemEnvelope::new(current.clone())]);
+    let prompt = ResponseItemEnvelope::new(user_message("retained prompt"));
+    assert_eq!(
+        insert_initial_context_before_last_real_user_or_summary(
+            vec![old.into(), quoted.clone(), prompt.clone()],
+            routes,
+        ),
+        vec![quoted, ResponseItemEnvelope::new(current), prompt],
+    );
+}
 
 fn compacted_user_message<'a>(text: &str, original: &'a ResponseItem) -> CompactedUserMessage<'a> {
     CompactedUserMessage {

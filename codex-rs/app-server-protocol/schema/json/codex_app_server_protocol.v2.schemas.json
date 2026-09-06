@@ -683,6 +683,31 @@
           ],
           "title": "ObserveAgentControlAction",
           "type": "object"
+        },
+        {
+          "description": "Enable or disable the target's attributed reply route to a controlled recipient.",
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "target": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "replyRoute"
+              ],
+              "title": "ReplyRouteAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "target",
+            "type"
+          ],
+          "title": "ReplyRouteAgentControlAction",
+          "type": "object"
         }
       ]
     },
@@ -958,6 +983,40 @@
           ],
           "title": "ObservedAgentControlOutcome",
           "type": "object"
+        },
+        {
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "previous_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentReplyRouteMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "target_thread_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "replyRouteChanged"
+              ],
+              "title": "ReplyRouteChangedAgentControlOutcomeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "target_thread_id",
+            "type"
+          ],
+          "title": "ReplyRouteChangedAgentControlOutcome",
+          "type": "object"
         }
       ]
     },
@@ -1202,6 +1261,14 @@
         "sourceThreadId"
       ],
       "type": "object"
+    },
+    "AgentReplyRouteMode": {
+      "description": "User-authored state for a target's attributed reply route.",
+      "enum": [
+        "enabled",
+        "disabled"
+      ],
+      "type": "string"
     },
     "AgentResponseFinalDelivery": {
       "description": "Final-response handling retained as durable evidence for an observer.",
@@ -25782,7 +25849,8 @@
         "resume",
         "interrupt",
         "close",
-        "observe"
+        "observe",
+        "reply_route"
       ],
       "type": "string"
     },

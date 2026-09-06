@@ -278,7 +278,7 @@ async fn acknowledged_completion_survives_stale_checkpoint_before_or_after_consu
 
 #[tokio::test]
 async fn acknowledged_task_survives_stale_but_not_source_covered_compaction() {
-    let (mut session, _, _) = make_session_and_context_with_rx().await;
+    let (mut session, turn, _) = make_session_and_context_with_rx().await;
     let store = attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique")).await;
     let mut task = ResponseItem::Message {
         status: None,
@@ -302,6 +302,8 @@ async fn acknowledged_task_survives_stale_but_not_source_covered_compaction() {
         commentary_admissions: Vec::new(),
         commentary_delivery: None,
         target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
         queue_delivery: false,
         message_wake_turn_id: None,
         baseline_final_delivery: AgentResponseFinalDelivery::Passive,
@@ -365,8 +367,8 @@ async fn acknowledged_task_survives_stale_but_not_source_covered_compaction() {
         let installed = session
             .publish_compacted_history(
                 Vec::new(),
-                /*reference_context_item*/ None,
-                /*world_state_baseline*/ None,
+                turn.to_turn_context_item(),
+                WorldStateSnapshot::default(),
                 CompactedHistoryMetadata {
                     input_goal_ids: Default::default(),
                     completion_source_items: crate::compact::completion_source_items(
@@ -379,10 +381,12 @@ async fn acknowledged_task_survives_stale_but_not_source_covered_compaction() {
                     compaction_response_id: None,
                     compaction_model_hash: None,
                     reviewer_compaction_hash: None,
-                },
+                }
+                .into(),
             )
             .await
-            .expect("publish task checkpoint");
+            .expect("publish task checkpoint")
+            .expect("install task checkpoint");
         assert_eq!(
             installed
                 .iter()
