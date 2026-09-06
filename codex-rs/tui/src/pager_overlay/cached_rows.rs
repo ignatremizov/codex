@@ -3,13 +3,12 @@
 use std::cell::RefCell;
 
 use crate::render::renderable::Renderable;
+use crate::terminal_hyperlinks::render_line_rows;
 use crate::terminal_hyperlinks::wrap_line_rows;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Widget;
 
 pub(super) struct CachedRows {
     lines: Vec<Line<'static>>,
@@ -64,8 +63,7 @@ impl Renderable for CachedRows {
             let end = start
                 .saturating_add(usize::from(area.height))
                 .min(rows.len());
-            // Rows already contain alignment padding. Do not wrap or align them again.
-            Widget::render(Paragraph::new(rows[start..end].to_vec()), area, buf);
+            render_line_rows(&rows[start..end], area, buf);
         });
     }
 }

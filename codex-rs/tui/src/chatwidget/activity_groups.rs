@@ -33,7 +33,7 @@ impl ChatWidget {
         if let Some(exploration) = active.as_any_mut().downcast_mut::<ExecCell>()
             && exploration.is_exploring_cell()
         {
-            exploration.group.push_detail(Arc::from(cell));
+            exploration.push_detail(Arc::from(cell));
             self.bump_active_cell_revision();
             return Ok(());
         }
