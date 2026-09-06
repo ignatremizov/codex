@@ -797,19 +797,17 @@ impl AgentControl {
         }
         if response_observation.target_messages()
             && let Some(target_turn_id) = target_turn_id.as_deref()
-        {
-            if let Err(err) = self
+            && let Err(err) = self
                 .inject_agent_reply_route(child_thread, parent, target_turn_id)
                 .await
-            {
-                drop(watcher_registration);
-                self.restore_response_observation_relationship_snapshot(
-                    parent,
-                    child,
-                    previous_relationship,
-                );
-                return Err(err);
-            }
+        {
+            drop(watcher_registration);
+            self.restore_response_observation_relationship_snapshot(
+                parent,
+                child,
+                previous_relationship,
+            );
+            return Err(err);
         }
         if let Some(task_preview) = task_preview.as_ref() {
             self.set_response_observation_task_preview(

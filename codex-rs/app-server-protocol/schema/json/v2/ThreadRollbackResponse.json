@@ -2714,7 +2714,8 @@
         "resume",
         "interrupt",
         "close",
-        "observe"
+        "observe",
+        "replyRoute"
       ],
       "type": "string"
     },

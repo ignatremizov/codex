@@ -22,7 +22,6 @@ mod response_observation;
 
 pub(in crate::agent::control) use self::response_observation::CommentaryDeliveryRoute;
 pub(in crate::agent::control) use self::response_observation::FinalResponseObservationReplacement;
-pub(in crate::agent::control) use self::response_observation::PreparedTargetMessageRouteReplacement;
 pub(crate) use self::response_observation::ReplacedFinalResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBinding;
 pub(crate) use self::response_observation::ResponseObservationBindingPublication;
