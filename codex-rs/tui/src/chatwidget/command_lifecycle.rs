@@ -634,27 +634,31 @@ impl ChatWidget {
                 });
                 let completed = cell.complete_call(&id, output, duration);
                 debug_assert!(completed, "new exec cell should contain {id}");
-                if let Some(active) = self
+                let remaining = match self
                     .transcript
                     .active_cell
                     .as_mut()
                     .and_then(|cell| cell.as_any_mut().downcast_mut::<ExecCell>())
-                    && !active.is_active()
-                    && active.is_exploring_cell()
-                    && cell.is_exploring_cell()
                 {
                     // Replayed commands have completion events without matching starts.
-                    active.group.calls.extend(cell.group.calls);
-                    self.bump_active_cell_revision();
-                    self.request_redraw();
-                } else {
-                    self.flush_active_cell();
-                    if cell.should_flush() {
-                        self.add_to_history(cell);
-                    } else {
-                        self.transcript.active_cell = Some(Box::new(cell));
+                    // Use the group's owner so cached rows and detail positions stay current.
+                    Some(active) if !active.is_active() => active.append_completed(cell),
+                    _ => Err(cell),
+                };
+                match remaining {
+                    Ok(()) => {
                         self.bump_active_cell_revision();
                         self.request_redraw();
+                    }
+                    Err(cell) => {
+                        self.flush_active_cell();
+                        if cell.should_flush() {
+                            self.add_to_history(cell);
+                        } else {
+                            self.transcript.active_cell = Some(Box::new(cell));
+                            self.bump_active_cell_revision();
+                            self.request_redraw();
+                        }
                     }
                 }
             }

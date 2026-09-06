@@ -167,6 +167,18 @@ q close    v detail    [ review prev    ] review next
 
 `Home` and `End` address the absolute beginning and end of the loaded transcript. On paginated history, `Home` keeps requesting older pages until the true beginning is available; `End` cancels that continuation and returns to the latest history. The shared `TranscriptView` keeps logical entry anchors and bounded layout caches, so loading more history does not introduce a second pager state machine.
 
+In either transcript viewport, fixed navigation keys such as `Ctrl+Home`,
+`Ctrl+End`, and `Ctrl+Space` take priority over unrelated pager chord prefixes.
+An explicit owned-browser close binding still works when no selection, Find, or
+prompt preview owns the interaction. A close chord shared with a global action
+closes Review or Full first; pressing it again outside the browser invokes the
+global action. Outside the browser, composer shortcuts retain their existing
+priority.
+
+Cached static rows retain Ratatui's wrapped rendering at the right edge,
+including clipped wide graphemes. Painting remains limited to the visible rows;
+repainting one cached row must not move subsequent rows.
+
 When backtrack preview is active, retain its edit hints and show only actions that are actually available. Do not hide working pager/browser controls or advertise confirmation before painted-content eligibility is established.
 
 Respect modal, search, selection and disclosure ownership before routing browser keys. Plain `v` and plain brackets (including Windows AltGr bracket input) belong only to an explicitly open live browser; they must not intercept the composer or fixed historical preview. Within that browser, browser-local keys take priority over conflicting pager bindings. Static pagers retain configured bindings.
@@ -221,7 +233,9 @@ Deferred ideas are recorded in
 - Distinguish an explicitly open live browser from the existing detailed-rendering boolean: Review still owns pager input even when cells use ordinary display representations. Preserve existing live-tail identity and invalidation.
 - An explicit optional browser state distinguishes live Review/Full from fixed historical Full.
   The configured transcript shortcut and backtrack open the live browser; the resume-picker preview keeps
-  its current Full-only title, hints, and pager handling.
+  its current Full-only title, hints, and pager handling. Its Find editor receives
+  the complete resolved keymap, including remapped single keys and editor chords,
+  not only the pager bindings used to construct the preview.
 - In Review, committed cells and the live tail use
   `display_hyperlink_lines(width)`. In Full they use
   `transcript_hyperlink_lines(width)`. Detail mode is part of the live-tail
