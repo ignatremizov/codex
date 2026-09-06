@@ -56,6 +56,8 @@ pub(super) struct ThreadEventStore {
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
     pub(super) pending_interactive_replay: PendingInteractiveReplayState,
     active_turn_id: Option<String>,
+    // Lifecycle identity must survive bounded replay-buffer eviction.
+    latest_turn_id: Option<String>,
     active_turn_started_at: Option<Instant>,
     pub(super) pending_interrupt_turn_id: Option<String>,
     pub(super) input_state: Option<ThreadInputState>,
@@ -103,6 +105,7 @@ impl ThreadEventStore {
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
+            latest_turn_id: None,
             active_turn_started_at: None,
             pending_interrupt_turn_id: None,
             input_state: None,
@@ -152,6 +155,7 @@ impl ThreadEventStore {
                 self.clear_pending_turn_start();
             }
         }
+        self.latest_turn_id = turns.last().map(|turn| turn.id.clone());
         self.turns = turns;
         self.turn_history_complete = true;
     }
@@ -172,6 +176,9 @@ impl ThreadEventStore {
                 self.set_active_turn_id(turn.turn.id.clone());
             }
             ServerNotification::TurnCompleted(turn) => {
+                if self.active_turn_id.is_none() {
+                    self.latest_turn_id = Some(turn.turn.id.clone());
+                }
                 if matches!(turn.turn.status, TurnStatus::Completed) {
                     self.recap_progress.completed_turns += 1;
                 }
@@ -182,6 +189,14 @@ impl ThreadEventStore {
                 if self.pending_interrupt_turn_id.as_deref() == Some(turn.turn.id.as_str()) {
                     self.pending_interrupt_turn_id = None;
                 }
+            }
+            ServerNotification::Error(notification)
+                if self.active_turn_id.is_none()
+                    && !notification.will_retry
+                    && notification.error.codex_error_info
+                        == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) =>
+            {
+                self.latest_turn_id = Some(notification.turn_id.clone());
             }
             ServerNotification::ThreadClosed(_) => {
                 self.clear_active_turn_id();
@@ -251,6 +266,7 @@ impl ThreadEventStore {
 
     pub(super) fn apply_thread_rollback(&mut self, response: &ThreadRollbackResponse) {
         self.turns = response.thread.turns.clone();
+        self.latest_turn_id = self.turns.last().map(|turn| turn.id.clone());
         self.turn_history_complete = true;
         self.buffer.retain(Self::event_survives_thread_rollback);
         self.clear_active_turn_id();
@@ -258,7 +274,7 @@ impl ThreadEventStore {
     }
 
     pub(super) fn snapshot(&self) -> ThreadEventSnapshot {
-        ThreadEventSnapshot {
+        let mut snapshot = ThreadEventSnapshot {
             session: self.session.clone(),
             turns: self.turns.clone(),
             // Thread switches replay buffered events into a rebuilt ChatWidget. Only replay
@@ -282,7 +298,11 @@ impl ThreadEventStore {
             // current active turn independently. Carry its process-local timing separately from
             // optional composer state so first-time replay remains lifecycle-correct.
             active_turn_timing: self.active_turn_timing(),
+        };
+        if let Some(latest_turn_id) = &self.latest_turn_id {
+            replay_filter::omit_resolved_misalignment_errors(&mut snapshot, latest_turn_id);
         }
+        snapshot
     }
 
     pub(super) fn recap_progress(&self) -> recap::RecapProgress {
@@ -351,6 +371,7 @@ impl ThreadEventStore {
 
     pub(super) fn set_active_turn_id(&mut self, turn_id: String) {
         self.clear_pending_turn_start();
+        self.latest_turn_id = Some(turn_id.clone());
         if self.active_turn_id.as_ref() != Some(&turn_id) {
             self.active_turn_id = Some(turn_id);
             self.active_turn_started_at = Some(Instant::now());
