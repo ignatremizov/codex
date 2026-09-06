@@ -31,7 +31,7 @@ fn materialized_rows_match_ratatui_buffers() {
                 let mut expected = Buffer::empty(area);
                 let mut actual = Buffer::empty(area);
                 paragraph.render(area, &mut expected);
-                Paragraph::new(rows).render(area, &mut actual);
+                render_line_rows(&rows, area, &mut actual);
                 assert_eq!(
                     actual, expected,
                     "text={text:?} width={width} alignment={alignment:?}"
@@ -39,6 +39,18 @@ fn materialized_rows_match_ratatui_buffers() {
             }
         }
     }
+}
+
+#[test]
+fn materialized_rows_keep_wide_graphemes_at_the_right_edge() {
+    let line = Line::from("漢字 ｶﾞ 👩‍💻 e\u{301} end").blue().bold();
+    let area = Rect::new(
+        /*x*/ 0, /*y*/ 0, /*width*/ 9, /*height*/ 3,
+    );
+    let rows = wrap_line_rows(&line, area.width, Style::default());
+    let mut buffer = Buffer::empty(area);
+    render_line_rows(&rows, area, &mut buffer);
+    insta::assert_debug_snapshot!(buffer);
 }
 
 #[test]
