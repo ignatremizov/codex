@@ -2,10 +2,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::HistoryHydrationScope;
 use crate::chatwidget::ChatWidget;
+use crate::exec_cell::ActiveExecCall;
+use crate::exec_cell::CommandOutput;
+use crate::exec_cell::OutputPreviewLineLimits;
+use crate::exec_cell::new_active_exec_command;
+use crate::exec_command::split_command_string;
 use crate::git_action_directives::parse_assistant_markdown;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::HistoryCell;
@@ -22,7 +28,6 @@ use crate::multi_agents::background_commentary_history_cell_from_agent_message;
 use crate::multi_agents::background_completion_history_cell_from_agent_message;
 use crate::multi_agents::parse_thread_id;
 use crate::multi_agents::sub_agent_activity_summary;
-use crate::user_shell_command::user_shell_response_handling_label;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
@@ -249,8 +254,8 @@ pub(crate) fn thread_items_with_sources_to_transcript_cells(
                 }
             }
             other => {
-                if let Some(cell) = fallback_transcript_cell(&other) {
-                    cells.push(Arc::new(cell));
+                if let Some(cell) = fallback_transcript_cell(&other, config) {
+                    cells.push(cell);
                 }
             }
         }
@@ -336,7 +341,10 @@ fn extend_collab_agent_metadata<'a>(
     }
 }
 
-fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
+fn fallback_transcript_cell(
+    item: &ThreadItem,
+    config: Option<&Config>,
+) -> Option<Arc<dyn HistoryCell>> {
     let lines = match item {
         ThreadItem::HookPrompt { fragments, .. } => fragments
             .iter()
@@ -352,42 +360,62 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
             command,
             status,
             user_shell_response_handling,
+            source,
+            command_actions,
             aggregated_output,
             exit_code,
+            duration_ms,
             ..
         } => {
-            let mut command_line = vec!["$ ".dim(), command.clone().into()];
-            if let Some(response_handling) = user_shell_response_handling {
-                command_line.push(" ".into());
-                command_line.push(
-                    format!(
-                        "({})",
-                        user_shell_response_handling_label(*response_handling)
-                    )
-                    .dim(),
-                );
-            }
-            let mut lines: Vec<Line<'static>> = vec![command_line.into()];
-            lines.push(
-                format!(
-                    "status: {status:?}{}",
-                    exit_code
-                        .map(|code| format!(" · exit {code}"))
-                        .unwrap_or_default()
-                )
-                .dim()
-                .into(),
-            );
-            if let Some(output) = aggregated_output.as_deref()
-                && !output.trim().is_empty()
+            let parsed = command_actions
+                .iter()
+                .cloned()
+                .map(codex_app_server_protocol::CommandAction::into_core)
+                .collect();
+            let output = if *source
+                == codex_app_server_protocol::CommandExecutionSource::UnifiedExecInteraction
             {
-                lines.extend(
-                    output
-                        .lines()
-                        .map(|line| vec!["  ".dim(), line.trim_end().to_string().dim()].into()),
+                String::new()
+            } else {
+                aggregated_output.clone().unwrap_or_default()
+            };
+            let exit_code =
+                if *status == codex_app_server_protocol::CommandExecutionStatus::Completed {
+                    exit_code.unwrap_or_default()
+                } else {
+                    exit_code.filter(|code| *code != 0).unwrap_or(1)
+                };
+            let limits = config.map_or(
+                OutputPreviewLineLimits {
+                    command: codex_config::types::DEFAULT_TUI_COMMAND_OUTPUT_PREVIEW_LINES,
+                    user_shell: codex_config::types::DEFAULT_TUI_USER_SHELL_OUTPUT_PREVIEW_LINES,
+                },
+                |config| OutputPreviewLineLimits {
+                    command: config.tui_command_output_preview_lines,
+                    user_shell: config.tui_user_shell_output_preview_lines,
+                },
+            );
+            let mut cell = new_active_exec_command(
+                ActiveExecCall {
+                    call_id: id.clone(),
+                    command: split_command_string(command),
+                    parsed,
+                    source: *source,
+                    user_shell_response_handling: *user_shell_response_handling,
+                    interaction_input: None,
+                },
+                config.is_some_and(|config| config.animations),
+                limits,
+            );
+            if *status != codex_app_server_protocol::CommandExecutionStatus::InProgress {
+                let completed = cell.complete_call(
+                    id,
+                    CommandOutput::new(exit_code, output),
+                    Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64),
                 );
+                debug_assert!(completed, "hydrated exec cell should contain {id}");
             }
-            lines
+            return Some(Arc::new(cell));
         }
         ThreadItem::FileChange {
             changes, status, ..
@@ -506,7 +534,7 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
         | ThreadItem::UserAgentControl { .. }
         | ThreadItem::Sleep(_) => return None,
     };
-    (!lines.is_empty()).then(|| PlainHistoryCell::new(lines))
+    (!lines.is_empty()).then(|| Arc::new(PlainHistoryCell::new(lines)) as Arc<dyn HistoryCell>)
 }
 
 #[cfg(test)]

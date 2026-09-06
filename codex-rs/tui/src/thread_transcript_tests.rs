@@ -10,6 +10,9 @@ use crate::history_cell::UserHistoryCell;
 use codex_app_server_protocol::CollabAgentRef;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::CommandAction;
+use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadStatus;
@@ -121,6 +124,80 @@ fn hydrated_user_message_preserves_canonical_turn_and_item_identity() {
 }
 
 #[test]
+fn hydrated_command_execution_uses_canonical_review_cell_snapshot() {
+    let cwd = test_path_buf("/tmp").abs();
+    let script =
+        "rg -n transcript_navigation codex-rs/tui; sed -n '1,80p' codex-rs/tui/src/replay.rs";
+    let command = codex_shell_command::parse_command::shlex_join(&[
+        "/bin/zsh".to_string(),
+        "-lc".to_string(),
+        script.to_string(),
+    ]);
+    let cells = thread_items_to_transcript_cells(
+        /*thread_id*/ None,
+        &cwd,
+        [ThreadItem::CommandExecution {
+            id: "exec-1".to_string(),
+            command,
+            cwd: cwd.clone().into(),
+            process_id: None,
+            plugin_id: None,
+            script_path: None,
+            source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
+            status: CommandExecutionStatus::Completed,
+            command_actions: vec![
+                CommandAction::Search {
+                    command: "rg -n transcript_navigation codex-rs/tui".to_string(),
+                    query: Some("transcript_navigation".to_string()),
+                    path: Some("codex-rs/tui".to_string()),
+                },
+                CommandAction::Read {
+                    command: "sed -n '1,80p' codex-rs/tui/src/replay.rs".to_string(),
+                    name: "replay.rs".to_string(),
+                    path: test_path_buf("/tmp/codex-rs/tui/src/replay.rs")
+                        .abs()
+                        .into(),
+                },
+            ],
+            aggregated_output: Some("matching source\nreplayed source\n".to_string()),
+            exit_code: Some(0),
+            duration_ms: Some(42),
+        }],
+        RawReasoningVisibility::Hidden,
+        /*config*/ None,
+    );
+
+    assert_eq!(cells.len(), 1);
+    assert!(cells[0].as_any().is::<crate::exec_cell::ExecCell>());
+    let review = cells[0]
+        .display_lines(/*width*/ 120)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let full = cells[0]
+        .transcript_lines(/*width*/ 120)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(
+        review,
+        @r"
+    • Explored
+      └ Search transcript_navigation in codex-rs/tui
+        Read replay.rs
+    "
+    );
+    assert!(full.contains(script));
+    assert!(full.contains("matching source"));
+    assert!(!review.contains(script));
+    assert!(!review.contains("matching source"));
+}
+
+#[test]
 fn collab_response_observation_transcript_snapshot() {
     let rendered = [
         (Some(false), Some(true)),
@@ -145,7 +222,7 @@ fn collab_response_observation_transcript_snapshot() {
             reasoning_effort: None,
             agents_states: HashMap::new(),
         };
-        fallback_transcript_cell(&item)
+        fallback_transcript_cell(&item, /*config*/ None)
             .expect("collab tool call should render")
             .display_lines(/*width*/ 200)
             .into_iter()
@@ -175,7 +252,7 @@ fn compaction_decode_error_transcript_snapshot() {
         decode_error: Some("Selected model is at capacity.".to_string()),
         available_skills: Vec::new(),
     };
-    let rendered = fallback_transcript_cell(&item)
+    let rendered = fallback_transcript_cell(&item, /*config*/ None)
         .expect("compaction error should render")
         .display_lines(/*width*/ 200)
         .into_iter()
