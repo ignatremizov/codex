@@ -379,6 +379,7 @@ impl PresentationState {
             return;
         };
         relationship.revoked = true;
+        relationship.reply_route = None;
         relationship.baseline_final_response = FinalResponseObservation::None;
         relationship.pending_next_turn = None;
         relationship.pending_admissions.clear();

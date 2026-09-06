@@ -18,6 +18,7 @@ use codex_app_server_protocol::AgentQueueEntry;
 use codex_app_server_protocol::AgentQueueListParams;
 use codex_app_server_protocol::AgentQueueListResponse;
 use codex_app_server_protocol::AgentQueueTurnMetadata;
+use codex_app_server_protocol::AgentReplyRouteMode;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -95,7 +96,7 @@ async fn user_control_audit_does_not_finish_an_active_source_turn() -> Result<()
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -193,6 +194,165 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it_in_v1_and_v2() ->
 }
 
 #[tokio::test]
+async fn user_reply_route_changes_are_persistent_and_audited_for_v1() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .disable_feature(Feature::MultiAgentV2)
+        .write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let root = app.start_thread(ThreadStartParams::default()).await?;
+    let spawned: AgentControlResponse = app
+        .request(|request_id| ClientRequest::AgentControl {
+            request_id,
+            params: AgentControlParams {
+                source_thread_id: root.thread.id.clone(),
+                authored_selector: Some("new".to_string()),
+                action: AgentControlAction::Spawn {
+                    role: None,
+                    model: None,
+                    reasoning_effort: None,
+                    input: None,
+                    fork_mode: AgentForkMode::None,
+                    response_handling: Some(AgentResponseHandling::Presentation),
+                },
+            },
+        })
+        .await?;
+    let AgentControlOutcome::Spawned {
+        target_thread_id, ..
+    } = agent_control_outcome(spawned)
+    else {
+        panic!("user control should spawn an idle V1 child");
+    };
+
+    for (mode, previous_mode, expected_target_messages) in [
+        (AgentReplyRouteMode::Enabled, None, true),
+        (
+            AgentReplyRouteMode::Disabled,
+            Some(AgentReplyRouteMode::Enabled),
+            false,
+        ),
+    ] {
+        let response: AgentControlResponse = app
+            .request(|request_id| ClientRequest::AgentControl {
+                request_id,
+                params: AgentControlParams {
+                    source_thread_id: root.thread.id.clone(),
+                    authored_selector: Some("2".to_string()),
+                    action: AgentControlAction::ReplyRoute {
+                        target: target_thread_id.clone(),
+                        mode,
+                    },
+                },
+            })
+            .await?;
+        assert_eq!(
+            agent_control_outcome(response),
+            AgentControlOutcome::ReplyRouteChanged {
+                target_thread_id: target_thread_id.clone(),
+                previous_mode,
+                mode,
+            }
+        );
+
+        let audit = timeout(DEFAULT_READ_TIMEOUT, async {
+            loop {
+                let completed: ItemCompletedNotification =
+                    app.read_notification("item/completed").await?;
+                if matches!(
+                    &completed.item,
+                    ThreadItem::UserAgentControl {
+                        action: AuditAgentControlAction::ReplyRoute,
+                        target_thread_id: Some(audit_target),
+                        target_messages: Some(audit_target_messages),
+                        ..
+                    } if audit_target == &target_thread_id
+                        && *audit_target_messages == expected_target_messages
+                ) {
+                    return Ok::<_, anyhow::Error>(completed);
+                }
+            }
+        })
+        .await??;
+        assert!(matches!(
+            audit.item,
+            ThreadItem::UserAgentControl {
+                status: UserAgentControlStatus::Succeeded,
+                ..
+            }
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_reply_route_rejects_v2_targets_before_mutation() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::MultiAgentV2)
+        .write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let root = app.start_thread(ThreadStartParams::default()).await?;
+    let spawned: AgentControlResponse = app
+        .request(|request_id| ClientRequest::AgentControl {
+            request_id,
+            params: AgentControlParams {
+                source_thread_id: root.thread.id.clone(),
+                authored_selector: Some("new".to_string()),
+                action: AgentControlAction::Spawn {
+                    role: None,
+                    model: None,
+                    reasoning_effort: None,
+                    input: None,
+                    fork_mode: AgentForkMode::None,
+                    response_handling: Some(AgentResponseHandling::Presentation),
+                },
+            },
+        })
+        .await?;
+    let AgentControlOutcome::Spawned {
+        target_thread_id, ..
+    } = agent_control_outcome(spawned)
+    else {
+        panic!("user control should spawn an idle V2 child");
+    };
+
+    let request_id = app
+        .send_raw_request(
+            "agent/control",
+            Some(serde_json::to_value(AgentControlParams {
+                source_thread_id: root.thread.id,
+                authored_selector: Some("2".to_string()),
+                action: AgentControlAction::ReplyRoute {
+                    target: target_thread_id,
+                    mode: AgentReplyRouteMode::Enabled,
+                },
+            })?),
+        )
+        .await?;
+    let error = app
+        .read_stream_until_error_message(RequestId::Integer(request_id))
+        .await?;
+    assert!(
+        error
+            .error
+            .message
+            .contains("V2 targets use native inter-agent messaging")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn user_control_fork_modes_cross_the_app_server_boundary_in_v1_and_v2() -> Result<()> {
     for multi_agent_v2 in [false, true] {
         user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2).await?;
@@ -237,7 +397,7 @@ async fn user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2: b
         config = config.enable_feature(Feature::MultiAgentV2);
     }
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -409,7 +569,7 @@ config_file = "./reviewer.toml"
         config = config.enable_feature(Feature::MultiAgentV2);
     }
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -563,7 +723,7 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
         config.disable_feature(Feature::MultiAgentV2)
     };
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -732,7 +892,7 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
     MockResponsesConfig::new(&server.uri())
         .disable_feature(Feature::MultiAgentV2)
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -973,7 +1133,7 @@ async fn commentary_presentation_keeps_user_task_context(multi_agent_v2: bool) -
         config.disable_feature(Feature::MultiAgentV2)
     };
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -1183,7 +1343,7 @@ async fn queued_prompt_observation_failure_before_admission_requires_reload(
             r#"experimental_thread_store = {{ type = "in_memory", id = "{store_id}" }}"#
         ))
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -1240,7 +1400,7 @@ async fn queued_prompt_observation_failure_before_admission_requires_reload(
         queued.outcome,
         AgentControlOutcome::Prompted {
             target_thread_id: ref prompted_thread_id,
-            queued: true,
+            input_outcome: AgentInputOutcome::Queued,
             post_admission_warning: None,
             ..
         } if prompted_thread_id == &target_thread_id
@@ -1311,7 +1471,7 @@ async fn queued_prompt_binding_failure_preserves_input_without_unacknowledged_ha
             r#"experimental_thread_store = {{ type = "in_memory", id = "{store_id}" }}"#
         ))
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -1374,7 +1534,7 @@ async fn queued_prompt_binding_failure_preserves_input_without_unacknowledged_ha
         queued.outcome,
         AgentControlOutcome::Prompted {
             target_thread_id: ref prompted_thread_id,
-            queued: true,
+            input_outcome: AgentInputOutcome::Queued,
             post_admission_warning: None,
             ..
         } if prompted_thread_id == &target_thread_id
@@ -1534,7 +1694,7 @@ async fn queued_prompt_waits_for_idle_target(
         config.disable_feature(Feature::MultiAgentV2)
     };
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -1782,7 +1942,7 @@ async fn agent_queue_delete_removes_pending_input_and_rejects_a_stale_id() -> Re
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -1845,7 +2005,7 @@ async fn agent_queue_delete_removes_pending_input_and_rejects_a_stale_id() -> Re
         .await?;
     let AgentControlOutcome::Prompted {
         submission_id,
-        queued: true,
+        input_outcome: AgentInputOutcome::Queued,
         ..
     } = agent_control_outcome(queued)
     else {
@@ -1986,7 +2146,7 @@ async fn user_control_prompt_reopens_closed_target(
         config.disable_feature(Feature::MultiAgentV2)
     };
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -2054,7 +2214,7 @@ async fn user_control_prompt_reopens_closed_target(
     let AgentControlOutcome::Prompted {
         target_thread_id: prompted_thread_id,
         submission_id,
-        queued,
+        input_outcome,
         post_admission_warning,
     } = agent_control_outcome(prompted)
     else {
@@ -2062,8 +2222,11 @@ async fn user_control_prompt_reopens_closed_target(
     };
     assert_eq!(prompted_thread_id, target_thread_id);
     assert_eq!(
-        queued,
-        matches!(admission, ClosedTargetPromptAdmission::Queued)
+        input_outcome,
+        match admission {
+            ClosedTargetPromptAdmission::Direct => AgentInputOutcome::Admitted,
+            ClosedTargetPromptAdmission::Queued => AgentInputOutcome::Queued,
+        }
     );
     assert_eq!(post_admission_warning, None);
     if matches!(admission, ClosedTargetPromptAdmission::Queued) {
@@ -2147,7 +2310,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
     config
         .with_root_config("[agents]\nmax_depth = 2")
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -2487,7 +2650,7 @@ async fn user_control_adopts_a_stored_standalone_rollout(multi_agent_v2: bool) -
         config.disable_feature(Feature::MultiAgentV2)
     };
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -2688,7 +2851,7 @@ async fn user_control_adoption_records_the_previous_owner(multi_agent_v2: bool) 
         config.disable_feature(Feature::MultiAgentV2)
     };
     config.write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -2918,7 +3081,7 @@ async fn passive_close_replay_precedes_the_next_user_prompt() -> Result<()> {
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -3095,7 +3258,7 @@ async fn close_with_none_does_not_replay_a_completed_response() -> Result<()> {
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -3226,7 +3389,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::MultiAgentV2)
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized()
@@ -3403,6 +3566,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                         sort_key: None,
                         sort_direction: None,
                         model_providers: None,
+                        originators: None,
                         source_kinds: None,
                         archived: None,
                         section_id: None,

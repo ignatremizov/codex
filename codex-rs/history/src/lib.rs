@@ -1,5 +1,8 @@
 //! Model-history and persisted-rollout domain types.
 
+mod agent_reply_route;
+pub use agent_reply_route::persistent_agent_reply_route_source;
+
 mod compaction_checkpoint;
 pub use compaction_checkpoint::CompactionCheckpoint;
 

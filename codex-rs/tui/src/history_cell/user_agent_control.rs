@@ -100,6 +100,7 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
         title.push(format!(" ({model_and_effort})").dim());
     }
     if let Some(response_observation) = response_observation_label(
+        action,
         observe_commentary,
         final_response,
         target_messages,
@@ -229,6 +230,9 @@ fn control_action_title(
         (UserAgentControlStatus::Succeeded, UserAgentControlAction::Observe, _, _) => {
             "User changed observation for"
         }
+        (UserAgentControlStatus::Succeeded, UserAgentControlAction::ReplyRoute, _, _) => {
+            "User changed reply route for"
+        }
         (UserAgentControlStatus::Failed, UserAgentControlAction::Spawn, _, _) => {
             "User agent spawn failed"
         }
@@ -249,6 +253,9 @@ fn control_action_title(
         }
         (UserAgentControlStatus::Failed, UserAgentControlAction::Observe, _, _) => {
             "User observation change failed for"
+        }
+        (UserAgentControlStatus::Failed, UserAgentControlAction::ReplyRoute, _, _) => {
+            "User reply-route change failed for"
         }
     }
 }
@@ -285,6 +292,7 @@ fn fork_mode_label(fork_mode: UserAgentForkMode) -> String {
 }
 
 fn response_observation_label(
+    action: UserAgentControlAction,
     observe_commentary: Option<bool>,
     final_response: Option<AgentFinalResponseHandling>,
     target_messages: Option<bool>,
@@ -303,6 +311,8 @@ fn response_observation_label(
     }
     if target_messages == Some(true) {
         labels.push("allow replies");
+    } else if action == UserAgentControlAction::ReplyRoute && target_messages == Some(false) {
+        labels.push("no replies");
     }
     if queue_input == Some(true) {
         labels.push("queued turn + reply");

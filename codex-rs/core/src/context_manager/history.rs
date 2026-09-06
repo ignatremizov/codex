@@ -715,16 +715,18 @@ impl ContextManager {
         cut_idx =
             self.trim_pre_turn_context_updates(&snapshot, first_instruction_turn_idx, cut_idx);
 
-        let retained_agent_tasks = snapshot[cut_idx..]
+        let retained_agent_context = snapshot[cut_idx..]
             .iter()
             .filter(|item| {
-                item.id()
-                    .is_some_and(|id| is_user_agent_task_context_response_item_id(id.as_str()))
+                codex_history::persistent_agent_reply_route_source(item).is_some()
+                    || item
+                        .id()
+                        .is_some_and(|id| is_user_agent_task_context_response_item_id(id.as_str()))
             })
             .cloned()
             .collect::<Vec<_>>();
         let mut retained_items = snapshot[..cut_idx].to_vec();
-        retained_items.extend(retained_agent_tasks);
+        retained_items.extend(retained_agent_context);
         if cut_idx == first_instruction_turn_idx
             && let Some(first_turn_id) = snapshot[first_instruction_turn_idx].turn_id()
         {

@@ -4,6 +4,13 @@ use crate::context::AgentContextIdentity;
 use crate::context::AgentReplyRoute;
 use crate::context::AttributedAgentMessage;
 use crate::context::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
+
+pub(super) enum AgentReplyRouteLifetime {
+    CurrentTurn,
+    UntilDisabled,
+}
 
 impl LocalAgentControl {
     pub(super) fn ensure_scoped_reply_route_supported(
@@ -21,6 +28,25 @@ impl LocalAgentControl {
         Ok(())
     }
 
+    pub(super) fn ensure_target_message_route_allowed(
+        &self,
+        target_thread: &CodexThread,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+    ) -> CodexResult<()> {
+        self.ensure_scoped_reply_route_supported(target_thread, response_observation)?;
+        if response_observation.target_messages()
+            && self.target_message_route_mode(observer, target_thread.session.presentation_id())
+                == Some(TargetMessageRouteMode::Disabled)
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "agent replies to {} are disabled by the user",
+                observer.thread_id
+            )));
+        }
+        Ok(())
+    }
+
     pub(super) async fn with_agent_reply_route(
         &self,
         target_thread: &CodexThread,
@@ -31,7 +57,43 @@ impl LocalAgentControl {
         if !response_observation.target_messages() {
             return Ok(input);
         }
-        self.ensure_scoped_reply_route_supported(target_thread, response_observation)?;
+        self.ensure_target_message_route_allowed(target_thread, observer, response_observation)?;
+        let target = target_thread.session.presentation_id();
+        match self.target_message_route_mode(observer, target) {
+            Some(TargetMessageRouteMode::Disabled) => {
+                return Err(CodexErr::InvalidRequest(
+                    "agent replies are disabled by the user".into(),
+                ));
+            }
+            Some(TargetMessageRouteMode::Enabled) => return Ok(input),
+            None => {}
+        }
+        let route = self
+            .agent_reply_route_item(
+                target_thread,
+                observer,
+                AgentReplyRouteLifetime::CurrentTurn,
+            )
+            .await?;
+        let ResponseItem::Message { content, .. } = route else {
+            unreachable!("agent reply routes are contextual user messages")
+        };
+        let Some(ContentItem::InputText { text }) = content.into_iter().next() else {
+            unreachable!("agent reply routes contain one text item")
+        };
+        input.push_internal_context(UserInput::Text {
+            text,
+            text_elements: Vec::new(),
+        });
+        Ok(input)
+    }
+
+    pub(super) async fn agent_reply_route_item(
+        &self,
+        target_thread: &CodexThread,
+        observer: SessionPresentationId,
+        lifetime: AgentReplyRouteLifetime,
+    ) -> CodexResult<ResponseItem> {
         if target_thread.session.presentation_id().thread_id == observer.thread_id {
             return Err(CodexErr::InvalidRequest(
                 "an agent cannot grant a reply route to itself".to_string(),
@@ -47,13 +109,15 @@ impl LocalAgentControl {
         let agent = self
             .model_visible_agent_identity(&observer_thread, observer.thread_id)
             .await?;
-        input.push_internal_context(UserInput::Text {
-            text: AgentReplyRoute::new(agent).render(),
-            text_elements: Vec::new(),
-        });
-        Ok(input)
+        Ok(match lifetime {
+            AgentReplyRouteLifetime::CurrentTurn => {
+                ContextualUserFragment::into(AgentReplyRoute::new(agent))
+            }
+            AgentReplyRouteLifetime::UntilDisabled => {
+                ContextualUserFragment::into(AgentReplyRoute::until_disabled(agent))
+            }
+        })
     }
-
     pub(super) async fn acquire_target_message_admission_after_binding(
         &self,
         observer_thread: &CodexThread,

@@ -173,7 +173,11 @@ impl RollbackPlanner {
             RolloutItem::ResponseItem(response) => {
                 let trusted =
                     response.id().and_then(|id| self.trusted_contexts.get(id)) == Some(response);
-                if let Some(metadata_index) = paired_delivery_boundary {
+                let persistent_route =
+                    codex_history::persistent_agent_reply_route_source(response).is_some();
+                if persistent_route {
+                    self.record_boundaries[index] = None;
+                } else if let Some(metadata_index) = paired_delivery_boundary {
                     let boundary = self.start_boundary(metadata_index);
                     self.record_boundaries[index] = Some(boundary);
                     self.boundaries[boundary].message_id = response.id().cloned();
@@ -195,7 +199,7 @@ impl RollbackPlanner {
                     // no later turn to attach it to.
                     self.pending_context_records.push(index);
                 }
-                if trusted {
+                if trusted || persistent_route {
                     self.record_boundaries[index] = None;
                     if let Some(metadata_index) = preceding_metadata {
                         self.record_boundaries[metadata_index] = None;
@@ -341,7 +345,8 @@ impl RollbackPlanner {
                         .replacement_history
                         .get_or_insert_default()
                         .retain(|item| {
-                            item.id().and_then(|id| trusted_contexts.get(id)) == Some(item)
+                            codex_history::persistent_agent_reply_route_source(item).is_some()
+                                || item.id().and_then(|id| trusted_contexts.get(id)) == Some(item)
                         });
                     frame.item.mcp_resource_origins = None;
                 } else if frame
@@ -352,7 +357,8 @@ impl RollbackPlanner {
                 }
                 if let Some(history) = &mut frame.item.replacement_history {
                     for item in frame.removed_context {
-                        if item.id().and_then(|id| trusted_contexts.get(id)) == Some(&item)
+                        if (codex_history::persistent_agent_reply_route_source(&item).is_some()
+                            || item.id().and_then(|id| trusted_contexts.get(id)) == Some(&item))
                             && !history.contains(&item)
                         {
                             history.push(item);
@@ -521,7 +527,8 @@ impl RollbackPlanner {
                     before_rollback[replacement_history.len()..]
                         .iter()
                         .filter(|item| {
-                            item.id().is_some_and(|id| {
+                            codex_history::persistent_agent_reply_route_source(item).is_some()
+                                || item.id().is_some_and(|id| {
                                 id.as_str().starts_with("amsg_")
                                     || codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
                                     || codex_protocol::protocol::is_user_agent_task_context_response_item_id(id.as_str())
