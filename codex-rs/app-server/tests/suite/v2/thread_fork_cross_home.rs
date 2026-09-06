@@ -22,7 +22,6 @@ use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_rollout::RolloutItem;
-use codex_rollout::RolloutLine;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::read_session_meta_line;
 use pretty_assertions::assert_eq;
@@ -188,7 +187,7 @@ async fn thread_fork_copies_cross_home_paginated_lineage_by_path() -> Result<()>
     let fork_contents = std::fs::read_to_string(fork_path.as_path())?;
     let fork_session_meta_count = fork_contents
         .lines()
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .filter(|line| matches!(line.item, RolloutItem::SessionMeta(_)))

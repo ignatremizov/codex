@@ -1,5 +1,3 @@
-use codex_history::RolloutLine;
-
 use super::json_spans::JsonSpan;
 use super::json_spans::JsonSpanKind;
 
@@ -10,7 +8,7 @@ pub(super) fn is_valid_rollout_record_without_materializing_inline_media(
     let mut inline_media_spans = Vec::new();
     collect_inline_media_spans(value, json, &mut inline_media_spans);
     if inline_media_spans.is_empty() {
-        return serde_json::from_slice::<RolloutLine>(json).is_ok();
+        return crate::parse_rollout_line_bytes(json).is_ok();
     }
 
     inline_media_spans.sort_unstable_by_key(|(start, _)| *start);
@@ -25,7 +23,7 @@ pub(super) fn is_valid_rollout_record_without_materializing_inline_media(
         cursor = end;
     }
     validation_json.extend_from_slice(&json[cursor..]);
-    serde_json::from_slice::<RolloutLine>(validation_json.as_slice()).is_ok()
+    crate::parse_rollout_line_bytes(validation_json.as_slice()).is_ok()
 }
 
 fn collect_inline_media_spans(

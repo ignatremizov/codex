@@ -1870,7 +1870,7 @@ impl RolloutWriterState {
                 .split(|byte| *byte == b'\n')
                 .find(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()));
             let complete_session_meta = match first_record {
-                Some(line) => match serde_json::from_slice::<RolloutLine>(line) {
+                Some(line) => match crate::parse_rollout_line_bytes(line) {
                     Ok(RolloutLine {
                         item: RolloutItem::SessionMeta(_),
                         ..
