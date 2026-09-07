@@ -110,10 +110,19 @@ pub struct UserAgentControlItem {
     pub action: UserAgentControlAction,
     pub authored_selector: Option<String>,
     pub target_thread_id: Option<ThreadId>,
+    #[serde(default)]
+    pub reply_recipient_thread_id: Option<ThreadId>,
     pub previous_owner_session_id: Option<SessionId>,
     pub new_owner_session_id: Option<SessionId>,
     pub agent_ref: Option<u64>,
     pub nickname: Option<String>,
+    /// Assignment label exactly as requested by the user.
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub task_path: Option<String>,
+    #[serde(default)]
+    pub task_path_mapping: Vec<crate::AgentTaskPathMapping>,
     pub role: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
@@ -139,10 +148,14 @@ impl UserAgentControlItem {
             action,
             authored_selector: None,
             target_thread_id: None,
+            reply_recipient_thread_id: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
             agent_ref: None,
             nickname: None,
+            task: None,
+            task_path: None,
+            task_path_mapping: Vec::new(),
             role: None,
             model: None,
             reasoning_effort: None,
@@ -171,6 +184,7 @@ pub enum UserAgentControlAction {
     Close,
     Observe,
     ReplyRoute,
+    SubtreeMessaging,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -245,6 +259,14 @@ pub struct AsyncUserInputQuestion {
 pub struct AgentMessageItem {
     pub id: String,
     pub content: Vec<AgentMessageContent>,
+    /// Trusted agent-input identity; absent on ordinary assistant output and legacy items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub attribution: Option<crate::AgentInputAttribution>,
+    /// Original input and attachments. Rich agent input need not duplicate these in `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub input: Option<Vec<UserInput>>,
     /// Optional phase metadata carried through from `ResponseItem::Message`.
     ///
     /// This is currently used by TUI rendering to distinguish mid-turn
@@ -886,6 +908,8 @@ impl AgentMessageItem {
             memory_citation: None,
             delivery: None,
             questions: None,
+            attribution: None,
+            input: None,
             sub_agent_completion: None,
         }
     }

@@ -121,7 +121,11 @@ fn parse_agent_id(id: &str) -> ThreadId {
     ThreadId::from_string(id).expect("agent id should be valid")
 }
 
-async fn wait_for_recorded_user_input(thread: &crate::CodexThread, expected: &[UserInput]) {
+async fn wait_for_recorded_agent_input(
+    thread: &crate::CodexThread,
+    sender: ThreadId,
+    expected: &[UserInput],
+) {
     timeout(Duration::from_secs(5), async {
         loop {
             let event = thread
@@ -129,17 +133,27 @@ async fn wait_for_recorded_user_input(thread: &crate::CodexThread, expected: &[U
                 .await
                 .expect("event stream should stay open");
             if let EventMsg::ItemCompleted(ItemCompletedEvent {
-                item: TurnItem::UserMessage(item),
+                item: TurnItem::AgentMessage(item),
                 ..
             }) = event.msg
             {
-                assert_eq!(item.content, expected);
+                let Some(attribution) = item.attribution else {
+                    continue;
+                };
+                assert_eq!(
+                    (
+                        attribution.sender.thread_id,
+                        attribution.recipient.thread_id,
+                        item.input.as_deref(),
+                    ),
+                    (sender, thread.session.thread_id(), Some(expected)),
+                );
                 return;
             }
         }
     })
     .await
-    .expect("timed out waiting for recorded user input");
+    .expect("timed out waiting for recorded attributed agent input");
 }
 
 fn thread_manager() -> ThreadManager {
@@ -564,6 +578,7 @@ async fn spawn_agent_history_fork_applies_authorized_role_override() {
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
     let output = SpawnAgentHandler::default()
         .handle(invocation(
             Arc::new(session),
@@ -608,6 +623,7 @@ async fn spawn_agent_explicit_model_overrides_configured_role_model_and_effort_d
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
 
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -997,6 +1013,7 @@ async fn spawn_agent_service_tier_override_validates_the_effective_child_model()
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1107,6 +1124,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1148,6 +1166,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1211,6 +1230,7 @@ service_tier = "priority"
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1284,6 +1304,7 @@ service_tier = "turbo"
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(
@@ -1384,6 +1405,7 @@ async fn spawn_agent_full_history_fork_accepts_explicit_service_tier() {
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(
@@ -3422,14 +3444,23 @@ async fn send_input_interrupts_before_prompt() {
     assert!(matches!(ops_for_agent[0], Op::Interrupt));
     assert!(matches!(
         ops_for_agent[1],
-        Op::UserInput { items, .. }
-            if items == &[UserInput::Text {
+        Op::AgentInput {
+            presentation: codex_protocol::protocol::AgentInputPresentation::AttributedInput {
+                attribution,
+                input,
+            },
+            ..
+        }
+            if attribution.sender.thread_id == parent.thread_id
+                && attribution.recipient.thread_id == agent_id
+                && input == &[UserInput::Text {
                 text: "hi".to_string(),
                 text_elements: Vec::new(),
             }]
     ));
-    wait_for_recorded_user_input(
+    wait_for_recorded_agent_input(
         thread.as_ref(),
+        parent.thread_id,
         &[UserInput::Text {
             text: "hi".to_string(),
             text_elements: Vec::new(),
@@ -3528,8 +3559,9 @@ async fn send_input_accepts_structured_items() {
         .await
         .expect("child thread should remain live");
 
-    wait_for_recorded_user_input(
+    wait_for_recorded_agent_input(
         thread.as_ref(),
+        parent.thread_id,
         &[
             UserInput::Mention {
                 name: "drive".to_string(),
@@ -3986,6 +4018,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
                 agent_id,
                 agent_ref: None,
                 nickname: resumed_nickname,
+                task_path: None,
             },
             &AgentStatus::Completed(Some("standalone done".to_string())),
         )]

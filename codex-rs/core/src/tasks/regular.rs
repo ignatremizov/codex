@@ -72,6 +72,10 @@ impl SessionTask for RegularTask {
         input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
+        sess.services
+            .agent_control
+            .refresh_subtree_messaging(sess.thread_id())
+            .await?;
         let run_turn_span = trace_span!("run_turn");
         // The tracked startup phase emitted `TurnStarted`, so first-turn lifecycle does not wait
         // on startup prewarm resolution.

@@ -106,6 +106,7 @@ struct ThreadRevertRuntimeSnapshot {
     config: Config,
     settings: CodexThreadSettingsOverrides,
     client_mcp_extensions: ClientMcpExtensions,
+    agent_messaging: Option<codex_core::LiveRevertMessagingSnapshot>,
 }
 
 #[derive(Clone, Copy)]
@@ -844,6 +845,7 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: AgentControlParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
         self.agent_control_response_inner(request_id, params)
             .await
             .map(|response| Some(response.into()))
@@ -2153,6 +2155,14 @@ impl ThreadRequestProcessor {
             config: thread.config().await.as_ref().clone(),
             settings: thread.restorable_thread_settings().await,
             client_mcp_extensions: thread.client_mcp_extensions(),
+            agent_messaging: thread
+                .snapshot_agent_messaging_for_revert()
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to snapshot live agent messaging before revert: {err}"
+                    ))
+                })?,
         };
 
         // Subscribe before shutdown so a pending idle unload either rejects this request or can
@@ -2257,6 +2267,7 @@ impl ThreadRequestProcessor {
             config,
             settings,
             client_mcp_extensions,
+            agent_messaging,
         } = runtime_snapshot;
         let thread_id_string = thread_id.to_string();
         let stored_thread = self
@@ -2278,12 +2289,13 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_after_live_revert(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
                 self.request_trace_context(request_id).await,
                 client_mcp_extensions,
+                agent_messaging,
             )
             .await
             .map_err(|err| internal_error(format!("error reloading thread after revert: {err}")))?;

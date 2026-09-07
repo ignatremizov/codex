@@ -121,6 +121,8 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
 
             let item = TurnItem::AgentMessage(AgentMessageItem {
                 id: call_id,
+                attribution: None,
+                input: None,
                 content: vec![AgentMessageContent::Text {
                     text: messages.join("\n\n"),
                 }],

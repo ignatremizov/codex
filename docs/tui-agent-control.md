@@ -131,8 +131,8 @@ its current durable owner, or under its persisted root identity when it has no o
 /agent <target> close [w:<w-mode>]
 /agent resume <target> [w:<w-mode>] [<prompt>]
 /agent observe <target> <passive|wake|presentation>
-/agent replies <target> <enable|disable>
-/agent <target> replies <enable|disable>
+/agent sends <sender> [to <recipient>] <enable|disable>
+/agent <sender> sends [to <recipient>] <enable|disable>
 ```
 
 Selectors accept compact unprefixed forms and explicit namespaces:
@@ -141,9 +141,14 @@ Selectors accept compact unprefixed forms and explicit namespaces:
 <target> = <uuid> | <decimal-ref> | <nickname>
          | id:<uuid> | ref:<decimal-ref> | nick:<name>
 <role>   = <ordinary-role-name> | role:<name>
-<w-mode> = one or more unique flags in cfmqx order
+<w-mode> = one or more c/f/m/q/x flags in any order, with repetitions allowed
 <level>  = a reasoning effort advertised by the selected model
 ```
+
+Within one `w` value, `f` and `x` cancel pairwise by count: equal counts mean passive final
+delivery, more `f` means wake, and more `x` means presentation-only. `c`, `m`, and `q` are
+independent, idempotent presence flags. Thus `qfx` is equivalent to `q`, `qfxx` to `qx`,
+and `xqc` to `cqx`. Canonical output may use `cfmqx` order; input does not require it.
 
 Examples:
 
@@ -672,11 +677,53 @@ remove, or replay first-commentary observation.
 Reply permission is a separate, user-authored relationship setting:
 
 ```text
-/agent replies <target> enable
-/agent replies <target> disable
+/agent sends <target> enable
+/agent sends <target> disable
+/agent sends Banach to Franklin enable
+/agent sends Franklin to Banach enable
 ```
 
-Enabling it adds one source-relative `<agent_reply_route>` item to the target's model context and
+Without `to`, the recipient is the thread issuing the command. With `to`, the user selects
+another live recipient in the same owned graph, by ref, nickname, or UUID. A grant is directed:
+Banach → Franklin does not grant Franklin → Banach or Banach → Main. Enable both directions
+explicitly for a pair of collaborating agents. Self-routes, foreign-owned endpoints, and closed
+endpoints are rejected; these commands neither adopt nor resume threads.
+
+For a supervisor coordinating collaborating coders and their reviewers:
+
+```text
+/agent sends all enable
+/agent sends all disable
+```
+
+`all` sets a live default for the issuing thread and its current and future descendants. Both
+endpoints must belong to that subtree; it grants nothing to ancestors or outside siblings.
+Explicit directed pair settings take precedence. When subtrees have different defaults, the
+nearest common supervisor with an explicit subtree setting decides the pair's default.
+The picker distinguishes inherited and explicit permissions. A new member learns permitted
+peer identities through the same singleton route context, without inheriting parent history
+or starting another agent's turn merely to announce membership.
+
+Subtree settings last across turns, not process shutdown, cold resume, or history fork.
+Closing a supervisor revokes its setting; changing ownership does not carry it to another
+supervisor's graph. Existing instructions remain auditable but are not permission authority.
+Disabling a default does not override explicitly enabled pairs or retract already admitted
+turns. Pending peer inputs are checked against the effective permission before queue admission.
+Ordinary supervisor task dispatch to descendants remains available.
+
+The picker's **Messaging permissions** action prepares this command for confirmation. Its detail
+panel lists inherited and explicit **Send to** and **Receive from** permissions by peer name/ref, independently
+of the viewed thread's per-turn response observation. Unlisted relationships are not implied
+grants. Permission confirmations show sender → recipient; canonical UUIDs remain in detailed
+inspection. **Latest response** is the selected agent's own output, while **Latest received from**
+separately shows attributed incoming input. Main's peer display copies are neither.
+
+Enabling permission does not assign work or ask agents to start communicating. The user or
+supervisor supplies that instruction. For a routine peer update, `w:x` avoids subscribing the
+sender to the recipient's final response; `w:cx` also requests first commentary acknowledgement,
+and `w:f` requests a completion wake when the sender needs the completed work.
+
+Enabling it adds one recipient-specific `<agent_reply_route>` item to the target's model context and
 authorizes attributed `send_input` calls from all later target turns. Repeating `enable` is
 idempotent: the route appears only once in model context, including after a disable/re-enable
 cycle, and is not repeated on each turn. Compaction carries that singleton into replacement
@@ -688,6 +735,17 @@ retract auditable work. An explicit disable wins over a later model-authored `w:
 repeated `m` context redundant. The setting lasts for the live control relationship and is revoked
 by close, ownership transfer, process shutdown, cold resume, or fork. V2 targets retain their
 native inter-agent communication contract and reject this V1 route action.
+
+Accepted peer input has two presentations: the recipient's attributed input and a live-only copy in
+Main's transcript, labeled `Banach [role] sends to Franklin [role] (○ not visible)`. That label
+describes visibility to **Main's model**, not the recipient. The copy never steers or wakes Main,
+never enters Main's model context or rollout, and retains complete message text in Full transcript mode.
+Queued messages are copied when admitted to the recipient's turn, not when merely enqueued.
+Messages sent directly to Main already have a receipt there and are not duplicated. Peer audit
+copies use the existing live TUI replay buffer, including in-process history refreshes, without
+restoring reply permissions. A cold resume of Main does not reconstruct these display-only copies;
+inspect the communicating threads for their durable messages. This avoids storing a third copy of
+every peer payload in Main. User-authored route-control decisions remain durable in Main.
 
 Promoting a presentation-only user task to passive or wake delivery records its compact hidden
 task linkage before the replacement becomes deliverable. The source model therefore receives the
@@ -991,15 +1049,13 @@ must not silently weaken input provenance, observation, ownership, fork, or audi
   next admitted turn under the existing next-turn policy.
 - `observe` explicitly replaces source-relative response handling when replacement remains
   possible.
-- `replies` enables or disables one persistent V1 reply route for the selected agent. Enabling
+- `sends` enables or disables one directed V1 messaging route, or a live subtree default with `all`. Enabling
   installs the source identity exactly once; later target turns reuse the same context item.
 - `w:m` grants only the resulting target turn a reverse-message route to the displayed source;
   `w:q` carries every other selected flag with the future queued turn and queues its model-visible
   final response for the source's next turn.
 
-Prompt text must not collide with action verbs. Except for the documented target-first `close`
-form, verb forms are parsed only immediately after `/agent`; `/agent <target> stop ...` remains
-ordinary prompt text unless an explicit compatibility alias is deliberately added.
+Target-first `close`, `resume`, and `sends` are reserved actions and receive action highlighting. Use `/agent <target> -- resume ...` to send literal prompt text beginning with a reserved action. Other verb forms are parsed only immediately after `/agent`; `/agent <target> stop ...` remains ordinary prompt text.
 
 ## Required coverage
 
@@ -1019,7 +1075,7 @@ Integration and TUI coverage should include:
 8. `w:f` wakes the displayed source exactly once.
 9. `w:x` produces presentation-only completion on a new turn.
 10. `w:m` exposes an attributed reply route for one target turn, permits one idle source wake, and
-    rejects later wake attempts or UUID-only bypass; `/agent replies` enables the same attributed
+    rejects later wake attempts or UUID-only bypass; `/agent sends` enables the same attributed
     route across later turns with one context installation, and explicit disable overrides `m`.
 11. Existing `f` remains authoritative when a later active-turn dispatch requests `x`.
 12. Source switch after dispatch does not move observation ownership.

@@ -187,6 +187,7 @@ impl ThreadManager {
                             parent_thread_id: missing_edge.parent_thread_id,
                             child_thread_id: missing_edge.child_thread_id,
                             nickname: missing_edge.nickname,
+                            task_path: None,
                         })
                         .await
                         .map_err(|err| {
@@ -300,6 +301,45 @@ impl ThreadManager {
         })
     }
 
+    /// Reload an explicit live revert, restoring only its send policy before V1 publication.
+    ///
+    /// Ordinary resume and history fork never take a live permission handoff.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn resume_thread_after_live_revert(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        parent_trace: Option<W3cTraceContext>,
+        client_mcp_extensions: ClientMcpExtensions,
+        messaging: Option<crate::LiveRevertMessagingSnapshot>,
+    ) -> CodexResult<NewThread> {
+        match messaging {
+            Some(messaging) => {
+                self.resume_thread_with_current_owner(
+                    config,
+                    initial_history,
+                    auth_manager,
+                    parent_trace,
+                    client_mcp_extensions,
+                    Some(messaging),
+                )
+                .await
+            }
+            None => {
+                self.resume_thread_with_history(
+                    config,
+                    initial_history,
+                    auth_manager,
+                    parent_trace,
+                    client_mcp_extensions,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn resume_thread_with_current_owner(
         &self,
         config: Config,
@@ -307,6 +347,7 @@ impl ThreadManager {
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
+        live_revert_messaging: Option<crate::LiveRevertMessagingSnapshot>,
     ) -> CodexResult<NewThread> {
         let resumed_thread_id = match &initial_history {
             InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
@@ -459,11 +500,12 @@ impl ThreadManager {
             ..StartThreadOptions::new(config)
         };
         let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control.clone());
-        if activates_controlled_alias {
+        let defers_publication = activates_controlled_alias || live_revert_messaging.is_some();
+        if defers_publication {
             request.runtime_publication = ThreadRuntimePublication::Deferred;
         }
         let resumed = Box::pin(self.state.spawn_thread(request)).await?;
-        let mut setup_cleanup = (activates_controlled_alias
+        let mut setup_cleanup = (defers_publication
             && resumed.runtime_origin == ThreadRuntimeOrigin::Created)
             .then(|| {
                 SetupCleanupGuard::new_with_agent_lifecycle(
@@ -542,27 +584,34 @@ impl ThreadManager {
                 resumed.thread_id
             )));
         }
-        if activates_controlled_alias {
-            let setup_result: CodexResult<()> = match agent_control
-                .activate_controlled_resume_alias(resumed.thread.as_ref(), &session_source)
-                .await
-            {
-                Ok(_) => {
-                    let registration_commit = controlled_registration
-                        .take()
-                        .map(ControlledResumeRegistration::commit);
-                    match self.state.publish_thread(&resumed.thread).await {
-                        Ok(()) => {
-                            if let Some(registration_commit) = registration_commit {
-                                registration_commit.publish();
-                            }
-                            Ok(())
-                        }
-                        Err(err) => Err(err),
-                    }
+        if defers_publication {
+            let setup_result: CodexResult<()> = async {
+                if activates_controlled_alias {
+                    agent_control
+                        .activate_controlled_resume_alias(resumed.thread.as_ref(), &session_source)
+                        .await?;
                 }
-                Err(err) => Err(err),
-            };
+                let messaging_publication = match live_revert_messaging {
+                    Some(messaging) => Some(
+                        messaging
+                            .restore_before_publication(resumed.thread.as_ref())
+                            .await?,
+                    ),
+                    None => None,
+                };
+                let registration_commit = controlled_registration
+                    .take()
+                    .map(ControlledResumeRegistration::commit);
+                self.state.publish_thread(&resumed.thread).await?;
+                if let Some(messaging) = messaging_publication {
+                    messaging.published();
+                }
+                if let Some(registration_commit) = registration_commit {
+                    registration_commit.publish();
+                }
+                Ok(())
+            }
+            .await;
             if let Err(err) = setup_result {
                 if let Some(setup_cleanup) = setup_cleanup.take()
                     && let Err(cleanup_err) = setup_cleanup.rollback().await

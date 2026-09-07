@@ -9,7 +9,7 @@ use codex_protocol::protocol::WarningEvent;
 
 pub(crate) struct QueuedInputObservationParams {
     pub(crate) agent_id: ThreadId,
-    pub(crate) input: Vec<UserInput>,
+    pub(crate) input: AgentControlInput,
     pub(crate) start_options: TurnStartOptions,
     pub(crate) observer: SessionPresentationId,
     pub(crate) response_observation: ResponseObservationPolicy,
@@ -56,7 +56,7 @@ impl AgentControl {
                 control: self.clone(),
                 source: observer,
                 target_thread_id: agent_id,
-                input: AgentControlInput::User(input),
+                input,
                 start_options,
                 response_observation,
                 task_preview,
@@ -98,6 +98,9 @@ impl AgentControl {
             response_observation,
         )?;
         let sender_thread = state.get_thread_including_pending(sender.thread_id).await?;
+        let attributed_input = receiver_control
+            .attribute_model_input(sender, receiver_thread_id, sender_turn_id, input)
+            .await?;
         let admission = receiver_control
             .acquire_target_message_admission_after_binding(
                 &receiver_thread,
@@ -113,11 +116,6 @@ impl AgentControl {
                 "agent message route already reserved or consumed its idle wake".to_string(),
             ));
         };
-        let sender_identity = receiver_control
-            .model_visible_agent_identity(&receiver_thread, sender.thread_id)
-            .await?;
-        let attributed_input =
-            super::scoped_messages::attributed_agent_input(sender_identity, sender_turn_id, input);
         let queue_id = uuid::Uuid::now_v7();
         Self::enqueue_agent_turn(
             &state,
@@ -179,6 +177,15 @@ impl AgentControl {
                     continue;
                 }
 
+                if let Err(error) = target_thread
+                    .session
+                    .services
+                    .agent_control
+                    .refresh_subtree_messaging(target_thread_id)
+                    .await
+                {
+                    tracing::warn!(%error, "failed to refresh queued messaging permissions");
+                }
                 let lifecycle_lock = state.agent_lifecycle_lock(target_thread_id);
                 let lifecycle_guard = lifecycle_lock.lock_owned().await;
                 let Some(entry) = state.agent_turn_queue.take_front(target_thread_id) else {
@@ -216,6 +223,33 @@ impl AgentControl {
                     drop(lifecycle_guard);
                     continue;
                 }
+                // Recheck permission when the queued peer message becomes eligible, rather
+                // than discovering a revoked route only after the target has started.
+                if let Some(reservation) = &entry.target_message_wake
+                    && !entry.control.target_message_wake_is_current(
+                        reservation.observer,
+                        reservation.target,
+                        &reservation.target_turn_id,
+                        reservation.reservation_id,
+                    )
+                {
+                    publish_queued_turn_warning(
+                        &state,
+                        &entry,
+                        "permission",
+                        format!(
+                            "Queued input {} for {} was discarded before admission: \
+                             message permission was revoked or its scoped wake expired",
+                            entry.id, entry.target_thread_id
+                        ),
+                    )
+                    .await;
+                    entry.rollback_target_message_wake();
+                    state
+                        .agent_turn_queue
+                        .finish_front(target_thread_id, entry.id);
+                    continue;
+                }
                 let task_context = entry.task_preview.clone().map_or(
                     ObservedInputTaskContext::None,
                     ObservedInputTaskContext::UserAuthored,
@@ -246,6 +280,14 @@ impl AgentControl {
                             response_observation,
                             admission_mode: InputTurnAdmissionMode::Queued(agent_queue_turn),
                             task_context,
+                            scoped_authorization: entry.target_message_wake.as_ref().map_or(
+                                ScopedInputAuthorization::NotRequired,
+                                |reservation| ScopedInputAuthorization::Wake {
+                                    receiver: reservation.observer,
+                                    sender_turn_id: reservation.target_turn_id.clone(),
+                                    reservation_id: reservation.reservation_id,
+                                },
+                            ),
                         },
                     )
                     .await;
@@ -323,6 +365,7 @@ impl AgentControl {
                             .agent_turn_queue
                             .restore_front(target_thread_id, entry.id);
                         drop(lifecycle_guard);
+                        drop(_source_admission_guard);
                         if target_thread.session.active_turn.lock().await.is_some() {
                             tokio::select! {
                                 () = active_turn_transition.as_mut() => {}
@@ -340,6 +383,7 @@ impl AgentControl {
                             .agent_turn_queue
                             .restore_front(target_thread_id, entry.id);
                         drop(lifecycle_guard);
+                        drop(_source_admission_guard);
                         tokio::select! {
                             () = entry.control.wait_for_execution_capacity() => {}
                             _ = state.agent_turn_queue.wait_changed() => {}
@@ -350,8 +394,8 @@ impl AgentControl {
                     }
                     Err(err) => {
                         let warning = format!(
-                            "Queued input for {} was discarded before admission: {err}",
-                            entry.target_thread_id
+                            "Queued input {} for {} was discarded before admission: {err}",
+                            entry.id, entry.target_thread_id
                         );
                         tracing::warn!(
                             queue_id = %entry.id,
@@ -416,3 +460,7 @@ fn queued_admission_target_became_active(err: &CodexErr) -> bool {
             if message.starts_with(QUEUED_INPUT_ACTIVE_ERROR_PREFIX)
     )
 }
+
+#[cfg(test)]
+#[path = "turn_queue_permission_tests.rs"]
+mod permission_tests;

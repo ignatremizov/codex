@@ -120,6 +120,8 @@ pub enum ThreadItemDetails {
     /// Response from the agent.
     /// Either a natural-language response or a JSON string when structured output is requested.
     AgentMessage(AgentMessageItem),
+    /// Input received from another agent, not an assistant response.
+    AgentInput(AgentInputItem),
     /// Agent's reasoning summary.
     Reasoning(ReasoningItem),
     /// Tracks a command executed by the agent. The item starts when the command is
@@ -148,6 +150,14 @@ pub enum ThreadItemDetails {
 /// Either a natural-language response or a JSON string when structured output is requested.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct AgentMessageItem {
+    pub text: String,
+}
+
+/// Text-only export of trusted agent input. Media payloads are represented by display markers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct AgentInputItem {
+    pub sender_thread_id: String,
+    pub recipient_thread_id: String,
     pub text: String,
 }
 

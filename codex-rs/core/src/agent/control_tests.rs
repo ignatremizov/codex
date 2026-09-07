@@ -101,6 +101,12 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 
+#[path = "control/directory_tests.rs"]
+mod directory_tests;
+
+#[path = "control/scoped_admission_tests.rs"]
+mod scoped_admission_tests;
+
 #[test]
 fn internal_agent_input_provenance_is_not_inferred_from_user_text() {
     let route = AgentReplyRoute::new(AgentContextIdentity::Canonical {
@@ -658,12 +664,12 @@ async fn setup_pending_observer_can_persist_inter_agent_response_handling() {
 #[tokio::test]
 async fn controlled_uuid_fallback_requires_explicit_adoption_without_alias_storage() {
     let harness = AgentControlHarness::new_without_state_db().await;
-    let (_source_thread_id, source_thread) = harness.start_thread().await;
+    let (source_thread_id, source_thread) = harness.start_thread().await;
     let source_control = &source_thread.session.services.agent_control;
     let (foreign_thread_id, _foreign_thread) = harness.start_thread().await;
 
     let controlled = source_control
-        .resolve_controlled_v1_agent_target(&foreign_thread_id.to_string())
+        .resolve_controlled_v1_agent_target(source_thread_id, &foreign_thread_id.to_string())
         .await;
     assert_matches!(
         controlled,
@@ -674,7 +680,7 @@ async fn controlled_uuid_fallback_requires_explicit_adoption_without_alias_stora
     );
     assert_eq!(
         source_control
-            .resolve_resumable_v1_agent_target(&foreign_thread_id.to_string())
+            .resolve_resumable_v1_agent_target(source_thread_id, &foreign_thread_id.to_string())
             .await
             .expect("explicit UUID adoption should remain available"),
         foreign_thread_id
@@ -690,7 +696,7 @@ async fn reserved_main_nickname_resolves_case_insensitively_without_alias_storag
     for target in ["main", "Main", "MAIN", "nick:mAiN"] {
         assert_eq!(
             control
-                .resolve_controlled_v1_agent_target(target)
+                .resolve_controlled_v1_agent_target(root_thread_id, target)
                 .await
                 .expect("reserved Main nickname should resolve"),
             root_thread_id
@@ -1916,7 +1922,7 @@ async fn ephemeral_spawn_does_not_persist_agent_graph_edge() {
     assert_eq!(
         harness
             .control
-            .resolve_controlled_v1_agent_target(&child_thread_id.to_string())
+            .resolve_controlled_v1_agent_target(parent_thread_id, &child_thread_id.to_string())
             .await
             .expect("live ephemeral child UUID should remain controlled"),
         child_thread_id
@@ -2471,7 +2477,6 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                         agent_path: AgentPath::try_from("/root/reviewer")
                             .expect("valid agent path"),
                     },
-                    "reviewer-turn",
                     "parent-only attributed message",
                 )),
                 assistant_message("parent commentary", Some(MessagePhase::Commentary)),
@@ -6025,6 +6030,7 @@ async fn transferred_uuid_generic_resume_uses_current_owner_and_rejects_stale_me
             ResponseObservationPolicy::default(),
             previous_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await
         .expect("new owner should adopt the closed child");
@@ -6033,7 +6039,7 @@ async fn transferred_uuid_generic_resume_uses_current_owner_and_rejects_stale_me
         .restore_agent_metadata(child_thread_id, stale_metadata.clone())
         .expect("simulate stale metadata retained by another process");
     let stale_resolution = previous_control
-        .resolve_controlled_v1_agent_target(&child_thread_id.to_string())
+        .resolve_controlled_v1_agent_target(previous_root_thread_id, &child_thread_id.to_string())
         .await;
     assert_matches!(
         stale_resolution,
@@ -6132,6 +6138,7 @@ async fn transferred_uuid_generic_resume_uses_current_owner_and_rejects_stale_me
             ResponseObservationPolicy::default(),
             current_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await
         .expect("the previous root should explicitly adopt the closed rollout back");
@@ -6446,6 +6453,7 @@ async fn ownership_transfer_revokes_recovering_v1_subtree_observers_before_publi
             ResponseObservationPolicy::default(),
             previous_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await
         .expect("destination root should adopt the unloaded subtree");
@@ -6610,6 +6618,7 @@ async fn cross_manager_writer_conflict_prevents_ownership_transfer() {
             ResponseObservationPolicy::default(),
             previous_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await;
     assert_matches!(
@@ -6643,6 +6652,7 @@ async fn cross_manager_writer_conflict_prevents_ownership_transfer() {
             ResponseObservationPolicy::default(),
             previous_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await
         .expect("adoption should succeed after the original writer closes");
@@ -6760,6 +6770,7 @@ async fn cross_manager_descendant_writer_conflict_prevents_subtree_transfer() {
             ResponseObservationPolicy::default(),
             previous_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await;
     assert_matches!(
@@ -6796,6 +6807,7 @@ async fn cross_manager_descendant_writer_conflict_prevents_subtree_transfer() {
             ResponseObservationPolicy::default(),
             previous_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await
         .expect("subtree transfer should succeed after every old writer closes");
@@ -6937,6 +6949,7 @@ async fn transferred_descendant_resumes_without_its_colliding_rollout_nickname()
             ResponseObservationPolicy::default(),
             previous_owner,
             target_thread_id.to_string(),
+            /*task*/ None,
         )
         .await
         .expect("target subtree should transfer");
@@ -7091,6 +7104,7 @@ async fn adoption_rejects_an_unloaded_target_with_a_live_descendant() {
                 ResponseObservationPolicy::default(),
                 previous_owner,
                 child_thread_id.to_string(),
+                /*task*/ None,
             ),
     )
     .await
@@ -7120,6 +7134,7 @@ async fn adoption_rejects_an_unloaded_target_with_a_live_descendant() {
             ResponseObservationPolicy::default(),
             previous_owner,
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await;
     assert_matches!(
@@ -9272,3 +9287,5 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
 }
+#[path = "control/task_path_control_tests.rs"]
+mod task_path_control_tests;

@@ -576,6 +576,19 @@ impl AgentControl {
             return false;
         }
         self.commit_response_observation_delivery(&commit);
+        if let Err(err) = self
+            .mirror_agent_delivery_receipt(
+                commentary.child.thread_id,
+                parent.thread_id,
+                MessagePhase::Commentary,
+                SubAgentCompletionModelVisibility::Visible,
+                commentary.delivery.response_item_id.as_str(),
+                &commentary.delivery.text,
+            )
+            .await
+        {
+            tracing::warn!("failed to present commentary delivery receipt: {err}");
+        }
         true
     }
 
@@ -625,15 +638,31 @@ impl AgentControl {
         communication.id = Some(delivery.response_item_id.clone());
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, child.thread_id);
-        self.send_inter_agent_communication_durably(
-            parent,
-            communication,
-            context,
-            /*parent_turn_id*/ None,
-            durable_delivery,
-        )
-        .await
-        .is_ok()
+        let delivered = self
+            .send_inter_agent_communication_durably(
+                parent,
+                communication,
+                context,
+                /*parent_turn_id*/ None,
+                durable_delivery,
+            )
+            .await
+            .is_ok();
+        if delivered
+            && let Err(err) = self
+                .mirror_agent_delivery_receipt(
+                    child.thread_id,
+                    parent.thread_id,
+                    MessagePhase::Commentary,
+                    SubAgentCompletionModelVisibility::Visible,
+                    delivery.response_item_id.as_str(),
+                    &delivery.text,
+                )
+                .await
+        {
+            tracing::warn!("failed to present commentary delivery receipt: {err}");
+        }
+        delivered
     }
 
     pub(super) async fn deliver_v1_watcher_terminal(

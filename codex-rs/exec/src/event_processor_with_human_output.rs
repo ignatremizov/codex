@@ -8,6 +8,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::attributed_agent_input_text;
 use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
@@ -103,6 +104,10 @@ impl EventProcessorWithHumanOutput {
     }
 
     fn render_item_completed(&mut self, item: ThreadItem) {
+        if let Some(text) = attributed_agent_input_text(&item) {
+            eprintln!("{text}");
+            return;
+        }
         match item {
             ThreadItem::AgentMessage { id, .. }
                 if sub_agent_completion_status_from_response_item_id(&id).is_some() => {}
@@ -561,9 +566,12 @@ fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
         .iter()
         .rev()
         .find_map(|item| match item {
-            ThreadItem::AgentMessage { id, text, .. }
-                if sub_agent_completion_status_from_response_item_id(id).is_none() =>
-            {
+            ThreadItem::AgentMessage {
+                id,
+                text,
+                attribution: None,
+                ..
+            } if sub_agent_completion_status_from_response_item_id(id).is_none() => {
                 Some(text.clone())
             }
             _ => None,
@@ -598,6 +606,10 @@ fn should_print_final_message_to_tty(
 ) -> bool {
     final_message.is_some() && !final_message_rendered && stdout_is_terminal && stderr_is_terminal
 }
+
+#[cfg(test)]
+#[path = "agent_input_output_tests.rs"]
+mod agent_input_output_tests;
 
 #[cfg(test)]
 mod tests {
@@ -696,6 +708,8 @@ mod tests {
         let message = final_message_from_turn_items(&[
             ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
+                attribution: None,
+                input: None,
                 text: "first".to_string(),
                 phase: None,
                 memory_citation: None,
@@ -708,6 +722,8 @@ mod tests {
             },
             ThreadItem::AgentMessage {
                 id: "msg-2".to_string(),
+                attribution: None,
+                input: None,
                 text: "second".to_string(),
                 phase: None,
                 memory_citation: None,
@@ -768,6 +784,8 @@ mod tests {
                     id: "turn-1".to_string(),
                     items: vec![ThreadItem::AgentMessage {
                         id: "msg-1".to_string(),
+                        attribution: None,
+                        input: None,
                         text: "final answer".to_string(),
                         phase: None,
                         memory_citation: None,
@@ -819,6 +837,8 @@ mod tests {
                     id: "turn-1".to_string(),
                     items: vec![ThreadItem::AgentMessage {
                         id: "msg-1".to_string(),
+                        attribution: None,
+                        input: None,
                         text: "final answer".to_string(),
                         phase: None,
                         memory_citation: None,

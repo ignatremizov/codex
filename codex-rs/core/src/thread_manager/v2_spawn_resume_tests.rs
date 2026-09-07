@@ -346,6 +346,7 @@ async fn transferred_v2_subtree_resolves_current_owner_parent_and_depth() {
             parent_thread_id: source_root,
             child_thread_id: child,
             nickname: Some("Hopper".to_string()),
+            task_path: None,
         })
         .await
         .expect("allocate child alias");
@@ -355,6 +356,7 @@ async fn transferred_v2_subtree_resolves_current_owner_parent_and_depth() {
             parent_thread_id: child,
             child_thread_id: descendant,
             nickname: Some("Noether".to_string()),
+            task_path: None,
         })
         .await
         .expect("allocate descendant alias");
@@ -367,6 +369,7 @@ async fn transferred_v2_subtree_resolves_current_owner_parent_and_depth() {
             thread_id: child,
             nickname: Some("Hopper".to_string()),
             authored_selector: child.to_string(),
+            task_path: None,
         })
         .await
         .expect("transfer subtree");
@@ -488,6 +491,7 @@ async fn cold_v2_resume_relocks_parent_after_concurrent_transfer() {
             parent_thread_id: source_root,
             child_thread_id: child,
             nickname: Some("Hopper".to_string()),
+            task_path: None,
         })
         .await
         .expect("allocate source child alias");
@@ -541,6 +545,7 @@ async fn cold_v2_resume_relocks_parent_after_concurrent_transfer() {
             thread_id: child,
             nickname: Some("Hopper".to_string()),
             authored_selector: child.to_string(),
+            task_path: None,
         })
         .await
         .expect("transfer child while cold resume waits for its lifecycle lock");
@@ -722,6 +727,7 @@ async fn failed_closed_v2_resume_restores_alias_and_edge_lifecycle() {
             parent_thread_id: root_thread_id,
             child_thread_id,
             nickname: Some("worker".to_string()),
+            task_path: None,
         })
         .await
         .expect("allocate child alias");
@@ -741,6 +747,7 @@ async fn failed_closed_v2_resume_restores_alias_and_edge_lifecycle() {
             parent_thread_id: root_thread_id,
             child_thread_id,
             nickname: Some("worker".to_string()),
+            task_path: None,
         })
         .await
         .expect("simulate resume activation");

@@ -220,10 +220,13 @@ impl App {
                     state_labels.push(observation.compact_label());
                 }
                 if let Some(reply_route) = reply_route {
+                    let recipient = displayed_thread_id
+                        .map(|id| self.agent_navigation.display_name(id, agent_root_thread_id))
+                        .unwrap_or_default();
                     state_labels.push(if reply_route {
-                        "replies enabled".to_string()
+                        format!("can message {recipient}")
                     } else {
-                        "replies disabled".to_string()
+                        format!("messages to {recipient} disabled")
                     });
                 }
                 if has_pending_approval {
@@ -304,6 +307,18 @@ impl App {
                     activity_lines
                         .push(vec!["Latest response: ".bold(), response_preview.into()].into());
                 }
+                if let Some((sender, received_preview)) = runtime_summary.received_preview {
+                    let sender = self
+                        .agent_navigation
+                        .display_name(sender, agent_root_thread_id);
+                    activity_lines.push(
+                        vec![
+                            format!("Latest received from {sender}: ").bold(),
+                            received_preview.into(),
+                        ]
+                        .into(),
+                    );
+                }
                 if let Some(fork_mode) = spawned_settings.and_then(|settings| settings.fork_mode) {
                     activity_lines.push(
                         vec!["Fork: ".bold(), agent_fork_mode_label(fork_mode).into()].into(),
@@ -339,19 +354,11 @@ impl App {
                 } else {
                     detail_lines.push(vec!["Response: ".bold(), "none".dim()].into());
                 }
-                if let Some(reply_route) = reply_route {
-                    detail_lines.push(
-                        vec![
-                            "Replies: ".bold(),
-                            if reply_route {
-                                "enabled".green()
-                            } else {
-                                "disabled".dim()
-                            },
-                        ]
-                        .into(),
-                    );
-                }
+                detail_lines.extend(super::agent_messaging::permission_lines(
+                    &self.agent_navigation,
+                    thread_id,
+                    agent_root_thread_id,
+                ));
                 detail_lines.push(vec!["Queued: ".bold(), queued.to_string().into()].into());
                 if let Some(queue) = self.queued_agent_prompts.get(&thread_id) {
                     for (index, prompt) in queue.iter().take(3).enumerate() {

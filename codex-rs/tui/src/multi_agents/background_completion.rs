@@ -3,6 +3,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::SubAgentCompletionStatus;
+use codex_protocol::protocol::agent_delivery_receipt_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_transcript_parts;
@@ -26,6 +27,36 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
 ) -> Option<CollabAgentHistoryCell> {
     if phase != Some(&MessagePhase::Commentary) {
         return None;
+    }
+    if let Some((sender, recipient, delivered_phase, recipient_model_visibility)) =
+        agent_delivery_receipt_from_response_item_id(id)
+    {
+        let label = match delivered_phase {
+            MessagePhase::Commentary => " · commentary delivered (",
+            MessagePhase::FinalAnswer => " · final delivered (",
+        };
+        let mut sender_metadata = agent_metadata(sender);
+        // These raw root copies are emitted only for acknowledged delivery of Main's output.
+        sender_metadata.agent_nickname = Some("Main".to_string());
+        let agent_title = super::CollabAgentTitle {
+            thread_id: sender,
+            metadata: sender_metadata,
+            recipient: Some((recipient, agent_metadata(recipient))),
+            recipient_separator: " → ",
+            suffix: vec![
+                label.dim(),
+                completion_visibility_span(recipient_model_visibility),
+                " to recipient):".dim(),
+            ],
+        };
+        return Some(CollabAgentHistoryCell {
+            title: agent_title.render(),
+            agent_title: Some(agent_title),
+            details: vec![CollabDetail::preview(
+                preview_source_lines(text),
+                agent_response_preview_lines,
+            )],
+        });
     }
     let completion_status = sub_agent_completion_status_from_response_item_id(id)?;
     let model_visibility = sub_agent_completion_model_visibility_from_response_item_id(id)?;
@@ -79,6 +110,10 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         collab_event(title_spans_line(title), details)
     })
 }
+
+#[cfg(test)]
+#[path = "background_completion_tests.rs"]
+mod tests;
 
 fn completion_visibility_span(
     model_visibility: SubAgentCompletionModelVisibility,

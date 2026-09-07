@@ -34,7 +34,32 @@ struct PreparedClosedAgentResume {
 }
 
 impl CodexThread {
+    /// Set a live messaging default for this supervisor and its current/future descendants.
+    pub async fn set_agent_subtree_messaging(
+        &self,
+        mode: UserAgentReplyRouteMode,
+    ) -> CodexResult<Option<UserAgentReplyRouteMode>> {
+        let mode = match mode {
+            UserAgentReplyRouteMode::Enabled => TargetMessageRouteMode::Enabled,
+            UserAgentReplyRouteMode::Disabled => TargetMessageRouteMode::Disabled,
+        };
+        self.session
+            .services
+            .agent_control
+            .set_subtree_messaging(self.session.presentation_id(), mode)
+            .await
+            .map(|previous| {
+                previous.map(|mode| match mode {
+                    TargetMessageRouteMode::Enabled => UserAgentReplyRouteMode::Enabled,
+                    TargetMessageRouteMode::Disabled => UserAgentReplyRouteMode::Disabled,
+                })
+            })
+    }
+
     /// Resume a controlled closed agent or explicitly adopt a stored agent by UUID.
+    ///
+    /// `task` assigns a caller-relative label only during cross-root adoption. Same-root resume
+    /// preserves the existing assignment and rejects a task override.
     ///
     /// A live runtime owned by another root is never adopted in place because its session still
     /// carries the old controller. The caller must first close that runtime, after which this
@@ -42,9 +67,10 @@ impl CodexThread {
     pub async fn resume_agent(
         &self,
         target: &str,
+        task: Option<String>,
         response_handling: UserAgentResponseHandling,
     ) -> CodexResult<UserAgentResumeResult> {
-        self.resume_agent_inner(target, response_handling.into())
+        self.resume_agent_inner(target, task, response_handling.into())
             .await
     }
 
@@ -61,7 +87,7 @@ impl CodexThread {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
-            .resolve_controlled_agent_target(target)
+            .resolve_controlled_agent_target(self.session.thread_id(), target)
             .await?;
         if target_thread_id == source_thread_id {
             return Err(CodexErr::InvalidRequest(
@@ -95,20 +121,40 @@ impl CodexThread {
         ))
     }
 
-    /// Enable or disable the target's attributed reply route back to this source.
+    /// Enable or disable a sender's attributed reply route within this control graph.
+    /// Omitted recipient means the thread issuing the user command.
     pub async fn set_agent_reply_route(
         &self,
         target: &str,
+        recipient: Option<&str>,
         mode: UserAgentReplyRouteMode,
-    ) -> CodexResult<(ThreadId, Option<UserAgentReplyRouteMode>)> {
+    ) -> CodexResult<(ThreadId, ThreadId, Option<UserAgentReplyRouteMode>)> {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
-            .resolve_controlled_agent_target(target)
+            .resolve_controlled_agent_target(self.session.thread_id(), target)
             .await?;
-        if target_thread_id == source_thread_id {
+        let recipient_thread_id = match recipient {
+            Some(recipient) => {
+                agent_control
+                    .resolve_controlled_agent_target(self.session.thread_id(), recipient)
+                    .await?
+            }
+            None => source_thread_id,
+        };
+        if target_thread_id == recipient_thread_id {
             return Err(CodexErr::InvalidRequest(
                 "an agent cannot grant itself a reply route".to_string(),
+            ));
+        }
+        if mode == UserAgentReplyRouteMode::Disabled
+            && agent_control
+                .is_live_agent_descendant(target_thread_id, recipient_thread_id)
+                .await?
+        {
+            return Err(CodexErr::InvalidRequest(
+                "cannot disable supervisor send_input to a descendant; task dispatch remains enabled"
+                    .to_string(),
             ));
         }
         if matches!(
@@ -126,7 +172,7 @@ impl CodexThread {
         let replaced = agent_control
             .replace_durable_target_message_route(
                 target_thread_id,
-                self.session.presentation_id(),
+                recipient_thread_id,
                 replacement,
             )
             .await?;
@@ -134,17 +180,20 @@ impl CodexThread {
             TargetMessageRouteMode::Enabled => UserAgentReplyRouteMode::Enabled,
             TargetMessageRouteMode::Disabled => UserAgentReplyRouteMode::Disabled,
         });
-        Ok((replaced.target_thread_id, previous))
+        Ok((replaced.target_thread_id, recipient_thread_id, previous))
     }
 
     pub(super) async fn resume_agent_inner(
         &self,
         target: &str,
+        task: Option<String>,
         response_observation: ResponseObservationPolicy,
     ) -> CodexResult<UserAgentResumeResult> {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
-        let target_thread_id = agent_control.resolve_resumable_agent_target(target).await?;
+        let target_thread_id = agent_control
+            .resolve_resumable_agent_target(source_thread_id, target)
+            .await?;
         if target_thread_id == source_thread_id {
             return Err(CodexErr::InvalidRequest(
                 "an agent cannot resume itself".to_string(),
@@ -152,6 +201,13 @@ impl CodexThread {
         }
 
         let resume_plan = agent_control.plan_agent_resume(target_thread_id).await?;
+        if task.is_some() && !resume_plan.ownership.transfers_ownership() {
+            return Err(CodexErr::InvalidRequest(
+                "task is only supported when adopting an agent from another root; \
+                 same-root resume does not rename its assignment"
+                    .to_string(),
+            ));
+        }
         let observed_status = resume_plan.status;
         let target_is_live = !matches!(observed_status, AgentStatus::NotFound);
         if target_is_live {
@@ -185,13 +241,16 @@ impl CodexThread {
                 )
                 .await
                 .map(Into::into);
-            let (agent_ref, nickname) = resume_plan.current_alias.map_or((None, None), |alias| {
-                (Some(alias.agent_ref), alias.nickname)
-            });
+            let (agent_ref, nickname, task_path) = resume_plan
+                .current_alias
+                .map_or((None, None, None), |alias| {
+                    (Some(alias.agent_ref), alias.nickname, alias.task_path)
+                });
             return Ok(UserAgentResumeResult {
                 target_thread_id,
                 agent_ref,
                 nickname,
+                task_path,
                 status,
                 ownership_transfer: None,
                 observation_binding,
@@ -199,7 +258,7 @@ impl CodexThread {
             });
         }
 
-        let prepared = self
+        let mut prepared = self
             .prepare_closed_agent_resume(resume_plan.ownership)
             .await?;
         let mut post_commit_warning = None;
@@ -225,10 +284,16 @@ impl CodexThread {
                         response_observation,
                         previous_session_id,
                         target.to_string(),
+                        task,
                     )
                     .await;
                 match adoption {
-                    Ok(persisted_alias) => persisted_alias,
+                    Ok(persisted_alias) => persisted_alias.map(|persisted| {
+                        if let Some(transfer) = prepared.ownership_transfer.as_mut() {
+                            transfer.task_path_mapping = persisted.task_path_mapping;
+                        }
+                        persisted.alias
+                    }),
                     Err(err) => {
                         let alias_after_failure = match agent_control
                             .current_agent_alias(target_thread_id)
@@ -268,13 +333,15 @@ impl CodexThread {
                 .await
                 .map(Into::into)
         };
-        let (agent_ref, nickname) = persisted_alias.map_or((None, None), |alias| {
-            (Some(alias.agent_ref), alias.nickname)
-        });
+        let (agent_ref, nickname, task_path) = persisted_alias
+            .map_or((None, None, None), |alias| {
+                (Some(alias.agent_ref), alias.nickname, alias.task_path)
+            });
         Ok(UserAgentResumeResult {
             target_thread_id,
             agent_ref,
             nickname,
+            task_path,
             status,
             ownership_transfer: prepared.ownership_transfer,
             observation_binding,
@@ -295,6 +362,7 @@ impl CodexThread {
             } => Some(UserAgentOwnershipTransfer {
                 previous_session_id,
                 new_session_id: agent_control.session_id(),
+                task_path_mapping: Vec::new(),
             }),
         };
         let task_name = ownership_transfer
@@ -390,7 +458,7 @@ impl CodexThread {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
-            .resolve_controlled_agent_target(target)
+            .resolve_controlled_agent_target(self.session.thread_id(), target)
             .await?;
         if target_thread_id == source_thread_id {
             return Err(CodexErr::InvalidRequest(
@@ -451,7 +519,7 @@ impl CodexThread {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
-            .resolve_controlled_agent_target(target)
+            .resolve_controlled_agent_target(self.session.thread_id(), target)
             .await?;
         if target_thread_id == source_thread_id {
             return Err(CodexErr::InvalidRequest(

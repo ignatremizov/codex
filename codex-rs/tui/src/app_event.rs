@@ -359,6 +359,7 @@ pub(crate) enum AppEvent {
     /// Spawn a default or configured-role agent from the displayed source thread.
     SpawnAgent {
         source_thread_id: ThreadId,
+        task: Option<String>,
         role: Option<String>,
         authored_selector: Option<String>,
         model: Option<String>,
@@ -372,6 +373,7 @@ pub(crate) enum AppEvent {
     ResumeAgent {
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        task: Option<String>,
         response_handling: Option<codex_app_server_protocol::AgentResponseHandling>,
         prompt: Option<UserMessage>,
     },
@@ -402,6 +404,7 @@ pub(crate) enum AppEvent {
     SetAgentReplyRoute {
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        recipient: Option<AgentSelector>,
         mode: codex_app_server_protocol::AgentReplyRouteMode,
     },
 

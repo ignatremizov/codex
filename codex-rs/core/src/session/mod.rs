@@ -3749,7 +3749,8 @@ impl Session {
         }
     }
 
-    async fn deliver_event_raw(&self, event: Event) {
+    /// Publish a live-only presentation without rollout persistence or response observation.
+    pub(crate) async fn deliver_event_raw(&self, event: Event) {
         self.prepare_raw_sub_agent_terminal_presentation(&event);
         let _ = self
             .deliver_event_raw_prepared(event, AgentResponseEventPublication::Skip)
@@ -6429,6 +6430,16 @@ impl Session {
                 TurnItem::AgentMessage(agent_message_item)
             }
             PromptInputKind::Agent {
+                presentation: AgentInputPresentation::AttributedInput { attribution, input },
+            } => {
+                let mut agent_message_item = AgentMessageItem::new(&[]);
+                agent_message_item.id = new_attributed_agent_message_response_item_id().to_string();
+                agent_message_item.phase = Some(MessagePhase::Commentary);
+                agent_message_item.attribution = Some(*attribution);
+                agent_message_item.input = Some(input);
+                TurnItem::AgentMessage(agent_message_item)
+            }
+            PromptInputKind::Agent {
                 presentation: AgentInputPresentation::Delegated(visible_input),
             } => {
                 if visible_input.is_empty() {
@@ -6439,6 +6450,22 @@ impl Session {
             }
         };
         self.emit_turn_item_started(turn_context, &turn_item).await;
+        if let Err(err) = self
+            .services
+            .agent_control
+            .mirror_attributed_agent_input(self.thread_id, &turn_item)
+            .await
+        {
+            self.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: format!(
+                        "Agent input was received, but Main's transcript copy failed: {err}"
+                    ),
+                }),
+            )
+            .await;
+        }
         self.emit_turn_item_completed(turn_context, turn_item).await;
         self.ensure_rollout_materialized(persist_context).await;
     }

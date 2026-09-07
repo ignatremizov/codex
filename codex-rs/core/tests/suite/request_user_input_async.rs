@@ -224,6 +224,8 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
         serde_json::to_value(&started)?,
         serde_json::to_value(AgentMessageItem {
             id: CALL_ID.to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: MESSAGE.to_string(),
             }],

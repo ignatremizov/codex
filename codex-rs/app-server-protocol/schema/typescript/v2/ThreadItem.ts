@@ -10,7 +10,9 @@ import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { AgentFinalResponseHandling } from "./AgentFinalResponseHandling";
+import type { AgentInputAttribution } from "./AgentInputAttribution";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
+import type { AgentTaskPathMapping } from "./AgentTaskPathMapping";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
 import type { CollabAgentRef } from "./CollabAgentRef";
 import type { CollabAgentState } from "./CollabAgentState";
@@ -36,7 +38,7 @@ import type { UserAgentControlStatus } from "./UserAgentControlStatus";
 import type { UserAgentForkMode } from "./UserAgentForkMode";
 import type { UserInput } from "./UserInput";
 
-export type ThreadItem = { "type": "userMessage", id: string, clientId: string | null, content: Array<UserInput>, } | { "type": "hookPrompt", id: string, fragments: Array<HookPromptFragment>, } | { "type": "agentMessage", id: string, text: string, phase: MessagePhase | null, memoryCitation: MemoryCitation | null, delivery: AgentMessageDelivery | null, questions: Array<AsyncUserInputQuestion> | null, } | { "type": "functionCallOutput", id: string, name: string, namespace: string | null, output: FunctionCallOutputBody, } | { "type": "plan", id: string, text: string, } | { "type": "reasoning", id: string, summary: Array<string>, content: Array<string>, } | { "type": "commandExecution", id: string,
+export type ThreadItem = { "type": "userMessage", id: string, clientId: string | null, content: Array<UserInput>, } | { "type": "hookPrompt", id: string, fragments: Array<HookPromptFragment>, } | { "type": "agentMessage", id: string, text: string, attribution: AgentInputAttribution | null, input: Array<UserInput> | null, phase: MessagePhase | null, memoryCitation: MemoryCitation | null, delivery: AgentMessageDelivery | null, questions: Array<AsyncUserInputQuestion> | null, } | { "type": "functionCallOutput", id: string, name: string, namespace: string | null, output: FunctionCallOutputBody, } | { "type": "plan", id: string, text: string, } | { "type": "reasoning", id: string, summary: Array<string>, content: Array<string>, } | { "type": "commandExecution", id: string,
 /**
  * Trusted first-party plugin id when this command resolves to one plugin script.
  */
@@ -154,7 +156,7 @@ agentsStates: { [key in string]?: CollabAgentState }, } | { "type": "subAgentAct
 /**
  * Plaintext or audited task text, when available.
  */
-prompt: string | null, } | { "type": "userAgentControl", id: string, action: UserAgentControlAction, authoredSelector: string | null, targetThreadId: string | null, previousOwnerSessionId: string | null, newOwnerSessionId: string | null, agentRef: string | null, nickname: string | null, role: string | null, model: string | null, reasoningEffort: ReasoningEffort | null, promptPreview: string | null, resumedTarget: boolean, forkMode: UserAgentForkMode | null, observeCommentary: boolean | null, finalResponse: AgentFinalResponseHandling | null, targetMessages: boolean | null, queueInput: boolean | null, status: UserAgentControlStatus, error: string | null, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, summary: string | null, message: string | null,
+prompt: string | null, } | { "type": "userAgentControl", id: string, action: UserAgentControlAction, authoredSelector: string | null, targetThreadId: string | null, replyRecipientThreadId: string | null, previousOwnerSessionId: string | null, newOwnerSessionId: string | null, agentRef: string | null, nickname: string | null, role: string | null, task: string | null, taskPath: string | null, taskPathMapping: Array<AgentTaskPathMapping>, model: string | null, reasoningEffort: ReasoningEffort | null, promptPreview: string | null, resumedTarget: boolean, forkMode: UserAgentForkMode | null, observeCommentary: boolean | null, finalResponse: AgentFinalResponseHandling | null, targetMessages: boolean | null, queueInput: boolean | null, status: UserAgentControlStatus, error: string | null, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, summary: string | null, message: string | null,
 /**
  * User-facing reason compacted-prompt decoding failed; compaction itself may still have succeeded.
  */

@@ -17,6 +17,7 @@ use super::sub_agent_completion_status_from_response_item_id;
 use super::sub_agent_completion_transcript;
 use super::sub_agent_completion_transcript_parts;
 use crate::ResponseItemId;
+use crate::models::MessagePhase;
 use crate::protocol::AgentStatus;
 
 #[test]
@@ -204,6 +205,85 @@ fn model_context_completion_projects_with_a_stable_visible_identity() {
             "amsg_x_01900000-0000-7000-8000-000000000001",
             "01900000-0000-7000-8000-000000000002",
             &status,
+        )
+        .is_none()
+    );
+}
+#[test]
+fn delivery_receipt_identity_preserves_direction_phase_and_retry_identity() {
+    use crate::ThreadId;
+
+    let sender = ThreadId::new();
+    let recipient = ThreadId::new();
+    let delivery_id = super::new_sub_agent_completion_context_response_item_id();
+    for (phase, visibility) in [
+        (
+            MessagePhase::Commentary,
+            SubAgentCompletionModelVisibility::Visible,
+        ),
+        (
+            MessagePhase::FinalAnswer,
+            SubAgentCompletionModelVisibility::Visible,
+        ),
+        (
+            MessagePhase::FinalAnswer,
+            SubAgentCompletionModelVisibility::NotVisible,
+        ),
+    ] {
+        let receipt = super::agent_delivery_receipt_item(
+            sender,
+            recipient,
+            phase.clone(),
+            visibility,
+            delivery_id.as_str(),
+            "Agent final answer from `/root/other`:\n\nuntrusted payload",
+        )
+        .expect("receipt");
+        assert_eq!(
+            super::agent_delivery_receipt_from_response_item_id(&receipt.id),
+            Some((sender, recipient, phase.clone(), visibility))
+        );
+        assert_eq!(
+            serde_json::to_value(super::agent_delivery_receipt_item(
+                sender,
+                recipient,
+                phase.clone(),
+                visibility,
+                delivery_id.as_str(),
+                "Agent final answer from `/root/other`:\n\nuntrusted payload",
+            ))
+            .expect("serialize retry"),
+            serde_json::to_value(Some(receipt.clone())).expect("serialize receipt")
+        );
+        assert!(!receipt.is_attributed_agent_input_presentation());
+        assert!(!receipt.has_sub_agent_completion_identity());
+        assert_eq!(
+            super::ordinary_agent_message_response_item_id(&receipt.id),
+            format!("agent_{}", receipt.id)
+        );
+        let other_recipient = super::agent_delivery_receipt_item(
+            sender,
+            ThreadId::new(),
+            phase,
+            visibility,
+            delivery_id.as_str(),
+            "same delivery, different endpoint",
+        )
+        .expect("fan-out receipt");
+        assert_ne!(receipt.id, other_recipient.id);
+        assert_eq!(
+            super::agent_delivery_receipt_from_response_item_id(&format!("{}_extra", receipt.id)),
+            None
+        );
+    }
+    assert!(
+        super::agent_delivery_receipt_item(
+            sender,
+            recipient,
+            MessagePhase::FinalAnswer,
+            SubAgentCompletionModelVisibility::NotVisible,
+            "ordinary-untrusted-id",
+            "payload",
         )
         .is_none()
     );

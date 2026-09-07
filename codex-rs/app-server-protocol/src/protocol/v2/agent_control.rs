@@ -31,6 +31,8 @@ pub struct AgentControlParams {
 pub enum AgentControlAction {
     /// Spawn a default or configured-role child.
     Spawn {
+        /// Optional assignment label, resolved within the issuing agent's root namespace.
+        task: Option<String>,
         /// Omitted selects the default child configuration.
         role: Option<String>,
         /// Explicit model override. Takes precedence over role and configured defaults.
@@ -68,6 +70,8 @@ pub enum AgentControlAction {
     },
     /// Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.
     Resume {
+        /// New assignment for cross-root adoption only; same-root resume cannot rename a task.
+        task: Option<String>,
         /// Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.
         target: String,
         /// Omitted reserves passive delivery for the next admitted target turn.
@@ -91,11 +95,16 @@ pub enum AgentControlAction {
         target: String,
         response_handling: AgentObservationMode,
     },
-    /// Enable or disable the target's attributed reply route back to the source.
+    /// Enable or disable the target's attributed reply route to a controlled recipient.
     ReplyRoute {
         target: String,
+        /// Omitted means the source thread issuing the user command.
+        recipient: Option<String>,
         mode: AgentReplyRouteMode,
     },
+    /// Live default for communication within the source's current and future subtree.
+    /// Explicit directed routes override this default. Not restored from history.
+    SubtreeMessaging { mode: AgentReplyRouteMode },
 }
 
 /// Final-response handling selected by an explicit user observation replacement.
@@ -257,6 +266,7 @@ pub enum AgentControlOutcome {
         #[ts(rename = "ref")]
         agent_ref: Option<String>,
         nickname: Option<String>,
+        task_path: Option<String>,
         /// Non-retryable degradation after child input admission.
         post_admission_warning: Option<String>,
     },
@@ -281,6 +291,9 @@ pub enum AgentControlOutcome {
         #[ts(rename = "ref")]
         agent_ref: Option<String>,
         nickname: Option<String>,
+        task_path: Option<String>,
+        #[serde(default)]
+        task_path_mapping: Vec<super::AgentTaskPathMapping>,
         observation_binding: Option<AgentObservationBinding>,
         /// Degradation that occurred after an exclusive ownership transfer committed.
         post_commit_warning: Option<String>,
@@ -302,6 +315,12 @@ pub enum AgentControlOutcome {
     },
     ReplyRouteChanged {
         target_thread_id: String,
+        recipient_thread_id: String,
+        previous_mode: Option<AgentReplyRouteMode>,
+        mode: AgentReplyRouteMode,
+    },
+    SubtreeMessagingChanged {
+        root_thread_id: String,
         previous_mode: Option<AgentReplyRouteMode>,
         mode: AgentReplyRouteMode,
     },

@@ -10,8 +10,7 @@ const SUB_AGENT_COMMENTARY_PREFIX: &str = "<subagent_commentary>\n";
 const SUB_AGENT_COMMENTARY_SUFFIX: &str = "\n</subagent_commentary>";
 const SUB_AGENT_COMMENTARY_TRANSCRIPT_PREFIX: &str = "Agent commentary from `";
 const SUB_AGENT_COMMENTARY_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
-const ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_PREFIX: &str = "Agent message from `";
-const ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
+pub use codex_protocol::protocol::attributed_agent_message_transcript_parts;
 
 #[derive(Deserialize)]
 struct SubAgentCommentaryEnvelope {
@@ -56,12 +55,6 @@ pub(super) fn sub_agent_notification(text: &str) -> Option<(ThreadId, AgentStatu
 pub fn sub_agent_commentary_transcript_parts(text: &str) -> Option<(&str, &str)> {
     text.strip_prefix(SUB_AGENT_COMMENTARY_TRANSCRIPT_PREFIX)?
         .split_once(SUB_AGENT_COMMENTARY_TRANSCRIPT_SEPARATOR)
-}
-
-/// Parses canonical attributed V1 agent input into agent identity and message.
-pub fn attributed_agent_message_transcript_parts(text: &str) -> Option<(&str, &str)> {
-    text.strip_prefix(ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_PREFIX)?
-        .split_once(ATTRIBUTED_AGENT_MESSAGE_TRANSCRIPT_SEPARATOR)
 }
 
 fn sub_agent_commentary_envelope(text: &str) -> Option<SubAgentCommentaryEnvelope> {

@@ -4139,6 +4139,7 @@ impl ChatComposer {
                 matches!(
                     completion.scope,
                     AgentTargetCompletionScope::ObservationMode
+                        | AgentTargetCompletionScope::ReplyRouteRecipientOrMode
                         | AgentTargetCompletionScope::ReplyRouteMode
                         | AgentTargetCompletionScope::Model
                         | AgentTargetCompletionScope::ReasoningEffort
@@ -4168,13 +4169,19 @@ impl ChatComposer {
                         label: label.to_string(),
                     })
                     .to_vec(),
-                AgentTargetCompletionScope::ReplyRouteMode => AGENT_REPLY_ROUTE_MODE_CHOICES
+                AgentTargetCompletionScope::ReplyRouteRecipientOrMode
+                | AgentTargetCompletionScope::ReplyRouteMode => AGENT_REPLY_ROUTE_MODE_CHOICES
+                    .into_iter()
+                    .chain(
+                        (completion.scope == AgentTargetCompletionScope::ReplyRouteRecipientOrMode)
+                            .then_some(("to", "Choose a different recipient")),
+                    )
                     .map(|(selector, label)| AgentPromptTarget {
                         thread_id: None,
                         selector: selector.to_string(),
                         label: label.to_string(),
                     })
-                    .to_vec(),
+                    .collect(),
                 AgentTargetCompletionScope::Model => {
                     agent_spawn_option_completion::model_targets(&self.agent_spawn_models)
                 }
@@ -4185,7 +4192,20 @@ impl ChatComposer {
                     )
                 }
                 AgentTargetCompletionScope::Any | AgentTargetCompletionScope::ExistingTarget => {
-                    self.agent_prompt_targets.clone()
+                    let mut targets = self.agent_prompt_targets.clone();
+                    if completion.action == Some("sends")
+                        && first_line[..completion.range.start].trim() == "/agent sends"
+                    {
+                        targets.insert(
+                            0,
+                            AgentPromptTarget {
+                                thread_id: None,
+                                selector: "all".into(),
+                                label: "Supervisor and current/future descendants".into(),
+                            },
+                        );
+                    }
+                    targets
                 }
             };
             if completion.scope == AgentTargetCompletionScope::ReasoningEffort && targets.is_empty()

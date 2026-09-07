@@ -325,6 +325,12 @@ pub(crate) enum ThreadRuntimeOrigin {
     Existing,
 }
 
+/// Scoped callers retain their validated turn; ordinary steering selects at submission.
+pub(crate) enum SteerTargetTurn {
+    Current,
+    Expected(String),
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ThreadRuntimePublication {
     #[default]
@@ -1328,6 +1334,7 @@ impl ThreadManager {
             auth_manager,
             parent_trace,
             client_mcp_extensions,
+            /*live_revert_messaging*/ None,
         )
         .await
     }
@@ -2170,6 +2177,7 @@ impl ThreadManagerState {
         &self,
         thread: &Arc<CodexThread>,
         request: TurnInputRequest,
+        target_turn: SteerTargetTurn,
     ) -> CodexResult<crate::session::SubmittedInputTurn> {
         let thread_id = thread.session.thread_id();
         if let Some(ops_log) = &self.ops_log
@@ -2178,10 +2186,16 @@ impl ThreadManagerState {
         {
             log.push((thread_id, captured_op));
         }
-        let expected_turn_id = thread
-            .session
-            .active_agent_response_turn_id()
-            .ok_or_else(|| CodexErr::InvalidRequest(STEER_ONLY_TARGET_ENDED_ERROR.to_string()))?;
+        let expected_turn_id =
+            match target_turn {
+                SteerTargetTurn::Current => thread
+                    .session
+                    .active_agent_response_turn_id()
+                    .ok_or_else(|| {
+                        CodexErr::InvalidRequest(STEER_ONLY_TARGET_ENDED_ERROR.to_string())
+                    })?,
+                SteerTargetTurn::Expected(turn_id) => turn_id,
+            };
         thread
             .io
             .submit_turn_input_with_admission(
@@ -3072,7 +3086,7 @@ impl ThreadManagerState {
         let mut pending_threads = self.pending_threads.write().await;
         pending_threads.retain(|_, pending| pending.strong_count() != 0);
         let mut threads = self.threads.write().await;
-        match threads.entry(thread_id) {
+        let result = match threads.entry(thread_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 if let Some(pending) = pending_threads.get(&thread_id).and_then(Weak::upgrade)
                     && !Arc::ptr_eq(&pending, thread)
@@ -3100,7 +3114,19 @@ impl ThreadManagerState {
             std::collections::hash_map::Entry::Occupied(_) => Err(CodexErr::InvalidRequest(
                 format!("thread {thread_id} is already running"),
             )),
+        };
+        drop(threads);
+        drop(pending_threads);
+        if result.is_ok() {
+            // Discovery is passive and cannot roll back an already published runtime.
+            let control = thread.session.services.agent_control.clone();
+            tokio::spawn(async move {
+                if let Err(error) = control.refresh_subtree_messaging(thread_id).await {
+                    tracing::warn!(%error, "failed to refresh subtree messaging discovery");
+                }
+            });
         }
+        result
     }
 
     pub(crate) fn notify_thread_created(&self, thread_id: ThreadId) {

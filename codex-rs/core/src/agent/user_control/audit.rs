@@ -14,7 +14,21 @@ impl CodexThread {
         clippy::await_holding_invalid_type,
         reason = "active-turn decision and durable append must remain atomic"
     )]
-    pub async fn record_user_agent_control(&self, item: UserAgentControlItem) -> CodexResult<()> {
+    pub async fn record_user_agent_control(
+        &self,
+        mut item: UserAgentControlItem,
+    ) -> CodexResult<()> {
+        if item.task_path.is_none()
+            && let Some(target_thread_id) = item.target_thread_id
+        {
+            item.task_path = self
+                .session
+                .services
+                .agent_control
+                .current_agent_alias(target_thread_id)
+                .await?
+                .and_then(|alias| alias.task_path);
+        }
         let item_id = item.id.clone();
         // Keep the active-turn decision and durable append atomic with source turn
         // start/finalization. Otherwise an idle observation can select a standalone synthetic

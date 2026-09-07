@@ -102,6 +102,7 @@ use url::Url;
 const RAW_DIFF_SUMMARY_WIDTH: usize = 10_000;
 const RAW_TOOL_OUTPUT_WIDTH: usize = 10_000;
 
+mod agent_input;
 mod approvals;
 mod base;
 mod exec;
@@ -118,6 +119,7 @@ mod separators;
 mod session;
 mod user_agent_control;
 
+pub(crate) use agent_input::AgentInputHistoryCell;
 pub(crate) use approvals::*;
 pub(crate) use base::*;
 pub(crate) use exec::*;

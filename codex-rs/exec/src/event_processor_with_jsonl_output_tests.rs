@@ -15,6 +15,8 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
         codex_app_server_protocol::ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
+                attribution: None,
+                input: None,
                 text: "partial answer".to_string(),
                 phase: None,
                 memory_citation: None,
@@ -69,6 +71,8 @@ fn background_subagent_completion_does_not_replace_final_message() {
         ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg-parent".to_string(),
+                attribution: None,
+                input: None,
                 text: "parent answer".to_string(),
                 phase: None,
                 memory_citation: None,
@@ -83,6 +87,8 @@ fn background_subagent_completion_does_not_replace_final_message() {
         ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
+                attribution: None,
+                input: None,
                 text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
                 phase: Some(codex_protocol::models::MessagePhase::Commentary),
                 memory_citation: None,

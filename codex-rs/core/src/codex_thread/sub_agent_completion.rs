@@ -1,4 +1,7 @@
+use codex_protocol::AgentPath;
+use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -99,6 +102,23 @@ impl CodexThread {
         let session_loop_termination = self.io.session_loop_termination.clone();
         let (first_attempt_tx, first_attempt_rx) = tokio::sync::oneshot::channel();
         let history_only_turn_id = uuid::Uuid::now_v7().to_string();
+        let receipt_sender = session
+            .services
+            .agent_control
+            .bound_session_id()
+            .map(ThreadId::from)
+            .filter(|root| {
+                agent_reference == AgentPath::ROOT || agent_reference == root.to_string()
+            });
+        let receipt_text = match status {
+            AgentStatus::Completed(text) => Some(text.clone().unwrap_or_default()),
+            AgentStatus::PendingInit
+            | AgentStatus::Running
+            | AgentStatus::Interrupted
+            | AgentStatus::Errored(_)
+            | AgentStatus::Shutdown
+            | AgentStatus::NotFound => None,
+        };
         tokio::spawn(async move {
             let _accepted_completion_delivery = accepted_completion_delivery;
             let item = TurnItem::AgentMessage(item);
@@ -121,7 +141,25 @@ impl CodexThread {
                     let _ = first_attempt_tx.send(());
                 }
                 match result {
-                    Ok(()) => return,
+                    Ok(()) => {
+                        if let (Some(sender), Some(text)) = (receipt_sender, receipt_text)
+                            && let Err(err) = session
+                                .services
+                                .agent_control
+                                .mirror_agent_delivery_receipt(
+                                    sender,
+                                    session.thread_id(),
+                                    MessagePhase::FinalAnswer,
+                                    model_visibility,
+                                    item.id().as_str(),
+                                    &text,
+                                )
+                                .await
+                        {
+                            tracing::warn!("failed to present completion delivery receipt: {err}");
+                        }
+                        return;
+                    }
                     Err(err) => {
                         tracing::warn!(
                             "failed to record subagent completion; retrying while the parent session is active: {err}"

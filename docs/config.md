@@ -100,6 +100,19 @@ surfaces such as pickers, pagers, and full-screen approvals. See
 [TUI Alternate Screen and Scrollback](./tui-alternate-screen.md) for mode behavior and resize-reflow
 limits.
 
+## V1 agent discovery
+
+V1 agent discovery is opt-in:
+
+```toml
+[tools.list_agents]
+enabled = true
+```
+
+The owning root's setting controls `list_agents` for its current and future agents, including depth-limited children. Omission or an empty table leaves discovery disabled. Send permissions do not enable discovery, and listing does not resume threads or subscribe to responses. Results default to loaded agents; optional status and task-path filters are applied before pagination. Human `/agent` inspection remains available independently.
+
+See [V1 attribution and task paths](./multi-agent-v1-attribution-and-task-paths.md) for assignment labels, adoption, and compact message attribution.
+
 ## Multi-Agent V2
 
 By default, MultiAgentV2 `spawn_agent` starts subagents without copying the
@@ -286,7 +299,7 @@ agent_response_preview_lines = 0
 
 Set any value to `0` to show all retained output for that category in the main TUI. Agent prompt
 previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply
-to rendered rows from subagent output shown after a multi-agent wait completes.
+to rendered rows from subagent output, attributed agent input, and presentation-only peer copies. The default response preview is unlimited (`0`); finite settings affect normal history only, while Full transcripts retain complete payloads.
 
 Configure diff add/remove line backgrounds:
 

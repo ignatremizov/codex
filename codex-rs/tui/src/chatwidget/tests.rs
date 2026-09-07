@@ -241,6 +241,10 @@ fn next_goal_draft(
     }
 }
 
+#[path = "tests/agent_input_presentation_tests.rs"]
+mod agent_input_presentation_tests;
+#[path = "tests/agent_task_dispatch_tests.rs"]
+mod agent_task_dispatch_tests;
 mod app_server;
 mod approval_requests;
 #[path = "tests/backend_banners_tests.rs"]

@@ -4,6 +4,7 @@ use codex_protocol::protocol::sub_agent_completion_transcript;
 use codex_protocol::protocol::sub_agent_completion_transcript_with_visibility;
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 fn completed_item(agent_reference: &str, response: &str) -> (String, String) {
     let (id, text) = sub_agent_completion_transcript(
@@ -24,10 +25,50 @@ fn completion_notification(id: String, text: String, phase: MessagePhase) -> Ser
             text,
             phase: Some(phase),
             memory_citation: None,
+            attribution: None,
+            input: None,
             delivery: None,
             questions: None,
         },
     })
+}
+
+#[tokio::test]
+async fn live_receipt_is_presented_as_delivery_not_child_commentary() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender = ThreadId::new();
+    let recipient = ThreadId::new();
+    chat.set_collab_agent_metadata(
+        recipient,
+        Some("Newton".to_string()),
+        Some("default".to_string()),
+    );
+    let receipt = codex_protocol::protocol::agent_delivery_receipt_item(
+        sender,
+        recipient,
+        MessagePhase::FinalAnswer,
+        SubAgentCompletionModelVisibility::NotVisible,
+        codex_protocol::protocol::new_sub_agent_completion_context_response_item_id().as_str(),
+        "Main owns this answer.",
+    )
+    .expect("receipt");
+    chat.handle_server_notification(
+        completion_notification(
+            receipt.id,
+            "Main owns this answer.".to_string(),
+            MessagePhase::Commentary,
+        ),
+        /*replay_kind*/ None,
+    );
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert_snapshot!(
+        lines_to_single_string(&cells[0]),
+        @r"
+    • Main → Newton [default] · final delivered (○ not visible to recipient):
+      └ Main owns this answer.
+    "
+    );
 }
 
 #[tokio::test]
@@ -45,6 +86,8 @@ async fn completion_requires_canonical_phase_and_replays_with_wait_rendering() {
             text,
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
+            attribution: None,
+            input: None,
             delivery: None,
             questions: None,
         },
@@ -362,6 +405,8 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             text: completion_text,
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
+            attribution: None,
+            input: None,
             delivery: None,
             questions: None,
         },

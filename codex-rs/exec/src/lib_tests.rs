@@ -386,6 +386,8 @@ fn turn_items_for_thread_returns_matching_turn_items() {
                 items: vec![AppServerThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "hello".to_string(),
+                    attribution: None,
+                    input: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,
@@ -418,6 +420,8 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         Some(vec![AppServerThreadItem::AgentMessage {
             id: "msg-1".to_string(),
             text: "hello".to_string(),
+            attribution: None,
+            input: None,
             phase: None,
             memory_citation: None,
             delivery: None,

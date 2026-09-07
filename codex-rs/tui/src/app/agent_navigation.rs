@@ -37,10 +37,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
 
+#[path = "agent_task_paths.rs"]
+mod task_paths;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AgentAliasEntry {
     pub(crate) agent_ref: u64,
     pub(crate) nickname: Option<String>,
+    pub(crate) task_path: Option<String>,
     pub(crate) state: AgentAliasState,
 }
 
@@ -65,6 +69,7 @@ pub(crate) struct AgentNavigationState {
     stopped_threads: HashSet<ThreadId>,
     /// Live response observation keyed by observer, target, and exact/next-turn binding.
     response_observations: AgentResponseObservationState,
+    subtree_messaging: HashMap<ThreadId, bool>,
     /// Source threads holding response handling for the target's next user-authored turn.
     pending_reserved_prompt_sources: HashMap<ThreadId, ThreadId>,
     /// Durable root-scoped identities keyed by canonical thread UUID.
@@ -170,6 +175,7 @@ impl AgentNavigationState {
                     AgentAliasEntry {
                         agent_ref,
                         nickname: alias.nickname,
+                        task_path: alias.task_path,
                         state: alias.state,
                     },
                 ))
@@ -201,6 +207,10 @@ impl AgentNavigationState {
             AgentAliasEntry {
                 agent_ref,
                 nickname,
+                task_path: self
+                    .aliases
+                    .get(&thread_id)
+                    .and_then(|alias| alias.task_path.clone()),
                 state,
             },
         );
@@ -401,7 +411,8 @@ impl AgentNavigationState {
         primary_thread_id: Option<ThreadId>,
     ) -> String {
         let is_primary = primary_thread_id == Some(thread_id);
-        self.threads
+        let mut label = self
+            .threads
             .get(&thread_id)
             .map(|entry| {
                 if !is_primary
@@ -424,7 +435,15 @@ impl AgentNavigationState {
                 format_agent_picker_item_name(
                     /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
                 )
-            })
+            });
+        if let Some(task_path) = self
+            .alias(thread_id)
+            .and_then(|alias| alias.task_path.as_deref())
+        {
+            label.push(' ');
+            label.push_str(task_path);
+        }
+        label
     }
 
     pub(crate) fn note_response_observation(
@@ -465,6 +484,24 @@ impl AgentNavigationState {
 
     pub(crate) fn reply_route(&self, observer: ThreadId, target: ThreadId) -> Option<bool> {
         self.response_observations.reply_route(observer, target)
+    }
+
+    pub(crate) fn set_subtree_messaging(&mut self, root: ThreadId, enabled: bool) {
+        self.subtree_messaging.insert(root, enabled);
+    }
+
+    pub(crate) fn subtree_messaging(&self, root: ThreadId) -> Option<bool> {
+        self.subtree_messaging.get(&root).copied()
+    }
+
+    pub(crate) fn inherited_messaging(
+        &self,
+        sender: ThreadId,
+        recipient: ThreadId,
+    ) -> Option<bool> {
+        codex_protocol::inherited_subtree_policy(sender, recipient, &self.parent_threads, |id| {
+            self.subtree_messaging(id)
+        })
     }
 
     #[cfg(test)]
@@ -513,6 +550,7 @@ impl AgentNavigationState {
     /// this up" by deleting the entry instead, wraparound navigation will silently change shape
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
+        self.subtree_messaging.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
@@ -531,6 +569,7 @@ impl AgentNavigationState {
     /// This is used when `App` tears down thread event state and needs the picker cache to return
     /// to a pristine single-session state.
     pub(crate) fn clear(&mut self) {
+        self.subtree_messaging.clear();
         self.threads.clear();
         self.order.clear();
         self.parent_threads.clear();
@@ -685,3 +724,7 @@ impl AgentNavigationState {
 #[cfg(test)]
 #[path = "agent_navigation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_subtree_policy_tests.rs"]
+mod subtree_policy_tests;

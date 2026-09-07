@@ -578,6 +578,8 @@ async fn replayed_nested_review_prompts_do_not_render_or_seed_composer_history()
                         text: "review result is retained".to_string(),
                         phase: Some(MessagePhase::FinalAnswer),
                         memory_citation: None,
+                        attribution: None,
+                        input: None,
                         delivery: None,
                         questions: None,
                     },

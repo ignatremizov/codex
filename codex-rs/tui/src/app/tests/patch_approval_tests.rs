@@ -271,6 +271,8 @@ async fn active_patch_approval_preserves_deferred_startup_protection() -> Result
                 text: "streaming".to_string(),
                 phase: None,
                 memory_citation: None,
+                attribution: None,
+                input: None,
                 delivery: None,
                 questions: None,
             },

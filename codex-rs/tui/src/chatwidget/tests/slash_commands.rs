@@ -359,6 +359,7 @@ async fn slash_agent_new_with_only_remote_image_starts_the_first_turn() {
         .expect("spawn agent event");
     let AppEvent::SpawnAgent {
         source_thread_id: actual_source_thread_id,
+        task: None,
         role,
         authored_selector,
         model,
@@ -412,6 +413,7 @@ async fn slash_agent_resume_preserves_source_selector_and_response_handling() {
         AppEvent::ResumeAgent {
             source_thread_id: actual_source,
             selector,
+            task: None,
             response_handling: Some(
                 codex_app_server_protocol::AgentResponseHandling::CommentaryWake
             ),
@@ -455,6 +457,7 @@ async fn slash_agent_new_preserves_spawn_overrides_and_response_handling() {
         event,
         AppEvent::SpawnAgent {
             source_thread_id: actual_source,
+            task: None,
             role: None,
             authored_selector: Some(ref authored_selector),
             model: Some(ref model),

@@ -67,14 +67,16 @@ impl App {
         &mut self,
         app_server: &AppServerSession,
         selector: &AgentSelector,
+        source_thread_id: Option<ThreadId>,
     ) -> Result<ThreadId, String> {
-        if let Some(thread_id) = self.cached_agent_selector(selector)? {
+        if let Some(thread_id) = self.cached_agent_selector(selector, source_thread_id)? {
             return Ok(thread_id);
         }
         if matches!(
             selector.kind(),
             AgentSelectorKind::Ref(_)
                 | AgentSelectorKind::Nickname(_)
+                | AgentSelectorKind::Task(_)
                 | AgentSelectorKind::UnprefixedName(_)
         ) && let Some(root_thread_id) = self.primary_thread_id
         {
@@ -83,7 +85,7 @@ impl App {
                 .await
                 .map_err(|err| format!("Failed to load agent aliases: {err:#}"))?;
             self.apply_primary_agent_aliases(aliases);
-            if let Some(thread_id) = self.cached_agent_selector(selector)? {
+            if let Some(thread_id) = self.cached_agent_selector(selector, source_thread_id)? {
                 return Ok(thread_id);
             }
         }
@@ -94,6 +96,7 @@ impl App {
                 format!("Agent {nickname:?} was not found.")
             }
             AgentSelectorKind::Role(role) => format!("Agent role {role:?} was not found."),
+            AgentSelectorKind::Task(task) => format!("Agent task path {task:?} was not found."),
         })
     }
 
@@ -112,7 +115,10 @@ impl App {
                 return;
             }
         };
-        let thread_id = match self.resolve_agent_selector(app_server, &selector).await {
+        let thread_id = match self
+            .resolve_agent_selector(app_server, &selector, Some(source_thread_id))
+            .await
+        {
             Ok(thread_id) => thread_id,
             Err(message) => {
                 self.chat_widget.add_error_message(message);
@@ -191,7 +197,11 @@ impl App {
         Ok(turn_id)
     }
 
-    fn cached_agent_selector(&self, selector: &AgentSelector) -> Result<Option<ThreadId>, String> {
+    fn cached_agent_selector(
+        &self,
+        selector: &AgentSelector,
+        source_thread_id: Option<ThreadId>,
+    ) -> Result<Option<ThreadId>, String> {
         match selector.kind() {
             AgentSelectorKind::Id(thread_id) => Ok(Some(*thread_id)),
             AgentSelectorKind::Ref(agent_ref) => {
@@ -200,13 +210,22 @@ impl App {
             AgentSelectorKind::Nickname(nickname) => {
                 Ok(self.agent_navigation.thread_id_for_nickname(nickname))
             }
+            AgentSelectorKind::Task(task) => Ok(self
+                .agent_navigation
+                .thread_id_for_task_path(source_thread_id, task)),
             AgentSelectorKind::UnprefixedName(name) => {
                 if self.config.agent_roles.contains_key(name) {
                     return Err(format!(
                         "{name:?} is a configured role; add a prompt to spawn a new role agent"
                     ));
                 }
-                Ok(self.agent_navigation.thread_id_for_nickname(name))
+                Ok(self
+                    .agent_navigation
+                    .thread_id_for_nickname(name)
+                    .or_else(|| {
+                        self.agent_navigation
+                            .thread_id_for_task_path(source_thread_id, name)
+                    }))
             }
             AgentSelectorKind::Role(role) => Err(format!(
                 "{role:?} selects a configured role; add a prompt to spawn a new role agent"

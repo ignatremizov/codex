@@ -206,6 +206,7 @@ mod agent_control_pane;
 mod agent_control_summary;
 mod agent_lifecycle_control;
 mod agent_message_consolidation;
+mod agent_messaging;
 mod agent_navigation;
 mod agent_observation_display;
 mod agent_picker;

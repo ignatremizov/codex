@@ -28,7 +28,7 @@ pub(crate) const AGENT_TARGET_ACTION_CHOICES: [(&str, &str); 6] = [
     ("close", "Close an agent"),
     ("resume", "Resume or adopt an agent"),
     ("observe", "Change response observation"),
-    ("replies", "Allow or block replies from an agent"),
+    ("sends", "Control directed or subtree messaging"),
 ];
 pub(crate) const AGENT_OBSERVATION_MODE_CHOICES: [(&str, &str); 3] = [
     ("passive", "Deliver the final response without waking"),
@@ -39,8 +39,8 @@ pub(crate) const AGENT_OBSERVATION_MODE_CHOICES: [(&str, &str); 3] = [
     ),
 ];
 pub(crate) const AGENT_REPLY_ROUTE_MODE_CHOICES: [(&str, &str); 2] = [
-    ("enable", "Allow replies until disabled"),
-    ("disable", "Block replies until enabled"),
+    ("enable", "Allow messaging until disabled"),
+    ("disable", "Block messaging until enabled"),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +55,7 @@ pub(crate) enum AgentTargetCompletionScope {
     Any,
     ExistingTarget,
     ObservationMode,
+    ReplyRouteRecipientOrMode,
     ReplyRouteMode,
     Model,
     ReasoningEffort,
@@ -158,10 +159,12 @@ impl AgentTargetPopup {
             .iter()
             .filter(|target| {
                 (self.scope != AgentTargetCompletionScope::ExistingTarget
-                    || target.thread_id.is_some())
+                    || target.thread_id.is_some()
+                    || target.selector == "all")
                     && if matches!(
                         self.scope,
                         AgentTargetCompletionScope::ObservationMode
+                            | AgentTargetCompletionScope::ReplyRouteRecipientOrMode
                             | AgentTargetCompletionScope::ReplyRouteMode
                     ) {
                         query.is_empty()
@@ -223,7 +226,8 @@ impl WidgetRef for AgentTargetPopup {
                 AgentTargetCompletionScope::ObservationMode => {
                     "no matching response observation modes"
                 }
-                AgentTargetCompletionScope::ReplyRouteMode => "no matching reply-route modes",
+                AgentTargetCompletionScope::ReplyRouteRecipientOrMode
+                | AgentTargetCompletionScope::ReplyRouteMode => "no matching reply-route modes",
                 AgentTargetCompletionScope::Model => "no matching models",
                 AgentTargetCompletionScope::ReasoningEffort => "no matching reasoning efforts",
             },
@@ -267,37 +271,62 @@ pub(crate) fn agent_target_completion(
         return spawn_option_completion(first_line, cursor, first_end);
     }
 
-    let action = canonical_agent_target_action(first)?;
-
-    let action_tail = &first_line[first_end..];
-    if !action_tail.starts_with(char::is_whitespace) {
+    let second_start =
+        first_end + first_line[first_end..].len() - first_line[first_end..].trim_start().len();
+    let second_end = token_end(first_line, second_start);
+    let (action, target_end) = if let Some(action) = canonical_agent_target_action(first) {
+        if cursor < second_start {
+            return None;
+        }
+        if cursor <= second_end {
+            let range = second_start..second_end;
+            return Some(AgentTargetCompletion {
+                query: first_line[range.clone()].to_string(),
+                range,
+                scope: AgentTargetCompletionScope::ExistingTarget,
+                action: Some(action),
+            });
+        }
+        (action, second_end)
+    } else if &first_line[second_start..second_end] == "sends" && cursor > second_end {
+        ("sends", second_end)
+    } else {
         return None;
-    }
-    let target_start = first_end + (action_tail.len() - action_tail.trim_start().len());
-    if cursor < target_start {
-        return None;
-    }
-    let target_end = token_end(first_line, target_start);
-    if cursor <= target_end {
-        let range = target_start..target_end;
-        return Some(AgentTargetCompletion {
-            query: first_line[range.clone()].to_string(),
-            range,
-            scope: AgentTargetCompletionScope::ExistingTarget,
-            action: Some(action),
-        });
-    }
+    };
 
-    let scope = match action {
+    let mut scope = match action {
         "observe" => AgentTargetCompletionScope::ObservationMode,
-        "replies" => AgentTargetCompletionScope::ReplyRouteMode,
+        "sends" => AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
         _ => return None,
     };
+    if action == "sends" && (first == "all" || &first_line[second_start..second_end] == "all") {
+        scope = AgentTargetCompletionScope::ReplyRouteMode;
+    }
     let target_tail = &first_line[target_end..];
     if !target_tail.starts_with(char::is_whitespace) {
         return None;
     }
-    let mode_start = target_end + (target_tail.len() - target_tail.trim_start().len());
+    let mut mode_start = target_end + (target_tail.len() - target_tail.trim_start().len());
+    if action == "sends"
+        && &first_line[mode_start..token_end(first_line, mode_start)] == "to"
+        && cursor > token_end(first_line, mode_start)
+    {
+        let to_end = token_end(first_line, mode_start);
+        let recipient_start =
+            to_end + first_line[to_end..].len() - first_line[to_end..].trim_start().len();
+        let recipient_end = token_end(first_line, recipient_start);
+        if cursor <= recipient_end {
+            return Some(AgentTargetCompletion {
+                query: first_line[recipient_start..recipient_end].to_string(),
+                range: recipient_start..recipient_end,
+                scope: AgentTargetCompletionScope::ExistingTarget,
+                action: Some(action),
+            });
+        }
+        mode_start = recipient_end + first_line[recipient_end..].len()
+            - first_line[recipient_end..].trim_start().len();
+        scope = AgentTargetCompletionScope::ReplyRouteMode;
+    }
     if cursor < mode_start {
         return None;
     }
@@ -355,7 +384,7 @@ fn spawn_option_completion(
                 action: None,
             });
         }
-        if !["fork:", "w:", "model:", "effort:"]
+        if !["fork:", "w:", "model:", "effort:", "task:"]
             .iter()
             .any(|prefix| option.starts_with(prefix))
         {
@@ -385,6 +414,19 @@ pub(super) fn token_end(input: &str, start: usize) -> usize {
 }
 
 fn target_matches_query(target: &AgentPromptTarget, query: &str) -> bool {
+    // Path aliases are available for explicit path completion without duplicating the normal
+    // ref/nickname directory. Selecting a path always inserts its forced selector.
+    if let Some(path) = target.selector.strip_prefix("task:") {
+        return if let Some(query) = query.strip_prefix("task:") {
+            path.to_ascii_lowercase()
+                .starts_with(trim_quoted_query(query))
+        } else {
+            query.starts_with('/') && path.to_ascii_lowercase().starts_with(query)
+        };
+    }
+    if query.starts_with("task:") || query.starts_with('/') {
+        return false;
+    }
     if query.is_empty() {
         return true;
     }
@@ -466,3 +508,7 @@ fn canonical_agent_target_action(value: &str) -> Option<&'static str> {
 #[cfg(test)]
 #[path = "agent_target_popup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_task_completion_tests.rs"]
+mod task_tests;

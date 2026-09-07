@@ -400,6 +400,8 @@ fn title_agent_message(id: &str, text: &str, phase: Option<MessagePhase>) -> Thr
         text: text.to_string(),
         phase,
         memory_citation: None,
+        attribution: None,
+        input: None,
         delivery: None,
         questions: None,
     }

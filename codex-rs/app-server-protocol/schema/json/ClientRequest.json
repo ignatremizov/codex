@@ -89,6 +89,13 @@
                 "null"
               ]
             },
+            "task": {
+              "description": "Optional assignment label, resolved within the issuing agent's root namespace.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "spawn"
@@ -231,6 +238,13 @@
               "description": "Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.",
               "type": "string"
             },
+            "task": {
+              "description": "New assignment for cross-root adoption only; same-root resume cannot rename a task.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "resume"
@@ -345,10 +359,17 @@
           "type": "object"
         },
         {
-          "description": "Enable or disable the target's attributed reply route back to the source.",
+          "description": "Enable or disable the target's attributed reply route to a controlled recipient.",
           "properties": {
             "mode": {
               "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "recipient": {
+              "description": "Omitted means the source thread issuing the user command.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "target": {
               "type": "string"
@@ -367,6 +388,27 @@
             "type"
           ],
           "title": "ReplyRouteAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Live default for communication within the source's current and future subtree. Explicit directed routes override this default. Not restored from history.",
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "type": {
+              "enum": [
+                "subtreeMessaging"
+              ],
+              "title": "SubtreeMessagingAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "type"
+          ],
+          "title": "SubtreeMessagingAgentControlAction",
           "type": "object"
         }
       ]

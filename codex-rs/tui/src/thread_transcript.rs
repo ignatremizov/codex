@@ -182,8 +182,22 @@ pub(crate) fn thread_items_with_sources_to_transcript_cells(
                 }));
             }
             ThreadItem::AgentMessage {
-                id, text, phase, ..
+                id,
+                text,
+                phase,
+                attribution,
+                input,
+                ..
             } => {
+                if let Some(attribution) = attribution {
+                    cells.push(Arc::new(crate::history_cell::AgentInputHistoryCell::new(
+                        attribution,
+                        input.unwrap_or_default(),
+                        text,
+                        thread_id,
+                    )));
+                    continue;
+                }
                 let collab_cell = background_completion_history_cell_from_agent_message(
                     &id,
                     &text,
@@ -273,6 +287,10 @@ pub(crate) fn thread_items_with_sources_to_transcript_cells(
             }
             item @ ThreadItem::UserAgentControl { .. } => {
                 if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
+                    let cell = cell.with_reply_recipient_label(|id| {
+                        let id = ThreadId::from_string(id).ok()?;
+                        known_collab_agent_metadata.get(&id)?.agent_nickname.clone()
+                    });
                     cells.push(Arc::new(cell));
                 }
             }
