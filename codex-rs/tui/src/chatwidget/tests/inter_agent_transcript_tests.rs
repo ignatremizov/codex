@@ -8,6 +8,8 @@ fn communication(id: &str, author: &str, text: &str) -> AppServerThreadItem {
     AppServerThreadItem::AgentMessage {
         id: id.into(),
         text: text.into(),
+        attribution: None,
+        input: None,
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,
@@ -75,13 +77,14 @@ async fn live_app_server_inter_agent_message_renders_in_transcript() {
             "Agent message from `/root`:\n\nInspect the repository.",
         ),
     );
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_cells(&mut rx);
     assert_eq!(cells.len(), 1);
     assert_eq!(
         cells[0].transcript_navigation_kind(),
         Some(crate::history_cell::TranscriptNavigationKind::Commentary)
     );
-    let rendered = lines_to_single_string(&cells[0]).replace("  \n", "\n");
+    let rendered =
+        lines_to_single_string(&cells[0].display_lines(/*width*/ 80)).replace("  \n", "\n");
     insta::assert_snapshot!(
         "live_app_server_inter_agent_message_renders_in_transcript",
         rendered
@@ -239,21 +242,34 @@ async fn canonical_and_legacy_communication_replay_keep_full_source() {
 
 #[tokio::test]
 async fn ordinary_message_with_communication_looking_text_still_completes_the_answer() {
-    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
-    let text = "Agent message from `/root/worker`:\n\nThis is ordinary assistant text.";
-    let mut item = communication("amsg_lookalike", "/root/worker", text);
-    if let AppServerThreadItem::AgentMessage {
-        inter_agent_source, ..
-    } = &mut item
-    {
-        *inter_agent_source = None;
+    for message_phase in [
+        Some(MessagePhase::FinalAnswer),
+        Some(MessagePhase::Commentary),
+        None,
+    ] {
+        let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        let text = "Agent message from `/root/worker`:\n\nThis is ordinary assistant text.";
+        let mut item = communication("amsg_lookalike", "/root/worker", text);
+        if let AppServerThreadItem::AgentMessage {
+            inter_agent_source,
+            phase,
+            ..
+        } = &mut item
+        {
+            *inter_agent_source = None;
+            *phase = message_phase.clone();
+        }
+        publish(&mut chat, item);
+        assert_eq!(
+            chat.transcript.last_completed_agent_message,
+            Some(("communication-turn".into(), "amsg_lookalike".into())),
+        );
+        assert_eq!(
+            chat.transcript.last_agent_markdown.as_deref(),
+            (message_phase != Some(MessagePhase::Commentary)).then_some(text),
+        );
+        assert_eq!(chat.transcript.copyable_agent_message(), Some((text, text)));
     }
-    publish(&mut chat, item);
-    assert_eq!(
-        chat.transcript.last_completed_agent_message,
-        Some(("communication-turn".into(), "amsg_lookalike".into())),
-    );
-    assert_eq!(chat.transcript.last_agent_markdown.as_deref(), Some(text));
 }
 
 #[tokio::test]

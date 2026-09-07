@@ -31,6 +31,9 @@ use crate::StoredTurnError;
 use crate::StoredTurnStatus;
 use crate::local::test_support::test_config;
 
+#[path = "search_attribution_tests.rs"]
+mod search_attribution_tests;
+
 #[tokio::test]
 async fn list_turns_pages_projected_rows_and_applies_item_views() {
     let (_home, store, thread_id) = store_with_mode(ThreadHistoryMode::Paginated).await;
@@ -1032,9 +1035,13 @@ async fn search_finds_user_agent_control_audit_terms() {
     let item = codex_app_server_protocol::ThreadItem::UserAgentControl {
         id: "control-item".to_string(),
         input_outcome: None,
+        task: None,
+        task_path: None,
+        task_path_mapping: Vec::new(),
         action: codex_app_server_protocol::UserAgentControlAction::QueuedPrompt,
         authored_selector: Some("Hume".to_string()),
         target_thread_id: Some(ThreadId::new().to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         agent_ref: Some("2".to_string()),
@@ -1046,7 +1053,7 @@ async fn search_finds_user_agent_control_audit_terms() {
         resumed_target: true,
         fork_mode: None,
         observe_commentary: Some(true),
-        final_response: Some(codex_app_server_protocol::AgentFinalResponseHandling::Wake),
+        final_response: Some(codex_protocol::protocol::AgentResponseFinalDelivery::Wake),
         target_messages: Some(true),
         queue_input: Some(true),
         status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,

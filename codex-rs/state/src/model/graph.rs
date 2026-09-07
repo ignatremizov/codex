@@ -28,6 +28,8 @@ pub struct AgentAliasRecord {
     pub thread_id: ThreadId,
     pub agent_ref: u64,
     pub nickname: Option<String>,
+    /// Semantic assignment label, independent of lifecycle ancestry.
+    pub task_path: Option<String>,
     pub state: AgentAliasState,
 }
 
@@ -38,6 +40,7 @@ pub struct AgentAliasAllocation {
     pub parent_thread_id: ThreadId,
     pub child_thread_id: ThreadId,
     pub nickname: Option<String>,
+    pub task_path: Option<String>,
 }
 
 /// Root namespaces participating in a history-bearing fork reservation import.
@@ -56,6 +59,7 @@ pub struct AgentAliasTransferRequest {
     pub new_parent_thread_id: ThreadId,
     pub thread_id: ThreadId,
     pub nickname: Option<String>,
+    pub task_path: Option<String>,
     pub authored_selector: String,
 }
 
@@ -70,5 +74,14 @@ pub enum AgentAliasTransfer {
         previous_session_id: Option<SessionId>,
         previous_parent_thread_id: Option<ThreadId>,
         transferred_at_ms: i64,
+        task_path_mapping: Vec<AgentTaskPathMapping>,
     },
+}
+
+/// Assignment-label change committed with one canonical thread's ownership transfer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentTaskPathMapping {
+    pub thread_id: ThreadId,
+    pub previous_task_path: Option<String>,
+    pub task_path: Option<String>,
 }

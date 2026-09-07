@@ -13,7 +13,7 @@ impl App {
             .map_err(|error| error.to_string())?;
         selector.control_target()?;
         let target = self
-            .resolve_agent_selector(app_server, selector)
+            .resolve_agent_selector(app_server, selector, Some(source))
             .await?;
         self.ensure_agent_control_admission(source, Some(target))
             .map_err(|error| error.to_string())?;

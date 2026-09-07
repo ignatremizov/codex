@@ -23,12 +23,13 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through acknowledged live user-controlled reply routes, including settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
+This checkpoint inventories the integrated owners through attributed V1 input, task-path discovery, and live subtree messaging, including acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
 | Canonical model slugs and stable accents | Compatibility | Show canonical active-model slugs in session headers and footers while retaining catalog labels in pickers and historical analytics; preserve stable thread-name and title accents without reverting newer layouts, warning controls, or key notation. | `codex-rs/tui/src/bottom_pane/status_line_style.rs`<br>`codex-rs/tui/src/chatwidget/session_flow.rs`<br>`codex-rs/tui/styles.md` | Current model selection, status/footer rendering, session startup, TUI snapshots | `revert(tui): restore canonical model slugs and stable accents` |
 | Private Guardian screenshot evidence | Compatibility | Preserve missing private-review screenshot evidence with original provenance after compaction without replaying already admitted text or weakening reviewer input budgets and source isolation. | `codex-rs/core/src/context/node_repl_review_evidence.rs`<br>`codex-rs/core/src/guardian/input_budget.rs`<br>`codex-rs/core/src/guardian/review_session_images.rs` | Private review lifecycle, current screenshot selection, compaction, input budgeting | `fix(guardian): preserve private screenshot evidence across compaction` |
+| Attributed V1 messages and task-path discovery | Capability | Distinguish model-authored agent input from human prompts using compact escaped attribution and separate durable sender/recipient snapshots; assign root-scoped task labels independent of lifecycle ancestry; preserve closed-label uniqueness and report adoption remapping; expose opt-in root-controlled paginated `list_agents` to current and future members without enabling sends or restoring runtimes. | `codex-rs/core/src/agent/control/task_paths.rs`<br>`codex-rs/core/src/agent/control/directory.rs`<br>`codex-rs/core/src/context/attributed_agent_message.rs`<br>`codex-rs/state/src/runtime/agent_aliases/task_paths.rs`<br>`codex-rs/tui/src/history_cell/agent_input.rs` | V1 spawn/send/resume, role/model precedence, alias ownership transactions, typed input and transcript projections, tool availability, TUI selection and completion | `feat(multi-agent): add attributed V1 messages and task-path discovery` |
 | Compact `apply_patch` tool guidance | Efficiency | Keep the model-visible patch contract explicit while avoiding redundant per-session instruction tokens. | `codex-rs/core/src/tools/handlers/apply_patch_spec.rs` | Tool schema construction and schema tests | `fix(tools): shorten the apply_patch freeform description` |
 | Complete repeated `apply_patch` history | Observability | Preserve every verified update hunk when one patch edits the same file repeatedly so inline summaries, transcript review, and persisted completion events do not show only the final section. | `codex-rs/apply-patch/src/invocation.rs`<br>`codex-rs/tui/src/diff_render.rs` | Apply-patch verification, structured change aggregation, TUI diff rendering | `fix(apply-patch): verify repeated updates as one canonical file change` |
 | Unlabelled compact rate-limit percentages | Compatibility | Preserve the compact rate-limit presentation instead of adding repeated window labels to status surfaces. | `codex-rs/tui/src/chatwidget/status_controls.rs`<br>`codex-rs/tui/src/bottom_pane/status_line_setup.rs` | TUI status controls and snapshots | `fix(tui): shorten compact rate-limit percentage labels` |
@@ -499,6 +500,38 @@ The typed action, source audit, two TUI command forms, completion, highlighting,
 share the existing extracted owners. Current queue result types, startup/writer cleanup, canonical
 input order, MCP attribution, and complete checkpoint resume metadata remain intact. The new source
 scenarios and inline snapshots still require remote execution and coordinated generated exports.
+
+### Attributed V1 input, task labels, and live messaging policy
+
+Ownership anchor: `feat(multi-agent): add attributed V1 messages and task-path discovery`.
+`agent/control/attribution.rs` captures trusted send-time identities and original structured input
+separately from the escaped model-visible fragment. Canonical typed input presentation is published
+with its source envelopes and persistence receipts; a recipient's agent input never becomes a
+human prompt or the receiving exec client's final answer. Main's peer copies and delivery receipts
+are live-only presentation, not durable root input or permission. The TUI retains those raw copies
+through in-process refresh without replaying a hydrated copy twice or discarding live questions.
+Exec ignores TUI-only delivery receipts, including its final-message and output-file fallbacks.
+
+Task labels use shared pure grammar and root-scoped transactional uniqueness. Closed members retain
+their labels; ordinary collisions fail. Adoption remaps only imported labels and reports exact
+old/new assignments, without inferring ownership from label prefixes. Migration10051 is unchanged
+from its original introducing commit. Source-relative TUI selection and opt-in `list_agents` retain
+native tree identity, the root's tool gate, pre-pagination filters, and separate send authorization.
+
+Directed overrides and nearest-supervisor subtree defaults are live authority, not historical
+instructions. Permission changes publish acknowledged context before compare-installing policy.
+Sender-only sampling/compaction snapshots do not mutate permission, restore observers, or deliver
+messages. The policy fragment lives in `core/src/context/agent_messaging_policy.rs`; current input
+orders, retained-source metadata, MCP attribution, and fail-closed publication remain intact.
+A one-use live-revert handoff rekeys only send policy to the same logical thread under lifecycle
+and generation checks; cold resume and forks never restore it. Startup retains complete current
+`StartThreadOptions`, parent identity, host-controller boundaries, and provisional cleanup.
+
+The existing role-instruction projection remains singular, with helper/reviewer exclusions. The
+shared response-flag parser accepts order-independent repetition and pairwise `f`/`x` cancellation.
+Global/role messaging defaults and task-label editing remain proposals. New source regressions,
+SDK fields, schema generation, and snapshots still require remote qualification; no executable
+success is implied. The later mailbox-receipt classifier remains assigned to its defining owner.
 
 ## Integration boundaries and deferred work
 

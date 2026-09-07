@@ -179,6 +179,7 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
             parent_thread_id: source.thread_id,
             child_thread_id: ThreadId::new(),
             nickname: Some("Historical".to_string()),
+            task_path: None,
         })
         .await
         .expect("source alias");
@@ -280,6 +281,7 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
                         thread_id: fork_id,
                         agent_ref: 1,
                         nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
+                        task_path: Some("/root".to_string()),
                         state: codex_agent_graph_store::AgentAliasState::Active,
                     }]
                 );
@@ -298,6 +300,7 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
                         parent_thread_id: fork_id,
                         child_thread_id: ThreadId::new(),
                         nickname: Some("Fresh".to_string()),
+                        task_path: None,
                     })
                     .await
                     .expect("fresh alias");

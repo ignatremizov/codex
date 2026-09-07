@@ -8,10 +8,12 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::attributed_agent_input_text;
 use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::protocol::agent_delivery_receipt_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_utils_path_uri::PathUri;
 use codex_utils_sandbox_summary::summarize_permission_profile;
@@ -99,9 +101,14 @@ impl EventProcessorWithHumanOutput {
     }
 
     fn render_item_completed(&mut self, item: ThreadItem) {
+        if let Some(text) = attributed_agent_input_text(&item) {
+            eprintln!("{text}");
+            return;
+        }
         match item {
             ThreadItem::AgentMessage { id, .. }
-                if sub_agent_completion_status_from_response_item_id(&id).is_some() => {}
+                if sub_agent_completion_status_from_response_item_id(&id).is_some()
+                    || agent_delivery_receipt_from_response_item_id(&id).is_some() => {}
             ThreadItem::AgentMessage {
                 text,
                 inter_agent_source,
@@ -561,8 +568,11 @@ fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
                 id,
                 text,
                 inter_agent_source: None,
+                attribution: None,
                 ..
-            } if sub_agent_completion_status_from_response_item_id(id).is_none() => {
+            } if sub_agent_completion_status_from_response_item_id(id).is_none()
+                && agent_delivery_receipt_from_response_item_id(id).is_none() =>
+            {
                 Some(text.clone())
             }
             _ => None,
@@ -601,3 +611,7 @@ fn should_print_final_message_to_tty(
 #[cfg(test)]
 #[path = "event_processor_with_human_output_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_input_output_tests.rs"]
+mod agent_input_output_tests;

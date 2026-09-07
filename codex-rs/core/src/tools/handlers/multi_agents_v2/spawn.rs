@@ -6,6 +6,7 @@ use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
@@ -205,6 +206,7 @@ async fn handle_spawn_agent(
             },
             source: spawn_source,
             options: SpawnAgentOptions {
+                task: None,
                 fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                 fork_mode: fork_mode.clone(),
                 parent_thread_id: Some(session.thread_id),

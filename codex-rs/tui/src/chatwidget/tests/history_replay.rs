@@ -287,6 +287,8 @@ async fn replay_and_projection_preserve_agent_message_phase() {
         inter_agent_source: None,
         id: "commentary-1".to_string(),
         text: "working on it".to_string(),
+        attribution: None,
+        input: None,
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,
@@ -297,7 +299,7 @@ async fn replay_and_projection_preserve_agent_message_phase() {
         "turn-1".to_string(),
         ReplayKind::ResumeInitialMessages,
     );
-    let replayed = drain_insert_history(&mut rx);
+    let replayed = drain_insert_history_cells(&mut rx);
     assert_eq!(replayed.len(), 1);
     assert_eq!(
         replayed[0].transcript_navigation_kind(),
@@ -333,6 +335,8 @@ async fn completed_empty_agent_message_does_not_retain_stale_stream_text() {
                 inter_agent_source: None,
                 id: "empty-1".to_string(),
                 text: "::git-push{cwd=\"/repo\"}".to_string(),
+                attribution: None,
+                input: None,
                 phase: Some(MessagePhase::FinalAnswer),
                 memory_citation: None,
                 delivery: None,
@@ -390,15 +394,12 @@ async fn replayed_delegated_tool_output_is_attributed_without_seeding_composer_h
         "replayed_delegated_tool_output",
         lines_to_single_string(&cells[0])
     );
-    let known_collab_agent_metadata =
-        crate::thread_transcript::collab_agent_metadata_from_items([&item]);
-    let projected = crate::thread_transcript::thread_items_to_transcript_cells_with_metadata(
+    let projected = crate::thread_transcript::thread_items_to_transcript_cells(
         /*thread_id*/ None,
         &chat.config.cwd,
         [item],
         crate::thread_transcript::RawReasoningVisibility::Hidden,
         /*config*/ None,
-        &known_collab_agent_metadata,
     );
     assert_eq!(
         projected
@@ -471,6 +472,8 @@ async fn replayed_nested_review_prompts_do_not_render_or_seed_composer_history()
                         text: "review result is retained".to_string(),
                         phase: Some(MessagePhase::FinalAnswer),
                         memory_citation: None,
+                        attribution: None,
+                        input: None,
                         delivery: None,
                         questions: None,
                     },
@@ -1041,6 +1044,8 @@ async fn prompt_edit_stops_streaming_without_submitting_queued_input() {
                 inter_agent_source: None,
                 id: "retained-response".to_string(),
                 text: "retained response".to_string(),
+                attribution: None,
+                input: None,
                 phase: Some(MessagePhase::FinalAnswer),
                 memory_citation: None,
                 delivery: None,
@@ -1059,6 +1064,8 @@ async fn prompt_edit_stops_streaming_without_submitting_queued_input() {
                 inter_agent_source: None,
                 id: "private-commentary".to_string(),
                 text: "hidden voice commentary".to_string(),
+                attribution: None,
+                input: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 delivery: None,

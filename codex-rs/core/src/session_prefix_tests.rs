@@ -74,6 +74,7 @@ fn v1_agent_context_fragments_use_ref_and_nickname() {
         agent_id,
         agent_ref: Some(2),
         nickname: Some("Pascal".to_string()),
+        task_path: None,
     };
 
     let task = UserAgentTask::new(agent.clone(), "Review the lifecycle change.").render();

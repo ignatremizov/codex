@@ -50,9 +50,11 @@ pub(super) fn user_agent_control_item(
         AgentControlAction::Close { .. } => CoreUserAgentControlAction::Close,
         AgentControlAction::Observe { .. } => CoreUserAgentControlAction::Observe,
         AgentControlAction::ReplyRoute { .. } => CoreUserAgentControlAction::ReplyRoute,
+        AgentControlAction::SubtreeMessaging { .. } => CoreUserAgentControlAction::SubtreeMessaging,
     });
     match action {
         AgentControlAction::Spawn {
+            task,
             role,
             model,
             reasoning_effort,
@@ -62,6 +64,7 @@ pub(super) fn user_agent_control_item(
         } => {
             item.authored_selector = authored_selector.map(ToOwned::to_owned);
             item.role = role.clone();
+            item.task = task.clone();
             item.model = model.clone();
             item.reasoning_effort = reasoning_effort.clone();
             item.prompt_preview = input.as_deref().and_then(agent_control_prompt_preview);
@@ -101,9 +104,11 @@ pub(super) fn user_agent_control_item(
             item.prompt_preview = agent_control_prompt_preview(input);
         }
         AgentControlAction::Resume {
+            task,
             target,
             response_handling,
         } => {
+            item.task = task.clone();
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
             apply_agent_control_response_handling(
                 &mut item,
@@ -157,8 +162,12 @@ pub(super) fn user_agent_control_item(
                 AgentObservationMode::Presentation => AgentResponseFinalDelivery::PresentationOnly,
             });
         }
-        AgentControlAction::ReplyRoute { target, mode } => {
+        AgentControlAction::ReplyRoute { target, mode, .. } => {
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
+            item.target_messages = Some(matches!(mode, AgentReplyRouteMode::Enabled));
+        }
+        AgentControlAction::SubtreeMessaging { mode } => {
+            item.authored_selector = Some("all".into());
             item.target_messages = Some(matches!(mode, AgentReplyRouteMode::Enabled));
         }
     }

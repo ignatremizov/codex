@@ -38,7 +38,9 @@ const UNLIMITED_AGENT_PREVIEW_ROWS: usize = 0;
 mod preview;
 pub(crate) use preview::AgentPreviewLineLimits;
 pub(crate) use preview::CollabAgentHistoryCell;
+use preview::CollabAgentTitle;
 use preview::CollabDetail;
+pub(crate) use preview::cap_preview_rows;
 use preview::preview_source_lines;
 use preview::wait_complete_agent_lines;
 

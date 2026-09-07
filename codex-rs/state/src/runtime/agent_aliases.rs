@@ -16,6 +16,7 @@ use queries::require_active_parent_alias;
 
 mod namespace;
 mod queries;
+mod task_paths;
 mod transfer;
 
 pub(super) async fn require_not_deleted(
@@ -207,6 +208,7 @@ WHERE session_id = ?
             parent_thread_id,
             child_thread_id,
             nickname,
+            task_path,
         } = allocation;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         require_not_deleted(&mut tx, child_thread_id).await?;
@@ -253,6 +255,7 @@ WHERE session_id = ?
             session_id,
             child_thread_id,
             nickname.as_deref(),
+            task_path.as_deref(),
             crate::AgentAliasState::Active,
         )
         .await?;
@@ -278,6 +281,7 @@ WHERE session_id = ?
             parent_thread_id,
             child_thread_id,
             nickname,
+            task_path,
         } = allocation;
         let root_thread_id = ThreadId::from(session_id);
         if child_thread_id == root_thread_id {
@@ -329,6 +333,7 @@ WHERE session_id = ?
                         session_id,
                         child_thread_id,
                         nickname.as_deref(),
+                        task_path.as_deref(),
                         crate::AgentAliasState::Active,
                     )
                     .await?

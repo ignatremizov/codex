@@ -278,6 +278,7 @@ mod mcp;
 mod mcp_prewarm;
 mod mcp_prompt;
 pub(crate) use mcp_prompt::is_mcp_use_input;
+mod agent_audit;
 mod agent_status_observation;
 mod mcp_refresh;
 mod mcp_runtime;

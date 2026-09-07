@@ -7,6 +7,12 @@ pub(super) fn resolve_without_alias_store(
     thread_exists: bool,
     root_thread_id: Option<ThreadId>,
 ) -> CodexResult<ThreadId> {
+    if let V1AgentTarget::TaskPath(path) = &target
+        && path == "/root"
+        && let Some(root_thread_id) = root_thread_id
+    {
+        return Ok(root_thread_id);
+    }
     if let V1AgentTarget::Nickname(nickname) = &target
         && nickname.eq_ignore_ascii_case(MAIN_AGENT_NICKNAME)
         && let Some(root_thread_id) = root_thread_id
@@ -28,7 +34,7 @@ pub(super) fn resolve_without_alias_store(
                 "agent {thread_id} is not controlled by this root; use resume_agent to adopt it"
             )))
         }
-        (V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_), _) => {
+        (V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) | V1AgentTarget::TaskPath(_), _) => {
             Err(CodexErr::UnsupportedOperation(
                 "short agent targets are unavailable; use the full agent UUID".to_string(),
             ))
@@ -37,6 +43,12 @@ pub(super) fn resolve_without_alias_store(
 }
 
 pub(super) fn parse_v1_agent_target(target: &str) -> CodexResult<V1AgentTarget> {
+    if let Some(path) = target.strip_prefix("task:") {
+        return Ok(V1AgentTarget::TaskPath(path.to_string()));
+    }
+    if target.starts_with('/') {
+        return Ok(V1AgentTarget::TaskPath(target.to_string()));
+    }
     if let Some(thread_id) = target.strip_prefix("id:") {
         return ThreadId::from_string(thread_id)
             .map(V1AgentTarget::Id)

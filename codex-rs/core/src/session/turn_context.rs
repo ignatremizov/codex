@@ -1189,11 +1189,20 @@ impl Session {
             .as_ref()
             .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let per_turn_config = self.build_per_turn_config(
+        let mut per_turn_config = self.build_per_turn_config(
             &session_configuration,
             cwd.clone(),
             turn_environments.primary_workspace_roots(),
         );
+        // Native discovery is root-owned. A child role, absent root, or selected host
+        // controller must not activate the native sidecar's directory.
+        per_turn_config.list_agents_enabled = self
+            .services
+            .local_agent_runtime
+            .control(self.session_id())
+            .agent_directory_enabled(self.thread_id)
+            .await
+            .unwrap_or(false);
         let network_permission_profile = primary_turn_environment
             .map(TurnEnvironment::permission_profile)
             .cloned()

@@ -306,6 +306,19 @@ fn item_to_cells(
             }));
         }
         ThreadItem::AgentMessage {
+            attribution: Some(attribution),
+            input,
+            text,
+            ..
+        } => {
+            cells.push(Arc::new(crate::history_cell::AgentInputHistoryCell::new(
+                attribution,
+                input.unwrap_or_default(),
+                text,
+                /*viewed_thread*/ None,
+            )));
+        }
+        ThreadItem::AgentMessage {
             id,
             text,
             phase,

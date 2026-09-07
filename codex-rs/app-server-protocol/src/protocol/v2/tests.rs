@@ -310,6 +310,8 @@ fn plaintext_inter_agent_message_becomes_labeled_agent_transcript_item() {
             memory_citation: None,
             delivery: None,
             questions: None,
+            attribution: None,
+            input: None,
         })
     );
 }
@@ -345,6 +347,8 @@ fn attributed_marker_in_generic_agent_message_does_not_replace_structured_author
             memory_citation: None,
             delivery: None,
             questions: None,
+            attribution: None,
+            input: None,
         })
     );
 }
@@ -3396,6 +3400,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         memory_citation: None,
         delivery: None,
         questions: None,
+        attribution: None,
+        input: None,
         sub_agent_completion: None,
     });
 
@@ -3409,6 +3415,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             memory_citation: None,
             delivery: None,
             questions: None,
+            attribution: None,
+            input: None,
         }
     );
 
@@ -3429,6 +3437,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         }),
         delivery: None,
         questions: None,
+        attribution: None,
+        input: None,
         sub_agent_completion: None,
     });
 
@@ -3450,6 +3460,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             }),
             delivery: None,
             questions: None,
+            attribution: None,
+            input: None,
         }
     );
 
@@ -3465,13 +3477,16 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             title: "Which?".to_string(),
             options: None,
         }]),
+        attribution: None,
+        input: None,
         sub_agent_completion: None,
     }));
     assert_eq!(
         serde_json::to_value(&async_item).unwrap(),
         json!({
             "type": "agentMessage", "id": "async-1", "text": "Which?", "phase": "final_answer",
-            "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}], "interAgentSource": null
+            "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}],
+            "attribution": null, "input": null, "interAgentSource": null
         })
     );
     let old_item: ThreadItem = serde_json::from_value(json!({
@@ -3482,6 +3497,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         old_item,
         ThreadItem::AgentMessage {
             questions: None,
+            attribution: None,
+            input: None,
             ..
         }
     ));
@@ -5590,6 +5607,7 @@ fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
 #[test]
 fn agent_control_action_uses_camel_case_variant_fields() {
     let action = AgentControlAction::Spawn {
+        task: None,
         role: None,
         model: Some("gpt-5.6-luna".to_string()),
         reasoning_effort: Some(ReasoningEffort::High),
@@ -5604,6 +5622,7 @@ fn agent_control_action_uses_camel_case_variant_fields() {
     };
     let expected = json!({
         "type": "spawn",
+        "task": null,
         "role": null,
         "model": "gpt-5.6-luna",
         "reasoningEffort": "high",
@@ -5637,6 +5656,8 @@ fn agent_control_response_uses_camel_case_variant_fields() {
             target_thread_id: "thread-2".to_string(),
             agent_ref: Some("2".to_string()),
             nickname: Some("Hopper".to_string()),
+            task_path: None,
+            task_path_mapping: Vec::new(),
             observation_binding: Some(AgentObservationBinding::NextTurn),
             post_commit_warning: None,
         },
@@ -5648,6 +5669,8 @@ fn agent_control_response_uses_camel_case_variant_fields() {
             "targetThreadId": "thread-2",
             "ref": "2",
             "nickname": "Hopper",
+            "taskPath": null,
+            "taskPathMapping": [],
             "observationBinding": "nextTurn",
             "postCommitWarning": null
         },
@@ -5669,11 +5692,13 @@ fn agent_control_response_uses_camel_case_variant_fields() {
 fn agent_reply_route_control_uses_camel_case_wire_shape() {
     let action = AgentControlAction::ReplyRoute {
         target: "2".to_string(),
+        recipient: Some("3".to_string()),
         mode: AgentReplyRouteMode::Enabled,
     };
     let action_json = json!({
         "type": "replyRoute",
         "target": "2",
+        "recipient": "3",
         "mode": "enabled"
     });
     assert_eq!(
@@ -5689,6 +5714,7 @@ fn agent_reply_route_control_uses_camel_case_wire_shape() {
     let response = AgentControlResponse {
         outcome: AgentControlOutcome::ReplyRouteChanged {
             target_thread_id: "thread-2".to_string(),
+            recipient_thread_id: "thread-3".to_string(),
             previous_mode: None,
             mode: AgentReplyRouteMode::Enabled,
         },
@@ -5698,6 +5724,7 @@ fn agent_reply_route_control_uses_camel_case_wire_shape() {
         "outcome": {
             "type": "replyRouteChanged",
             "targetThreadId": "thread-2",
+            "recipientThreadId": "thread-3",
             "previousMode": null,
             "mode": "enabled"
         },

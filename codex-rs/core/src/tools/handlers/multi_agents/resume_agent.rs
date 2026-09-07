@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_resumable_v1_agent_target;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::control::AgentAdoptionRequest;
 use crate::agent::control::AgentResumeOwnership;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::response_observation::FinalResponseObservation;
@@ -8,6 +9,8 @@ use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
+use codex_protocol::AgentTaskPathMapping;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
 use std::sync::Arc;
 
@@ -66,6 +69,18 @@ async fn handle_resume_agent(
         .plan_agent_resume(receiver_thread_id)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    if args.task.is_some() && resume_plan.ownership == AgentResumeOwnership::CurrentRoot {
+        return Err(FunctionCallError::RespondToModel(
+            "task can only be assigned during cross-root adoption; resume this agent without task"
+                .to_string(),
+        ));
+    }
+    if args.task.is_some() && !matches!(resume_plan.status, AgentStatus::NotFound) {
+        return Err(FunctionCallError::RespondToModel(
+            "close the agent before assigning task during adoption, then resume it with task"
+                .to_string(),
+        ));
+    }
     let child_depth = next_thread_spawn_depth(&turn.session_source);
     if resume_plan.ownership.transfers_ownership()
         && exceeds_thread_spawn_depth_limit(child_depth, turn.config.agent_max_depth)
@@ -133,6 +148,7 @@ async fn handle_resume_agent(
         )
         .await;
 
+    let mut adoption = None;
     let (receiver_agent, mut error) = if was_not_found {
         match Box::pin(try_resume_closed_agent(
             &session,
@@ -141,11 +157,13 @@ async fn handle_resume_agent(
             resumed_session_source.clone(),
             resume_plan.ownership,
             args.id.clone(),
+            args.task,
         ))
         .await
         {
-            Ok(()) => {
-                status = session.services.local_agent_runtime.control(session.session_id()).get_status(receiver_thread_id)
+            Ok(outcome) => {
+                adoption = outcome;
+                status = local_agent_control.get_status(receiver_thread_id)
                     .await;
                 (
                     session.services.local_agent_runtime.control(session.session_id()).get_agent_metadata(receiver_thread_id)
@@ -209,7 +227,7 @@ async fn handle_resume_agent(
     turn.session_telemetry
         .counter("codex.multi_agent.resume", /*inc*/ 1, &[]);
 
-    Ok(ResumeAgentResult { status })
+    Ok(ResumeAgentResult { status, adoption })
 }
 
 impl CoreToolRuntime for Handler {
@@ -221,6 +239,7 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 struct ResumeAgentArgs {
     id: String,
+    task: Option<String>,
     #[serde(default)]
     w: ResponseObservationPolicy,
 }
@@ -228,6 +247,14 @@ struct ResumeAgentArgs {
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ResumeAgentResult {
     pub(crate) status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) adoption: Option<ResumeAgentAdoptionResult>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ResumeAgentAdoptionResult {
+    pub(crate) task_path: Option<String>,
+    pub(crate) task_path_mapping: Vec<AgentTaskPathMapping>,
 }
 
 impl ToolOutput for ResumeAgentResult {
@@ -255,18 +282,26 @@ async fn try_resume_closed_agent(
     session_source: SessionSource,
     ownership: AgentResumeOwnership,
     authored_selector: String,
-) -> Result<(), FunctionCallError> {
-    let config = build_agent_resume_config(turn.as_ref())
-        .map_err(FunctionCallError::RespondToModel)?;
+    task: Option<String>,
+) -> Result<Option<ResumeAgentAdoptionResult>, FunctionCallError> {
+    let config =
+        build_agent_resume_config(turn.as_ref()).map_err(FunctionCallError::RespondToModel)?;
     let result = match ownership {
-        AgentResumeOwnership::CurrentRoot => {
-            session.services.local_agent_runtime.control(session.session_id()).resume_agent_from_rollout(config, receiver_thread_id, session_source)
-                .await
-        }
+        AgentResumeOwnership::CurrentRoot => session
+            .services
+            .local_agent_runtime
+            .control(session.session_id())
+            .resume_agent_from_rollout(config, receiver_thread_id, session_source)
+            .await
+            .map(|_| None),
         AgentResumeOwnership::Transfer {
             previous_session_id,
         } => {
-            session.services.local_agent_runtime.control(session.session_id()).resume_agent_from_rollout_adopting(
+            session
+                .services
+                .local_agent_runtime
+                .control(session.session_id())
+                .resume_agent_from_rollout_adopting(
                     config,
                     receiver_thread_id,
                     session_source,
@@ -276,13 +311,28 @@ async fn try_resume_closed_agent(
                         /*commentary*/ false,
                         FinalResponseObservation::None,
                     ),
-                    previous_session_id,
-                    authored_selector,
+                    AgentAdoptionRequest {
+                        previous_session_id,
+                        authored_selector,
+                        task,
+                    },
                 )
                 .await
+                .map(|outcome| {
+                    Some(ResumeAgentAdoptionResult {
+                        task_path: outcome.task_path,
+                        task_path_mapping: outcome
+                            .task_path_mapping
+                            .into_iter()
+                            .map(|mapping| AgentTaskPathMapping {
+                                thread_id: mapping.thread_id,
+                                previous_task_path: mapping.previous_task_path,
+                                task_path: mapping.task_path,
+                            })
+                            .collect(),
+                    })
+                })
         }
     };
-    result
-        .map(|_| ())
-        .map_err(|err| collab_agent_error(receiver_thread_id, err))
+    result.map_err(|err| collab_agent_error(receiver_thread_id, err))
 }
