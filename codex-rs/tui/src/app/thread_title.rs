@@ -297,6 +297,7 @@ where
                 text,
                 phase,
                 inter_agent_source: None,
+                attribution: None,
                 ..
             } if !matches!(phase, Some(MessagePhase::Commentary)) && !text.trim().is_empty() => {
                 Some(("assistant", text.clone()))

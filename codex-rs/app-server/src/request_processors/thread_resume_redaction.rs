@@ -78,6 +78,8 @@ mod tests {
                 delivery: None,
                 questions: None,
                 inter_agent_source: None,
+                attribution: None,
+                input: None,
             },
             ThreadItem::McpToolCall {
                 id: "mcp-1".to_string(),
@@ -136,6 +138,8 @@ mod tests {
                 delivery: None,
                 questions: None,
                 inter_agent_source: None,
+                attribution: None,
+                input: None,
             }
         );
         assert_eq!(

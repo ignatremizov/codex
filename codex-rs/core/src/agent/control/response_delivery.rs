@@ -87,6 +87,7 @@ impl LocalAgentControl {
             turn_id: turn_id.to_string(),
             response_item_id: delivery.response_item_id.clone(),
             kind: ResponseObservationDeliveryKind::Commentary,
+            model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
         };
         // The envelope's path authenticates the typed communication route. V1 workers
         // have no task path, so their separate agent_id remains the canonical identity.
@@ -205,6 +206,11 @@ impl LocalAgentControl {
             turn_id: terminal.turn_id.clone(),
             response_item_id: context_id.clone(),
             kind: ResponseObservationDeliveryKind::Final,
+            model_visibility: if disposition == FinalResponseObservation::PresentationOnly {
+                codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible
+            } else {
+                codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible
+            },
         };
         // Exec is a one-shot host, not a daemon waiting beyond its primary turn.
         if (disposition == FinalResponseObservation::Wake || queued)

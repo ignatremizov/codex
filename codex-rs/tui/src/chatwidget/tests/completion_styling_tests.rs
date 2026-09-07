@@ -15,6 +15,8 @@ fn completed_turn(duration_ms: Option<i64>, completed_at: Option<i64>) -> AppSer
             inter_agent_source: None,
             id: "answer-1".to_string(),
             text: "The change is ready.".to_string(),
+            attribution: None,
+            input: None,
             phase: Some(MessagePhase::FinalAnswer),
             memory_citation: None,
             delivery: None,

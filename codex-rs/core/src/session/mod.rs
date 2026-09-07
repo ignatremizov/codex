@@ -275,8 +275,7 @@ mod observed_input;
 mod response_observation;
 pub(crate) use observed_input::ObservedTurnInputSubmission;
 mod agent_identity;
-#[cfg(test)]
-mod reply_route_publication;
+mod messaging_context_publication;
 mod user_agent_publication;
 pub(crate) use agent_identity::AgentSessionOwnershipOverride;
 pub(crate) use response_observation::AgentResponseEvent;
@@ -296,6 +295,7 @@ mod mcp;
 mod mcp_prewarm;
 mod mcp_prompt;
 pub(crate) use mcp_prompt::is_mcp_use_input;
+mod agent_audit;
 mod agent_status_observation;
 mod developer_instruction_projection;
 mod mcp_refresh;

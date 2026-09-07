@@ -2,6 +2,7 @@
 
 mod agent_context_identity;
 mod agent_message_board_notification;
+mod agent_messaging_policy;
 mod approved_command_prefix_saved;
 mod apps_instructions;
 mod attributed_agent_message;
@@ -68,6 +69,7 @@ pub(crate) mod world_state;
 
 pub(crate) use agent_context_identity::AgentContextIdentity;
 pub(crate) use agent_message_board_notification::AgentMessageBoardNotification;
+pub(crate) use agent_messaging_policy::AGENT_MESSAGING_POLICY_PREFIX;
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;
 pub(crate) use apps_instructions::AppsInstructions;

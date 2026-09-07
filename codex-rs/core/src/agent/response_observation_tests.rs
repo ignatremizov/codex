@@ -22,13 +22,11 @@ fn policy(w: Option<&str>) -> Result<ResponseObservationPolicy, serde_json::Erro
 fn expected_policy(
     commentary: bool,
     final_response: FinalResponseObservation,
-    target_messages: bool,
     queue_input: bool,
 ) -> ResponseObservationPolicy {
     ResponseObservationPolicy {
         commentary,
         final_response,
-        target_messages,
         queue_input,
     }
 }
@@ -38,73 +36,99 @@ fn wire_policies_map_to_target_turn_handling() {
     let cases = [
         (
             None,
-            expected_policy(false, FinalResponseObservation::Passive, false, false),
+            expected_policy(
+                /*commentary*/ false,
+                FinalResponseObservation::Passive,
+                /*queue_input*/ false,
+            ),
         ),
         (
             Some("c"),
-            expected_policy(true, FinalResponseObservation::Passive, false, false),
+            expected_policy(
+                /*commentary*/ true,
+                FinalResponseObservation::Passive,
+                /*queue_input*/ false,
+            ),
         ),
         (
             Some("f"),
-            expected_policy(false, FinalResponseObservation::Wake, false, false),
+            expected_policy(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+                /*queue_input*/ false,
+            ),
         ),
         (
             Some("cf"),
-            expected_policy(true, FinalResponseObservation::Wake, false, false),
-        ),
-        (
-            Some("m"),
-            expected_policy(false, FinalResponseObservation::Passive, true, false),
+            expected_policy(
+                /*commentary*/ true,
+                FinalResponseObservation::Wake,
+                /*queue_input*/ false,
+            ),
         ),
         (
             Some("q"),
-            expected_policy(false, FinalResponseObservation::Passive, false, true),
-        ),
-        (
-            Some("fm"),
-            expected_policy(false, FinalResponseObservation::Wake, true, false),
+            expected_policy(
+                /*commentary*/ false,
+                FinalResponseObservation::Passive,
+                /*queue_input*/ true,
+            ),
         ),
         (
             Some("fq"),
-            expected_policy(false, FinalResponseObservation::Wake, false, true),
+            expected_policy(
+                /*commentary*/ false,
+                FinalResponseObservation::Wake,
+                /*queue_input*/ true,
+            ),
         ),
         (
-            Some("mq"),
-            expected_policy(false, FinalResponseObservation::Passive, true, true),
-        ),
-        (
-            Some("cfmq"),
-            expected_policy(true, FinalResponseObservation::Wake, true, true),
+            Some("cfq"),
+            expected_policy(
+                /*commentary*/ true,
+                FinalResponseObservation::Wake,
+                /*queue_input*/ true,
+            ),
         ),
         (
             Some("x"),
             expected_policy(
-                false,
+                /*commentary*/ false,
                 FinalResponseObservation::PresentationOnly,
-                false,
-                false,
+                /*queue_input*/ false,
             ),
         ),
         (
             Some("cx"),
             expected_policy(
-                true,
+                /*commentary*/ true,
                 FinalResponseObservation::PresentationOnly,
-                false,
-                false,
+                /*queue_input*/ false,
             ),
         ),
         (
             Some("fx"),
-            expected_policy(false, FinalResponseObservation::Passive, false, false),
+            expected_policy(
+                /*commentary*/ false,
+                FinalResponseObservation::Passive,
+                /*queue_input*/ false,
+            ),
         ),
         (
             Some("cfx"),
-            expected_policy(true, FinalResponseObservation::Passive, false, false),
+            expected_policy(
+                /*commentary*/ true,
+                FinalResponseObservation::Passive,
+                /*queue_input*/ false,
+            ),
         ),
         (
-            Some("cfmqx"),
-            expected_policy(true, FinalResponseObservation::Passive, true, true),
+            Some("cfqx"),
+            expected_policy(
+                /*commentary*/ true,
+                FinalResponseObservation::Passive,
+                /*queue_input*/ true,
+            ),
         ),
     ];
 
@@ -114,10 +138,29 @@ fn wire_policies_map_to_target_turn_handling() {
 }
 
 #[test]
-fn malformed_or_noncanonical_wire_policies_are_rejected() {
-    for value in ["", "fc", "xf", "mc", "qm", "cc", "mm", "z"] {
+fn malformed_wire_policies_are_rejected() {
+    for value in ["", "z", "qfz", "f x", "F"] {
         assert!(policy(Some(value)).is_err(), "{value} should be rejected");
     }
+}
+
+#[test]
+fn wire_policy_order_and_repetitions_normalize_by_count() {
+    for (input, canonical) in [
+        ("fc", "cf"),
+        ("qfx", "q"),
+        ("qfxx", "qx"),
+        ("xqc", "cqx"),
+        ("ccqqxff", "cfq"),
+        ("xxff", "fx"),
+        ("xq", "qx"),
+    ] {
+        assert_eq!(
+            policy(Some(input)).unwrap(),
+            policy(Some(canonical)).unwrap()
+        );
+    }
+    assert_eq!(policy(Some("xxff")).unwrap(), policy(None).unwrap());
 }
 
 #[test]
@@ -125,14 +168,17 @@ fn explicit_user_none_does_not_become_passive_final_delivery() {
     let handling = UserAgentResponseHandling::from_parts(
         /*commentary*/ false,
         UserAgentFinalResponseHandling::None,
-        /*target_messages*/ true,
         /*queue_input*/ false,
     );
 
     let policy = ResponseObservationPolicy::from(handling);
     assert_eq!(
         policy,
-        expected_policy(false, FinalResponseObservation::None, true, false)
+        expected_policy(
+            /*commentary*/ false,
+            FinalResponseObservation::None,
+            /*queue_input*/ false,
+        )
     );
-    assert!(policy.exposes_source_model_context());
+    assert!(!policy.exposes_source_model_context());
 }

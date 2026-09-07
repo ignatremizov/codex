@@ -407,6 +407,8 @@ mod tests {
             memory_citation: None,
             delivery: None,
             questions: None,
+            attribution: None,
+            input: None,
         };
 
         assert_eq!(

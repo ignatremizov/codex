@@ -23,19 +23,17 @@ enum AgentControlActionKind {
     Interrupt,
     Resume,
     Observe,
-    Replies,
     Close,
 }
 
 impl AgentControlActionKind {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 7] = [
         Self::InspectTranscript,
         Self::Prompt,
         Self::Queue,
         Self::Interrupt,
         Self::Resume,
         Self::Observe,
-        Self::Replies,
         Self::Close,
     ];
 
@@ -47,7 +45,6 @@ impl AgentControlActionKind {
             Self::Interrupt => "Interrupt turn",
             Self::Resume => "Resume agent",
             Self::Observe => "Observe response",
-            Self::Replies => "Reply route",
             Self::Close => "Close agent",
         }
     }
@@ -60,7 +57,6 @@ impl AgentControlActionKind {
             Self::Interrupt => "Stop the active turn, optionally with a follow-up",
             Self::Resume => "Reopen this controlled agent",
             Self::Observe => "Choose passive, wake, or presentation delivery",
-            Self::Replies => "Allow or block attributed replies from this agent",
             Self::Close => "End the agent runtime and revoke observation",
         }
     }
@@ -97,19 +93,13 @@ impl AgentControlActionKind {
                 Some("Agent is already open.")
             }
             Self::Resume => None,
-            Self::Observe | Self::Replies if state.is_side_thread => {
+            Self::Observe if state.is_side_thread => {
                 Some("Side conversations do not use agent response observation.")
             }
-            Self::Observe | Self::Replies if state.needs_adoption => {
-                Some("Agent is not controlled by this root.")
-            }
-            Self::Observe | Self::Replies if state.is_current => {
-                Some("An agent cannot observe itself.")
-            }
-            Self::Observe | Self::Replies if state.is_closed => {
-                Some("Resume the closed agent first.")
-            }
-            Self::Observe | Self::Replies => None,
+            Self::Observe if state.needs_adoption => Some("Agent is not controlled by this root."),
+            Self::Observe if state.is_current => Some("An agent cannot observe itself."),
+            Self::Observe if state.is_closed => Some("Resume the closed agent first."),
+            Self::Observe => None,
             Self::Close if state.is_side_thread => {
                 Some("Side conversations use the normal TUI lifecycle.")
             }
@@ -136,9 +126,6 @@ impl AgentControlActionKind {
             }
             Self::Observe => {
                 AgentControlMenuEffect::PrepareCommand(format!("/agent observe {target} "))
-            }
-            Self::Replies => {
-                AgentControlMenuEffect::PrepareCommand(format!("/agent replies {target} "))
             }
             Self::Close => AgentControlMenuEffect::PrepareCommand(format!("/agent close {target}")),
         }

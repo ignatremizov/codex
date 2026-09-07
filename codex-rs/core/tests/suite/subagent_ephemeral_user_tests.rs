@@ -59,6 +59,7 @@ async fn ephemeral_spawn_delivers_only_the_requested_completion_context(
     let spawned = test
         .codex
         .spawn_agent(UserAgentSpawnOptions {
+            task: None,
             role: None,
             model: None,
             reasoning_effort: None,

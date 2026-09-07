@@ -35,6 +35,8 @@ fn preview_line(speaker: TranscriptPreviewSpeaker, text: &str) -> TranscriptPrev
 fn incoming_communication_preview_preserves_literal_directives() {
     let item = ThreadItem::AgentMessage {
         id: "amsg-preview".into(),
+        attribution: None,
+        input: None,
         text: "Agent message from `/root/worker`:\n\n::git-create-branch{cwd=\"/ignored\" branch=\"ignored\"}\n\nlast".into(),
         inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
             author: "/root/worker".into(),
@@ -316,6 +318,8 @@ fn legacy_transcript_preview_falls_back_when_scan_budget_is_exhausted() {
 fn transcript_preview_reverse_scan_stops_before_older_items() {
     let newest = ThreadItem::AgentMessage {
         inter_agent_source: None,
+        attribution: None,
+        input: None,
         id: String::from("final"),
         text: String::from("one\ntwo\nthree\nfour\nfive\nsix"),
         phase: None,

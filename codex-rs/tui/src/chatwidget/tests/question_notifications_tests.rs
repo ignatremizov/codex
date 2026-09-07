@@ -12,6 +12,8 @@ async fn live_async_question_notifies_once_and_takes_priority_over_turn_completi
         inter_agent_source: None,
         id: "question".into(),
         text: String::new(),
+        attribution: None,
+        input: None,
         phase: None,
         memory_citation: None,
         delivery: None,

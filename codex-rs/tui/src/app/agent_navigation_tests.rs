@@ -250,18 +250,21 @@ fn durable_aliases_resolve_refs_and_nicknames_but_not_transferred_reservations()
     let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
     state.replace_aliases(vec![
         AgentAlias {
+            task_path: None,
             thread_id: main_thread_id.to_string(),
             agent_ref: "1".to_string(),
             nickname: Some(MAIN_AGENT_NICKNAME.to_string()),
             state: AgentAliasState::Active,
         },
         AgentAlias {
+            task_path: None,
             thread_id: first_agent_id.to_string(),
             agent_ref: "2".to_string(),
             nickname: Some("Robie".to_string()),
             state: AgentAliasState::Closed,
         },
         AgentAlias {
+            task_path: None,
             thread_id: second_agent_id.to_string(),
             agent_ref: "3".to_string(),
             nickname: Some("Bob".to_string()),
@@ -299,6 +302,7 @@ fn durable_alias_without_nickname_clears_stale_thread_metadata() {
     );
 
     state.replace_aliases(vec![AgentAlias {
+        task_path: None,
         thread_id: thread_id.to_string(),
         agent_ref: "2".to_string(),
         nickname: None,
@@ -400,18 +404,21 @@ fn durable_refs_restore_cold_picker_order() {
     );
     state.replace_aliases(vec![
         AgentAlias {
+            task_path: None,
             thread_id: second.to_string(),
             agent_ref: "3".to_string(),
             nickname: None,
             state: AgentAliasState::Active,
         },
         AgentAlias {
+            task_path: None,
             thread_id: root.to_string(),
             agent_ref: "1".to_string(),
             nickname: Some("Main".to_string()),
             state: AgentAliasState::Active,
         },
         AgentAlias {
+            task_path: None,
             thread_id: first.to_string(),
             agent_ref: "2".to_string(),
             nickname: None,
