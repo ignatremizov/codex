@@ -32,7 +32,6 @@ pub enum AgentControlAction {
     /// Spawn a default or configured-role child.
     Spawn {
         /// Optional assignment label, resolved within the issuing agent's root namespace.
-        #[ts(optional = nullable)]
         task: Option<String>,
         /// Omitted selects the default child configuration.
         role: Option<String>,
@@ -72,7 +71,6 @@ pub enum AgentControlAction {
     /// Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.
     Resume {
         /// New assignment for cross-root adoption only; same-root resume cannot rename a task.
-        #[ts(optional = nullable)]
         task: Option<String>,
         /// Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.
         target: String,
@@ -101,7 +99,6 @@ pub enum AgentControlAction {
     ReplyRoute {
         target: String,
         /// Omitted means the source thread issuing the user command.
-        #[ts(optional = nullable)]
         recipient: Option<String>,
         mode: AgentReplyRouteMode,
     },

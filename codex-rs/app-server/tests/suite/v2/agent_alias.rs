@@ -184,7 +184,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
                 thread_id: thread.id.clone(),
                 agent_ref: "1".to_string(),
                 nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
-                task_path: None,
+                task_path: Some("/root".to_string()),
                 state: AgentAliasState::Active,
             }],
             next_cursor: Some("1".to_string()),
@@ -749,7 +749,7 @@ async fn unaliased_legacy_child_alias_list_uses_persisted_root() -> Result<()> {
                     thread_id: root_thread_id.to_string(),
                     agent_ref: "1".to_string(),
                     nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
-                    task_path: None,
+                    task_path: Some("/root".to_string()),
                     state: AgentAliasState::Active,
                 },
                 AgentAlias {
