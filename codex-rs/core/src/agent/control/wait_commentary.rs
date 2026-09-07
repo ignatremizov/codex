@@ -55,6 +55,8 @@ impl LocalAgentControl {
                 turn_id: commentary.turn_id.clone(),
                 response_item_id: commentary.delivery.response_item_id.clone(),
                 kind: ResponseObservationDeliveryKind::Commentary,
+                model_visibility:
+                    codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
             };
             observer
                 .session

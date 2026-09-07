@@ -58,6 +58,8 @@ fn transcript(id: &str, text: &str) -> ThreadItem {
             author: "/root".into(),
             recipient: "/root/worker".into(),
         }),
+        attribution: None,
+        input: None,
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,
