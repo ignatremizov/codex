@@ -12,6 +12,45 @@ fn cache_no_project_root(chat: &mut ChatWidget) {
 }
 
 #[tokio::test]
+async fn idle_agent_activity_animates_title_without_running_the_current_task() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_terminal_title = Some(vec!["activity".to_string()]);
+    chat.config.animations = true;
+    chat.set_running_agent_count(2);
+    let origin = chat.terminal_title_animation_origin;
+    let first = chat.terminal_title_spinner_text_at(origin).unwrap();
+    let second = chat
+        .terminal_title_spinner_text_at(origin + Duration::from_millis(/*millis*/ 100))
+        .unwrap();
+    insta::assert_snapshot!(format!("{first}\n{second}"), @"
+    ⠋
+    ⠙
+    ");
+    assert!(chat.should_animate_terminal_title_spinner());
+    assert!(chat.terminal_title_next_refresh.is_some());
+    assert!(!chat.bottom_pane.is_task_running());
+    assert_eq!(chat.run_state_status_text(), "Ready");
+    assert!(op_rx.try_recv().is_err());
+
+    chat.config.animations = false;
+    chat.refresh_terminal_title();
+    assert_eq!(chat.terminal_title_spinner_text_at(origin), None);
+    assert_eq!(chat.terminal_title_next_refresh, None);
+
+    chat.config.animations = true;
+    chat.config.tui_terminal_title = Some(vec!["model".to_string()]);
+    chat.refresh_terminal_title();
+    assert!(!chat.should_animate_terminal_title_spinner());
+    assert_eq!(chat.terminal_title_next_refresh, None);
+
+    chat.config.tui_terminal_title = Some(vec!["activity".to_string()]);
+    chat.set_running_agent_count(0);
+    assert_eq!(chat.terminal_title_spinner_text_at(origin), None);
+    assert_eq!(chat.terminal_title_next_refresh, None);
+    assert!(!chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
 async fn goal_clock_refresh_redraws_only_when_elapsed_label_changes() {
     let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual_with_auth(
@@ -107,6 +146,7 @@ async fn terminal_title_shows_action_required_while_exec_approval_is_pending() {
         available_decisions: None,
     };
     handle_exec_approval_request(&mut chat, "sub-action-required", request);
+    chat.set_running_agent_count(2);
 
     let before_refresh = Instant::now();
     chat.terminal_title_animation_origin = before_refresh;

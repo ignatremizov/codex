@@ -107,6 +107,14 @@ impl ChatWidget {
         self.bottom_pane.set_active_agent_label(active_agent_label);
     }
 
+    pub(crate) fn set_running_agent_count(&mut self, running: usize) {
+        let had_running_agents = self.bottom_pane.has_running_agents();
+        self.bottom_pane.set_running_agent_count(running);
+        if had_running_agents != self.bottom_pane.has_running_agents() {
+            self.refresh_terminal_title();
+        }
+    }
+
     /// Recomputes footer status-line content from config and current runtime state.
     ///
     /// This method is the status-line orchestrator: it parses configured item identifiers,

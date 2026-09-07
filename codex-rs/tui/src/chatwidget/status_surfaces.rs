@@ -991,7 +991,9 @@ impl ChatWidget {
             return false;
         }
 
-        self.mcp_startup_status.is_some() || self.bottom_pane.is_task_running()
+        self.mcp_startup_status.is_some()
+            || self.bottom_pane.is_task_running()
+            || self.bottom_pane.has_running_agents()
     }
 
     pub(super) fn should_animate_terminal_title_spinner(&self) -> bool {

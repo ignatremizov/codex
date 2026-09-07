@@ -40,6 +40,9 @@ use uuid::Uuid;
 #[path = "agent_task_paths.rs"]
 mod task_paths;
 
+#[path = "agent_activity.rs"]
+mod activity;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AgentAliasEntry {
     pub(crate) agent_ref: u64,

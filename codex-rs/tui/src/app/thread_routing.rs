@@ -204,6 +204,10 @@ impl App {
     pub(super) fn sync_active_agent_label(&mut self) {
         let current_thread_id = self.current_displayed_thread_id();
         let agent_root_thread_id = self.agent_root_thread_id();
+        self.chat_widget.set_running_agent_count(
+            self.agent_navigation
+                .running_agent_count(agent_root_thread_id, current_thread_id),
+        );
         let label = self
             .agent_navigation
             .active_agent_label(current_thread_id, agent_root_thread_id);
@@ -1212,9 +1216,7 @@ impl App {
                 .await;
         }
         self.cache_collab_response_observation_for_notification(&notification);
-        let inferred_session = if let ServerNotification::ThreadStarted(started) = &notification
-            && self.primary_session_configured.is_some()
-        {
+        let inferred_session = if let ServerNotification::ThreadStarted(started) = &notification {
             let agent_nickname = self
                 .agent_navigation
                 .authoritative_nickname(thread_id, started.thread.agent_nickname.clone());
@@ -1236,7 +1238,7 @@ impl App {
                 None => false,
             };
 
-            if already_has_session {
+            if already_has_session || self.primary_session_configured.is_none() {
                 None
             } else {
                 self.infer_session_for_started_thread(thread_id, started)
@@ -1251,6 +1253,11 @@ impl App {
         };
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
+        let running_status = match &notification {
+            ServerNotification::ThreadStatusChanged(status) => Some(status.status.clone()),
+            ServerNotification::ThreadStarted(started) => Some(started.thread.status.clone()),
+            _ => None,
+        };
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
@@ -1320,6 +1327,12 @@ impl App {
             if self.queued_agent_prompts.contains_key(&thread_id) {
                 self.app_event_tx.send(AppEvent::RefreshAgentPromptQueue);
             }
+        } else if let Some(status) = running_status.as_ref() {
+            self.agent_navigation
+                .update_visual_status(thread_id, status);
+        }
+        if is_turn_started || is_thread_closed || turn_stopped || running_status.is_some() {
+            self.sync_active_agent_label();
         }
 
         if let Some(notification) = notification {

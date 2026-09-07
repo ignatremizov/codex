@@ -254,6 +254,7 @@ impl App {
         self.agent_navigation.order_by_agent_ref();
 
         let params = self.agent_picker_selection_view_params(selected);
+        self.sync_active_agent_label();
         self.chat_widget
             .replace_selection_view_if_present(AGENT_PICKER_VIEW_ID, params);
     }
