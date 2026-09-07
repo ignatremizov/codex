@@ -86,8 +86,14 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let trace_input_history = compaction_trace
         .is_enabled()
         .then(|| history.raw_items().cloned().collect());
-    let mut input: Vec<_> = history
-        .for_prompt_annotated(&turn_context.model_info().input_modalities)
+    let mut prompt_items =
+        history.for_prompt_annotated(&turn_context.model_info().input_modalities);
+    sess.services
+        .agent_control
+        .messaging_context_snapshot(sess.presentation_id())
+        .await?
+        .reconcile_annotated(&mut prompt_items);
+    let mut input: Vec<_> = prompt_items
         .into_iter()
         .map(ResponseItemEnvelope::into_item)
         .collect();

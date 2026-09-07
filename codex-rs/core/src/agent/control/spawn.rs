@@ -37,6 +37,10 @@ struct SpawnAgentThreadInheritance {
 #[allow(clippy::large_enum_variant)]
 pub(super) enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
+    ModelInput {
+        input: Vec<UserInput>,
+        origin: AgentModelInputOrigin,
+    },
     UserControlled {
         input: Option<Vec<UserInput>>,
         task_preview: Option<String>,
@@ -183,6 +187,24 @@ pub(super) async fn load_agent_model_context(
 }
 
 impl LocalAgentControl {
+    /// Model authorship is an internal capability, not part of the public spawn options.
+    pub(crate) async fn spawn_model_agent_with_metadata(
+        &self,
+        config: Config,
+        input: Vec<UserInput>,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+        origin: AgentModelInputOrigin,
+    ) -> CodexResult<LiveAgent> {
+        Box::pin(self.spawn_agent_internal(
+            config,
+            SpawnInitialInput::ModelInput { input, origin },
+            session_source,
+            options,
+        ))
+        .await
+    }
+
     /// Spawn a new agent thread and submit the initial prompt.
     #[cfg(test)]
     pub(crate) async fn spawn_agent(
@@ -265,6 +287,12 @@ impl LocalAgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<SpawnedAgent> {
+        let (model_input_origin, initial_input) = match initial_input {
+            SpawnInitialInput::ModelInput { input, origin } => {
+                (Some(origin), SpawnInitialInput::UserInput(input))
+            }
+            initial_input => (None, initial_input),
+        };
         if options.response_observation.target_messages()
             && config.multi_agent_version_from_features() == MultiAgentVersion::V2
         {
@@ -292,6 +320,18 @@ impl LocalAgentControl {
                         )
                     })?,
             ),
+            None => None,
+        };
+        let task_path = match options.task.as_deref() {
+            Some(task) => {
+                let parent = parent.as_ref().ok_or_else(|| {
+                    CodexErr::InvalidRequest("task requires a parent agent".into())
+                })?;
+                Some(
+                    self.resolve_new_agent_task_path(parent.session.thread_id(), task)
+                        .await?,
+                )
+            }
             None => None,
         };
         self.sync_durable_agent_nickname_reservations().await?;
@@ -417,7 +457,7 @@ impl LocalAgentControl {
                 new_thread.thread.as_ref(),
                 new_thread.thread_id,
                 notification_source.as_ref(),
-                super::aliases::ThreadSpawnPersistence::New,
+                super::aliases::ThreadSpawnPersistence::New { task_path },
             )
             .await
         {
@@ -518,92 +558,111 @@ impl LocalAgentControl {
         };
         let mut post_admission_warning = None;
         let mut input_outcome = None;
-        let submission = match initial_input {
-            SpawnInitialInput::UserControlled {
-                input,
-                task_preview,
-            } => {
-                let observer = parent.as_ref().ok_or_else(|| {
-                    CodexErr::InvalidRequest("user spawn requires its exact source runtime".into())
-                })?;
-                match input {
-                    Some(input) => match self
-                        .send_user_input_observing_response(
-                            new_thread.thread_id,
-                            input,
-                            start_options,
-                            observer.session.presentation_id(),
-                            options.response_observation,
-                            task_preview,
+        let submission = async {
+            match initial_input {
+                SpawnInitialInput::UserControlled {
+                    input,
+                    task_preview,
+                } => {
+                    let observer = parent.as_ref().ok_or_else(|| {
+                        CodexErr::InvalidRequest(
+                            "user spawn requires its exact source runtime".into(),
                         )
-                        .await
-                    {
-                        Ok(submission) => {
-                            input_outcome = Some(submission.input_outcome);
-                            post_admission_warning = submission.post_admission_warning;
-                            Ok(submission.submission_id)
-                        }
-                        Err(error) => Err(error),
-                    },
-                    None => {
-                        let _transaction = self
-                            .acquire_response_observation_transaction(
-                                observer.session.presentation_id(),
-                            )
-                            .await;
-                        self.install_response_observer(
-                            observer,
-                            &new_thread.thread,
-                            options.response_observation,
-                            ResponseObservationBinding::NextTurn,
-                            super::response_observer::ResponseObserverStart::FutureOnly,
-                        )
-                        .await
-                        .map(|()| String::new())
-                    }
-                }
-            }
-            SpawnInitialInput::UserInput(input) => {
-                if let Some(parent_id) = notification_source
-                    .as_ref()
-                    .and_then(SessionSource::parent_thread_id)
-                {
-                    match state.get_thread(parent_id).await {
-                        Ok(observer) => {
-                            self.send_user_input_observing_response(
+                    })?;
+                    match input {
+                        Some(input) => match self
+                            .send_user_input_observing_response(
                                 new_thread.thread_id,
                                 input,
                                 start_options,
                                 observer.session.presentation_id(),
                                 options.response_observation,
-                                /*task_preview*/ None,
+                                task_preview,
                             )
                             .await
-                            .map(|submission| {
+                        {
+                            Ok(submission) => {
                                 input_outcome = Some(submission.input_outcome);
                                 post_admission_warning = submission.post_admission_warning;
-                                submission.submission_id
-                            })
+                                Ok(submission.submission_id)
+                            }
+                            Err(error) => Err(error),
+                        },
+                        None => {
+                            let _transaction = self
+                                .acquire_response_observation_transaction(
+                                    observer.session.presentation_id(),
+                                )
+                                .await;
+                            self.install_response_observer(
+                                observer,
+                                &new_thread.thread,
+                                options.response_observation,
+                                ResponseObservationBinding::NextTurn,
+                                super::response_observer::ResponseObserverStart::FutureOnly,
+                            )
+                            .await
+                            .map(|()| String::new())
                         }
-                        Err(error) => Err(error),
                     }
-                } else {
-                    self.send_input(new_thread.thread_id, input, start_options)
-                        .await
+                }
+                SpawnInitialInput::UserInput(input) => {
+                    if let Some(parent_id) = notification_source
+                        .as_ref()
+                        .and_then(SessionSource::parent_thread_id)
+                    {
+                        match state.get_thread(parent_id).await {
+                            Ok(observer) => {
+                                let input = match &model_input_origin {
+                                    Some(origin) => {
+                                        self.attribute_model_input(
+                                            origin.sender,
+                                            new_thread.thread_id,
+                                            &origin.sender_turn_id,
+                                            input,
+                                        )
+                                        .await?
+                                    }
+                                    None => AgentControlInput::User(input),
+                                };
+                                self.send_agent_input_observing_response(
+                                    new_thread.thread_id,
+                                    input,
+                                    start_options,
+                                    observer.session.presentation_id(),
+                                    options.response_observation,
+                                )
+                                .await
+                                .map(|submission| {
+                                    input_outcome = Some(submission.input_outcome);
+                                    post_admission_warning = submission.post_admission_warning;
+                                    submission.submission_id
+                                })
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        self.send_input(new_thread.thread_id, input, start_options)
+                            .await
+                    }
+                }
+                SpawnInitialInput::InterAgentCommunication(communication, context) => {
+                    self.send_inter_agent_communication_after_capacity_check(
+                        new_thread.thread_id,
+                        &state,
+                        &new_thread.thread,
+                        communication,
+                        context,
+                        start_options,
+                    )
+                    .await
+                }
+                SpawnInitialInput::ModelInput { .. } => {
+                    unreachable!("model authorship was separated before spawn setup")
                 }
             }
-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    &new_thread.thread,
-                    communication,
-                    context,
-                    start_options,
-                )
-                .await
-            }
-        };
+        }
+        .await;
         if let Err(error) = submission {
             // This spawn allocated a fresh thread ID; cleanup never removes an adopted runtime.
             // The worker owns both admission and cleanup even if the caller drops its receipt.

@@ -62,6 +62,8 @@ impl Session {
                                 .final_delivery_response_item_id
                                 .clone()?,
                             kind: crate::agent::control::ResponseObservationDeliveryKind::Final,
+                            // Wait returns the consumed answer directly to the recipient model.
+                            model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
                         })
                     })
                     .collect::<Vec<_>>();

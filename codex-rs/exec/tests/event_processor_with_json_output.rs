@@ -421,6 +421,8 @@ fn unsupported_items_do_not_consume_synthetic_ids() {
         ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "message-1".to_string(),
+                attribution: None,
+                input: None,
                 text: "hello".to_string(),
                 inter_agent_source: None,
                 phase: None,
@@ -1113,6 +1115,8 @@ fn agent_message_item_updates_final_message() {
         ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
+                attribution: None,
+                input: None,
                 text: "hello".to_string(),
                 inter_agent_source: None,
                 phase: None,
@@ -1151,6 +1155,8 @@ fn agent_message_item_started_is_ignored() {
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
+                attribution: None,
+                input: None,
                 text: "hello".to_string(),
                 inter_agent_source: None,
                 phase: None,
@@ -1505,6 +1511,8 @@ fn turn_completion_recovers_final_message_from_turn_items() {
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
+                    attribution: None,
+                    input: None,
                     text: "final answer".to_string(),
                     inter_agent_source: None,
                     phase: None,
@@ -1640,6 +1648,8 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
         ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg-stale".to_string(),
+                attribution: None,
+                input: None,
                 text: "stale answer".to_string(),
                 inter_agent_source: None,
                 phase: None,
@@ -1661,6 +1671,8 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
+                    attribution: None,
+                    input: None,
                     text: "final answer".to_string(),
                     inter_agent_source: None,
                     phase: None,
@@ -1696,6 +1708,8 @@ fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() 
         ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg-streamed".to_string(),
+                attribution: None,
+                input: None,
                 text: "streamed answer".to_string(),
                 inter_agent_source: None,
                 phase: None,
@@ -1745,6 +1759,8 @@ fn failed_turn_clears_stale_final_message() {
         ItemCompletedNotification {
             item: ThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
+                attribution: None,
+                input: None,
                 text: "partial answer".to_string(),
                 inter_agent_source: None,
                 phase: None,

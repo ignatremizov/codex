@@ -41,6 +41,8 @@ pub struct AgentAlias {
     #[ts(rename = "ref")]
     pub agent_ref: String,
     pub nickname: Option<String>,
+    /// Current root-scoped assignment label, independent of lifecycle ancestry.
+    pub task_path: Option<String>,
     pub state: AgentAliasState,
 }
 

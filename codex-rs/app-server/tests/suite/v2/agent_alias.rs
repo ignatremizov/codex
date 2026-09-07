@@ -184,6 +184,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
                 thread_id: thread.id.clone(),
                 agent_ref: "1".to_string(),
                 nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
+                task_path: Some("/root".to_string()),
                 state: AgentAliasState::Active,
             }],
             next_cursor: Some("1".to_string()),
@@ -207,6 +208,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
                 thread_id: child_thread_id.clone(),
                 agent_ref: "2".to_string(),
                 nickname: Some(child_nickname.clone()),
+                task_path: None,
                 state: AgentAliasState::Active,
             }],
             next_cursor: None,
@@ -282,9 +284,13 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         prompt_audit,
         ThreadItem::UserAgentControl {
             id: prompt_audit_id,
+            task: None,
+            task_path: None,
+            task_path_mapping: Vec::new(),
             action: AuditAgentControlAction::Prompt,
             authored_selector: Some("ref:2".to_string()),
             target_thread_id: Some(child_thread_id.clone()),
+            reply_recipient_thread_id: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
             agent_ref: Some("2".to_string()),
@@ -348,9 +354,13 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         observe_audit,
         ThreadItem::UserAgentControl {
             id: observe_audit_id,
+            task: None,
+            task_path: None,
+            task_path_mapping: Vec::new(),
             action: AuditAgentControlAction::Observe,
             authored_selector: Some("2".to_string()),
             target_thread_id: Some(child_thread_id.clone()),
+            reply_recipient_thread_id: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
             agent_ref: Some("2".to_string()),
@@ -408,6 +418,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
                 source_thread_id: thread.id.clone(),
                 authored_selector: None,
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -427,6 +438,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         agent_ref,
         nickname,
         post_admission_warning,
+        task_path,
     } = spawned.outcome
     else {
         panic!("agent spawn should return spawned");
@@ -434,6 +446,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     assert_ne!(spawned_thread_id, child_thread_id);
     assert_eq!(agent_ref.as_deref(), Some("3"));
     assert!(nickname.is_some());
+    assert_eq!(task_path, None);
     assert_eq!(post_admission_warning, None);
     user_spawn_turn.single_request();
 
@@ -499,6 +512,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
                 source_thread_id: thread.id.clone(),
                 authored_selector: Some("2".to_string()),
                 action: AgentControlAction::Resume {
+                    task: None,
                     target: "2".to_string(),
                     response_handling: Some(AgentResponseHandling::Wake),
                 },
@@ -512,6 +526,8 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             target_thread_id: child_thread_id.clone(),
             agent_ref: Some("2".to_string()),
             nickname: Some(child_nickname.clone()),
+            task_path: None,
+            task_path_mapping: Vec::new(),
             observation_binding: Some(AgentObservationBinding::NextTurn),
             post_commit_warning: None,
         }
@@ -572,9 +588,13 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         rejected_audit,
         ThreadItem::UserAgentControl {
             id: rejected_audit_id,
+            task: None,
+            task_path: None,
+            task_path_mapping: Vec::new(),
             action: AuditAgentControlAction::Prompt,
             authored_selector: Some(foreign.thread.id.clone()),
             target_thread_id: Some(foreign.thread.id.clone()),
+            reply_recipient_thread_id: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
             agent_ref: None,
@@ -729,12 +749,14 @@ async fn unaliased_legacy_child_alias_list_uses_persisted_root() -> Result<()> {
                     thread_id: root_thread_id.to_string(),
                     agent_ref: "1".to_string(),
                     nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
+                    task_path: Some("/root".to_string()),
                     state: AgentAliasState::Active,
                 },
                 AgentAlias {
                     thread_id: child_thread_id.to_string(),
                     agent_ref: "2".to_string(),
                     nickname: Some("legacy-worker".to_string()),
+                    task_path: None,
                     state: AgentAliasState::Active,
                 },
             ],
@@ -750,6 +772,7 @@ async fn unaliased_legacy_child_alias_list_uses_persisted_root() -> Result<()> {
             thread_id: child_thread_id,
             agent_ref: 2,
             nickname: Some("legacy-worker".to_string()),
+            task_path: None,
             state: codex_state::AgentAliasState::Active,
         })
     );

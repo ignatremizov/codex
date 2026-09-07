@@ -36,19 +36,39 @@ fn internal_context_keeps_the_original_presented_input() {
 }
 
 #[test]
-fn attributed_input_keeps_transcript_separate_from_model_context() {
-    let input = AgentControlInput::AttributedAgent {
+fn attributed_input_keeps_original_input_separate_from_model_context() {
+    let sender = codex_protocol::AgentInputIdentity {
+        thread_id: ThreadId::new(),
+        nickname: Some("sender".into()),
+        agent_ref: None,
+        task_path: None,
+        role: None,
+        model: None,
+        reasoning_effort: None,
+    };
+    let recipient = codex_protocol::AgentInputIdentity {
+        thread_id: ThreadId::new(),
+        nickname: Some("recipient".into()),
+        ..sender.clone()
+    };
+    let attribution = Box::new(codex_protocol::AgentInputAttribution {
+        sender,
+        recipient,
+        sender_turn_id: "source-turn".into(),
+    });
+    let input = AgentControlInput::AttributedAgentInput {
         content: vec![text("trusted envelope")],
-        transcript: "Agent message from sender:\n\npayload".into(),
+        attribution: attribution.clone(),
         presentation: vec![text("payload")],
     };
     assert_eq!(
         input.into_request().input,
         TurnInput::AgentInput {
             content: vec![text("trusted envelope")],
-            presentation: AgentInputPresentation::Attributed(
-                "Agent message from sender:\n\npayload".into()
-            ),
+            presentation: AgentInputPresentation::AttributedInput {
+                attribution,
+                input: vec![text("payload")],
+            },
         }
     );
 }

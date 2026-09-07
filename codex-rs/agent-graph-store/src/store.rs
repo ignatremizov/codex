@@ -22,6 +22,8 @@ pub type AgentGraphStoreFuture<'a, T> =
 /// Implementations that support aliases must allocate refs monotonically and retain closed or
 /// transferred aliases so historical short targets can never be rebound to a different thread.
 /// Alias allocation and the corresponding parent edge must commit atomically.
+/// Task paths are assignment labels, unique among current owners including closed agents, but
+/// transferred historical labels do not reserve paths in the former root.
 ///
 /// Implementations that only provide graph traversal may retain the default unsupported alias
 /// methods.
@@ -62,6 +64,8 @@ pub trait AgentGraphStore: Send + Sync {
     ///
     /// Repeating the same `(session_id, child_thread_id)` request is idempotent and returns the
     /// existing alias.
+    /// A different UUID requesting a currently owned task path must fail without publishing an
+    /// alias or parent edge, and identify the existing owner.
     fn allocate_agent_alias(
         &self,
         _request: AllocateAgentAliasRequest,
@@ -73,6 +77,7 @@ pub trait AgentGraphStore: Send + Sync {
     ///
     /// A supplied nickname may fill an alias whose historical metadata had none, but never
     /// replaces an already persisted nickname.
+    /// Existing assignment labels remain unchanged, including when the request omits a task path.
     fn activate_agent_alias(
         &self,
         _request: AllocateAgentAliasRequest,
@@ -87,6 +92,8 @@ pub trait AgentGraphStore: Send + Sync {
     /// the subtree did not change after the caller reserved its rollout writers. Descendant aliases
     /// move in the same transaction so the replaced parent edge cannot expose a subtree still owned
     /// by the former root.
+    /// Resolve imported task-path collisions in that same transaction without changing destination
+    /// members. Return changed labels alongside ownership details; preserve historical source labels.
     fn transfer_agent_alias(
         &self,
         _request: TransferAgentAliasRequest,
@@ -94,7 +101,7 @@ pub trait AgentGraphStore: Send + Sync {
         unsupported_alias_store()
     }
 
-    /// Change ordinary active/closed lifecycle state without releasing either reservation.
+    /// Change ordinary active/closed lifecycle state without releasing refs, nicknames, or task paths.
     ///
     /// Ownership transfer is intentionally rejected here and belongs to a separate atomic
     /// transfer operation.

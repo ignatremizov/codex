@@ -353,6 +353,11 @@ async fn run_compact_task_inner_impl(
             .clone()
             .for_prompt(&turn_context.model_info().input_modalities);
         sess.services
+            .agent_control
+            .messaging_context_snapshot(sess.presentation_id())
+            .await?
+            .reconcile(&mut turn_input);
+        sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);
         let turn_input_len = turn_input.len();

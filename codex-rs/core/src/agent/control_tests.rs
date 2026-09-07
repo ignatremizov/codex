@@ -99,6 +99,15 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 
+#[path = "control/directory_tests.rs"]
+mod directory_tests;
+#[path = "control/scoped_admission_tests.rs"]
+mod scoped_admission_tests;
+#[path = "control/task_path_control_tests.rs"]
+mod task_path_control_tests;
+#[path = "control/turn_queue_permission_tests.rs"]
+mod turn_queue_permission_tests;
+
 async fn test_config_with_cli_overrides(
     mut cli_overrides: Vec<(String, TomlValue)>,
 ) -> (TempDir, Config) {

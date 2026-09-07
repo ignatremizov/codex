@@ -1295,6 +1295,7 @@ impl ThreadManager {
             auth_manager,
             parent_trace,
             client_mcp_extensions,
+            /*live_revert_messaging*/ None,
         )
         .await
     }

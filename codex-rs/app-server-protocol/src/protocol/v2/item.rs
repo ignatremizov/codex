@@ -249,6 +249,7 @@ pub enum UserAgentControlAction {
     Close,
     Observe,
     ReplyRoute,
+    SubtreeMessaging,
 }
 
 impl From<CoreUserAgentControlAction> for UserAgentControlAction {
@@ -262,6 +263,7 @@ impl From<CoreUserAgentControlAction> for UserAgentControlAction {
             CoreUserAgentControlAction::Close => Self::Close,
             CoreUserAgentControlAction::Observe => Self::Observe,
             CoreUserAgentControlAction::ReplyRoute => Self::ReplyRoute,
+            CoreUserAgentControlAction::SubtreeMessaging => Self::SubtreeMessaging,
         }
     }
 }
@@ -329,6 +331,10 @@ pub enum ThreadItem {
         text: String,
         #[serde(default)]
         inter_agent_source: Option<InterAgentMessageSource>,
+        #[serde(default)]
+        attribution: Option<super::AgentInputAttribution>,
+        #[serde(default)]
+        input: Option<Vec<UserInput>>,
         #[serde(default)]
         phase: Option<MessagePhase>,
         #[serde(default)]
@@ -496,6 +502,7 @@ pub enum ThreadItem {
         action: UserAgentControlAction,
         authored_selector: Option<String>,
         target_thread_id: Option<String>,
+        reply_recipient_thread_id: Option<String>,
         previous_owner_session_id: Option<String>,
         new_owner_session_id: Option<String>,
         #[serde(rename = "ref")]
@@ -503,6 +510,12 @@ pub enum ThreadItem {
         agent_ref: Option<String>,
         nickname: Option<String>,
         role: Option<String>,
+        #[serde(default)]
+        task: Option<String>,
+        #[serde(default)]
+        task_path: Option<String>,
+        #[serde(default)]
+        task_path_mapping: Vec<super::AgentTaskPathMapping>,
         #[serde(default)]
         model: Option<String>,
         #[serde(default)]
@@ -1042,6 +1055,10 @@ impl From<CoreTurnItem> for ThreadItem {
                 ThreadItem::AgentMessage {
                     id,
                     text,
+                    attribution: agent.attribution.map(Into::into),
+                    input: agent
+                        .input
+                        .map(|input| input.into_iter().map(UserInput::from).collect()),
                     inter_agent_source: None,
                     phase: agent.phase,
                     memory_citation: agent.memory_citation.map(Into::into),
@@ -1148,6 +1165,9 @@ impl From<CoreTurnItem> for ThreadItem {
                 action: control.action.into(),
                 authored_selector: control.authored_selector,
                 target_thread_id: control.target_thread_id.map(|id| id.to_string()),
+                reply_recipient_thread_id: control
+                    .reply_recipient_thread_id
+                    .map(|id| id.to_string()),
                 previous_owner_session_id: control
                     .previous_owner_session_id
                     .map(|id| id.to_string()),
@@ -1155,6 +1175,13 @@ impl From<CoreTurnItem> for ThreadItem {
                 agent_ref: control.agent_ref.map(|agent_ref| agent_ref.to_string()),
                 nickname: control.nickname,
                 role: control.role,
+                task: control.task,
+                task_path: control.task_path,
+                task_path_mapping: control
+                    .task_path_mapping
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
                 model: control.model,
                 reasoning_effort: control.reasoning_effort,
                 prompt_preview: control.prompt_preview,

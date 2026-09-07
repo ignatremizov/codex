@@ -1225,6 +1225,7 @@ mod tests {
                 agent_id: ThreadId::new(),
                 agent_ref: Some(1),
                 nickname: Some("Main".to_string()),
+                task_path: None,
             },
         ));
         input_queue

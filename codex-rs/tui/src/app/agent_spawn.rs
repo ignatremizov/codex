@@ -11,6 +11,7 @@ impl App {
     ) -> Option<ThreadId> {
         let SpawnAgentCommandArgs {
             source_thread_id,
+            task,
             role,
             authored_selector,
             model,
@@ -21,6 +22,10 @@ impl App {
         } = args;
         let response = super::agent_prompt_queue::response_handling_option(response_handling)
             .map(|option| format!(" {option}"))
+            .unwrap_or_default();
+        let task_option = task
+            .as_deref()
+            .map(|task| format!(" task:{task}"))
             .unwrap_or_default();
         let fork = match fork_mode {
             codex_app_server_protocol::AgentForkMode::None => "none".to_string(),
@@ -43,7 +48,7 @@ impl App {
             .map(|effort| format!(" effort:{effort}"))
             .unwrap_or_default();
         let recovery_command = format!(
-            "/agent {} fork:{fork}{}{reasoning_effort_option}{response}",
+            "/agent {}{task_option} fork:{fork}{}{reasoning_effort_option}{response}",
             authored_selector.as_deref().unwrap_or("new"),
             model_option.as_deref().unwrap_or_default()
         );
@@ -76,6 +81,7 @@ impl App {
         let result = app_server
             .spawn_agent(crate::app_server_session::SpawnAgentRequest {
                 source_thread_id,
+                task,
                 role,
                 authored_selector,
                 model,
@@ -105,6 +111,7 @@ impl App {
                 agent_ref,
                 nickname,
                 input_outcome,
+                task_path,
                 post_admission_warning,
             } => {
                 let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id) else {
@@ -138,6 +145,8 @@ impl App {
                         ),
                     }
                 }
+                self.agent_navigation
+                    .update_task_path(target_thread_id, task_path);
                 self.refresh_primary_agent_aliases(app_server).await;
                 self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
                     .await;

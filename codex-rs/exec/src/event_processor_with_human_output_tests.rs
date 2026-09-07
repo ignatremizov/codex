@@ -352,6 +352,8 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
     let message = final_message_from_turn_items(&[
         ThreadItem::AgentMessage {
             id: "msg-1".to_string(),
+            attribution: None,
+            input: None,
             text: "first".to_string(),
             inter_agent_source: None,
             phase: None,
@@ -365,6 +367,8 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
         },
         ThreadItem::AgentMessage {
             id: "msg-2".to_string(),
+            attribution: None,
+            input: None,
             text: "second".to_string(),
             inter_agent_source: None,
             phase: None,
@@ -382,6 +386,8 @@ fn final_message_from_turn_items_ignores_inter_agent_messages() {
     let message = final_message_from_turn_items(&[
         ThreadItem::AgentMessage {
             id: "msg-1".to_string(),
+            attribution: None,
+            input: None,
             text: "ordinary answer".to_string(),
             inter_agent_source: None,
             phase: None,
@@ -391,6 +397,8 @@ fn final_message_from_turn_items_ignores_inter_agent_messages() {
         },
         ThreadItem::AgentMessage {
             id: "msg-2".to_string(),
+            attribution: None,
+            input: None,
             text: "worker transcript".to_string(),
             inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
                 author: "/root".to_string(),
@@ -411,6 +419,8 @@ fn final_message_from_turn_items_ignores_canonical_completion() {
     let message = final_message_from_turn_items(&[
         ThreadItem::AgentMessage {
             id: "msg-parent".to_string(),
+            attribution: None,
+            input: None,
             text: "parent answer".to_string(),
             inter_agent_source: None,
             phase: None,
@@ -420,6 +430,8 @@ fn final_message_from_turn_items_ignores_canonical_completion() {
         },
         ThreadItem::AgentMessage {
             id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
+            attribution: None,
+            input: None,
             text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
             inter_agent_source: None,
             phase: Some(codex_protocol::models::MessagePhase::Commentary),
@@ -455,6 +467,8 @@ fn inter_agent_item_does_not_overwrite_rendered_final_message() {
 
     processor.render_item_completed(ThreadItem::AgentMessage {
         id: "msg-2".to_string(),
+        attribution: None,
+        input: None,
         text: "worker transcript".to_string(),
         inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
             author: "/root".to_string(),
@@ -520,6 +534,8 @@ fn turn_completed_recovers_final_message_from_turn_items() {
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
+                    attribution: None,
+                    input: None,
                     text: "final answer".to_string(),
                     inter_agent_source: None,
                     phase: None,
@@ -572,6 +588,8 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::AgentMessage {
                     id: "msg-1".to_string(),
+                    attribution: None,
+                    input: None,
                     text: "final answer".to_string(),
                     inter_agent_source: None,
                     phase: None,

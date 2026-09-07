@@ -114,10 +114,31 @@ fn wire_policies_map_to_target_turn_handling() {
 }
 
 #[test]
-fn malformed_or_noncanonical_wire_policies_are_rejected() {
-    for value in ["", "fc", "xf", "mc", "qm", "cc", "mm", "z"] {
+fn malformed_wire_policies_are_rejected() {
+    for value in ["", "z", "qfz", "f x", "F"] {
         assert!(policy(Some(value)).is_err(), "{value} should be rejected");
     }
+}
+
+#[test]
+fn wire_policy_order_and_repetitions_normalize_by_count() {
+    for (input, canonical) in [
+        ("fc", "cf"),
+        ("qm", "mq"),
+        ("mm", "m"),
+        ("qfx", "q"),
+        ("qfxx", "qx"),
+        ("xqc", "cqx"),
+        ("ccmmqqxff", "cfmq"),
+        ("xxff", "fx"),
+        ("xq", "qx"),
+    ] {
+        assert_eq!(
+            policy(Some(input)).unwrap(),
+            policy(Some(canonical)).unwrap()
+        );
+    }
+    assert_eq!(policy(Some("xxff")).unwrap(), policy(None).unwrap());
 }
 
 #[test]

@@ -1133,12 +1133,14 @@ impl ChatWidget {
                 };
                 let spawn = match &parsed {
                     AgentCommand::New {
+                        task,
                         fork,
                         response,
                         model,
                         reasoning_effort,
                         prompt,
                     } => Some((
+                        task.clone(),
                         None,
                         Some("new".to_string()),
                         *fork,
@@ -1149,6 +1151,7 @@ impl ChatWidget {
                     )),
                     AgentCommand::SelectOrDispatch {
                         selector,
+                        task,
                         fork,
                         response,
                         model,
@@ -1156,6 +1159,7 @@ impl ChatWidget {
                         prompt,
                     } => match selector.kind() {
                         crate::chatwidget::agent_command::AgentSelectorKind::Role(role) => Some((
+                            task.clone(),
                             Some(role.clone()),
                             Some(selector.authored().to_string()),
                             *fork,
@@ -1167,6 +1171,7 @@ impl ChatWidget {
                         crate::chatwidget::agent_command::AgentSelectorKind::UnprefixedName(
                             role,
                         ) if self.config.agent_roles.contains_key(role) => Some((
+                            task.clone(),
                             Some(role.clone()),
                             Some(selector.authored().to_string()),
                             *fork,
@@ -1178,6 +1183,7 @@ impl ChatWidget {
                         crate::chatwidget::agent_command::AgentSelectorKind::Id(_)
                         | crate::chatwidget::agent_command::AgentSelectorKind::Ref(_)
                         | crate::chatwidget::agent_command::AgentSelectorKind::Nickname(_)
+                        | crate::chatwidget::agent_command::AgentSelectorKind::Task(_)
                         | crate::chatwidget::agent_command::AgentSelectorKind::UnprefixedName(_) => {
                             None
                         }
@@ -1185,6 +1191,7 @@ impl ChatWidget {
                     _ => None,
                 };
                 if let Some((
+                    task,
                     role,
                     authored_selector,
                     fork,
@@ -1205,6 +1212,7 @@ impl ChatWidget {
                     });
                     self.app_event_tx.send(AppEvent::SpawnAgent {
                         source_thread_id,
+                        task,
                         role,
                         authored_selector,
                         model,
@@ -1217,6 +1225,7 @@ impl ChatWidget {
                 }
                 if let AgentCommand::Resume {
                     selector,
+                    task,
                     response,
                     prompt,
                 } = &parsed
@@ -1233,6 +1242,7 @@ impl ChatWidget {
                     self.app_event_tx.send(AppEvent::ResumeAgent {
                         source_thread_id,
                         selector: selector.clone(),
+                        task: task.clone(),
                         response_handling: *response,
                         prompt,
                     });
@@ -1254,10 +1264,16 @@ impl ChatWidget {
                     });
                     return;
                 }
-                if let AgentCommand::ReplyRoute { selector, mode } = &parsed {
+                if let AgentCommand::ReplyRoute {
+                    selector,
+                    recipient,
+                    mode,
+                } = &parsed
+                {
                     self.app_event_tx.send(AppEvent::SetAgentReplyRoute {
                         source_thread_id,
                         selector: selector.clone(),
+                        recipient: recipient.clone(),
                         mode: *mode,
                     });
                     return;
@@ -1317,6 +1333,7 @@ impl ChatWidget {
                 }
                 let AgentCommand::SelectOrDispatch {
                     selector,
+                    task: None,
                     fork: None,
                     response,
                     model: None,

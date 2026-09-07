@@ -93,6 +93,7 @@ async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
     let resumed = root
         .resume_agent(
             &child.target_thread_id.to_string(),
+            /*task*/ None,
             UserAgentResponseHandling::Passive,
         )
         .await
@@ -170,6 +171,7 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
     let result = new_root
         .resume_agent(
             &child.target_thread_id.to_string(),
+            /*task*/ None,
             UserAgentResponseHandling::Presentation,
         )
         .await
@@ -179,6 +181,7 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
         Some(crate::UserAgentOwnershipTransfer {
             previous_session_id: Some(old_root.session.session_id()),
             new_session_id: new_root.session.session_id(),
+            task_path_mapping: Vec::new(),
         })
     );
     assert_eq!(result.post_commit_warning, None);
@@ -209,7 +212,10 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
             .session
             .services
             .agent_control
-            .resolve_controlled_agent_target(&child.target_thread_id.to_string())
+            .resolve_controlled_agent_target(
+                old_root.session.thread_id(),
+                &child.target_thread_id.to_string()
+            )
             .await
             .is_err()
     );

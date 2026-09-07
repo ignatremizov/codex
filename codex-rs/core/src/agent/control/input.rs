@@ -11,9 +11,9 @@ pub(crate) enum AgentControlInput {
         content: Vec<UserInput>,
         presentation: Vec<UserInput>,
     },
-    AttributedAgent {
+    AttributedAgentInput {
         content: Vec<UserInput>,
-        transcript: String,
+        attribution: Box<codex_protocol::AgentInputAttribution>,
         presentation: Vec<UserInput>,
     },
 }
@@ -26,9 +26,8 @@ impl AgentControlInput {
     pub(crate) fn presentation(&self) -> &[UserInput] {
         match self {
             Self::User(input) => input,
-            Self::Delegated { presentation, .. } | Self::AttributedAgent { presentation, .. } => {
-                presentation
-            }
+            Self::Delegated { presentation, .. }
+            | Self::AttributedAgentInput { presentation, .. } => presentation,
         }
     }
 
@@ -42,7 +41,7 @@ impl AgentControlInput {
                     presentation,
                 };
             }
-            Self::Delegated { content, .. } | Self::AttributedAgent { content, .. } => {
+            Self::Delegated { content, .. } | Self::AttributedAgentInput { content, .. } => {
                 content.push(item);
             }
         }
@@ -58,13 +57,16 @@ impl AgentControlInput {
                 content,
                 presentation: AgentInputPresentation::Delegated(presentation),
             }),
-            Self::AttributedAgent {
+            Self::AttributedAgentInput {
                 content,
-                transcript,
-                ..
+                attribution,
+                presentation,
             } => TurnInputRequest::new(TurnInput::AgentInput {
                 content,
-                presentation: AgentInputPresentation::Attributed(transcript),
+                presentation: AgentInputPresentation::AttributedInput {
+                    attribution,
+                    input: presentation,
+                },
             }),
         }
     }

@@ -85,30 +85,30 @@ The TUI must not approximate this by independently chaining `thread/resume` and 
 
 ```text
 /agent
-/agent new [fork:<none|all|N>] [model:<slug>] [effort:<level>] [w:<w-mode>] [<prompt>]
+/agent new [task:<path>] [fork:<none|all|N>] [model:<slug>] [effort:<level>] [w:<w-mode>] [<prompt>]
 /agent <target>
-/agent <role> [fork:<none|all|N>] [model:<slug>] [effort:<level>] [w:<w-mode>] [<prompt>]
+/agent <role> [task:<path>] [fork:<none|all|N>] [model:<slug>] [effort:<level>] [w:<w-mode>] [<prompt>]
 /agent <target> [w:<w-mode>] <prompt>
 /agent queue <target>
 /agent queue <target> [w:<w-mode>] <prompt>
 /agent interrupt <target>
 /agent interrupt <target> [w:<w-mode>] <follow-up prompt>
-/agent close <target>
-/agent <target> close
-/agent resume <target> [w:<w-mode>] [<prompt>]
+/agent close <target> [w:<w-mode>] /agent <target> close [w:<w-mode>] /agent resume <target> [task:<path>] [w:<w-mode>] [<prompt>]
 /agent observe <target> <passive|wake|presentation>
-/agent replies <target> <enable|disable> /agent <target> replies <enable|disable>
+/agent sends <sender> [to <recipient>] <enable|disable> /agent <sender> sends [to <recipient>] <enable|disable>
 ```
 
 Selectors accept compact unprefixed forms and explicit namespaces:
 
 ```text
-<target> = <uuid> | <decimal-ref> | <nickname>
+<target> = <uuid> | <decimal-ref> | <nickname> | task:<path>
          | id:<uuid> | ref:<decimal-ref> | nick:<name>
 <role>   = <ordinary-role-name> | role:<name>
-<w-mode> = one or more unique flags in cfmqx order
+<w-mode> = one or more c/f/m/q/x flags in any order, with repetitions allowed
 <level>  = a reasoning effort advertised by the selected model
 ```
+
+Within one `w` value, `f` and `x` cancel pairwise by count: equal counts mean passive final delivery, more `f` means wake, and more `x` means presentation-only. `c`, `m`, and `q` are independent, idempotent presence flags. Thus `qfx` is equivalent to `q`, `qfxx` to `qx`, and `xqc` to `cqx`. Canonical output may use `cfmqx` order; input does not require it.
 
 Examples:
 
@@ -120,6 +120,7 @@ Examples:
 /agent nick:"Ada Lovelace" Review the latest diff.
 /agent 019ff050-d466-73b0-b133-72ecc7c67269 w:f Continue the review.
 /agent new w:x
+/agent new task:backend/auth w:f Review the API contract.
 /agent new model:gpt-5.6-luna effort:high fork:all w:x
 /agent reviewer w:f
 /agent role:"2" w:f
@@ -134,20 +135,20 @@ Bare `/agent` opens the control pane. `/agent <target>` opens it with that exist
 
 An unprefixed exact configured role name selects a new-child spawn, including when one or more agents already use that role. Without a prompt, it creates a real idle child and switches into that child's blank transcript and composer. If a nickname equals an ordinary configured role name, the role meaning wins; use the agent's ref, UUID, or `nick:` selector to target the existing agent.
 
-`fork:<mode>`, `model:<slug>`, and `effort:<level>` are valid only for default or configured-role spawns. `w:<w-mode>` is valid wherever the grammar shows it. Option tokens appear after the selector, may be given in any order, and may each occur at most once. Explicit model and effort values override the selected role and configured subagent defaults.
+`task:<path>`, `fork:<mode>`, `model:<slug>`, and `effort:<level>` are valid for default or configured-role spawns; `task:` is also valid on explicit resume/adoption. `w:<w-mode>` is valid wherever the grammar shows it. Option tokens appear after the selector, may be given in any order, and may each occur at most once. Explicit model and effort values override the selected role and configured subagent defaults.
 
 The control prefix uses these lexical rules:
 
 - Unquoted whitespace separates control tokens. Double quotes group control-token text; quote delimiters are removed, `\"` and `\\` are decoded, and an unmatched quote is an error.
 - Quoting may follow a namespace prefix, so `nick:"Ada Lovelace"` is one selector whose value is `Ada Lovelace`; the same rule permits a quoted model slug after `model:`.
-- After the action or selector, the parser consumes recognized `fork:`, `model:`, `effort:`, and `w:` options until the first non-option token. The untouched input beginning at that token is the prompt.
+- After the action or selector, the parser consumes recognized `task:`, `fork:`, `model:`, `effort:`, and `w:` options until the first non-option token. The untouched input beginning at that token is the prompt.
 - `--` ends option parsing and is removed; the untouched text after it is the prompt. Use it when a prompt intentionally begins with a recognized option prefix.
 - Attached images count as structured prompt input even when no prompt text follows the control tokens. They start or queue work anywhere the grammar accepts a prompt.
 - Unknown values for recognized option prefixes, misplaced recognized options, and duplicate options fail before any lifecycle mutation. Other `name:value` text begins the prompt.
 
 Autocomplete inserts the forced form when a nickname or role is numeric, UUID-shaped, action-shaped, option-shaped, contains whitespace, or otherwise collides. A bare generated nickname normally needs no prefix.
 
-Action words such as `new`, `queue`, `interrupt`, `close`, `resume`, and `observe` are reserved in command entry. A colliding configured role uses `role:<name>` and a colliding existing agent uses `nick:<name>`, its numeric ref, or its UUID. `Main` is also a reserved nickname in every case variation; a configured role named `main` therefore uses `role:main`.
+Action words such as `new`, `queue`, `interrupt`, `close`, `resume`, `observe`, and `sends` are reserved in command entry. A colliding configured role uses `role:<name>` and a colliding existing agent uses `nick:<name>`, its numeric ref, or its UUID. `Main` is also a reserved nickname in every case variation; a configured role named `main` therefore uses `role:main`.
 
 ## Target resolution
 
@@ -155,7 +156,7 @@ Existing-target resolution should accept:
 
 1. a canonical full thread UUID;
 2. a persisted root-scoped decimal ref under the short-target contract;
-3. an exact persisted nickname, plus the reserved case-insensitive `Main` nickname.
+3. an exact persisted nickname, a root-scoped `task:<path>`, plus the reserved case-insensitive `Main` nickname.
 
 UUID remains the canonical and externally auditable identifier. Refs and nicknames are persisted root-scoped aliases that survive cold resume without replacing UUID ownership.
 
@@ -163,7 +164,7 @@ The complete command precedence is:
 
 1. a reserved action immediately after `/agent`;
 2. `new`;
-3. forced `id:`, `ref:`, `nick:`, or `role:` selectors;
+3. forced `id:`, `ref:`, `nick:`, `task:`, or `role:` selectors;
 4. an unprefixed canonical UUID;
 5. an unprefixed canonical decimal ref;
 6. the reserved unprefixed `Main` nickname in any case, which targets;
@@ -171,7 +172,7 @@ The complete command precedence is:
 8. an unprefixed exact ordinary nickname, which targets;
 9. an actionable unknown/ambiguous-selector error.
 
-This means numeric- or UUID-shaped roles require `role:`, while similarly shaped nicknames require `nick:`. Fuzzy and prefix matching are autocomplete aids only and never execute directly.
+Task paths resolve relative to the issuing thread's root-scoped assignment; absolute paths remain root-scoped and do not cross ownership boundaries. This means numeric- or UUID-shaped roles require `role:`, while similarly shaped nicknames require `nick:`. Fuzzy and prefix matching are autocomplete aids only and never execute directly.
 
 Autocomplete should show:
 
@@ -418,11 +419,33 @@ Promoting a presentation-only user task to passive or wake delivery records its 
 Reply permission is a separate, user-authored relationship setting:
 
 ```text
-/agent replies <target> enable
-/agent replies <target> disable
+/agent sends <target> enable /agent sends <target> disable /agent sends Banach to Franklin enable /agent sends Franklin to Banach enable
 ```
 
-Enabling it adds one source-relative `<agent_reply_route>` item to the target's model context and authorizes attributed `send_input` calls from all later target turns. Repeating `enable` is idempotent: the route appears only once in model context, including after a disable/re-enable cycle, and is not repeated on each turn. Compaction carries that singleton into replacement history, and rollback treats it as out-of-band relationship context rather than a user turn. Disabling it revokes future admission and clears uncommitted route-owned wake reservations without trying to remove the already recorded context item. Input already accepted into a queued turn remains accepted and runs under its captured response policy; disabling the route does not silently retract auditable work. An explicit disable wins over a later model-authored `w:m`; enabling makes repeated `m` context redundant. The setting lasts for the live control relationship and is revoked by close, ownership transfer, process shutdown, cold resume, or fork. V2 targets retain their native inter-agent communication contract and reject this V1 route action.
+Without `to`, the recipient is the thread issuing the command. With `to`, the user selects
+another live recipient in the same owned graph, by ref, nickname, or UUID. A grant is directed:
+Banach → Franklin does not grant Franklin → Banach or Banach → Main. Enable both directions
+explicitly for a pair of collaborating agents. Self-routes, foreign-owned endpoints, and closed
+endpoints are rejected; these commands neither adopt nor resume threads.
+
+For a supervisor coordinating collaborating coders and their reviewers:
+
+```text
+/agent sends all enable
+/agent sends all disable
+```
+
+`all` sets a live default for the issuing thread and its current and future descendants. Both endpoints must belong to that subtree; it grants nothing to ancestors or outside siblings. Explicit directed pair settings take precedence. When subtrees have different defaults, the nearest common supervisor with an explicit subtree setting decides the pair's default. The picker distinguishes inherited and explicit permissions. A new member learns permitted peer identities through the same singleton route context, without inheriting parent history or starting another agent's turn merely to announce membership.
+
+Subtree settings last across turns, not process shutdown, cold resume, or history fork. Closing a supervisor revokes its setting; changing ownership does not carry it to another supervisor's graph. Existing instructions remain auditable but are not permission authority. Disabling a default does not override explicitly enabled pairs or retract already admitted turns. Pending peer inputs are checked against the effective permission before queue admission. Ordinary supervisor task dispatch to descendants remains available.
+
+The picker's **Messaging permissions** action prepares this command for confirmation. Its detail panel lists inherited and explicit **Send to** and **Receive from** permissions by peer name/ref, independently of the viewed thread's per-turn response observation. Unlisted relationships are not implied grants. Permission confirmations show sender → recipient; canonical UUIDs remain in detailed inspection. **Latest response** is the selected agent's own output, while **Latest received from** separately shows attributed incoming input. Main's peer display copies are neither.
+
+Enabling permission does not assign work or ask agents to start communicating. The user or supervisor supplies that instruction. For a routine peer update, `w:x` avoids subscribing the sender to the recipient's final response; `w:cx` also requests first commentary acknowledgement, and `w:f` requests a completion wake when the sender needs the completed work.
+
+Enabling it adds one recipient-specific `<agent_reply_route>` item to the target's model context and authorizes attributed `send_input` calls from all later target turns. Repeating `enable` is idempotent: the route appears only once in model context, including after a disable/re-enable cycle, and is not repeated on each turn. Compaction carries that singleton into replacement history, and rollback treats it as out-of-band relationship context rather than a user turn. Disabling it revokes future admission and clears uncommitted route-owned wake reservations without trying to remove the already recorded context item. Input already accepted into a queued turn remains accepted and runs under its captured response policy; disabling the route does not silently retract auditable work. An explicit disable wins over a later model-authored `w:m`; enabling makes repeated `m` context redundant. The setting lasts for the live control relationship and is revoked by close, ownership transfer, process shutdown, cold resume, or fork. V2 targets retain their native inter-agent communication contract and reject this V1 route action.
+
+Accepted peer input has two presentations: the recipient's attributed input and a live-only copy in Main's transcript, labeled `Banach [role] sends to Franklin [role] (○ not visible)`. That label describes visibility to **Main's model**, not the recipient. The copy never steers or wakes Main, never enters Main's model context or rollout, and retains complete message text in Full transcript mode. Queued messages are copied when admitted to the recipient's turn, not when merely enqueued. Messages sent directly to Main already have a receipt there and are not duplicated. Peer audit copies use the existing live TUI replay buffer, including in-process history refreshes, without restoring reply permissions. A cold resume of Main does not reconstruct these display-only copies; inspect the communicating threads for their durable messages. This avoids storing a third copy of every peer payload in Main. User-authored route-control decisions remain durable in Main.
 
 ## User input and attribution
 
@@ -591,14 +614,15 @@ Version-specific task names, mailboxes, and watcher implementation remain intern
 - `<target>` without a prompt opens that agent's Overview/Inspect view; with a prompt it dispatches immediately.
 - `main` in any case variation is the reserved nickname for the current root, so `/agent main [w:<w-mode>] <prompt>` works from a child without a preceding resume.
 - `<role>` spawns a configured child with the requested fork mode. Without a prompt it reserves its optional one-shot first-turn observation policy and switches into its blank TUI; adding a prompt starts the new child's first turn without switching.
-- `queue <target>` opens that target's queued-follow-up view; adding a prompt defers it until the target is idle or can be reopened. Atomic idle-only admission preserves the queued draft if another turn wins the race. The compact `w:q` form is deferred.
+- `queue <target>` opens that target's queued-follow-up view; adding a prompt defers it until the active turn completes, or dispatches immediately when the target is already idle or closed. `w:q` on ordinary prompt syntax selects the same path.
 - `interrupt` stops the active turn but leaves the agent live. An optional follow-up starts the next turn after interruption commits, with `w` bound to that follow-up turn.
-- `close` ends the runtime and revokes future observation. Accepted receipts still settle against their original identities. Close-response policy and replay are deferred.
+- `close` ends the agent runtime, revokes pending observation, and conditionally replays a completed response according to `w`.
 - `resume` reopens or adopts without sending a prompt; optional response handling binds to the next admitted turn under the existing next-turn policy.
 - `observe` explicitly replaces source-relative response handling when replacement remains possible.
-- Future `w:m` and `w:q` behavior is specified above but is not accepted by this slice's response-policy enum.
+- `sends` enables or disables one directed V1 messaging route, or a live subtree default with `all`. Enabling installs the source identity exactly once; later target turns reuse the same context item.
+- `w:m` grants only the resulting target turn a reverse-message route to the displayed source; `w:q` carries every other selected flag with the future queued turn and queues its model-visible final response for the source's next turn.
 
-Prompt text must not collide with action verbs. Except for the documented target-first `close` form, verb forms are parsed only immediately after `/agent`; `/agent <target> stop ...` remains ordinary prompt text unless an explicit compatibility alias is deliberately added.
+Target-first `close`, `resume`, and `sends` are reserved actions and receive action highlighting. Use `/agent <target> -- resume ...` to send literal prompt text beginning with a reserved action. Other verb forms are parsed only immediately after `/agent`; `/agent <target> stop ...` remains ordinary prompt text.
 
 ## Required coverage and remaining qualification
 
@@ -613,7 +637,7 @@ The following inventory includes both current and deferred contracts. Cases invo
 7. An exact role name wins over a colliding ordinary nickname, while the existing agent remains addressable by ref, UUID, or `nick:`; the reserved `Main` target wins over an unprefixed role named `main`, which remains available through `role:main`.
 8. `w:f` wakes the displayed source exactly once.
 9. `w:x` produces presentation-only completion on a new turn.
-10. `w:m` exposes an attributed reply route for one target turn, permits one idle source wake, and rejects later wake attempts or UUID-only bypass; `/agent replies` enables the same attributed route across later turns with one context installation, and explicit disable overrides `m`.
+10. `w:m` exposes an attributed reply route for one target turn, permits one idle source wake, and rejects later wake attempts or UUID-only bypass; `/agent sends` enables the same attributed route across later turns with one context installation, and explicit disable overrides `m`.
 11. Existing `f` remains authoritative when a later active-turn dispatch requests `x`.
 12. Source switch after dispatch does not move observation ownership.
 13. Child-to-sibling dispatch binds the child as observer.

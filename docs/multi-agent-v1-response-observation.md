@@ -25,6 +25,16 @@ This is a compatible v1 extension, not a new multi-agent v3 contract. It keeps t
 ### User-controlled persistent reply routes
 
 `/agent replies <target> enable` (or the app-server `replyRoute` action) permits attributed replies across later target turns within the same valid live relationship. An unset override preserves exact-turn `m`; explicit `disable` vetoes new reverse admissions, including later model-authored `m`. Already accepted forward queue entries retain their input and captured observation/receipt policy: dequeue neither drops their prompts nor silently re-enables reverse permission. Accepted reverse queue entries retain their exact admission reservation.
+- `core/src/agent/response_observation.rs` parses the shared `w` field into a named target-turn policy whose response observation, reverse-message capability, and input admission are separate typed parts.
+- `core/src/agent/control/presentation/response_observation/` owns the per-observer aggregate, turn binding, stable delivery identities, wait ownership, and durable snapshots.
+- `core/src/session/response_observation/` publishes only complete commentary items and final response events, resolves input admission to an exact target turn, and reconstructs target response state for live watcher replacement.
+- Parent-to-descendant V1 `send_input` without `m` forwards its task payload unchanged as `UserInput`, preserving the current non-attributed delegation contract. `m` adds a model-visible, source-relative reply route for the exact admitted target turn. Upward and peer input must use such a live route; accepted messages become attributed agent communication rather than fabricated user input.
+- `/agent sends <target> enable` installs a user-authored route for the live relationship and adds its source-relative address to target context exactly once. Later target turns retain that singleton from history; Core does not inject it again per turn. It survives interruption, compaction, and rollback, and disable/re-enable does not install another copy. `disable` revokes future admission and overrides any model-authored exact-turn `m` grant. Input already accepted into a queued turn remains admitted and runs under the response policy captured by that entry.
+- `/agent sends <sender> to <recipient> enable|disable` controls a directed peer route from the user's current thread. Both endpoints must be live members of the same owned graph. Omitting `to <recipient>` retains the current-thread recipient. Each direction is granted separately; neither UUID knowledge nor permission to reach a sibling grants permission to reach Main. Received peer messages produce live-only presentation copies in Main, showing sender, recipient, and payload with `○ not visible`. These copies are events, not model inputs or response subscriptions. Queued input is shown when admitted, and rejected input is not shown as sent. Main's rollout does not duplicate peer payloads; inspect the communicating threads' rollouts for the durable history. Live TUI replay retains buffered copies across switches and refreshes, but cold resume of Main does not reconstruct them.
+- `q` stores complete structured input and its target-turn policy in one process-lifetime FIFO. Admission to the target, response observation, and any `m` grant occur together only when that queued entry starts its own turn.
+- The TUI reserves `Main [default]` metadata for its primary thread, so child-side send and commentary rows remain readable even when app-server events carry only the parent's UUID.
+- Core treats a bound `f` wake as pending automatic work when deciding whether to emit the thread-idle lifecycle callback used by active goals. Automatic idle-turn reservation repeats that check while holding the destination mailbox permit and observer transaction, so a target turn that binds during goal bookkeeping still wins before the active-turn placeholder.
+- `RolloutItem::AgentResponseObservation` stores canonical, model-hidden observer UUID, target UUID, target turn, effective disposition, pending commentary admission cursors, and committed delivery IDs. A cursor combines a runtime event watermark with the preceding canonical commentary item ID; live recovery uses the item boundary because paginated model context does not preserve absolute rollout ordinals.
 
 Enabling first acknowledges one harness-classified route singleton in the target's canonical history, then acknowledges the source policy snapshot, then compare-installs the narrow live permission. The owned worker survives cancellation of its waiter. There is no cross-journal atomicity guarantee: a later source failure can leave inert target guidance. A missing or ambiguous publication receipt quarantines the affected history and is never repaired by automatically repeating the append.
 
@@ -118,6 +128,7 @@ Examples may use full UUIDs when canonical identity matters. V1 also accepts dur
 The schema description should explain the flags in full, while model-authored calls pay only for the compact field and characters.
 
 Accepted flags are `c`, `f`, `m`, `q`, and `x`. A value contains each selected flag at most once in canonical `cfmqx` order. Existing values such as `c`, `f`, `cf`, `x`, `cx`, `fx`, and `cfx` therefore remain valid, while new values include `m`, `q`, `fm`, `fq`, `mq`, `cfm`, and `cfmq`. The field should be omitted for the default mode. Unknown characters, duplicates, and noncanonical ordering produce a model-visible validation error rather than being silently ignored.
+Accepted flags are `c`, `f`, `m`, `q`, and `x`, in any order and with repetitions. `c`, `m`, and `q` are idempotent presence flags. Count `f` and `x` and cancel them pairwise: equal counts mean passive final delivery, more `f` means wake, and more `x` means presentation-only. For example, `qfx` normalizes to `q`, `qfxx` to `qx`, and `xqc` to `cqx`. Canonical serialization may use `cfmqx` order, but input never requires that order. Omit the field for the default mode. Empty values and unknown characters produce a model-visible validation error rather than being silently ignored.
 
 Internally, parse the wire value into a named observation-policy type. Do not propagate raw characters or positional booleans through the implementation.
 
@@ -155,6 +166,7 @@ Omitted flags mean no commentary, passive final delivery, no reverse route, and 
 | `cfx` | first subsequent commentary | passive |
 
 `f` and `x` cancel within the same call. Consequently, `fx` is equivalent to omitted mode and `cfx` is equivalent to `c`. The parser accepts these combinations so mechanically combined flags remain harmless, but tool guidance should recommend the shorter canonical equivalent.
+`f` and `x` cancel pairwise within the same call, regardless of order. Consequently, `fx`, `xf`, and `ffxx` are equivalent to omitted mode, while `cfx` is equivalent to `c`. Unmatched occurrences determine the final disposition: `fxx` is presentation-only and `xff` wakes. Repeating `c`, `m`, or `q` does not change their independent presence effects. Tool guidance may recommend the shorter canonical equivalent without requiring callers to normalize their input.
 
 The final dispositions mean:
 
@@ -217,6 +229,7 @@ The grant ends when any of these occurs:
 - the live process shuts down, or either thread is cold-resumed or forked.
 
 Lifecycle and response-observation cleanup must revoke the exact grant generation without deleting a newer grant for the same thread IDs. TUI and rollout audit state should retain who granted the route, its target turn, whether its idle wake was consumed, and every attributed message, but cold reconstruction must not reactivate it.
+The user-authored `/agent sends` route differs only in turn scope: it is not consumed when one target or source wake turn completes. It remains until explicitly disabled or one of the relationship lifecycle boundaries above revokes it.
 
 `m` does not expose `resume_agent`, `close_agent`, spawn, or ownership-transfer authority over the source. It authorizes only attributed input through `send_input`. Existing parent-to-child orchestration remains controlled by the graph owner; upward or peer input that relies on the promoted reply route must pass the live grant check.
 
@@ -256,6 +269,21 @@ Queue ordering and response binding use these rules:
 - A reverse `q` message consumes the grant's one future wake. While it remains queued, another non-`q` message may still steer a source turn that is already active, but cannot reserve a competing idle wake.
 - Interrupting active work leaves queued entries intact. Explicitly closing the target cancels its pending entries; closing the source cancels entries that source authored.
 - A later admission failure, or response handling that degrades after input admission, emits a source-thread warning. Already-admitted input is never retried.
+- Queue state is visible to the user and source transcript while live, but remains process-local until an entry becomes durable target input. Shutdown, cold resume, and fork do not replay unadmitted entries.
+- An entry's response observation and `m` route bind only after that entry wins exact target-turn admission; they never attach to the turn that was active when it was queued.
+- The existing `turn/started` event carries the admitted queue entry ID, source thread, and committed `c`/`f`/`m`/`q`/`x` policy for that queue entry. Clients promote any pending next-turn observation and merge the queue entry's policy from that one lifecycle event; there is no separate queue-start notification.
+- Core withholds the queue entry's handling until the source-side observation state and task linkage commit. If either degrades after target input admission, the turn still carries queue provenance, its entry handling is absent, and the source receives the post-admission warning.
+- Queued turn-start publication is a tracked startup boundary. Interrupting the target may cancel ordinary work immediately, but forced abort waits for this boundary to publish the admitted input and queue provenance before ending the turn.
+- A response policy already reserved for the target's next turn is consumed by the queued turn and combines with the queue entry under the normal observation rules. In particular, an earlier pending `f` continues to win over a later queued `x` for that turn.
+- Target completion racing queue insertion either starts the entry immediately or leaves it queued for the same next-turn slot, never both.
+- Later immediate input may steer currently active work but cannot overtake a queued entry at an idle-turn boundary.
+- `q` starts a source turn for the queued final reply after any current source turn ends. Adding `f` keeps the intent explicit but does not turn the reply into an active-turn steer. Calling `wait_agent` before that entry starts can observe the preceding target turn instead.
+- A reverse `q` message consumes the grant's one future wake. While it remains queued, another non-`q` message may still steer a source turn that is already active, but cannot reserve a competing idle wake.
+- Eligibility is not authorization to admit later. After capacity and mailbox waits, Core validates the exact queued wake again and serializes that validation and input admission with directed permission replacement and subtree-policy reconciliation. A disable that commits first prevents admission; an input already admitted is not recalled by a later disable. This boundary uses the existing messaging refresh transaction, before observation transactions, without acquiring the sender's lifecycle or holding the permission transaction during capacity waits. Queue source-admission guards are also released before capacity or active-turn retry waits.
+- Immediate scoped sends use the same boundary: wake admission rechecks its exact receiver presentation and reservation, while steering rechecks the live route and permitted active turn without reserving another wake. A receiver becoming idle retains the normal steer-to-wake retry. Supervisor-to-descendant task dispatch does not require scoped authorization. A validated scoped steer carries that receiver turn ID into the atomic session admission check. If another turn starts before submission, the steer is rejected rather than retargeted. Ordinary non-scoped steering continues to select the current turn at submission.
+- Interrupting active work leaves queued entries intact. Explicitly closing the target cancels its pending entries; closing the source cancels entries that source authored.
+- A later admission failure, or response handling that degrades after input admission, emits a source-thread warning. Already-admitted input is never retried.
+- A queued message rejected because its permission was revoked or its scoped wake expired emits a non-waking warning to its exact live source presentation. The warning identifies both the queue entry and target, including when rejection happens at the early eligibility check. It is separate from the developer permission-change notice. An ended or replaced source presentation does not receive a warning through its replacement.
 - Queue state is visible to the user and source transcript while live, but remains process-local until an entry becomes durable target input. Shutdown, cold resume, and fork do not replay unadmitted entries.
 
 `q` is meaningful on calls that carry input. A prompted spawn already has an idle target and therefore starts immediately, but its final reply still waits for the source's next-turn boundary. `resume_agent` carries no input, so `q` merely preserves next-turn binding for the other selected flags; it does not manufacture an empty queue entry.
@@ -482,6 +510,11 @@ When commentary or a final response is injected into an observer, use a provenan
 Presentation prefixes such as `msg_t` and `msg_a` identify an item; they do not confer authority. Canonical replay checks the original raw lineage segment and committed adjacency before rollback or filtering can remove evidence, and conflicting payloads invalidate the claim. Ordinary input that resembles an envelope or reserved ID must not acquire trusted task or agent-message provenance.
 
 Non-paginated and paginated rollouts should preserve the same canonical observation and delivery information. Raw function-call arguments alone are not sufficient because they contain the model-authored target reference and cannot represent the eventual target-turn binding or resolved UUID.
+Received completion presentations are receipts, not commentary authored by the receiving agent. They must not satisfy that agent's `c` subscriptions or be forwarded as its response, either live or when reconstructing observation state from a rollout. The next genuinely authored commentary remains eligible for delivery.
+
+Main's live transcript can show directional receipts when a child receives Main's commentary or final output. These identify Main as the sender, the child as the recipient, and whether the recipient's model receives the output or only its presentation does. Receipt copies themselves are presentation-only in Main: they do not enter Main's rollout or model context, install subscriptions, or wake a turn. Normal history uses the configured response preview; the full transcript retains the complete receipt payload. In-process refresh keeps these live copies, but a cold resume does not reconstruct a separate receipt in Main from the child's history.
+
+Non-paginated and paginated rollouts should preserve the same canonical observation and delivery information. Raw function-call arguments alone are not sufficient because they contain the model-authored target reference and cannot represent the eventual target-turn binding or resolved UUID.
 
 ## Short targets and canonical identity
 
@@ -564,7 +597,7 @@ An independent observer does not become an additional native parent. Distinct ob
 The tool description should convey these rules concisely:
 
 ```text
-Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags may combine in cfmqx order.
+Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags accept any order and repetitions. Count f and x and cancel them pairwise: equal counts mean passive final delivery, more f means wake, and more x means presentation-only. c, m, and q are idempotent presence flags.
 ```
 
 `spawn_agent.w` and `resume_agent.w` use:
@@ -623,6 +656,8 @@ Implementation should cover:
 - All three lifecycle tools using the same parser, aggregate, persistence, and delivery machinery.
 - Each accepted flag combination producing the documented per-call disposition.
 - Invalid characters, duplicate characters, and noncanonical ordering returning a model-visible error.
+- Invalid characters and empty flag strings returning a model-visible error.
+- Permutations and repetitions preserving idempotent `c/m/q` effects and pairwise `f/x` cancellation, including `qfx`, `qfxx`, and `xqc`.
 - `c` delivering one coherent commentary item, excluding reasoning and tool-progress events.
 - `c` waiting for the first complete commentary item rather than forwarding streaming fragments.
 - Several pending `c` requests being satisfied by one commentary without duplicate injection.

@@ -33,21 +33,27 @@ impl From<&codex_config::types::Tui> for AgentPreviewLineLimits {
 
 #[derive(Clone, Debug)]
 pub(crate) struct CollabAgentHistoryCell {
-    title: Line<'static>,
-    details: Vec<CollabDetail>,
-    agent_title: Option<CollabAgentTitle>,
+    pub(super) title: Line<'static>,
+    pub(super) details: Vec<CollabDetail>,
+    pub(super) agent_title: Option<CollabAgentTitle>,
 }
 
 #[derive(Clone, Debug)]
-struct CollabAgentTitle {
-    thread_id: ThreadId,
-    metadata: AgentMetadata,
-    suffix: Vec<Span<'static>>,
+pub(super) struct CollabAgentTitle {
+    pub(super) thread_id: ThreadId,
+    pub(super) metadata: AgentMetadata,
+    pub(super) recipient: Option<(ThreadId, AgentMetadata)>,
+    pub(super) recipient_separator: &'static str,
+    pub(super) suffix: Vec<Span<'static>>,
 }
 
 impl CollabAgentTitle {
-    fn render(&self) -> Line<'static> {
+    pub(super) fn render(&self) -> Line<'static> {
         let mut title = agent_label_spans(agent_label(self.thread_id, &self.metadata));
+        if let Some((recipient, metadata)) = &self.recipient {
+            title.push(self.recipient_separator.bold());
+            title.extend(agent_label_spans(agent_label(*recipient, metadata)));
+        }
         title.extend(self.suffix.clone());
         title_spans_line(title)
     }
@@ -71,6 +77,8 @@ impl CollabAgentHistoryCell {
         let agent_title = CollabAgentTitle {
             thread_id,
             metadata: metadata.clone(),
+            recipient: None,
+            recipient_separator: " sends to ",
             suffix,
         };
         Self {
@@ -85,15 +93,25 @@ impl CollabAgentHistoryCell {
         mut agent_metadata: impl FnMut(ThreadId) -> Option<AgentMetadata>,
     ) -> Option<Self> {
         let mut agent_title = self.agent_title.clone()?;
-        let metadata = agent_metadata(agent_title.thread_id)?;
-        if metadata.agent_nickname.is_some() {
-            agent_title.metadata.agent_nickname = metadata.agent_nickname;
-        }
-        if metadata.agent_role.is_some() {
-            agent_title.metadata.agent_role = metadata.agent_role;
-        }
-        if metadata.spawn_request.is_some() {
-            agent_title.metadata.spawn_request = metadata.spawn_request;
+        for (thread_id, stored) in
+            std::iter::once((agent_title.thread_id, &mut agent_title.metadata)).chain(
+                agent_title
+                    .recipient
+                    .as_mut()
+                    .map(|(id, metadata)| (*id, metadata)),
+            )
+        {
+            if let Some(metadata) = agent_metadata(thread_id) {
+                if metadata.agent_nickname.is_some() {
+                    stored.agent_nickname = metadata.agent_nickname;
+                }
+                if metadata.agent_role.is_some() {
+                    stored.agent_role = metadata.agent_role;
+                }
+                if metadata.spawn_request.is_some() {
+                    stored.spawn_request = metadata.spawn_request;
+                }
+            }
         }
         let title = agent_title.render();
         (title != self.title).then(|| Self {
@@ -126,7 +144,22 @@ impl HistoryCell for CollabAgentHistoryCell {
     }
 
     fn transcript_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
-        self.display_hyperlink_lines(width)
+        if width == 0 {
+            return Vec::new();
+        }
+        let mut lines = vec![HyperlinkLine::new(self.title.clone())];
+        let mut first_detail = true;
+        for detail in &self.details {
+            let source = match detail {
+                CollabDetail::Lines(lines) | CollabDetail::Preview { lines, .. } => lines,
+            };
+            let detail_lines = wrap_detail_lines(source, width, first_detail);
+            if !detail_lines.is_empty() {
+                first_detail = false;
+                lines.extend(detail_lines);
+            }
+        }
+        lines
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -260,7 +293,7 @@ fn wrap_detail_lines(
     rows
 }
 
-fn cap_preview_rows(
+pub(crate) fn cap_preview_rows(
     mut lines: Vec<HyperlinkLine>,
     max_rows: usize,
     first_detail: bool,

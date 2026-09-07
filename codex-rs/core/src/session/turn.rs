@@ -1802,6 +1802,11 @@ async fn run_sampling_request(
         };
         let mut prompt_input = prompt_input;
         sess.services
+            .agent_control
+            .messaging_context_snapshot(sess.presentation_id())
+            .await?
+            .reconcile(&mut prompt_input);
+        sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
         let prompt = build_prompt(
@@ -2488,6 +2493,8 @@ async fn emit_agent_message_in_plan_mode(
             .unwrap_or_else(|| {
                 TurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
                     id: agent_message_id.clone(),
+                    attribution: None,
+                    input: None,
                     content: Vec::new(),
                     phase: None,
                     memory_citation: None,

@@ -3,6 +3,7 @@ use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
+use crate::agent::control::AgentModelInputOrigin;
 use crate::agent::control::ResponseObserverKind;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
@@ -117,30 +118,40 @@ async fn handle_spawn_agent(
     .await
     .map_err(FunctionCallError::RespondToModel)?;
     let config = prepared.config;
-    let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
-        config,
-        input_items,
-        Some(thread_spawn_source(
-            session.thread_id,
-            &turn.session_source,
-            child_depth,
-            prepared.role_name.as_deref(),
-            /*task_name*/ None,
-        )?),
-        SpawnAgentOptions {
-            fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
-            fork_mode,
-            parent_thread_id: Some(session.thread_id),
-            parent_turn_id: Some(turn.sub_id.clone()),
-            root_turn_id: turn.turn_metadata_state.root_turn_id(),
-            turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
-            environments: Some(step_context.environments.to_selections()),
-            multi_agent_v2_usage_hints: None,
-            cyber_access_program: turn.cyber_access_program,
-            response_observation: args.w,
-            response_observer: ResponseObserverKind::Native,
-        },
-    ))
+    let result = Box::pin(
+        session
+            .services
+            .agent_control
+            .spawn_model_agent_with_metadata(
+                config,
+                input_items,
+                Some(thread_spawn_source(
+                    session.thread_id,
+                    &turn.session_source,
+                    child_depth,
+                    prepared.role_name.as_deref(),
+                    /*task_name*/ None,
+                )?),
+                SpawnAgentOptions {
+                    task: args.task,
+                    fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
+                    fork_mode,
+                    parent_thread_id: Some(session.thread_id),
+                    parent_turn_id: Some(turn.sub_id.clone()),
+                    root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                    turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+                    environments: Some(step_context.environments.to_selections()),
+                    multi_agent_v2_usage_hints: None,
+                    cyber_access_program: turn.cyber_access_program,
+                    response_observation: args.w,
+                    response_observer: ResponseObserverKind::Native,
+                },
+                AgentModelInputOrigin {
+                    sender: session.presentation_id(),
+                    sender_turn_id: turn.sub_id.clone(),
+                },
+            ),
+    )
     .await
     .map_err(collab_spawn_error);
     let (new_thread_id, new_agent_metadata, status, new_agent_ref) = match &result {
@@ -243,6 +254,7 @@ impl CoreToolRuntime for Handler {
 
 #[derive(Debug, Deserialize)]
 struct SpawnAgentArgs {
+    task: Option<String>,
     message: Option<String>,
     items: Option<Vec<UserInput>>,
     agent_type: Option<String>,

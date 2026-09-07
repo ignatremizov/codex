@@ -53,6 +53,9 @@ use std::time::Duration;
 use tempfile::tempdir;
 use wiremock::MockServer;
 
+#[path = "thread_manager/live_revert_messaging_tests.rs"]
+mod live_revert_messaging_tests;
+
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
 struct ParentInstructionsProvider(codex_extension_api::Instructions);

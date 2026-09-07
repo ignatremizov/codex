@@ -41,6 +41,8 @@ fn complete_commentary_item_becomes_observable_response() {
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: "message-1".to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "I understand the revised scope.".to_string(),
             }],
@@ -66,12 +68,42 @@ fn complete_commentary_item_becomes_observable_response() {
 }
 
 #[test]
+fn completion_receipts_are_not_observed_as_recipient_commentary() {
+    for visibility in [
+        codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
+        codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible,
+    ] {
+        let item = codex_protocol::protocol::sub_agent_completion_item_with_visibility(
+            "/root",
+            &AgentStatus::Completed(Some("Main's answer".to_string())),
+            visibility,
+        )
+        .expect("completed status has a presentation");
+        let event = EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "child-turn".to_string(),
+            item: TurnItem::AgentMessage(item),
+            started_at_ms: Some(0),
+            completed_at_ms: 1,
+        });
+
+        assert_eq!(agent_response_event(&event, /*sequence*/ 0), None);
+        assert_eq!(
+            super::agent_response_events_from_rollout(&[RolloutItem::EventMsg(event)]),
+            Vec::new(),
+        );
+    }
+}
+
+#[test]
 fn attributed_agent_input_presentation_is_not_observed_as_a_response() {
     let event = EventMsg::ItemCompleted(ItemCompletedEvent {
         thread_id: ThreadId::new(),
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: new_attributed_agent_message_response_item_id().to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Agent message from `01900000-0000-7000-8000-000000000001`:\n\nQuestion"
                     .to_string(),
@@ -120,6 +152,8 @@ fn canonical_commentary_recovery_matches_legacy_and_paginated_representations() 
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: item_id.clone(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Recovered acknowledgement.".to_string(),
             }],
@@ -178,6 +212,8 @@ fn final_answer_item_is_not_observed_as_commentary() {
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: "message-1".to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Done.".to_string(),
             }],
@@ -468,6 +504,8 @@ fn response_snapshot_excludes_exactly_rolled_back_turns_for_resume_and_fork() {
             turn_id: rolled_back_turn_id.to_string(),
             item: TurnItem::AgentMessage(AgentMessageItem {
                 id: rolled_back_item_id.to_string(),
+                attribution: None,
+                input: None,
                 content: vec![AgentMessageContent::Text {
                     text: "rolled back acknowledgement".to_string(),
                 }],
@@ -564,6 +602,75 @@ async fn response_subscription_is_serialized_with_terminal_publication() {
 }
 
 #[tokio::test]
+async fn delivered_completion_does_not_consume_recipient_commentary_subscription() {
+    let (session, _turn_context, _events) = make_session_and_context_with_rx().await;
+    let (_snapshot, mut response_rx) = session.subscribe_agent_responses();
+    let receipt = codex_protocol::protocol::sub_agent_completion_item(
+        "/root",
+        &AgentStatus::Completed(Some("Main's answer".to_string())),
+    )
+    .expect("completion receipt");
+    session
+        .send_event_raw(Event {
+            id: "child-turn".to_string(),
+            msg: EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: session.thread_id,
+                turn_id: "child-turn".to_string(),
+                item: TurnItem::AgentMessage(receipt),
+                started_at_ms: Some(0),
+                completed_at_ms: 1,
+            }),
+        })
+        .await;
+    session
+        .send_event_raw(Event {
+            id: "child-turn".to_string(),
+            msg: EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: session.thread_id,
+                turn_id: "child-turn".to_string(),
+                item: TurnItem::AgentMessage(AgentMessageItem {
+                    id: "child-commentary".to_string(),
+                    attribution: None,
+                    input: None,
+                    content: vec![AgentMessageContent::Text {
+                        text: "My own progress update.".to_string(),
+                    }],
+                    phase: Some(MessagePhase::Commentary),
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                    sub_agent_completion: None,
+                }),
+                started_at_ms: Some(0),
+                completed_at_ms: 2,
+            }),
+        })
+        .await;
+
+    let response = timeout(Duration::from_secs(1), response_rx.recv())
+        .await
+        .expect("authored commentary remains observable")
+        .expect("response stream stays open");
+    let AgentResponseEvent::Commentary {
+        turn_id,
+        item_id,
+        text,
+        ..
+    } = response
+    else {
+        panic!("expected the child's authored commentary");
+    };
+    assert_eq!(
+        (turn_id, item_id, text),
+        (
+            "child-turn".to_string(),
+            "child-commentary".to_string(),
+            "My own progress update.".to_string(),
+        )
+    );
+}
+
+#[tokio::test]
 async fn live_terminal_remains_observable_after_child_rollout_persistence_fails() {
     let (mut session, _turn_context, _events) = make_session_and_context_with_rx().await;
     attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
@@ -583,6 +690,8 @@ async fn live_terminal_remains_observable_after_child_rollout_persistence_fails(
                 turn_id: "turn-1".to_string(),
                 item: TurnItem::AgentMessage(AgentMessageItem {
                     id: "commentary-1".to_string(),
+                    attribution: None,
+                    input: None,
                     content: vec![AgentMessageContent::Text {
                         text: "This source item was not persisted.".to_string(),
                     }],

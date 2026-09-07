@@ -28,6 +28,7 @@ pub enum SpawnAgentForkMode {
 
 #[derive(Clone, Debug, Default)]
 pub struct SpawnAgentOptions {
+    pub task: Option<String>,
     pub response_observation: crate::agent::response_observation::ResponseObservationPolicy,
     pub fork_parent_spawn_call_id: Option<String>,
     pub fork_mode: Option<SpawnAgentForkMode>,
@@ -39,6 +40,13 @@ pub struct SpawnAgentOptions {
     pub environments: Option<Vec<TurnEnvironmentSelection>>,
     pub multi_agent_v2_usage_hints: Option<ResolvedMultiAgentV2UsageHints>,
     pub cyber_access_program: Option<CyberAccessProgram>,
+}
+
+/// Trusted model-tool authorship captured before the child is allocated an identity.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentModelInputOrigin {
+    pub(crate) sender: crate::agent::control::SessionPresentationId,
+    pub(crate) sender_turn_id: String,
 }
 
 /// Identity and status observed from a loaded agent, without a handle to its runtime.

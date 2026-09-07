@@ -41,8 +41,9 @@ INSERT INTO agent_aliases (
     thread_id,
     agent_ref,
     nickname,
+    task_path,
     ownership_state
-) VALUES (?, ?, 1, ?, ?)
+) VALUES (?, ?, 1, ?, '/root', ?)
 ON CONFLICT(session_id, thread_id) DO NOTHING
         "#,
     )
@@ -160,7 +161,10 @@ ORDER BY subtree.depth, subtree.child_thread_id
         } else {
             None
         };
-        insert_agent_alias_in_transaction(tx, session_id, thread_id, nickname, state).await?;
+        insert_agent_alias_in_transaction(
+            tx, session_id, thread_id, nickname, /*task_path*/ None, state,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -170,9 +174,11 @@ pub(super) async fn insert_agent_alias_in_transaction(
     session_id: SessionId,
     thread_id: ThreadId,
     nickname: Option<&str>,
+    task_path: Option<&str>,
     state: crate::AgentAliasState,
 ) -> anyhow::Result<crate::AgentAliasRecord> {
     super::require_not_deleted(tx, thread_id).await?;
+    super::task_paths::require_available_task_path(tx, session_id, task_path).await?;
     if nickname.is_some_and(is_main_agent_nickname) {
         anyhow::bail!("agent nickname {MAIN_AGENT_NICKNAME:?} is reserved for the root thread");
     }
@@ -212,14 +218,16 @@ INSERT INTO agent_aliases (
     thread_id,
     agent_ref,
     nickname,
+    task_path,
     ownership_state
-) VALUES (?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(session_id.to_string())
     .bind(thread_id.to_string())
     .bind(next_agent_ref)
     .bind(nickname)
+    .bind(task_path)
     .bind(super::AgentAliasOwnershipState::Current.as_ref())
     .execute(&mut **tx)
     .await?;
@@ -234,6 +242,7 @@ INSERT INTO agent_aliases (
         thread_id,
         agent_ref: u64::try_from(next_agent_ref).context("stored agent ref is negative")?,
         nickname: nickname.map(ToString::to_string),
+        task_path: task_path.map(ToString::to_string),
         state,
     })
 }

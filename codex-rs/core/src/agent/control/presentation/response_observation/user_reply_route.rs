@@ -34,12 +34,18 @@ impl LocalAgentControl {
         parent: SessionPresentationId,
         child: SessionPresentationId,
     ) -> Option<TargetMessageRouteMode> {
-        self.wait_agent_presentations
-            .state()
+        let state = self.wait_agent_presentations.state();
+        state
             .response_observation_by_observer_child
             .get(&(parent, child))
             .filter(|relationship| !relationship.revoked)
             .and_then(|relationship| relationship.reply_route)
+            .or_else(|| {
+                state
+                    .inherited_message_routes
+                    .get(&(parent, child))
+                    .copied()
+            })
     }
 
     pub(in crate::agent::control) fn prepare_reply_route(

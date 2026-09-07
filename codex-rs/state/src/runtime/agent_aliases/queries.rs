@@ -23,6 +23,7 @@ SELECT
     alias.thread_id,
     alias.agent_ref,
     alias.nickname,
+    alias.task_path,
     alias.ownership_state,
     edge.status AS edge_status,
     EXISTS (SELECT 1 FROM agent_alias_tombstones AS tombstone
@@ -51,6 +52,7 @@ SELECT
     alias.thread_id,
     alias.agent_ref,
     alias.nickname,
+    alias.task_path,
     alias.ownership_state,
     edge.status AS edge_status,
     EXISTS (SELECT 1 FROM agent_alias_tombstones AS tombstone
@@ -86,6 +88,7 @@ SELECT
     alias.thread_id,
     alias.agent_ref,
     alias.nickname,
+    alias.task_path,
     alias.ownership_state,
     edge.status AS edge_status,
     EXISTS (SELECT 1 FROM agent_alias_tombstones AS tombstone
@@ -122,6 +125,7 @@ SELECT
     alias.thread_id,
     alias.agent_ref,
     alias.nickname,
+    alias.task_path,
     alias.ownership_state,
     edge.status AS edge_status,
     EXISTS (SELECT 1 FROM agent_alias_tombstones AS tombstone
@@ -150,6 +154,7 @@ SELECT
     alias.thread_id,
     alias.agent_ref,
     alias.nickname,
+    alias.task_path,
     alias.ownership_state,
     edge.status AS edge_status,
     EXISTS (SELECT 1 FROM agent_alias_tombstones AS tombstone
@@ -193,6 +198,7 @@ SELECT
     alias.thread_id,
     alias.agent_ref,
     alias.nickname,
+    alias.task_path,
     alias.ownership_state,
     edge.status AS edge_status,
     EXISTS (SELECT 1 FROM agent_alias_tombstones AS tombstone
@@ -220,6 +226,7 @@ SELECT
     alias.thread_id,
     alias.agent_ref,
     alias.nickname,
+    alias.task_path,
     alias.ownership_state,
     edge.status AS edge_status,
     EXISTS (SELECT 1 FROM agent_alias_tombstones AS tombstone
@@ -321,6 +328,7 @@ fn agent_alias_from_row(row: SqliteRow) -> anyhow::Result<crate::AgentAliasRecor
         thread_id,
         agent_ref: u64::try_from(agent_ref).context("stored agent ref is negative")?,
         nickname: row.try_get("nickname")?,
+        task_path: row.try_get("task_path")?,
         state,
     })
 }

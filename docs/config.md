@@ -185,6 +185,20 @@ The branch retains history before the selected turn. Creating it does not submit
 In-place editing also follows the session's actual stored history mode: Paginated sessions use `thread/revert`, and Legacy sessions use guarded `thread/rollback`. Selection is tied to canonical user-message identity; an incomplete or ambiguous old transcript must be refreshed before editing. The draft is not automatically submitted. If a Legacy mutation or its refresh has an uncertain outcome, the TUI preserves the draft and keeps that conversation read-only for the current TUI process, including after switching away and back. Navigation, copying, other conversations, and quitting remain available. Save the draft before quitting, then reopen the conversation in a new Codex process for canonical recovery. The TUI never repeats the mutation automatically.
 
 ## Agent role instruction files
+## V1 agent discovery
+
+V1 agent discovery is opt-in:
+
+```toml
+[tools.list_agents]
+enabled = true
+```
+
+The owning root's setting controls `list_agents` for its current and future agents, including depth-limited children. Omission or an empty table leaves discovery disabled. Send permissions do not enable discovery, and listing does not resume threads or subscribe to responses. Results default to loaded agents; optional status and task-path filters are applied before pagination. Human `/agent` inspection remains available independently.
+
+See [V1 attribution and task paths](./multi-agent-v1-attribution-and-task-paths.md) for assignment labels, adoption, and compact message attribution.
+
+## Multi-Agent V2
 
 A configured role may also set `model_instructions_file`. Relative paths are resolved from the role TOML directory, and the non-empty file replaces inherited base instructions for new and resumed agents using that role. The role's `developer_instructions` remain a separate developer message. An explicit spawn model override changes the model without discarding the selected role's base instructions.
 
@@ -276,6 +290,7 @@ agent_response_preview_lines = 0
 ```
 
 Prompt previews default to 50 wrapped display rows; response previews default to unlimited (`0`). The limits apply to wrapped detail rows, including an omission marker, but exclude the preview title and status line. They affect presentation only. Complete prompt and response content remains available in canonical history and full transcript exports; ordinary replay uses the same presentation caps.
+Set any value to `0` to show all retained output for that category in the main TUI. Agent prompt previews apply to rendered rows from subagent spawn/input prompts, and agent response previews apply to rendered rows from subagent output, attributed agent input, and presentation-only peer copies. The default response preview is unlimited (`0`); finite settings affect normal history only, while Full transcripts retain complete payloads.
 
 ## Thread naming
 

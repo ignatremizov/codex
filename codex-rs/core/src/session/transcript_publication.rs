@@ -24,7 +24,9 @@ use codex_utils_output_truncation::with_serialization_allowance;
 pub(super) enum ConversationBoundary {
     Existing,
     HistoryOnly,
-    Prompt,
+    Prompt {
+        presentation: Option<codex_protocol::items::TurnItem>,
+    },
 }
 
 impl Session {
@@ -152,16 +154,37 @@ impl Session {
                 },
             )));
         }
-        let batch = self
+        let mut batch = self
             .conversation_publication_batch(turn_context, rollout_items, &response_items)
             .await;
         let analytics = self.services.analytics_events_client.clone();
         let turn_id = turn_context.sub_id.clone();
-        let prompt_receipt = if matches!(boundary, ConversationBoundary::Prompt) {
+        let prompt_receipt = if matches!(&boundary, ConversationBoundary::Prompt { .. }) {
             self.take_queued_input_persistence(&turn_id)
         } else {
             None
         };
+        let presentation = match boundary {
+            ConversationBoundary::Prompt { presentation } => presentation,
+            ConversationBoundary::Existing | ConversationBoundary::HistoryOnly => None,
+        };
+        if let Some(item) = &presentation {
+            let completed_at_ms = crate::turn_timing::now_unix_timestamp_ms();
+            let event = Event {
+                id: turn_id.clone(),
+                msg: EventMsg::ItemCompleted(codex_protocol::protocol::ItemCompletedEvent {
+                    thread_id: self.thread_id(),
+                    turn_id: turn_id.clone(),
+                    item: item.clone(),
+                    started_at_ms: Some(completed_at_ms),
+                    completed_at_ms,
+                }),
+            };
+            batch.rollout.push(RolloutItem::EventMsg(event.msg.clone()));
+            batch.events.push(event);
+        }
+        let audit_control = self.services.agent_control.clone();
+        let recipient = self.thread_id();
         let receiver = self.dispatch_history_publication_with_events(
             permit,
             batch,
@@ -182,6 +205,16 @@ impl Session {
                 // The worker owns it even when the originating task is forcibly cancelled.
                 if let Some(receipt) = prompt_receipt {
                     let _ = receipt.send(Ok(()));
+                }
+                if let Some(item) = presentation {
+                    tokio::spawn(async move {
+                        if let Err(error) = audit_control
+                            .mirror_attributed_agent_input(recipient, &item)
+                            .await
+                        {
+                            tracing::warn!(%error, "failed to present accepted peer input");
+                        }
+                    });
                 }
             },
         )?;

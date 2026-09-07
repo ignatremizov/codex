@@ -160,7 +160,9 @@ async fn queued_prompt_receipt_survives_task_cancellation_and_requires_canonical
             vec![render_inventory("queued prompt", &[])],
             Vec::new(),
             /*acknowledgement*/ None,
-            crate::session::transcript_publication::ConversationBoundary::Prompt,
+            crate::session::transcript_publication::ConversationBoundary::Prompt {
+                presentation: None,
+            },
         ));
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {

@@ -332,6 +332,7 @@ fn commentary_boundary_delivers_once_and_retains_committed_evidence() {
         turn_id: "turn".to_owned(),
         response_item_id: delivery.response_item_id.clone(),
         kind: ResponseObservationDeliveryKind::Commentary,
+        model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
     };
     let committed = control.deferred_response_observation_commit_snapshots(&commit);
     control.commit_response_observation_delivery(&commit);
@@ -395,6 +396,11 @@ fn every_final_disposition_commits_one_identity_including_presentation_only() {
             turn_id: "turn".to_owned(),
             response_item_id: context.clone(),
             kind: ResponseObservationDeliveryKind::Final,
+            model_visibility: if disposition == FinalResponseObservation::PresentationOnly {
+                codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible
+            } else {
+                codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible
+            },
         };
         let snapshots = control.deferred_response_observation_commit_snapshots(&commit);
         control.commit_response_observation_delivery(&commit);
@@ -496,6 +502,7 @@ fn close_after_claim_yields_inert_exact_turn_committed_tombstone() {
         turn_id: "accepted-turn".to_owned(),
         response_item_id: new_sub_agent_completion_context_response_item_id(),
         kind: ResponseObservationDeliveryKind::Final,
+        model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
     };
     control
         .wait_agent_presentations

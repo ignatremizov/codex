@@ -312,7 +312,13 @@ The experimental `agentAlias/list` method lists durable aliases in a root-scoped
 
 The `spawn` action accepts optional `model` and `reasoningEffort` overrides. Explicit values take precedence over role settings and configured subagent defaults; omitted values follow the normal child configuration resolution. The durable `userAgentControl` item records the requested model and reasoning values separately from the canonical target and outcome. Existing history-fork and lifecycle authorization rules still apply.
 
+Agent-originated input is projected as `agentMessage` with optional `attribution` and structured `input`. Attribution captures sender and recipient identity snapshots, including canonical thread IDs, refs, nicknames, task paths, role, model, reasoning effort, and the sender turn ID. These fields are presentation metadata and do not authorize routing; older messages without them retain their existing rendering. Human-authored spawn, prompt, and queued input remains `userMessage` in the target thread.
+
+`spawn` accepts an optional `task` label, and successful spawn/resume outcomes expose the committed `taskPath`. Resume adoption may also return `taskPathMapping`; these labels are nullable assignment metadata and never replace canonical UUID/ref identity or lifecycle edges.
+
 The `replyRoute` action enables or disables a V1 target's attributed replies to the source across later turns of that live runtime. Enabling adds route guidance to the target's model context once; disabling rejects new replies even when a model-authored send uses `m`. Already accepted human prompts keep their queued input and captured response policy. Unsupported V2 targets reject `replyRoute` before mutation. Saved context alone does not restore live reply authority after a cold resume or fork. An indeterminate route update is audited as `unknown` and must be reconciled rather than retried.
+
+Reply routes may name a recipient explicitly; omitting it addresses the source thread. A `subtreeMessaging` action can set a live default for a source and its descendants. Explicit reply-route settings override that default, and neither permission is restored by replaying history or by a cold resume.
 
 The experimental `agentQueue/list` and `agentQueue/delete` methods expose and cancel pending target-owned FIFO entries. Queue acceptance is not target-turn admission: queued entries have no synthetic turn ID, and their start metadata records the source and response policy once a target turn actually begins.
 

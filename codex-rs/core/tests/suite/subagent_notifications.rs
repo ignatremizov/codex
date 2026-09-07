@@ -134,6 +134,9 @@ mod reply_route_tests;
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
+
+#[path = "subagent_peer_routes.rs"]
+mod peer_routes;
 const TURN_0_FORK_PROMPT: &str = "seed fork context";
 const TURN_1_PROMPT: &str = "spawn a child and continue";
 const TURN_2_NO_WAIT_PROMPT: &str = "follow up without wait";
@@ -1480,12 +1483,40 @@ async fn subagent_start_replaces_session_start_and_injects_context(
         Some(spawned_id.as_str())
     );
 
+    // Model-authored delegation is agent input, not a user prompt. A genuine user
+    // follow-up still runs UserPromptSubmit with the child's hook identity.
+    const CHILD_USER_PROMPT: &str = "user follow-up to the child lifecycle fixture";
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, CHILD_USER_PROMPT),
+        sse(vec![
+            ev_response_created("resp-child-user"),
+            ev_completed("resp-child-user"),
+        ]),
+    )
+    .await;
+    let child = test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    wait_for_terminal_status(child.as_ref()).await?;
+    test.codex
+        .prompt_live_agent(
+            &spawned_id,
+            vec![UserInput::Text {
+                text: CHILD_USER_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
     let user_prompt_submit_inputs = wait_for_hook_log(
         test.codex_home_path(),
         "user_prompt_submit_hook_log.jsonl",
         /*expected_len*/ 2,
     )
     .await?;
+    assert_eq!(user_prompt_submit_inputs.len(), 2);
     let parent_prompt_input = user_prompt_submit_inputs
         .iter()
         .find(|input| input["prompt"].as_str() == Some(TURN_1_PROMPT))
@@ -1495,7 +1526,7 @@ async fn subagent_start_replaces_session_start_and_injects_context(
 
     let child_prompt_input = user_prompt_submit_inputs
         .iter()
-        .find(|input| input["prompt"].as_str() == Some(CHILD_PROMPT))
+        .find(|input| input["prompt"].as_str() == Some(CHILD_USER_PROMPT))
         .expect("child prompt submit hook input should be logged");
     assert_eq!(
         child_prompt_input["agent_id"].as_str(),
@@ -3965,6 +3996,7 @@ async fn observed_response_delivery_does_not_block_a_later_close(
                 parent_thread_id: test.session_configured.thread_id,
                 child_thread_id: target.thread_id,
                 nickname: None,
+                task_path: None,
             })
             .await?;
     }
@@ -5038,6 +5070,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             thread_id: spawned_id,
             agent_ref: 2,
             nickname: Some(nickname),
+            task_path: None,
             state: codex_state::AgentAliasState::Active,
         }
     );
@@ -5149,7 +5182,9 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
     let parent_with_message = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            body_contains(request, "<agent_message>") && body_contains(request, CHILD_MESSAGE)
+            body_contains(request, "<agent_message>")
+                && body_contains(request, CHILD_MESSAGE)
+                && !body_contains(request, CHILD_REPLY_CALL_ID)
         },
         sse(vec![
             ev_response_created("resp-parent-with-attributed-message"),
@@ -5167,8 +5202,68 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
     assert!(child_request.body_contains_text(&test.session_configured.thread_id.to_string()));
     let parent_request =
         wait_for_request_containing_text(&parent_with_message, CHILD_MESSAGE).await?;
-    assert!(parent_request.body_contains_text("<agent_message>"));
-    assert!(parent_request.body_contains_text(&child_thread_id.to_string()));
+    let envelopes = parent_request
+        .message_input_texts("user")
+        .into_iter()
+        .filter_map(|text| {
+            text.strip_prefix("<agent_message>")?
+                .strip_suffix("</agent_message>")
+                .map(str::to_owned)
+        })
+        .map(|body| serde_json::from_str::<Value>(&body))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        envelopes,
+        vec![json!({
+            "nickname": child_thread.config_snapshot().await.session_source.get_nickname(),
+            "ref": "2",
+            "message": CHILD_MESSAGE,
+        })],
+    );
+    wait_for_terminal_status(test.codex.as_ref()).await?;
+    test.codex.flush_rollout().await?;
+    let history = test
+        .thread_store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: test.session_configured.thread_id,
+            include_archived: false,
+        })
+        .await?;
+    let audits = history
+        .items
+        .iter()
+        .filter_map(|item| {
+            let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = item else {
+                return None;
+            };
+            match &event.item {
+                TurnItem::AgentMessage(item) if item.attribution.is_some() => Some(item),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let [audit] = audits.as_slice() else {
+        anyhow::bail!("expected exactly one persisted attributed reply");
+    };
+    let attribution = audit
+        .attribution
+        .as_ref()
+        .expect("trusted reply attribution");
+    assert_eq!(
+        (
+            attribution.sender.thread_id,
+            attribution.recipient.thread_id
+        ),
+        (child_thread_id, test.session_configured.thread_id),
+    );
+    assert_eq!(
+        json!(attribution.sender_turn_id),
+        child_request.body_json()["client_metadata"]["turn_id"],
+    );
+    assert_eq!(
+        serde_json::to_value(&audit.input)?,
+        json!([{"type": "text", "text": CHILD_MESSAGE, "text_elements": []}]),
+    );
     Ok(())
 }
 
@@ -5232,24 +5327,34 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
         test.codex
             .set_agent_reply_route(
                 &child_thread_id.to_string(),
+                /*recipient*/ None,
                 UserAgentReplyRouteMode::Enabled,
             )
             .await?,
-        (child_thread_id, None)
+        (child_thread_id, test.session_configured.thread_id, None)
     );
     assert_eq!(
         test.codex
             .set_agent_reply_route(
                 &child_thread_id.to_string(),
+                /*recipient*/ None,
                 UserAgentReplyRouteMode::Enabled,
             )
             .await?,
-        (child_thread_id, Some(UserAgentReplyRouteMode::Enabled),),
+        (
+            child_thread_id,
+            test.session_configured.thread_id,
+            Some(UserAgentReplyRouteMode::Enabled)
+        ),
         "repeating enable should be idempotent and must not install another context item"
     );
     child_thread.flush_rollout().await?;
-    let child_history = child_thread
-        .load_history(/*include_archived*/ false)
+    let child_history = test
+        .thread_store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: child_thread_id,
+            include_archived: false,
+        })
         .await?;
     assert_eq!(
         child_history
@@ -5374,10 +5479,15 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
         test.codex
             .set_agent_reply_route(
                 &child_thread_id.to_string(),
+                /*recipient*/ None,
                 UserAgentReplyRouteMode::Disabled,
             )
             .await?,
-        (child_thread_id, Some(UserAgentReplyRouteMode::Enabled),)
+        (
+            child_thread_id,
+            test.session_configured.thread_id,
+            Some(UserAgentReplyRouteMode::Enabled)
+        )
     );
 
     let blocked_turn = mount_response_once_match(
@@ -5468,10 +5578,15 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
         test.codex
             .set_agent_reply_route(
                 &child_thread_id.to_string(),
+                /*recipient*/ None,
                 UserAgentReplyRouteMode::Enabled,
             )
             .await?,
-        (child_thread_id, Some(UserAgentReplyRouteMode::Disabled),)
+        (
+            child_thread_id,
+            test.session_configured.thread_id,
+            Some(UserAgentReplyRouteMode::Disabled)
+        )
     );
     test.codex
         .prompt_live_agent(
@@ -6128,6 +6243,7 @@ async fn foreign_close_resumes_idle_lifecycle_after_revoking_final_wake(
                 parent_thread_id: test.session_configured.thread_id,
                 child_thread_id: target.thread_id,
                 nickname: None,
+                task_path: None,
             })
             .await?;
     }
@@ -6233,12 +6349,18 @@ async fn foreign_close_resumes_idle_lifecycle_after_revoking_final_wake(
         }
         sleep(Duration::from_millis(25)).await;
     }
-    sleep(Duration::from_millis(50)).await;
+    // Idle callbacks are level-triggered: close cleanup and ordinary completion can
+    // both probe the same idle observer. Re-probing must remain possible after the
+    // wake is revoked, without starting another model turn.
+    idle_rx.try_iter().for_each(drop);
+    test.codex
+        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+        .await;
     assert!(
         idle_rx
             .try_iter()
-            .all(|thread_id| thread_id != parent_thread_id),
-        "foreign close should resume the observer idle lifecycle once"
+            .any(|thread_id| thread_id == parent_thread_id),
+        "foreign close should leave the observer eligible for idle lifecycle probes"
     );
     assert!(
         unexpected_wake.requests().is_empty(),
@@ -7482,6 +7604,7 @@ async fn fork_requires_explicit_agent_reconfiguration(
             thread_id: forked.thread_id,
             agent_ref: 1,
             nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
+            task_path: Some("/root".to_string()),
             state: codex_state::AgentAliasState::Active,
         }]
     );
@@ -11420,3 +11543,8 @@ async fn spawn_agent_tool_description_mentions_role_default_settings() -> Result
 
     Ok(())
 }
+#[path = "subagent_v1_attribution.rs"]
+mod attribution;
+
+#[path = "subagent_permission_context.rs"]
+mod subagent_permission_context;

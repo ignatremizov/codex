@@ -32,6 +32,7 @@ impl TokenBudgetContext {
                 agent_id,
                 agent_ref,
                 nickname,
+                ..
             } => nickname
                 .or_else(|| agent_ref.map(|agent_ref| agent_ref.to_string()))
                 .unwrap_or_else(|| agent_id.to_string()),

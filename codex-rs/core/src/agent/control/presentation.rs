@@ -19,7 +19,12 @@ use std::sync::Weak;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+mod input_permission;
+mod live_revert_messaging;
 mod response_observation;
+mod subtree_messaging;
+use live_revert_messaging::LiveRevertMessagingContinuity;
+pub use live_revert_messaging::LiveRevertMessagingSnapshot;
 pub(in crate::agent) use response_observation::ReplacedFinalResponseObservationBinding;
 
 pub(crate) use response_observation::CommentaryDeliveryRoute;
@@ -73,10 +78,43 @@ pub(super) struct WaitAgentPresentations {
     pub(super) response_observation_changed: Notify,
     pub(super) watcher_terminal_changed: Notify,
     observation_transactions: Mutex<HashMap<SessionPresentationId, Arc<tokio::sync::Mutex<()>>>>,
+    messaging_refresh: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    pub(in crate::agent::control) scoped_permission_check_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(in crate::agent::control) scoped_steer_submission_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(crate) messaging_refresh_capture_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(crate) messaging_refresh_attempted:
+        Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<SessionPresentationId>>>>,
 }
 
 #[derive(Default)]
 struct PresentationState {
+    live_revert_messaging: HashMap<SessionPresentationId, LiveRevertMessagingContinuity>,
+    pending_messaging_context: HashMap<
+        (SessionPresentationId, String),
+        (Option<String>, codex_protocol::models::ResponseItem),
+    >,
+    subtree_messaging: HashMap<SessionPresentationId, (u64, TargetMessageRouteMode)>,
+    inherited_message_routes:
+        HashMap<(SessionPresentationId, SessionPresentationId), TargetMessageRouteMode>,
     next_wait: u64,
     next_terminal: u64,
     waits: HashMap<u64, WaitRegistration>,

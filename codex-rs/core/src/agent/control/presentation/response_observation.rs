@@ -96,7 +96,7 @@ impl ResponseTurnObservation {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(in crate::agent::control) struct ResponseObserverRelationship {
     pub(super) revoked: bool,
     pub(super) persistence: ResponseObservationPersistence,
@@ -164,6 +164,8 @@ pub(crate) struct ResponseObservationDeliveryCommit {
     pub(crate) turn_id: String,
     pub(crate) response_item_id: ResponseItemId,
     pub(crate) kind: ResponseObservationDeliveryKind,
+    /// Captured at delivery admission, before live policy can be retired or replaced.
+    pub(crate) model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility,
 }
 
 pub(crate) struct ResponseWatcherRegistration {
@@ -303,6 +305,16 @@ impl LocalAgentControl {
     ) -> CodexResult<TargetMessageAdmission> {
         let may_steer = mode == TargetMessageAdmissionMode::SteerOrWake;
         let mut state = self.wait_agent_presentations.state();
+        let inherited = state
+            .inherited_message_routes
+            .get(&(observer, target))
+            .copied();
+        if inherited.is_some() {
+            state
+                .response_observation_by_observer_child
+                .entry((observer, target))
+                .or_default();
+        }
         let relationship = state
             .response_observation_by_observer_child
             .get_mut(&(observer, target))
@@ -313,12 +325,13 @@ impl LocalAgentControl {
                     target.thread_id, observer.thread_id
                 ))
             })?;
-        if relationship.reply_route == Some(TargetMessageRouteMode::Disabled) {
+        let effective = relationship.reply_route.or(inherited);
+        if effective == Some(TargetMessageRouteMode::Disabled) {
             return Err(CodexErr::InvalidRequest(
                 "agent replies are disabled by the user".into(),
             ));
         }
-        let persistent = relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+        let persistent = effective == Some(TargetMessageRouteMode::Enabled);
         if persistent && may_steer && observer_active_turn_id.is_some() {
             return Ok(TargetMessageAdmission::Steer);
         }

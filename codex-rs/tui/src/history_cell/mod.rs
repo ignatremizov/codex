@@ -101,6 +101,7 @@ const RAW_DIFF_SUMMARY_WIDTH: usize = 10_000;
 
 mod activity_details;
 pub(crate) mod activity_preview;
+mod agent_input;
 mod approvals;
 mod base;
 mod dynamic;
@@ -122,6 +123,7 @@ mod user_agent_control;
 mod warnings;
 
 pub(crate) use activity_details::ActivityDetails;
+pub(crate) use agent_input::AgentInputHistoryCell;
 pub(crate) use approvals::*;
 pub(crate) use base::*;
 pub(crate) use dynamic::DynamicToolCallCell;

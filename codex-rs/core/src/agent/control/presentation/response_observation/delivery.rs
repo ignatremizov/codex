@@ -137,12 +137,33 @@ impl LocalAgentControl {
         commit: &ResponseObservationDeliveryCommit,
     ) {
         let mut state = self.wait_agent_presentations.state();
+        let terminal_text = state
+            .response_terminals
+            .get(&(commit.parent, commit.child, commit.turn_id.clone()))
+            .and_then(|terminal| match &terminal.status {
+                AgentStatus::Completed(text) => Some(text.clone().unwrap_or_default()),
+                _ => None,
+            });
         let Some(observation) = state
             .response_observation_by_observer_child
             .get_mut(&(commit.parent, commit.child))
             .and_then(|relationship| relationship.turns.get_mut(&commit.turn_id))
         else {
             return;
+        };
+        if observation
+            .committed_delivery_response_item_ids
+            .contains(&commit.response_item_id)
+        {
+            return;
+        }
+        let receipt_visibility = commit.model_visibility;
+        let receipt_text = match commit.kind {
+            ResponseObservationDeliveryKind::Commentary => observation
+                .commentary_delivery
+                .as_ref()
+                .map(|delivery| delivery.text.clone()),
+            ResponseObservationDeliveryKind::Final => terminal_text,
         };
         match commit.kind {
             ResponseObservationDeliveryKind::Commentary => {
@@ -170,6 +191,39 @@ impl LocalAgentControl {
             observation
                 .committed_delivery_response_item_ids
                 .push(commit.response_item_id.clone());
+        }
+        drop(state);
+        if let Some(text) = receipt_text
+            && self.bound_session_id().is_some_and(|root| {
+                ThreadId::from(root) == commit.child.thread_id
+                    && commit.parent.thread_id != commit.child.thread_id
+            })
+        {
+            let control = self.clone();
+            let commit = commit.clone();
+            tokio::spawn(async move {
+                let phase = match commit.kind {
+                    ResponseObservationDeliveryKind::Commentary => {
+                        codex_protocol::models::MessagePhase::Commentary
+                    }
+                    ResponseObservationDeliveryKind::Final => {
+                        codex_protocol::models::MessagePhase::FinalAnswer
+                    }
+                };
+                if let Err(error) = control
+                    .mirror_agent_delivery_receipt(
+                        commit.child.thread_id,
+                        commit.parent.thread_id,
+                        phase,
+                        receipt_visibility,
+                        commit.response_item_id.as_str(),
+                        &text,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "failed to present acknowledged response delivery");
+                }
+            });
         }
     }
 

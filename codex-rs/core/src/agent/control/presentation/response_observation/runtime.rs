@@ -315,7 +315,7 @@ impl LocalAgentControl {
 }
 
 impl PresentationState {
-    fn revoke_response_observation(
+    pub(in crate::agent::control::presentation) fn revoke_response_observation(
         &mut self,
         pair: (SessionPresentationId, SessionPresentationId),
     ) {

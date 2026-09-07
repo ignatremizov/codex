@@ -285,6 +285,7 @@ impl LocalAgentControl {
                 AgentContextIdentity::V1 {
                     agent_id: target_id,
                     agent_ref: alias.as_ref().map(|alias| alias.agent_ref),
+                    task_path: alias.as_ref().and_then(|alias| alias.task_path.clone()),
                     nickname: alias
                         .and_then(|alias| alias.nickname)
                         .or_else(|| {

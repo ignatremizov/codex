@@ -183,6 +183,9 @@ async fn handle_spawn_agent(
         MessageDeliveryMode::TriggerTurn,
     );
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+    let is_full_history_fork = fork_mode
+        .as_ref()
+        .is_some_and(|mode| matches!(mode, SpawnAgentForkMode::FullHistory));
     let multi_agent_v2_usage_hints =
         if is_full_history_fork && turn.multi_agent_version == MultiAgentVersion::V2 {
             let child_model_info = match config.model.as_deref() {
@@ -217,6 +220,8 @@ async fn handle_spawn_agent(
                 context,
                 Some(spawn_source),
                 SpawnAgentOptions {
+                    task: None,
+                    model_input_origin: None,
                     fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),

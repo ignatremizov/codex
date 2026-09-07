@@ -54,8 +54,8 @@ fn targets() -> Vec<AgentPromptTarget> {
         },
         AgentPromptTarget {
             thread_id: None,
-            selector: "replies".to_string(),
-            label: "Allow or block replies from an agent".to_string(),
+            selector: "sends".to_string(),
+            label: "Control directed or subtree messaging".to_string(),
         },
         AgentPromptTarget {
             thread_id: None,
@@ -155,12 +155,12 @@ fn action_target_completion_only_covers_existing_target_argument() {
         })
     );
     assert_eq!(
-        completion("/agent replies 2 enable", "/agent replies 2 enable".len()),
+        completion("/agent sends 2 enable", "/agent sends 2 enable".len()),
         Some(AgentTargetCompletion {
-            range: "/agent replies 2 ".len().."/agent replies 2 enable".len(),
+            range: "/agent sends 2 ".len().."/agent sends 2 enable".len(),
             query: "enable".to_string(),
-            scope: AgentTargetCompletionScope::ReplyRouteMode,
-            action: Some("replies"),
+            scope: AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
+            action: Some("sends"),
         })
     );
     assert_eq!(
@@ -299,20 +299,76 @@ fn observation_mode_popup_snapshot() {
 }
 
 #[test]
+fn subtree_sends_completion_offers_only_modes_after_all() {
+    let input = "/agent sends all ";
+    let completion =
+        agent_target_completion(input, input.len(), &[]).expect("subtree mode completion");
+    assert_eq!(completion.scope, AgentTargetCompletionScope::ReplyRouteMode);
+}
+
+#[test]
 fn reply_route_mode_popup_snapshot() {
     let targets = AGENT_REPLY_ROUTE_MODE_CHOICES
+        .into_iter()
+        .chain([("to", "Choose a different recipient")])
         .map(|(selector, label)| AgentPromptTarget {
             thread_id: None,
             selector: selector.to_string(),
             label: label.to_string(),
         })
-        .to_vec();
-    let popup = AgentTargetPopup::new(targets, "", AgentTargetCompletionScope::ReplyRouteMode);
+        .collect();
+    let popup = AgentTargetPopup::new(
+        targets,
+        "",
+        AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
+    );
 
     insta::assert_snapshot!(render_popup(&popup), @r"
-      enable   Allow replies until disabled
-      disable  Block replies until enabled
+      enable   Allow messaging until disabled
+      disable  Block messaging until enabled
+      to       Choose a different recipient
     ");
+}
+
+#[test]
+fn completes_reply_recipient_and_then_mode() {
+    for (input, prefix, scope) in [
+        (
+            "/agent sends 2 to 3",
+            "/agent sends 2 to ",
+            AgentTargetCompletionScope::ExistingTarget,
+        ),
+        (
+            "/agent sends 2 to 3 disable",
+            "/agent sends 2 to 3 ",
+            AgentTargetCompletionScope::ReplyRouteMode,
+        ),
+        (
+            "/agent 2 sends to 3",
+            "/agent 2 sends to ",
+            AgentTargetCompletionScope::ExistingTarget,
+        ),
+        (
+            "/agent 2 sends to 3 disable",
+            "/agent 2 sends to 3 ",
+            AgentTargetCompletionScope::ReplyRouteMode,
+        ),
+        (
+            "/agent 2 sends enable",
+            "/agent 2 sends ",
+            AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
+        ),
+    ] {
+        assert_eq!(
+            completion(input, input.len()),
+            Some(AgentTargetCompletion {
+                range: prefix.len()..input.len(),
+                query: input[prefix.len()..].to_string(),
+                scope,
+                action: Some("sends"),
+            })
+        );
+    }
 }
 
 #[test]

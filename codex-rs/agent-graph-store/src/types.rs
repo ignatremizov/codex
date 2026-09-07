@@ -21,7 +21,7 @@ pub enum AgentAliasState {
     Active,
     /// The target was closed but its aliases remain reserved.
     Closed,
-    /// Ownership moved to another root while this historical alias remains reserved.
+    /// Ownership moved to another root; the historical ref and nickname remain reserved.
     Transferred,
 }
 
@@ -32,6 +32,8 @@ pub struct AgentAlias {
     pub thread_id: ThreadId,
     pub agent_ref: u64,
     pub nickname: Option<String>,
+    /// Semantic assignment label, independent of lifecycle ancestry.
+    pub task_path: Option<String>,
     pub state: AgentAliasState,
 }
 
@@ -42,6 +44,8 @@ pub struct AllocateAgentAliasRequest {
     pub parent_thread_id: ThreadId,
     pub child_thread_id: ThreadId,
     pub nickname: Option<String>,
+    /// Canonical assignment label; omitted labels remain optional.
+    pub task_path: Option<String>,
 }
 
 /// Root namespaces participating in a history-bearing fork reservation import.
@@ -61,6 +65,9 @@ pub struct TransferAgentAliasRequest {
     pub new_parent_thread_id: ThreadId,
     pub thread_id: ThreadId,
     pub nickname: Option<String>,
+    /// Explicit canonical assignment for the adopted target; absence preserves non-root labels.
+    /// A foreign Main becomes unlabeled when omitted: /root is reserved for destination Main.
+    pub task_path: Option<String>,
     pub authored_selector: String,
 }
 
@@ -75,7 +82,17 @@ pub enum AgentAliasTransfer {
         previous_session_id: Option<SessionId>,
         previous_parent_thread_id: Option<ThreadId>,
         transferred_at_ms: i64,
+        /// Changed imported labels, in source-path order.
+        task_path_mapping: Vec<AgentTaskPathMapping>,
     },
+}
+
+/// Assignment-label change for one canonical thread during ownership transfer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentTaskPathMapping {
+    pub thread_id: ThreadId,
+    pub previous_task_path: Option<String>,
+    pub task_path: Option<String>,
 }
 
 #[cfg(test)]

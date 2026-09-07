@@ -18,6 +18,7 @@ pub(super) enum ObservedInputResult {
         input_persisted: Option<tokio::sync::oneshot::Receiver<CodexResult<()>>>,
     },
     NotSubmitted(NotSubmittedReason),
+    PermissionRejected(String),
 }
 
 impl ObservedInputResult {
@@ -33,6 +34,7 @@ impl ObservedInputResult {
             Self::NotSubmitted(reason) => Err(CodexErr::InvalidRequest(format!(
                 "agent input was not submitted: {reason:?}"
             ))),
+            Self::PermissionRejected(reason) => Err(CodexErr::InvalidRequest(reason)),
         }
     }
 }
@@ -102,9 +104,33 @@ pub(super) struct ObservedUserInputRequest {
     pub(super) observation: UserObservation,
     pub(super) dispatch: UserDispatch,
     pub(super) task_preview: Option<String>,
+    pub(super) target_message_wake: Option<crate::agent::turn_queue::QueuedTargetMessageWake>,
 }
 
 impl LocalAgentControl {
+    pub(crate) async fn send_agent_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: AgentControlInput,
+        start_options: TurnStartOptions,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+    ) -> CodexResult<ResponseObservationSubmission> {
+        self.dispatch_user_input(
+            agent_id,
+            ObservedUserInputRequest {
+                target_message_wake: None,
+                input,
+                start_options,
+                observer,
+                observation: UserObservation::Install(response_observation),
+                dispatch: UserDispatch::Prompt(TurnInputMode::StartOrSteer),
+                task_preview: None,
+            },
+        )
+        .await
+    }
+
     pub(super) async fn submit_user_input_to_thread_locked(
         &self,
         thread: &Arc<crate::CodexThread>,
@@ -113,6 +139,7 @@ impl LocalAgentControl {
         self.dispatch_user_input_locked(
             thread,
             ObservedUserInputRequest {
+                target_message_wake: None,
                 input: AgentControlInput::User(admission.input),
                 start_options: TurnStartOptions::default(),
                 observer: admission.observer,
@@ -137,6 +164,7 @@ impl LocalAgentControl {
         self.dispatch_user_input(
             agent_id,
             ObservedUserInputRequest {
+                target_message_wake: None,
                 input: AgentControlInput::User(input),
                 start_options,
                 observer,
@@ -159,6 +187,7 @@ impl LocalAgentControl {
         self.dispatch_user_input(
             agent_id,
             ObservedUserInputRequest {
+                target_message_wake: None,
                 input: AgentControlInput::User(input),
                 start_options: TurnStartOptions {
                     parent_turn_id,
@@ -184,6 +213,7 @@ impl LocalAgentControl {
         self.dispatch_user_input(
             agent_id,
             ObservedUserInputRequest {
+                target_message_wake: None,
                 input: AgentControlInput::User(input),
                 start_options: TurnStartOptions::default(),
                 observer,
@@ -269,6 +299,46 @@ impl LocalAgentControl {
             .submission_admission
             .try_accept_completion_delivery()
             .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".into()))?;
+        #[cfg(test)]
+        {
+            let gate = self
+                .wait_agent_presentations
+                .scoped_permission_check_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some((reached, proceed)) = gate {
+                let _ = reached.send(());
+                let _ = proceed.await;
+            }
+        }
+        let _permission = self.acquire_messaging_permission_transaction().await;
+        if let AgentControlInput::AttributedAgentInput { attribution, .. } = &request.input {
+            if attribution.sender.thread_id != request.observer.thread_id
+                || attribution.recipient.thread_id != agent_id
+            {
+                return Err(CodexErr::InvalidRequest(
+                    "agent input attribution does not match its endpoints".into(),
+                ));
+            }
+            if let Err(error) = self
+                .ensure_model_input_authorized(request.observer, child, &attribution.sender_turn_id)
+                .await
+            {
+                return Ok(ObservedInputResult::PermissionRejected(match error {
+                    CodexErr::InvalidRequest(reason) => reason,
+                    error => error.to_string(),
+                }));
+            }
+        }
+        if let Some(wake) = &request.target_message_wake
+            && !self.target_message_wake_is_current(wake)
+        {
+            return Ok(ObservedInputResult::PermissionRejected(
+                "scoped wake permission ended before target-turn admission; input not submitted"
+                    .into(),
+            ));
+        }
         let transaction = self
             .acquire_response_observation_transaction(request.observer)
             .await;
@@ -315,6 +385,19 @@ impl LocalAgentControl {
                 .await?
         };
         let input = input.into_request().on_start(request.start_options);
+        #[cfg(test)]
+        if matches!(&mode, TurnInputMode::Steer { .. }) {
+            let gate = self
+                .wait_agent_presentations
+                .scoped_steer_submission_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some((reached, proceed)) = gate {
+                let _ = reached.send(());
+                let _ = proceed.await;
+            }
+        }
         let admitted = match queue_metadata {
             Some(metadata) => {
                 thread

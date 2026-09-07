@@ -43,7 +43,7 @@ impl AgentControlActionKind {
             Self::Interrupt => "Interrupt turn",
             Self::Resume => "Resume agent",
             Self::Observe => "Observe response",
-            Self::Replies => "Reply route",
+            Self::Replies => "Messaging permissions",
             Self::Close => "Close agent",
         }
     }
@@ -56,7 +56,7 @@ impl AgentControlActionKind {
             Self::Interrupt => "Stop the active turn, optionally with a follow-up",
             Self::Resume => "Reopen this controlled agent",
             Self::Observe => "Choose passive, wake, or presentation delivery",
-            Self::Replies => "Allow or block attributed replies from this agent",
+            Self::Replies => "Choose who this agent may message",
             Self::Close => "End the agent runtime and revoke observation",
         }
     }
@@ -99,9 +99,7 @@ impl AgentControlActionKind {
             Self::Observe | Self::Replies if state.needs_adoption => {
                 Some("Agent is not controlled by this root.")
             }
-            Self::Observe | Self::Replies if state.is_current => {
-                Some("An agent cannot observe itself.")
-            }
+            Self::Observe if state.is_current => Some("An agent cannot observe itself."),
             Self::Observe | Self::Replies if state.is_closed => {
                 Some("Resume the closed agent first.")
             }
@@ -134,7 +132,7 @@ impl AgentControlActionKind {
                 AgentControlMenuEffect::PrepareCommand(format!("/agent observe {target} "))
             }
             Self::Replies => {
-                AgentControlMenuEffect::PrepareCommand(format!("/agent replies {target} "))
+                AgentControlMenuEffect::PrepareCommand(format!("/agent sends {target} "))
             }
             Self::Close => AgentControlMenuEffect::PrepareCommand(format!("/agent close {target}")),
         }
@@ -205,7 +203,11 @@ fn agent_control_actions_view_params(
         .into_iter()
         .map(|kind| {
             let disabled_reason = kind.disabled_reason(state).map(str::to_string);
-            let action = kind.effect(thread_id, target);
+            let action = if kind == AgentControlActionKind::Replies && state.is_current {
+                AgentControlMenuEffect::PrepareCommand(format!("/agent sends {target} to "))
+            } else {
+                kind.effect(thread_id, target)
+            };
             SelectionItem {
                 name: kind.label().to_string(),
                 description: Some(kind.description().to_string()),

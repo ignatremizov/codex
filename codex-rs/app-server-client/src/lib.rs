@@ -1079,6 +1079,8 @@ mod tests {
             completed_at_ms: 0,
             item: codex_app_server_protocol::ThreadItem::AgentMessage {
                 id: "item".to_string(),
+                attribution: None,
+                input: None,
                 text: text.to_string(),
                 inter_agent_source: None,
                 phase: None,
