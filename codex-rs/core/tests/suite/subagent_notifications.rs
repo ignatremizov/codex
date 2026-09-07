@@ -6299,12 +6299,18 @@ async fn foreign_close_resumes_idle_lifecycle_after_revoking_final_wake(
         }
         sleep(Duration::from_millis(25)).await;
     }
-    sleep(Duration::from_millis(50)).await;
+    // Idle callbacks are level-triggered: close cleanup and ordinary completion can
+    // both probe the same idle observer. Re-probing must remain possible after the
+    // wake is revoked, without starting another model turn.
+    idle_rx.try_iter().for_each(drop);
+    test.codex
+        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+        .await;
     assert!(
         idle_rx
             .try_iter()
-            .all(|thread_id| thread_id != parent_thread_id),
-        "foreign close should resume the observer idle lifecycle once"
+            .any(|thread_id| thread_id == parent_thread_id),
+        "foreign close should leave the observer eligible for idle lifecycle probes"
     );
     assert!(
         unexpected_wake.requests().is_empty(),

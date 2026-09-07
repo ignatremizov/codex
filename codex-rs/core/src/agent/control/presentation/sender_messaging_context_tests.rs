@@ -31,6 +31,10 @@ async fn histories(threads: &[Arc<crate::CodexThread>]) -> Vec<Vec<ResponseItem>
 #[test_case(ThreadHistoryMode::Legacy; "legacy")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "exclude lifecycle refreshes while testing read-only request projection"
+)]
 async fn repeated_sender_snapshots_are_read_only_but_policy_mutation_delivers_notices(
     history_mode: ThreadHistoryMode,
 ) {
@@ -75,6 +79,10 @@ async fn repeated_sender_snapshots_are_read_only_but_policy_mutation_delivers_no
         .set_agent_subtree_messaging(UserAgentReplyRouteMode::Enabled)
         .await
         .expect("enable sibling messages");
+    // Publishing a runtime schedules a detached discovery refresh. Exclude those
+    // lifecycle writers while staging undelivered authority and proving that request
+    // projection itself neither delivers notices nor mutates the routing state.
+    let permission_transaction = control.acquire_messaging_permission_transaction().await;
     let source = sender.session.presentation_id();
     let target = peer.session.presentation_id();
     let enabled = control
@@ -149,6 +157,7 @@ async fn repeated_sender_snapshots_are_read_only_but_policy_mutation_delivers_no
         control.target_message_wake_is_current(target, source, "source-turn", reservation),
         "projection must not revoke the reservation using its filtered policy view"
     );
+    drop(permission_transaction);
     root.thread
         .set_agent_subtree_messaging(UserAgentReplyRouteMode::Disabled)
         .await
