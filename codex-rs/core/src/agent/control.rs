@@ -665,6 +665,7 @@ impl AgentControl {
             .map(|(submission_id, _resolution)| submission_id)
     }
 
+    #[cfg(test)]
     pub(crate) async fn send_input_observing_response(
         &self,
         agent_id: ThreadId,
@@ -770,6 +771,10 @@ impl AgentControl {
         .await
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "permission validation and exact input admission must serialize with revocation"
+    )]
     async fn send_input_observing_response_to_retained_thread_locked(
         &self,
         agent_id: ThreadId,
@@ -1112,6 +1117,10 @@ impl AgentControl {
     /// visible. Re-registering the policy at first input could duplicate commentary admission or
     /// promote presentation-only delivery back to passive delivery, so this path binds that exact
     /// reservation to the admitted turn instead.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "reserved input admission must serialize with messaging permission replacement"
+    )]
     pub(crate) async fn send_input_using_reserved_response_observation(
         &self,
         agent_id: ThreadId,

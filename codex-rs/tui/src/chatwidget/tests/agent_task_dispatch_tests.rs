@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn nested_spawn_keeps_issuing_thread_label_and_all_spawn_controls() {

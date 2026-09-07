@@ -1,6 +1,7 @@
 use super::*;
 use codex_app_server_protocol::AgentInputAttribution;
 use codex_app_server_protocol::AgentInputIdentity;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn trusted_agent_input_uses_same_rich_cell_live_and_on_resume() {

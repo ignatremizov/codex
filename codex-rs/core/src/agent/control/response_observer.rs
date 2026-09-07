@@ -343,6 +343,10 @@ impl AgentControl {
         })
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "route replacement and reservation revocation must serialize with input admission"
+    )]
     pub(crate) async fn replace_durable_target_message_route(
         &self,
         target_thread_id: ThreadId,

@@ -1,6 +1,7 @@
 use super::*;
 use crate::UserAgentResponseHandling;
 use crate::UserAgentSpawnOptions;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn nested_task_labels_and_selectors_use_the_issuing_threads_alias() {

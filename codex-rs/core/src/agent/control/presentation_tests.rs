@@ -5,6 +5,7 @@ use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::session::TurnInput;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use pretty_assertions::assert_eq;
 use std::collections::HashSet;
 use std::time::Duration;
 

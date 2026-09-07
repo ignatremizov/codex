@@ -230,10 +230,10 @@ impl LiveRevertMessagingSnapshot {
 impl Drop for LiveRevertMessagingSnapshot {
     fn drop(&mut self) {
         let mut state = self.presentations.state();
-        if !state
+        if state
             .live_revert_messaging
             .get(&self.source)
-            .is_some_and(|marker| marker.generation == self.source_generation)
+            .is_none_or(|marker| marker.generation != self.source_generation)
         {
             return;
         }

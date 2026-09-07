@@ -1,5 +1,6 @@
 use super::*;
 use crate::AgentTaskPathMapping;
+use pretty_assertions::assert_eq;
 
 fn allocation(root: ThreadId, child: ThreadId, task_path: &str) -> AllocateAgentAliasRequest {
     AllocateAgentAliasRequest {

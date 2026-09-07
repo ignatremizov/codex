@@ -2,6 +2,7 @@ use super::*;
 use crate::UserAgentReplyRouteMode;
 use crate::UserAgentResponseHandling;
 use crate::UserAgentSpawnOptions;
+use pretty_assertions::assert_eq;
 use test_case::test_case;
 
 #[derive(Clone, Copy)]

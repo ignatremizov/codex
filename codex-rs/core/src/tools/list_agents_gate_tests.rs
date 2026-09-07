@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn v1_directory_requires_explicit_enablement_even_for_labeled_leaves() {

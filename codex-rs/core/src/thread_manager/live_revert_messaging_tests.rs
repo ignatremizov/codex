@@ -6,6 +6,7 @@ use crate::UserAgentSpawnOptions;
 use crate::agent::control::TargetMessageAdmission;
 use crate::agent::control::TargetMessageAdmissionMode;
 use crate::agent::control::TargetMessageRouteMode;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn live_revert_rebinds_send_policy_without_turn_scoped_wake_grants() {

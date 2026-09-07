@@ -4,6 +4,7 @@ use codex_protocol::protocol::sub_agent_completion_transcript;
 use codex_protocol::protocol::sub_agent_completion_transcript_with_visibility;
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 fn completed_item(agent_reference: &str, response: &str) -> (String, String) {
     let (id, text) = sub_agent_completion_transcript(

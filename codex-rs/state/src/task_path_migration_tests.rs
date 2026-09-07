@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn task_path_migration_upgrades_existing_aliases_without_reusing_lifecycle_paths() {

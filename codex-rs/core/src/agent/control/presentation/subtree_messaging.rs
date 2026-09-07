@@ -29,6 +29,10 @@ impl AgentControl {
         self.wait_agent_presentations.messaging_refresh.lock().await
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "subtree mutation and derived-route reconciliation form one permission transaction"
+    )]
     pub(crate) async fn set_subtree_messaging(
         &self,
         root: SessionPresentationId,
@@ -68,6 +72,10 @@ impl AgentControl {
         self.refresh_messaging_context(current).await
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "reconciliation must serialize across runtime reads and permission publication"
+    )]
     async fn refresh_messaging_context(&self, current: ThreadId) -> CodexResult<()> {
         #[cfg(test)]
         if let Some(attempted) = self

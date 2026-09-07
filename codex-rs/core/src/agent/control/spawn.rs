@@ -2137,7 +2137,6 @@ impl AgentControl {
                 .map(|persisted| (persisted.alias.task_path, persisted.task_path_mapping))
                 .unwrap_or_default();
             AgentAdoptionResult {
-                thread_id: outcome.thread_id,
                 task_path,
                 task_path_mapping,
             }

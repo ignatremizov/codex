@@ -62,7 +62,6 @@ pub(crate) struct PersistedAgentAlias {
 
 #[derive(Debug)]
 pub(crate) struct AgentAdoptionResult {
-    pub(crate) thread_id: ThreadId,
     pub(crate) task_path: Option<String>,
     pub(crate) task_path_mapping: Vec<codex_agent_graph_store::AgentTaskPathMapping>,
 }
