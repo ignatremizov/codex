@@ -18,6 +18,7 @@ const SUB_AGENT_COMPLETION_CONTEXT_ID_PREFIX: &str = "amsg_x";
 const AGENT_MESSAGE_ID_PREFIX: &str = "amsg_";
 const USER_AGENT_TASK_CONTEXT_ID_PREFIX: &str = "msg_t";
 const ATTRIBUTED_AGENT_MESSAGE_ID_PREFIX: &str = "msg_a";
+const AGENT_RECEIPT_ID_PREFIX: &str = "msg_r";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_PREFIX: &str = "Agent final answer from `";
 const SUB_AGENT_COMPLETION_TRANSCRIPT_SEPARATOR: &str = "`:\n\n";
 
@@ -130,6 +131,74 @@ pub fn is_attributed_agent_message_response_item_id(id: &str) -> bool {
     has_uuid_v7_suffix(id, ATTRIBUTED_AGENT_MESSAGE_ID_PREFIX)
 }
 
+/// Projects an acknowledged delivery into a live, presentation-only receipt.
+///
+/// Endpoints, phase, and recipient model visibility come from core delivery state, never from
+/// the payload. The root copy itself is always presentation-only. Reusing the
+/// delivery identity makes retries stable, while including the recipient distinguishes fan-out.
+pub fn agent_delivery_receipt_item(
+    sender: crate::ThreadId,
+    recipient: crate::ThreadId,
+    phase: MessagePhase,
+    recipient_model_visibility: SubAgentCompletionModelVisibility,
+    delivery_id: &str,
+    text: &str,
+) -> Option<AgentMessageItem> {
+    let (_, suffix) = delivery_id.rsplit_once('_')?;
+    if !has_uuid_v7(suffix) {
+        return None;
+    }
+    let phase = match phase {
+        MessagePhase::Commentary => "c",
+        MessagePhase::FinalAnswer => "f",
+    };
+    let id = ResponseItemId::with_suffix(
+        &format!(
+            "{AGENT_RECEIPT_ID_PREFIX}{phase}_{}_{sender}_{recipient}",
+            match recipient_model_visibility {
+                SubAgentCompletionModelVisibility::Visible => "v",
+                SubAgentCompletionModelVisibility::NotVisible => "x",
+            }
+        ),
+        suffix,
+    );
+    let mut item = AgentMessageItem::new(&[AgentMessageContent::Text {
+        text: text.to_string(),
+    }]);
+    item.id = id.to_string();
+    item.phase = Some(MessagePhase::Commentary);
+    Some(item)
+}
+
+/// Reads trusted receipt direction across the ordinary agent-message client projection.
+pub fn agent_delivery_receipt_from_response_item_id(
+    id: &str,
+) -> Option<(
+    crate::ThreadId,
+    crate::ThreadId,
+    MessagePhase,
+    SubAgentCompletionModelVisibility,
+)> {
+    let suffix = id.strip_prefix(AGENT_RECEIPT_ID_PREFIX)?;
+    let mut parts = suffix.split('_');
+    let phase = match parts.next()? {
+        "c" => MessagePhase::Commentary,
+        "f" => MessagePhase::FinalAnswer,
+        _ => return None,
+    };
+    let recipient_model_visibility = match parts.next()? {
+        "v" => SubAgentCompletionModelVisibility::Visible,
+        "x" => SubAgentCompletionModelVisibility::NotVisible,
+        _ => return None,
+    };
+    let sender = crate::ThreadId::from_string(parts.next()?).ok()?;
+    let recipient = crate::ThreadId::from_string(parts.next()?).ok()?;
+    if !has_uuid_v7(parts.next()?) || parts.next().is_some() {
+        return None;
+    }
+    Some((sender, recipient, phase, recipient_model_visibility))
+}
+
 /// Parses a received, core-authored agent input presentation.
 pub fn attributed_agent_message_transcript_parts(text: &str) -> Option<(&str, &str)> {
     text.strip_prefix("Agent message from `")?
@@ -228,6 +297,7 @@ impl AgentMessageItem {
 pub fn ordinary_agent_message_response_item_id(id: &str) -> String {
     if sub_agent_completion_status_from_response_item_id(id).is_some()
         || is_attributed_agent_message_response_item_id(id)
+        || agent_delivery_receipt_from_response_item_id(id).is_some()
     {
         format!("agent_{id}")
     } else {

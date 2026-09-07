@@ -83,6 +83,8 @@ impl AgentControlSummary {
                 attribution: None,
                 ..
             } if sub_agent_completion_status_from_response_item_id(id).is_none()
+                && codex_protocol::protocol::agent_delivery_receipt_from_response_item_id(id)
+                    .is_none()
                 && !codex_protocol::protocol::is_attributed_agent_message_response_item_id(id) =>
             {
                 detailed_agent_preview(text)

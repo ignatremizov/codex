@@ -3,6 +3,9 @@ use super::*;
 #[path = "subagent_downward_permissions.rs"]
 mod downward_permissions;
 
+#[path = "subagent_delivery_receipts.rs"]
+mod delivery_receipts;
+
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

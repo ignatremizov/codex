@@ -114,6 +114,8 @@ pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
 pub use crate::sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use crate::sub_agent_completion::SubAgentCompletionStatus;
+pub use crate::sub_agent_completion::agent_delivery_receipt_from_response_item_id;
+pub use crate::sub_agent_completion::agent_delivery_receipt_item;
 pub use crate::sub_agent_completion::agent_message_audit_transcript_parts;
 pub use crate::sub_agent_completion::attributed_agent_message_transcript_parts;
 pub use crate::sub_agent_completion::is_attributed_agent_message_response_item_id;

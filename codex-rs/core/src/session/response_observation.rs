@@ -769,10 +769,13 @@ fn agent_response_event(event: &EventMsg, sequence: u64) -> Option<AgentResponse
             turn_id: event.turn_id.clone(),
             sequence,
         }),
+        // Incoming messages and completion receipts share commentary presentation, but are
+        // not responses authored by this thread and must never satisfy its subscriptions.
         EventMsg::ItemCompleted(event) => match &event.item {
             TurnItem::AgentMessage(item)
                 if matches!(item.phase.as_ref(), Some(MessagePhase::Commentary))
-                    && !item.is_attributed_agent_input_presentation() =>
+                    && !item.is_attributed_agent_input_presentation()
+                    && !item.has_sub_agent_completion_identity() =>
             {
                 Some(AgentResponseEvent::Commentary {
                     turn_id: event.turn_id.clone(),

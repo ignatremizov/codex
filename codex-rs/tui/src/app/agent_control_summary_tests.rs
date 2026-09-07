@@ -48,6 +48,15 @@ fn summary_separates_received_peer_input_from_own_response() {
     let recipient = ThreadId::new();
     let received = codex_protocol::protocol::new_attributed_agent_message_response_item_id();
     let mirror = codex_protocol::protocol::new_attributed_agent_message_response_item_id();
+    let receipt = codex_protocol::protocol::agent_delivery_receipt_item(
+        sender,
+        recipient,
+        MessagePhase::FinalAnswer,
+        codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible,
+        mirror.as_str(),
+        "Delivered output must not replace the response or received-input summary.",
+    )
+    .expect("receipt");
     let mut store = ThreadEventStore::new(/*capacity*/ 4);
     store.set_turns(vec![turn(
         "turn",
@@ -68,6 +77,17 @@ fn summary_separates_received_peer_input_from_own_response() {
                 text: format!(
                     "Agent message from `{sender}` to `{recipient}`:\n\nPeer-only update."
                 ),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+                attribution: None,
+                input: None,
+                delivery: None,
+                questions: None,
+            },
+            ThreadItem::AgentMessage {
+                id: receipt.id,
+                text: "Delivered output must not replace the response or received-input summary."
+                    .to_string(),
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 attribution: None,

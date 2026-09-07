@@ -883,6 +883,19 @@ The exact commentary envelope remains in durable model context, while app-server
 projection converts it to a plain source-agent label and message. The TUI resolves that source UUID
 to current agent metadata and must not expose the internal tag or JSON payload.
 
+Received completion presentations are receipts, not commentary authored by the receiving agent.
+They must not satisfy that agent's `c` subscriptions or be forwarded as its response, either live
+or when reconstructing observation state from a rollout. The next genuinely authored commentary
+remains eligible for delivery.
+
+Main's live transcript can show directional receipts when a child receives Main's commentary or
+final output. These identify Main as the sender, the child as the recipient, and whether the
+recipient's model receives the output or only its presentation does. Receipt copies themselves
+are presentation-only in Main: they do not enter Main's rollout or model context, install
+subscriptions, or wake a turn. Normal history uses the configured response preview; the full
+transcript retains the complete receipt payload. In-process refresh keeps these live copies,
+but a cold resume does not reconstruct a separate receipt in Main from the child's history.
+
 Non-paginated and paginated rollouts should preserve the same canonical observation and delivery
 information. Raw function-call arguments alone are not sufficient because they contain the
 model-authored target reference and cannot represent the eventual target-turn binding or resolved

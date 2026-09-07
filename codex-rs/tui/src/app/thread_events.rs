@@ -73,16 +73,17 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Request(_)
             | ThreadBufferedEvent::McpInventoryResult(_)
             | ThreadBufferedEvent::FeedbackSubmission(_) => true,
-            // Peer-message mirrors have no root rollout record to reload. Keep the live copy
-            // through an in-process refresh, just like other transient presentation events.
+            // Peer-message mirrors and delivery receipts have no root rollout record to reload.
+            // Keep the live copy through an in-process refresh, like other transient events.
             ThreadBufferedEvent::Notification(notification)
                 if matches!(notification.as_ref(), ServerNotification::ItemCompleted(event)
                     if matches!(&event.item, ThreadItem::AgentMessage {
                         id, text, attribution, phase: Some(codex_protocol::models::MessagePhase::Commentary), ..
-                    } if codex_protocol::protocol::is_attributed_agent_message_response_item_id(id)
+                    } if codex_protocol::protocol::agent_delivery_receipt_from_response_item_id(id).is_some()
+                        || (codex_protocol::protocol::is_attributed_agent_message_response_item_id(id)
                         && (attribution.as_ref().is_some_and(|attribution| {
                             attribution.recipient.thread_id != event.thread_id
-                        }) || codex_protocol::protocol::agent_message_audit_transcript_parts(text).is_some()))) =>
+                        }) || codex_protocol::protocol::agent_message_audit_transcript_parts(text).is_some())))) =>
             {
                 true
             }
@@ -872,6 +873,62 @@ mod tests {
         let snapshot = store.snapshot();
         assert!(snapshot.events.is_empty());
         assert_eq!(store.has_pending_thread_approvals(), false);
+    }
+
+    #[test]
+    fn receipt_buffer_survives_disk_refresh_without_duplicating_hydrated_items() {
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        let receipt = codex_protocol::protocol::agent_delivery_receipt_item(
+            sender,
+            recipient,
+            codex_protocol::models::MessagePhase::FinalAnswer,
+            codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible,
+            codex_protocol::protocol::new_sub_agent_completion_context_response_item_id().as_str(),
+            "Main's delivered answer",
+        )
+        .expect("receipt");
+        let item = ThreadItem::AgentMessage {
+            id: receipt.id,
+            text: "Main's delivered answer".to_string(),
+            phase: receipt.phase,
+            memory_citation: None,
+            attribution: None,
+            input: None,
+            delivery: None,
+            questions: None,
+        };
+        let notification = ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                thread_id: sender.to_string(),
+                turn_id: "turn-receipt".to_string(),
+                item: item.clone(),
+                completed_at_ms: 0,
+            },
+        );
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification_ref(&notification);
+        store.rebase_buffer_after_session_refresh();
+        assert_eq!(store.snapshot().events.len(), 1);
+        store.set_turns(vec![test_turn(
+            "turn-receipt",
+            TurnStatus::Completed,
+            vec![item],
+        )]);
+        assert!(
+            store.snapshot().events.is_empty(),
+            "hydrated receipt is not replayed twice"
+        );
+        store.set_turns(Vec::new());
+        store.rebase_buffer_after_session_refresh();
+        let snapshot = store.snapshot();
+        let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
+            panic!("disk-only refresh must retain the raw receipt");
+        };
+        assert_eq!(
+            serde_json::to_value(actual).expect("serialize receipt"),
+            serde_json::to_value(notification).expect("serialize expected receipt")
+        );
     }
 
     #[test]
