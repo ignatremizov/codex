@@ -65,7 +65,7 @@ fn subtree_permissions_follow_new_members_with_explicit_exceptions() {
         .join("\n");
     insta::assert_snapshot!(text, @"
     Messaging permissions:
-    Send to Main: enabled · inherited
+    Send to Main [default]: enabled · inherited
     Send to Reviewer: disabled · explicit
     Receive from Reviewer: enabled · inherited
     Permission does not assign a task.
@@ -121,7 +121,7 @@ fn disabled_subtree_summary_excludes_supervisor_dispatch_in_both_views() {
 
     Coder:
     Messaging permissions:
-    Send to Main: disabled · inherited
+    Send to Main [default]: disabled · inherited
     Send to Reviewer: disabled · inherited
     Receive from Reviewer: disabled · inherited
     Receive from Worker: disabled · inherited

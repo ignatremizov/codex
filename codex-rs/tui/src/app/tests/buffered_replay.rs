@@ -118,11 +118,13 @@ async fn live_peer_message_remains_visible_in_history_and_transcript_after_refre
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        insta::assert_snapshot!(history, @r"
-        • Banach [coder] sends to Franklin [coder] (○ not visible):
-          └ Use API revision 2.
-            The field is optional.
-        ");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(history, @r"
+            • Banach [coder] sends to Franklin [coder] (○ not visible):
+              └ Use API revision 2.
+                The field is optional.
+            ");
+        }
         assert_eq!(transcript, history, "{presentation}");
     }
 }

@@ -24,13 +24,28 @@ fn response_flags_accept_reordering_repetition_and_counted_cancellation() {
         ("ccmmqqxff", "cfmq"),
         ("xxff", "fx"),
     ] {
-        let input_command = format!("2 w:{input} prompt");
-        let canonical_command = format!("2 w:{canonical} prompt");
-        assert_eq!(
-            parse_agent_command(&input_command),
-            parse_agent_command(&canonical_command),
-            "{input}"
-        );
+        let response = parse_response_mode(canonical).expect("valid canonical response flags");
+        for flags in [input, canonical] {
+            let prefix = format!("2 w:{flags} ");
+            let command = format!("{prefix}prompt");
+            // Equivalent flags retain the byte offset of their authored prompt.
+            assert_eq!(
+                parse_agent_command(&command),
+                Ok(AgentCommand::SelectOrDispatch {
+                    selector: selector(AgentSelectorKind::Ref(2), "2"),
+                    task: None,
+                    fork: None,
+                    response: Some(response),
+                    model: None,
+                    reasoning_effort: None,
+                    prompt: Some(AgentCommandPrompt {
+                        text: "prompt",
+                        offset: prefix.len(),
+                    }),
+                }),
+                "{flags}"
+            );
+        }
     }
     assert_eq!(
         parse_response_mode("ffxx").unwrap(),

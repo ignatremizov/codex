@@ -5243,10 +5243,10 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                       Select an agent to watch. ⌥ + ← previous, ⌥ + → next.
 
                       Filter by ref, name, role, path, or UUID
-                    › 1 • Main [default]     [root] · completed
-                      2 ↳ • worker [worker]  [child] · idle
+                    › 1 • Main [default] /root  [root] · completed
+                      2 ↳ • worker [worker]     [child] · idle
 
-                      Main [default]
+                      Main [default] /root
                       completed · ref 1
                       UUID: [root]
                       Model: [model]
