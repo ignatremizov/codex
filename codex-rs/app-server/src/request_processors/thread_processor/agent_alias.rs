@@ -36,6 +36,7 @@ impl ThreadRequestProcessor {
                 thread_id: alias.thread_id.to_string(),
                 agent_ref: alias.agent_ref.to_string(),
                 nickname: alias.nickname,
+                task_path: alias.task_path,
                 state: match alias.state {
                     codex_state::AgentAliasState::Active => AgentAliasState::Active,
                     codex_state::AgentAliasState::Closed => AgentAliasState::Closed,

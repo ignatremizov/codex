@@ -52,12 +52,12 @@ async fn options_resume_reuses_surviving_child_owner_and_cold_provider(shared: b
     let response_handling = UserAgentResponseHandling::from_parts(
         /*commentary*/ false,
         UserAgentFinalResponseHandling::None,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
     let survivor = root
         .thread
         .spawn_agent(UserAgentSpawnOptions {
+            task: None,
             role: None,
             model: None,
             reasoning_effort: None,
@@ -69,6 +69,7 @@ async fn options_resume_reuses_surviving_child_owner_and_cold_provider(shared: b
     let target = root
         .thread
         .spawn_agent(UserAgentSpawnOptions {
+            task: None,
             role: None,
             model: None,
             reasoning_effort: None,

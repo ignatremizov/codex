@@ -262,6 +262,8 @@ mod tests {
             turns[1].items[1],
             ThreadItem::AgentMessage {
                 id: "item-4".into(),
+                attribution: None,
+                input: None,
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
                 inter_agent_source: None,
                 phase: None,
@@ -297,6 +299,8 @@ mod tests {
             turns[0].items.last(),
             Some(&ThreadItem::AgentMessage {
                 id: "item-3".into(),
+                attribution: None,
+                input: None,
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
                 inter_agent_source: None,
                 phase: None,

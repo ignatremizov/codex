@@ -25,7 +25,6 @@ mod spawn;
 pub struct UserAgentResponseHandling {
     commentary: bool,
     final_response: FinalResponseObservation,
-    target_messages: bool,
     queue_input: bool,
 }
 
@@ -40,50 +39,42 @@ impl UserAgentResponseHandling {
     pub const Passive: Self = Self::new(
         /*commentary*/ false,
         FinalResponseObservation::Passive,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
     pub const Commentary: Self = Self::new(
         /*commentary*/ true,
         FinalResponseObservation::Passive,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
     pub const Wake: Self = Self::new(
         /*commentary*/ false,
         FinalResponseObservation::Wake,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
     pub const Presentation: Self = Self::new(
         /*commentary*/ false,
         FinalResponseObservation::PresentationOnly,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
     pub const CommentaryWake: Self = Self::new(
         /*commentary*/ true,
         FinalResponseObservation::Wake,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
     pub const CommentaryPresentation: Self = Self::new(
         /*commentary*/ true,
         FinalResponseObservation::PresentationOnly,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
 
     const fn new(
         commentary: bool,
         final_response: FinalResponseObservation,
-        target_messages: bool,
         queue_input: bool,
     ) -> Self {
         Self {
             commentary,
             final_response,
-            target_messages,
             queue_input,
         }
     }
@@ -91,7 +82,6 @@ impl UserAgentResponseHandling {
     pub fn from_parts(
         commentary: bool,
         final_response: UserAgentFinalResponseHandling,
-        target_messages: bool,
         queue_input: bool,
     ) -> Self {
         Self::new(
@@ -104,7 +94,6 @@ impl UserAgentResponseHandling {
                     FinalResponseObservation::PresentationOnly
                 }
             },
-            target_messages,
             queue_input,
         )
     }
@@ -114,9 +103,6 @@ impl UserAgentResponseHandling {
     }
     pub fn final_response(self) -> UserAgentFinalResponseHandling {
         self.final_response.into()
-    }
-    pub fn target_messages(self) -> bool {
-        self.target_messages
     }
     pub fn queue_input(self) -> bool {
         self.queue_input
@@ -138,6 +124,8 @@ pub enum UserAgentForkMode {
 /// Inputs for spawning a user-controlled default or configured-role child.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UserAgentSpawnOptions {
+    /// Optional assignment label, resolved relative to the issuing thread's task path.
+    pub task: Option<String>,
     /// Configured role selected for the child, or the default role when omitted.
     pub role: Option<String>,
     /// Explicit child model override.
@@ -176,15 +164,6 @@ pub enum UserAgentObservationMode {
     Presentation,
 }
 
-/// User-authored state for a target's attributed reply route.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UserAgentReplyRouteMode {
-    /// Permit attributed input from every later target turn.
-    Enabled,
-    /// Reject attributed input until the user enables the route again.
-    Disabled,
-}
-
 /// Exact target work whose final-response handling was replaced.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UserAgentObservationBinding {
@@ -221,12 +200,7 @@ impl From<FinalResponseObservation> for UserAgentFinalResponseHandling {
 
 impl From<UserAgentResponseHandling> for ResponseObservationPolicy {
     fn from(value: UserAgentResponseHandling) -> Self {
-        Self::from_turn_parts(
-            value.commentary,
-            value.final_response,
-            value.target_messages,
-            value.queue_input,
-        )
+        Self::from_turn_parts(value.commentary, value.final_response, value.queue_input)
     }
 }
 
@@ -245,7 +219,6 @@ impl TryFrom<ResponseObservationPolicy> for UserAgentResponseHandling {
         Ok(Self::from_parts(
             value.commentary(),
             final_response,
-            value.target_messages(),
             value.queue_input(),
         ))
     }
@@ -268,7 +241,7 @@ impl CodexThread {
     /// Resolve a root-scoped alias or canonical UUID without authorizing a lifecycle mutation.
     pub async fn resolve_user_agent_target(&self, target: &str) -> CodexResult<ThreadId> {
         self.native_user_agent_control()?
-            .resolve_resumable_agent_target(target)
+            .resolve_resumable_agent_target(self.session.thread_id(), target)
             .await
     }
 
@@ -287,7 +260,6 @@ impl CodexThread {
                 response_handling: UserAgentResponseHandling::from_parts(
                     turn.response_observation.commentary(),
                     turn.response_observation.final_response().into(),
-                    turn.response_observation.target_messages(),
                     turn.response_observation.queue_input(),
                 ),
                 authored_selector: turn.authored_selector,
@@ -368,6 +340,8 @@ pub struct UserAgentResumeResult {
     pub agent_ref: Option<u64>,
     /// Authoritative root-scoped nickname, when one is assigned.
     pub nickname: Option<String>,
+    /// Current assignment label from the root-scoped alias store.
+    pub task_path: Option<String>,
     /// Target status after the live control relationship is established.
     pub status: AgentStatus,
     /// Exclusive ownership transition committed by an explicit out-of-root adoption.
@@ -385,6 +359,8 @@ pub struct UserAgentOwnershipTransfer {
     pub previous_session_id: Option<SessionId>,
     /// Root that now exclusively controls the adopted subtree.
     pub new_session_id: SessionId,
+    /// Committed assignment-label remapping; unavailable after some post-commit failures.
+    pub task_path_mapping: Vec<codex_agent_graph_store::AgentTaskPathMapping>,
 }
 
 /// Canonical result of spawning a user-controlled agent.
@@ -396,6 +372,8 @@ pub struct UserAgentSpawnResult {
     pub agent_ref: Option<u64>,
     /// Generated user-facing nickname.
     pub nickname: Option<String>,
+    /// Current assignment label from the root-scoped alias store.
+    pub task_path: Option<String>,
     /// Child status after optional first-turn admission.
     pub status: AgentStatus,
     /// `None` for prompt-less creation.

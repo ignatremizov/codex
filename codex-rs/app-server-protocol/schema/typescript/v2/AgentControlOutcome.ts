@@ -5,11 +5,12 @@ import type { AgentFinalResponseHandling } from "./AgentFinalResponseHandling";
 import type { AgentInputOutcome } from "./AgentInputOutcome";
 import type { AgentObservationBinding } from "./AgentObservationBinding";
 import type { AgentReplyRouteMode } from "./AgentReplyRouteMode";
+import type { AgentTaskPathMapping } from "./AgentTaskPathMapping";
 
 /**
  * Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.
  */
-export type AgentControlOutcome = { "type": "spawned", targetThreadId: string, ref: string | null, nickname: string | null, inputOutcome: AgentInputOutcome | null,
+export type AgentControlOutcome = { "type": "spawned", targetThreadId: string, ref: string | null, nickname: string | null, inputOutcome: AgentInputOutcome | null, taskPath: string | null,
 /**
  * Non-retryable degradation after child input admission or uncertain routing.
  */
@@ -27,7 +28,7 @@ turnId: string | null,
  * Non-retryable degradation after target input admission, including an indeterminate
  * target turn after enqueue.
  */
-postAdmissionWarning: string | null, } | { "type": "resumed", targetThreadId: string, ref: string | null, nickname: string | null, observationBinding: AgentObservationBinding | null,
+postAdmissionWarning: string | null, } | { "type": "resumed", targetThreadId: string, ref: string | null, nickname: string | null, taskPath: string | null, taskPathMapping: Array<AgentTaskPathMapping>, observationBinding: AgentObservationBinding | null,
 /**
  * Degradation that occurred after an exclusive ownership transfer committed.
  */
@@ -35,4 +36,4 @@ postCommitWarning: string | null, } | { "type": "interrupted", targetThreadId: s
 /**
  * Non-retryable degradation after follow-up input admission or uncertain routing.
  */
-postAdmissionWarning: string | null, } | { "type": "closed", targetThreadId: string, } | { "type": "observed", targetThreadId: string, previousResponseHandling: AgentFinalResponseHandling, responseHandling: AgentFinalResponseHandling, binding: AgentObservationBinding, } | { "type": "replyRouteChanged", targetThreadId: string, previousMode: AgentReplyRouteMode | null, mode: AgentReplyRouteMode, } ;
+postAdmissionWarning: string | null, } | { "type": "closed", targetThreadId: string, } | { "type": "observed", targetThreadId: string, previousResponseHandling: AgentFinalResponseHandling, responseHandling: AgentFinalResponseHandling, binding: AgentObservationBinding, } | { "type": "replyRouteChanged", targetThreadId: string, recipientThreadId: string, previousMode: AgentReplyRouteMode | null, mode: AgentReplyRouteMode, } | { "type": "subtreeMessagingChanged", rootThreadId: string, previousMode: AgentReplyRouteMode | null, mode: AgentReplyRouteMode, };
