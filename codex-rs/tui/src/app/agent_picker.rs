@@ -274,7 +274,9 @@ impl App {
             self.agent_navigation
                 .set_parent_thread_id(thread_id, parent_thread_id);
             if !live && update_liveness {
-                self.agent_navigation.set_running(thread_id, is_running);
+                // A picker snapshot has no exact-turn authority over subscriptions.
+                self.agent_navigation
+                    .update_visual_status(thread_id, &thread.status);
             }
         }
         for thread_id in refresh.archived_thread_ids {
