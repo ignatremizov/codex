@@ -177,7 +177,14 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         "no receipt-driven Main wake"
     );
     assert_eq!(
-        child_done.requests().len(),
+        // ResponseMock records before the custom matcher runs, so Main's concurrent
+        // request can also be captured here. Count only this child's tool continuation;
+        // an unintended subsequent child request would retain the same call in history.
+        child_done
+            .requests()
+            .iter()
+            .filter(|request| request.has_function_call(CALL_ID))
+            .count(),
         1,
         "receipt cannot start a child turn"
     );

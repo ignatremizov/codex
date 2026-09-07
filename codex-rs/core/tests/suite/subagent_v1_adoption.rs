@@ -46,6 +46,11 @@ async fn native_resume_reports_committed_foreign_root_assignment(
         })
         .await?;
     foreign.thread.flush_rollout().await?;
+    // Root aliases are lazy. Materialize the source namespace so adoption must report
+    // clearing or replacing its reserved /root assignment, not an absent legacy label.
+    test.thread_manager
+        .ensure_agent_alias_namespace_for_thread(foreign.thread_id)
+        .await?;
     foreign.thread.submit(Op::Shutdown {}).await?;
     wait_for_event(foreign.thread.as_ref(), |event| {
         matches!(event, EventMsg::ShutdownComplete)

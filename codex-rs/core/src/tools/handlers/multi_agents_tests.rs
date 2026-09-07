@@ -578,6 +578,7 @@ async fn spawn_agent_history_fork_applies_authorized_role_override() {
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
     let output = SpawnAgentHandler::default()
         .handle(invocation(
             Arc::new(session),
@@ -622,6 +623,7 @@ async fn spawn_agent_explicit_model_overrides_configured_role_model_and_effort_d
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
 
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -1011,6 +1013,7 @@ async fn spawn_agent_service_tier_override_validates_the_effective_child_model()
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1121,6 +1124,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1162,6 +1166,7 @@ async fn spawn_agent_service_tier_inheritance_preserves_supported_or_configured_
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1225,6 +1230,7 @@ service_tier = "priority"
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
         session.thread_id = root.thread_id;
+        session.instance_id = root.thread.session.instance_id;
 
         let output = SpawnAgentHandler::default()
             .handle(invocation(
@@ -1298,6 +1304,7 @@ service_tier = "turbo"
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(
@@ -1398,6 +1405,7 @@ async fn spawn_agent_full_history_fork_accepts_explicit_service_tier() {
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session.instance_id = root.thread.session.instance_id;
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(

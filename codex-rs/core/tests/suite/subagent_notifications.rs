@@ -1427,12 +1427,40 @@ async fn subagent_start_replaces_session_start_and_injects_context() -> Result<(
         Some(spawned_id.as_str())
     );
 
+    // Model-authored delegation is agent input, not a user prompt. A genuine user
+    // follow-up still runs UserPromptSubmit with the child's hook identity.
+    const CHILD_USER_PROMPT: &str = "user follow-up to the child lifecycle fixture";
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, CHILD_USER_PROMPT),
+        sse(vec![
+            ev_response_created("resp-child-user"),
+            ev_completed("resp-child-user"),
+        ]),
+    )
+    .await;
+    let child = test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    wait_for_terminal_status(child.as_ref()).await?;
+    test.codex
+        .prompt_live_agent(
+            &spawned_id,
+            vec![UserInput::Text {
+                text: CHILD_USER_PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
     let user_prompt_submit_inputs = wait_for_hook_log(
         test.codex_home_path(),
         "user_prompt_submit_hook_log.jsonl",
         /*expected_len*/ 2,
     )
     .await?;
+    assert_eq!(user_prompt_submit_inputs.len(), 2);
     let parent_prompt_input = user_prompt_submit_inputs
         .iter()
         .find(|input| input["prompt"].as_str() == Some(TURN_1_PROMPT))
@@ -1442,7 +1470,7 @@ async fn subagent_start_replaces_session_start_and_injects_context() -> Result<(
 
     let child_prompt_input = user_prompt_submit_inputs
         .iter()
-        .find(|input| input["prompt"].as_str() == Some(CHILD_PROMPT))
+        .find(|input| input["prompt"].as_str() == Some(CHILD_USER_PROMPT))
         .expect("child prompt submit hook input should be logged");
     assert_eq!(
         child_prompt_input["agent_id"].as_str(),

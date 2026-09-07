@@ -1533,10 +1533,12 @@ async fn run_subagent_global_instruction_case(fork_context: bool) -> Result<()> 
     let child_request = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(request) = child_mock.requests().into_iter().find(|request| {
-                request
-                    .message_input_texts("user")
-                    .iter()
-                    .any(|text| text == SPAWN_CHILD_PROMPT)
+                request.message_input_texts("user").iter().any(|text| {
+                    text.strip_prefix("<agent_message>")
+                        .and_then(|text| text.strip_suffix("</agent_message>"))
+                        .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                        .is_some_and(|message| message["message"] == SPAWN_CHILD_PROMPT)
+                })
             }) {
                 break request;
             }
@@ -1582,7 +1584,12 @@ async fn run_subagent_global_instruction_case(fork_context: bool) -> Result<()> 
         assert_eq!(
             child_user_texts
                 .iter()
-                .filter(|text| text.as_str() == SPAWN_CHILD_PROMPT)
+                .filter(|text| {
+                    text.strip_prefix("<agent_message>")
+                        .and_then(|text| text.strip_suffix("</agent_message>"))
+                        .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                        .is_some_and(|message| message["message"] == SPAWN_CHILD_PROMPT)
+                })
                 .count(),
             1,
             "fresh-context subagent should contain its own prompt exactly once; observed: {child_user_texts:?}"
