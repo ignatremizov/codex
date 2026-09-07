@@ -6,6 +6,7 @@ use codex_app_server_protocol::AgentControlResponse;
 use codex_app_server_protocol::AgentForkMode;
 use codex_app_server_protocol::AgentReplyRouteMode;
 use codex_app_server_protocol::AgentResponseHandling;
+use pretty_assertions::assert_eq;
 
 async fn control(
     app: &mut TestAppServer,

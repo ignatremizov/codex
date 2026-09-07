@@ -438,6 +438,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         agent_ref,
         nickname,
         post_admission_warning,
+        task_path,
     } = spawned.outcome
     else {
         panic!("agent spawn should return spawned");
@@ -445,6 +446,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     assert_ne!(spawned_thread_id, child_thread_id);
     assert_eq!(agent_ref.as_deref(), Some("3"));
     assert!(nickname.is_some());
+    assert_eq!(task_path, None);
     assert_eq!(post_admission_warning, None);
     user_spawn_turn.single_request();
 
@@ -524,6 +526,8 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             target_thread_id: child_thread_id.clone(),
             agent_ref: Some("2".to_string()),
             nickname: Some(child_nickname.clone()),
+            task_path: None,
+            task_path_mapping: Vec::new(),
             observation_binding: Some(AgentObservationBinding::NextTurn),
             post_commit_warning: None,
         }
@@ -768,6 +772,7 @@ async fn unaliased_legacy_child_alias_list_uses_persisted_root() -> Result<()> {
             thread_id: child_thread_id,
             agent_ref: 2,
             nickname: Some("legacy-worker".to_string()),
+            task_path: None,
             state: codex_state::AgentAliasState::Active,
         })
     );

@@ -231,6 +231,7 @@ async fn thread_delete_preserves_spawned_descendants_and_their_graph() -> Result
                 parent_thread_id: parent,
                 child_thread_id: child,
                 nickname: Some(nickname.to_string()),
+                task_path: None,
             })
             .await?;
     }
@@ -290,6 +291,7 @@ async fn thread_delete_preserves_spawned_descendants_and_their_graph() -> Result
             thread_id: child_thread_id,
             agent_ref: 2,
             nickname: Some("Child".to_string()),
+            task_path: None,
             state: AgentAliasState::Active,
         })
     );
