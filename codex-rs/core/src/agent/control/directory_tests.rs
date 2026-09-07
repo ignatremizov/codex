@@ -286,7 +286,7 @@ async fn directory_gate_uses_root_config_and_rejects_disabled_queries() {
         .await
         .expect_err("deny before parsing or enumerating");
     assert!(
-        matches!(error.details, crate::error::CodexErrorDetails::InvalidRequest(message) if message.contains("disabled"))
+        matches!(error.details(), codex_protocol::error::CodexErrorDetails::InvalidRequest(message) if message.contains("disabled"))
     );
     harness.config.list_agents_enabled = true;
     let (child_id, child) = directory_child(&harness, control, root_id, "worker").await;

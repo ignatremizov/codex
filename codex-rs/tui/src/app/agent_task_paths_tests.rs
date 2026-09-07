@@ -65,7 +65,7 @@ fn relative_lookup_and_completion_follow_issuing_thread_and_exclude_transferred(
         label: "Reviewer /root/backend/review · closed".to_string(),
     };
     assert_eq!(
-        state.task_path_completions(Some(backend), &[target.clone()]),
+        state.task_path_completions(Some(backend), std::slice::from_ref(&target)),
         vec![
             AgentPromptTarget {
                 selector: "task:/root/backend/review".to_string(),

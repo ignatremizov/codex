@@ -41,7 +41,7 @@ async fn native_resume_reports_committed_foreign_root_assignment(
                 }
                 .into(),
             )]),
-            environments: Some(test.codex.config_snapshot().await.environments),
+            environments: Some(test.codex.config_snapshot().await.environments.environments),
             ..StartThreadOptions::new(test.config.clone())
         })
         .await?;
