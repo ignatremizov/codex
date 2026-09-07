@@ -39,6 +39,14 @@ when spawning a new child or explicitly adopting a stored target outside its cur
 Same-root existing targets retain their graph parent. This lets the same command work from Main,
 from a child coordinating a sibling, or from any other live agent thread.
 
+When other agents in the current root are running, a compact row above the composer shows
+`3 agents running · /agent to view`. It stays visible while Main is idle awaiting subscribed
+responses, coexists with the background-terminal summary, and disappears at zero. The count
+excludes the displayed thread, Main, closed/unloaded agents, and other roots. It is derived from
+the existing live agent cache and lifecycle notifications, not a rollout scan or polling loop.
+It neither marks Main busy nor changes response subscriptions; queued turns are not counted
+until running.
+
 ## Consolidating the earlier standalone supervisor design
 
 The earlier standalone supervisor design remains useful as an operator-UX inventory. Its features

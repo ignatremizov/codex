@@ -164,6 +164,7 @@ pub(crate) use title_setup::TerminalTitleItem;
 pub(crate) use title_setup::TerminalTitleSetupView;
 #[cfg(test)]
 pub(crate) use title_setup::preview_line_for_title_items;
+mod agent_activity_footer;
 mod paste_burst;
 mod pending_input_preview;
 mod pending_thread_approvals;
@@ -268,6 +269,7 @@ pub(crate) struct BottomPane {
     /// When a status row exists, this summary is mirrored inline in that row;
     /// when no status row exists, it renders as its own footer row.
     unified_exec_footer: UnifiedExecFooter,
+    agent_activity_footer: agent_activity_footer::AgentActivityFooter,
     /// Preview of pending steers and queued drafts shown above the composer.
     pending_input_preview: PendingInputPreview,
     /// Inactive threads with pending approval requests.
@@ -337,6 +339,7 @@ impl BottomPane {
             inline_banner: None,
             status_timer: crate::status_indicator_widget::StatusTimer::default(),
             unified_exec_footer: UnifiedExecFooter::new(),
+            agent_activity_footer: agent_activity_footer::AgentActivityFooter::default(),
             pending_input_preview: PendingInputPreview::new(),
             pending_thread_approvals: PendingThreadApprovals::new(),
             esc_backtrack_hint: false,
@@ -1975,12 +1978,17 @@ impl BottomPane {
                 );
             }
             let has_pending_thread_approvals = !self.pending_thread_approvals.is_empty();
+            flex.push(
+                /*flex*/ 0,
+                RenderableItem::Borrowed(&self.agent_activity_footer),
+            );
             let has_pending_input = !self.pending_input_preview.queued_messages.is_empty()
                 || !self.pending_input_preview.pending_steers.is_empty()
                 || !self.pending_input_preview.rejected_steers.is_empty();
             let has_status_or_footer = self.status_widget().is_some()
                 || self.hook_status_message.is_some()
-                || !self.unified_exec_footer.is_empty();
+                || !self.unified_exec_footer.is_empty()
+                || self.agent_activity_footer.desired_height(u16::MAX) > 0;
             let has_inline_previews = has_pending_thread_approvals || has_pending_input;
             if has_inline_previews && has_status_or_footer {
                 flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
