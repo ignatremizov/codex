@@ -3,8 +3,14 @@ use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn task_path_migration_upgrades_existing_aliases_without_reusing_lifecycle_paths() {
-    let home = tempfile::tempdir().expect("database home");
-    let sqlite = crate::SqliteConfig::new_for_testing(home.path().abs());
+    let home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&home)
+        .await
+        .expect("database home");
+    let _cleanup = scopeguard::guard(home.clone(), |home| {
+        let _ = std::fs::remove_dir_all(home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(home.as_path().abs());
     let pool = sqlite
         .open_read_write_pool(&sqlite.state_db_path())
         .await
