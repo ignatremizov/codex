@@ -1,3 +1,8 @@
+#![expect(
+    clippy::await_holding_invalid_type,
+    reason = "parameterized read-only projection tests exclude lifecycle refreshes across awaits"
+)]
+
 use super::*;
 use crate::ThreadManager;
 use crate::UserAgentReplyRouteMode;
@@ -31,10 +36,6 @@ async fn histories(threads: &[Arc<crate::CodexThread>]) -> Vec<Vec<ResponseItem>
 #[test_case(ThreadHistoryMode::Legacy; "legacy")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "exclude lifecycle refreshes while testing read-only request projection"
-)]
 async fn repeated_sender_snapshots_are_read_only_but_policy_mutation_delivers_notices(
     history_mode: ThreadHistoryMode,
 ) {
