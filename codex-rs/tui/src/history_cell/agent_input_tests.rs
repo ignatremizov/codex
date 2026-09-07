@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::AudioReference;
 use codex_app_server_protocol::ImageReference;
 use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
@@ -353,7 +354,9 @@ fn inline_media_uses_attachment_markers_in_agent_transcripts() {
                 detail: None,
             },
             UserInput::Audio {
-                url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                audio: AudioReference::Inline {
+                    url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                },
             },
         ],
         String::new(),
@@ -377,7 +380,7 @@ fn inline_media_uses_attachment_markers_in_agent_transcripts() {
 fn transcript_projection_keeps_human_authorship_and_complete_agent_payload() {
     use crate::test_support::PathBufExt as _;
     use crate::test_support::test_path_buf;
-    use codex_app_server_protocol::ThreadItem;
+    use codex_app_server_protocol::ThreadItemPayload;
 
     let attribution = attribution();
     let recipient = ThreadId::from_string(&attribution.recipient.thread_id).unwrap();
@@ -388,7 +391,7 @@ fn transcript_projection_keeps_human_authorship_and_complete_agent_payload() {
     let sourced_items = [
         (
             Some("human-turn".to_string()),
-            ThreadItem::UserMessage {
+            ThreadItemPayload::UserMessage {
                 id: "human".to_string(),
                 client_id: None,
                 content: vec![UserInput::Text {
@@ -399,7 +402,7 @@ fn transcript_projection_keeps_human_authorship_and_complete_agent_payload() {
         ),
         (
             Some("agent-turn".to_string()),
-            ThreadItem::AgentMessage {
+            ThreadItemPayload::AgentMessage {
                 id: "attributed".to_string(),
                 text: String::new(),
                 inter_agent_source: None,

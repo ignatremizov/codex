@@ -7,15 +7,19 @@ use codex_app_server_protocol::AgentReplyRouteMode;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_protocol::MAIN_AGENT_NICKNAME;
 use codex_protocol::ThreadId;
+use codex_protocol::WakeEventFinalDelivery;
+use codex_protocol::WakeEventFlags;
+use codex_protocol::WakeEventSurface;
 use codex_protocol::openai_models::ReasoningEffort;
 
 pub(super) const AGENT_COMMAND_USAGE: &str =
-    "Usage: /agent [new|<target>|<role>|queue|interrupt|close|resume|observe|replies] ...";
+    "Usage: /agent [new|<target>|<role>|queue|interrupt|close|resume|observe|sends] ...";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum AgentCommand<'a> {
     OpenPane,
     New {
+        task: Option<String>,
         fork: Option<AgentForkMode>,
         response: Option<AgentResponseHandling>,
         model: Option<String>,
@@ -24,6 +28,7 @@ pub(super) enum AgentCommand<'a> {
     },
     SelectOrDispatch {
         selector: AgentSelector,
+        task: Option<String>,
         fork: Option<AgentForkMode>,
         response: Option<AgentResponseHandling>,
         model: Option<String>,
@@ -46,6 +51,7 @@ pub(super) enum AgentCommand<'a> {
     },
     Resume {
         selector: AgentSelector,
+        task: Option<String>,
         response: Option<AgentResponseHandling>,
         prompt: Option<AgentCommandPrompt<'a>>,
     },
@@ -55,6 +61,7 @@ pub(super) enum AgentCommand<'a> {
     },
     ReplyRoute {
         selector: AgentSelector,
+        recipient: Option<AgentSelector>,
         mode: AgentReplyRouteMode,
     },
 }
@@ -70,6 +77,7 @@ pub(crate) enum AgentSelectorKind {
     Id(ThreadId),
     Ref(u64),
     Nickname(String),
+    Task(String),
     Role(String),
     UnprefixedName(String),
 }
@@ -90,6 +98,7 @@ struct ControlToken {
 
 #[derive(Default)]
 struct ParsedOptions {
+    task: Option<String>,
     fork: Option<AgentForkMode>,
     response: Option<AgentResponseHandling>,
     model: Option<String>,
@@ -99,6 +108,7 @@ struct ParsedOptions {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AgentCommandOptionScope {
     Spawn,
+    Resume,
     Existing,
 }
 
@@ -134,6 +144,7 @@ pub(super) fn parse_agent_command_with_attached_input(
         "new" => {
             let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Spawn)?;
             Ok(AgentCommand::New {
+                task: options.task,
                 fork: options.fork,
                 response: options.response,
                 model: options.model,
@@ -171,12 +182,7 @@ pub(super) fn parse_agent_command_with_attached_input(
         }
         "resume" => {
             let selector = parser.required_selector("resume")?;
-            let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Existing)?;
-            Ok(AgentCommand::Resume {
-                selector,
-                response: options.response,
-                prompt,
-            })
+            parser.resume_command(selector)
         }
         "observe" => {
             let selector = parser.required_selector("observe")?;
@@ -189,8 +195,8 @@ pub(super) fn parse_agent_command_with_attached_input(
             parser.require_end("observe")?;
             Ok(AgentCommand::Observe { selector, mode })
         }
-        "replies" => {
-            let selector = parser.required_selector("replies")?;
+        "sends" => {
+            let selector = parser.required_selector("sends")?;
             parser.reply_route_command(selector)
         }
         _ => {
@@ -203,9 +209,15 @@ pub(super) fn parse_agent_command_with_attached_input(
             }
             parser.cursor = target_first_action_start;
             if let Some(action) = parser.next_token()?
-                && action.raw == "replies"
+                && action.raw == "sends"
             {
                 return parser.reply_route_command(selector);
+            }
+            parser.cursor = target_first_action_start;
+            if let Some(action) = parser.next_token()?
+                && action.raw == "resume"
+            {
+                return parser.resume_command(selector);
             }
             parser.cursor = target_first_action_start;
             let (options, prompt) = parser.options_and_prompt(AgentCommandOptionScope::Spawn)?;
@@ -214,7 +226,11 @@ pub(super) fn parse_agent_command_with_attached_input(
                 AgentSelectorKind::Id(_)
                     | AgentSelectorKind::Ref(_)
                     | AgentSelectorKind::Nickname(_)
+                    | AgentSelectorKind::Task(_)
             );
+            if known_target && options.task.is_some() {
+                return Err("`task` is valid only when spawning an agent.".to_string());
+            }
             if known_target && options.fork.is_some() {
                 return Err("`fork` is valid only when spawning an agent.".to_string());
             }
@@ -229,6 +245,7 @@ pub(super) fn parse_agent_command_with_attached_input(
             }
             Ok(AgentCommand::SelectOrDispatch {
                 selector,
+                task: options.task,
                 fork: options.fork,
                 response: options.response,
                 model: options.model,
@@ -240,6 +257,16 @@ pub(super) fn parse_agent_command_with_attached_input(
 }
 
 impl<'a> AgentCommandParser<'a> {
+    fn resume_command(&mut self, selector: AgentSelector) -> Result<AgentCommand<'a>, String> {
+        let (options, prompt) = self.options_and_prompt(AgentCommandOptionScope::Resume)?;
+        Ok(AgentCommand::Resume {
+            selector,
+            task: options.task,
+            response: options.response,
+            prompt,
+        })
+    }
+
     fn close_command(&mut self, selector: AgentSelector) -> Result<AgentCommand<'a>, String> {
         let (options, prompt) = self.options_and_prompt(AgentCommandOptionScope::Existing)?;
         if prompt.is_some() {
@@ -252,12 +279,27 @@ impl<'a> AgentCommandParser<'a> {
     }
 
     fn reply_route_command(&mut self, selector: AgentSelector) -> Result<AgentCommand<'a>, String> {
-        let mode = self
-            .next_token()?
-            .ok_or_else(|| "Usage: /agent replies <target> <enable|disable>".to_string())
-            .and_then(|token| parse_reply_route_mode(&token.value))?;
-        self.require_end("replies")?;
-        Ok(AgentCommand::ReplyRoute { selector, mode })
+        let token = self.next_token()?.ok_or_else(|| {
+            "Usage: /agent sends <sender> [to <recipient>] <enable|disable>".to_string()
+        })?;
+        let (recipient, mode) = if token.value == "to" {
+            if selector.authored() == "all" {
+                return Err("`sends all` sets the subtree default; omit `to`.".into());
+            }
+            let recipient = self.required_selector("sends <sender> to")?;
+            let mode = self
+                .next_token()?
+                .ok_or_else(|| "Expected enable or disable after reply recipient.".to_string())?;
+            (Some(recipient), parse_reply_route_mode(&mode.value)?)
+        } else {
+            (None, parse_reply_route_mode(&token.value)?)
+        };
+        self.require_end("sends")?;
+        Ok(AgentCommand::ReplyRoute {
+            selector,
+            recipient,
+            mode,
+        })
     }
 
     fn required_selector(&mut self, action: &str) -> Result<AgentSelector, String> {
@@ -283,6 +325,18 @@ impl<'a> AgentCommandParser<'a> {
                     offset: prompt_start,
                 });
                 return Ok((options, prompt));
+            }
+            if let Some(value) = token.value.strip_prefix("task:") {
+                if scope == AgentCommandOptionScope::Existing {
+                    return Err(
+                        "`task` is valid only when spawning or adopting an agent.".to_string()
+                    );
+                }
+                if options.task.is_some() {
+                    return Err("`task` may be specified only once.".to_string());
+                }
+                options.task = Some(nonempty_selector(value, "task path")?);
+                continue;
             }
             if token.value.strip_prefix("fork:").is_some() && !scope.allows_spawn_options() {
                 return Err("`fork` is valid only when spawning an agent.".to_string());
@@ -423,6 +477,12 @@ fn parse_selector(value: &str, authored: String) -> Result<AgentSelector, String
 }
 
 fn parse_selector_kind(value: &str) -> Result<AgentSelectorKind, String> {
+    if let Some(value) = value.strip_prefix("task:") {
+        return nonempty_selector(value, "task path").map(AgentSelectorKind::Task);
+    }
+    if value == "/root" || value.starts_with("/root/") {
+        return Ok(AgentSelectorKind::Task(value.to_string()));
+    }
     if let Some(value) = value.strip_prefix("id:") {
         return parse_thread_id(value).map(AgentSelectorKind::Id);
     }
@@ -467,6 +527,7 @@ impl AgentSelector {
             AgentSelectorKind::Id(thread_id) => Ok(thread_id.to_string()),
             AgentSelectorKind::Ref(agent_ref) => Ok(agent_ref.to_string()),
             AgentSelectorKind::Nickname(nickname) => Ok(format!("nick:{nickname}")),
+            AgentSelectorKind::Task(task) => Ok(format!("task:{task}")),
             AgentSelectorKind::UnprefixedName(name) => Ok(name.clone()),
             AgentSelectorKind::Role(role) => Err(format!(
                 "{role:?} selects a configured role, not an existing agent"
@@ -513,59 +574,19 @@ fn parse_fork_mode(value: &str) -> Result<AgentForkMode, String> {
 }
 
 fn parse_response_mode(value: &str) -> Result<AgentResponseHandling, String> {
-    if value.is_empty() {
-        return Err("Invalid response mode ``; omit w for passive handling.".to_string());
-    }
-    let mut commentary = false;
-    let mut wake = false;
-    let mut target_messages = false;
-    let mut queue_input = false;
-    let mut presentation = false;
-    let mut previous_position = None;
-    for flag in value.chars() {
-        let position = match flag {
-            'c' if !commentary => {
-                commentary = true;
-                0
-            }
-            'f' if !wake => {
-                wake = true;
-                1
-            }
-            'm' if !target_messages => {
-                target_messages = true;
-                2
-            }
-            'q' if !queue_input => {
-                queue_input = true;
-                3
-            }
-            'x' if !presentation => {
-                presentation = true;
-                4
-            }
-            _ => return Err(invalid_response_mode(value)),
-        };
-        if previous_position.is_some_and(|previous| position <= previous) {
-            return Err(invalid_response_mode(value));
-        }
-        previous_position = Some(position);
-    }
-    let final_response = match (wake, presentation) {
-        (true, false) => AgentFinalResponseHandling::Wake,
-        (false, true) => AgentFinalResponseHandling::Presentation,
-        (false, false) | (true, true) => AgentFinalResponseHandling::Passive,
+    let flags = WakeEventFlags::parse(value, WakeEventSurface::Agent)
+        .map_err(|error| format!("Invalid response mode `{value}`; {error}."))?;
+    let final_response = match flags.final_delivery {
+        WakeEventFinalDelivery::Wake => AgentFinalResponseHandling::Wake,
+        WakeEventFinalDelivery::PresentationOnly => AgentFinalResponseHandling::Presentation,
+        WakeEventFinalDelivery::Passive => AgentFinalResponseHandling::Passive,
     };
     Ok(AgentResponseHandling::new(
-        commentary,
+        flags.commentary,
         final_response,
-        target_messages,
-        queue_input,
+        flags.target_messages,
+        flags.queue_input,
     ))
-}
-
-fn invalid_response_mode(value: &str) -> String {
-    format!("Invalid response mode `{value}`; use unique c, f, m, q, or x flags in cfmqx order.")
 }
 
 fn parse_observe_mode(value: &str) -> Result<AgentObservationMode, String> {
@@ -592,3 +613,7 @@ fn parse_reply_route_mode(value: &str) -> Result<AgentReplyRouteMode, String> {
 #[cfg(test)]
 #[path = "agent_command_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_task_command_tests.rs"]
+mod task_tests;

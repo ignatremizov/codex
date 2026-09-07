@@ -825,6 +825,8 @@ impl ThreadHistoryBuilder {
             memory_citation: payload.memory_citation.clone().map(Into::into),
             delivery: payload.delivery,
             questions: payload.questions.clone(),
+            attribution: None,
+            input: None,
         });
     }
 
@@ -2659,6 +2661,8 @@ mod tests {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                attribution: None,
+                input: None,
             }
         );
         assert_eq!(
@@ -2695,6 +2699,8 @@ mod tests {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                attribution: None,
+                input: None,
             }
         );
     }
@@ -3608,6 +3614,8 @@ mod tests {
                 memory_citation: None,
                 delivery: Some(AgentMessageDelivery::Async),
                 questions: Some(questions),
+                attribution: None,
+                input: None,
             }
         );
     }
@@ -3846,6 +3854,8 @@ mod tests {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                attribution: None,
+                input: None,
             }
         );
 
@@ -3873,6 +3883,8 @@ mod tests {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                attribution: None,
+                input: None,
             }
         );
     }
@@ -3962,6 +3974,8 @@ mod tests {
                     memory_citation: None,
                     delivery: None,
                     questions: None,
+                    attribution: None,
+                    input: None,
                 },
             ]
         );
@@ -3984,6 +3998,8 @@ mod tests {
                     memory_citation: None,
                     delivery: None,
                     questions: None,
+                    attribution: None,
+                    input: None,
                 },
             ]
         );
@@ -5049,6 +5065,8 @@ mod tests {
                     memory_citation: None,
                     delivery: None,
                     questions: None,
+                    attribution: None,
+                    input: None,
                     sub_agent_completion: None,
                 }),
                 started_at_ms: None,
@@ -6380,6 +6398,8 @@ mod tests {
                                     memory_citation: None,
                                     delivery: None,
                                     questions: None,
+                                    attribution: None,
+                                    input: None,
                                     sub_agent_completion: None,
                                 }),
                                 started_at_ms: None,
@@ -6399,6 +6419,8 @@ mod tests {
                             memory_citation: None,
                             delivery: None,
                             questions: None,
+                            attribution: None,
+                            input: None,
                         },
                         started_at_ms: None,
                         completed_at_ms: following_completed_at_ms,

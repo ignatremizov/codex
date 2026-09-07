@@ -6,4 +6,8 @@ import type { AgentAliasState } from "./AgentAliasState";
 /**
  * Root-scoped user-facing aliases for one canonical agent thread.
  */
-export type AgentAlias = { threadId: string, ref: string, nickname: string | null, state: AgentAliasState, };
+export type AgentAlias = { threadId: string, ref: string, nickname: string | null,
+/**
+ * Current root-scoped assignment label, independent of lifecycle ancestry.
+ */
+taskPath: string | null, state: AgentAliasState, };

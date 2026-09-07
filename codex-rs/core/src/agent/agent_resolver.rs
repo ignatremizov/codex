@@ -38,7 +38,7 @@ pub(crate) async fn resolve_controlled_v1_agent_target(
         .services
         .local_agent_runtime
         .control(session.session_id())
-        .resolve_controlled_v1_agent_target(target)
+        .resolve_controlled_v1_agent_target(session.thread_id, target)
         .await
         .map_err(agent_target_error)
 }
@@ -52,7 +52,7 @@ pub(crate) async fn resolve_resumable_v1_agent_target(
         .services
         .local_agent_runtime
         .control(session.session_id())
-        .resolve_resumable_v1_agent_target(target)
+        .resolve_resumable_v1_agent_target(session.thread_id, target)
         .await
         .map_err(agent_target_error)
 }

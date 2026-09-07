@@ -83,6 +83,8 @@ async fn send_user_message_async_emits_item_and_does_not_end_the_turn() -> Resul
     .await;
     let expected = AgentMessageItem {
         id: CALL_ID.to_string(),
+        attribution: None,
+        input: None,
         content: vec![AgentMessageContent::Text {
             text: MESSAGE.to_string(),
         }],
@@ -93,7 +95,7 @@ async fn send_user_message_async_emits_item_and_does_not_end_the_turn() -> Resul
         sub_agent_completion: None,
     };
     assert_eq!(
-        serde_json::to_value(started)?,
+        serde_json::to_value(&started)?,
         serde_json::to_value(&expected)?
     );
 
@@ -111,8 +113,8 @@ async fn send_user_message_async_emits_item_and_does_not_end_the_turn() -> Resul
     })
     .await;
     assert_eq!(
-        serde_json::to_value(completed)?,
-        serde_json::to_value(expected)?
+        serde_json::to_value(&completed)?,
+        serde_json::to_value(&expected)?
     );
 
     wait_for_event(test.codex.as_ref(), |event| {

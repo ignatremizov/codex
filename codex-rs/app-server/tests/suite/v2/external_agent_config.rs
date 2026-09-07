@@ -2146,6 +2146,8 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
             memory_citation: None,
             delivery: None,
             questions: None,
+            attribution: None,
+            input: None,
         })
     );
 

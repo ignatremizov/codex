@@ -1,10 +1,10 @@
 //! Durable presentation for user-authored `/agent` control actions.
 
-use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserAgentForkMode;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 
@@ -19,6 +19,7 @@ pub(crate) struct UserAgentControlHistoryCell {
     title: Line<'static>,
     details: Vec<Line<'static>>,
     audit_details: Vec<Line<'static>>,
+    reply_recipient: Option<String>,
 }
 
 pub(crate) fn new_user_agent_control(
@@ -28,10 +29,14 @@ pub(crate) fn new_user_agent_control(
         action,
         authored_selector,
         target_thread_id,
+        reply_recipient_thread_id,
         previous_owner_session_id,
         new_owner_session_id,
         agent_ref,
         nickname,
+        task_path,
+        task,
+        task_path_mapping,
         role,
         model,
         reasoning_effort,
@@ -86,6 +91,9 @@ pub(crate) fn new_user_agent_control(
         title.push(" ".into());
         title.push(target.cyan());
     }
+    if let Some(task_path) = task_path {
+        title.push(format!(" {task_path}").cyan());
+    }
     if let Some(agent_ref) = agent_ref {
         title.push(format!(" (ref {agent_ref})").dim());
     }
@@ -107,7 +115,10 @@ pub(crate) fn new_user_agent_control(
         final_response,
         target_messages,
         queue_input,
-    ) {
+    ) && !(action == UserAgentControlAction::ReplyRoute
+        && status == UserAgentControlStatus::Succeeded
+        && reply_recipient_thread_id.is_some())
+    {
         title.push(" ".into());
         title.push(
             if observe_commentary == Some(true)
@@ -148,6 +159,57 @@ pub(crate) fn new_user_agent_control(
     }
 
     let mut audit_details = Vec::new();
+    if let Some(task) = task {
+        audit_details.push(format!("Requested task: {task}").dim().into());
+    }
+    for mapping in task_path_mapping {
+        details.push(
+            format!(
+                "Task path: {} → {}",
+                mapping
+                    .previous_task_path
+                    .as_deref()
+                    .unwrap_or("(unlabeled)"),
+                mapping.task_path.as_deref().unwrap_or("(unlabeled)"),
+            )
+            .dim()
+            .into(),
+        );
+        audit_details.push(
+            format!(
+                "Task path: {} → {} ({})",
+                mapping
+                    .previous_task_path
+                    .as_deref()
+                    .unwrap_or("(unlabeled)"),
+                mapping.task_path.as_deref().unwrap_or("(unlabeled)"),
+                mapping.thread_id,
+            )
+            .dim()
+            .into(),
+        );
+    }
+    if action == UserAgentControlAction::SubtreeMessaging {
+        details.push("Applies to this supervisor and current/future descendants; explicit pair settings take precedence.".dim().into());
+    }
+    let reply_recipient = if action == UserAgentControlAction::ReplyRoute
+        && status == UserAgentControlStatus::Succeeded
+    {
+        reply_recipient_thread_id
+    } else {
+        None
+    };
+    if let Some(recipient) = &reply_recipient {
+        // Keep canonical identity in detail inspection; normal presentation resolves its label.
+        audit_details.push(format!("Recipient: {recipient}").dim().into());
+        title[1] = if target_messages == Some(true) {
+            "User enabled messages:".bold()
+        } else {
+            "User disabled messages:".bold()
+        };
+        title.push(" → ".into());
+        title.push(recipient.clone().cyan());
+    }
     if let Some(target_thread_id) = target_thread_id {
         audit_details.push(format!("Target: {target_thread_id}").dim().into());
     }
@@ -167,7 +229,23 @@ pub(crate) fn new_user_agent_control(
         title: title.into(),
         details,
         audit_details,
+        reply_recipient,
     })
+}
+
+impl UserAgentControlHistoryCell {
+    pub(crate) fn with_reply_recipient_label(
+        mut self,
+        label: impl FnOnce(&str) -> Option<String>,
+    ) -> Self {
+        if let Some(recipient) = &self.reply_recipient
+            && let Some(label) = label(recipient)
+            && let Some(span) = self.title.spans.last_mut()
+        {
+            *span = label.cyan();
+        }
+        self
+    }
 }
 
 impl HistoryCell for UserAgentControlHistoryCell {
@@ -235,6 +313,9 @@ fn control_action_title(
         (UserAgentControlStatus::Succeeded, UserAgentControlAction::ReplyRoute, _, _) => {
             "User changed reply route for"
         }
+        (UserAgentControlStatus::Succeeded, UserAgentControlAction::SubtreeMessaging, _, _) => {
+            "User changed subtree messaging for"
+        }
         (UserAgentControlStatus::Failed, UserAgentControlAction::Spawn, _, _) => {
             "User agent spawn failed"
         }
@@ -258,6 +339,9 @@ fn control_action_title(
         }
         (UserAgentControlStatus::Failed, UserAgentControlAction::ReplyRoute, _, _) => {
             "User reply-route change failed for"
+        }
+        (UserAgentControlStatus::Failed, UserAgentControlAction::SubtreeMessaging, _, _) => {
+            "User subtree messaging change failed for"
         }
     }
 }
@@ -311,7 +395,13 @@ fn response_observation_label(
         Some(AgentResponseFinalDelivery::PresentationOnly) => labels.push("presentation"),
         None => {}
     }
-    if target_messages == Some(true) {
+    if action == UserAgentControlAction::SubtreeMessaging {
+        labels.push(if target_messages == Some(true) {
+            "enabled"
+        } else {
+            "disabled"
+        });
+    } else if target_messages == Some(true) {
         labels.push("allow replies");
     } else if action == UserAgentControlAction::ReplyRoute && target_messages == Some(false) {
         labels.push("no replies");
@@ -325,3 +415,7 @@ fn response_observation_label(
 #[cfg(test)]
 #[path = "user_agent_control_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "user_agent_task_control_tests.rs"]
+mod task_tests;

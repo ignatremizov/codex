@@ -947,6 +947,8 @@ async fn agents_overview_details_render_markdown() {
                 thread.id.clone(),
                 "turn".into(),
                 ThreadItemPayload::AgentMessage {
+                    attribution: None,
+                    input: None,
                     inter_agent_source: None,
                     id: "answer".into(),
                     text: message.into(),
@@ -1104,6 +1106,8 @@ async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachm
                 inter_agent_source: None,
                 id: "answer".into(),
                 text: "Previous answer".into(),
+                attribution: None,
+                input: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,

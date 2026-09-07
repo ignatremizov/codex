@@ -826,6 +826,8 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        attribution: None,
+                        input: None,
                         sub_agent_completion: None,
                     }),
                 ),
@@ -834,6 +836,8 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                     "turn-1",
                     CoreTurnItem::AgentMessage(AgentMessageItem {
                         id: "partial-1".to_string(),
+                        attribution: None,
+                        input: None,
                         content: vec![AgentMessageContent::Text {
                             text: "stable partial answer".to_string(),
                         }],
@@ -856,6 +860,8 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        attribution: None,
+                        input: None,
                         sub_agent_completion: None,
                     }),
                 ),
@@ -1927,6 +1933,8 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        attribution: None,
+                        input: None,
                         sub_agent_completion: None,
                     }),
                 ),
@@ -1983,6 +1991,8 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                attribution: None,
+                input: None,
             },
         ]
         .into_iter()
@@ -2188,6 +2198,8 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                     memory_citation: None,
                     delivery: None,
                     questions: None,
+                    attribution: None,
+                    input: None,
                 },
             ]
             .into_iter()
@@ -2431,6 +2443,8 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                         memory_citation: None,
                         delivery: None,
                         questions: None,
+                        attribution: None,
+                        input: None,
                     },
                     started_at_ms: Some(0),
                     completed_at_ms: Some(1)

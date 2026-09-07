@@ -22,7 +22,6 @@ fn queued_turn(
         response_observation: ResponseObservationPolicy::from_turn_parts(
             /*commentary*/ false,
             FinalResponseObservation::Passive,
-            /*target_messages*/ false,
             /*queue_input*/ true,
         ),
         task_preview: None,

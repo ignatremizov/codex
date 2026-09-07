@@ -1186,6 +1186,8 @@ mod tests {
                     delivery: Some(AgentMessageDelivery::Async),
                     questions: None,
                     inter_agent_source: None,
+                    attribution: None,
+                    input: None,
                 },
                 /*started_at_ms*/ None,
                 /*completed_at_ms*/ 0

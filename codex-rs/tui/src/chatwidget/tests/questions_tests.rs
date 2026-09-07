@@ -656,6 +656,8 @@ fn open_questions(chat: &mut ChatWidget, options: Option<Vec<String>>) {
     chat.on_agent_message_item_completed(
         AgentMessageItem {
             id: "review".into(),
+            attribution: None,
+            input: None,
             content: Vec::new(),
             phase: None,
             memory_citation: None,
@@ -812,6 +814,8 @@ async fn question_drafts_survive_navigation_and_snapshot_replay() {
         inter_agent_source: None,
         id: "buffered".into(),
         text: String::new(),
+        attribution: None,
+        input: None,
         phase: None,
         memory_citation: None,
         delivery: None,
@@ -1077,6 +1081,8 @@ async fn async_question_markdown_matches_loaded_history() {
     let title = "Keep `--verbose` for **failed** runs?";
     let item = AppServerThreadItemPayload::AgentMessage {
         inter_agent_source: None,
+        attribution: None,
+        input: None,
         id: "ask".into(),
         text: format!("{title}\n- Only for **CI**\n\nSee the [guide](https://example.test/guide)?"),
         phase: None,

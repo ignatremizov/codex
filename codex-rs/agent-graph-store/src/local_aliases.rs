@@ -65,6 +65,7 @@ impl LocalAgentGraphStore {
                     parent_thread_id: request.parent_thread_id,
                     child_thread_id: request.child_thread_id,
                     nickname: request.nickname,
+                    task_path: request.task_path,
                 })
                 .await
                 .map(AgentAlias::from)
@@ -83,6 +84,7 @@ impl LocalAgentGraphStore {
                     parent_thread_id: request.parent_thread_id,
                     child_thread_id: request.child_thread_id,
                     nickname: request.nickname,
+                    task_path: request.task_path,
                 })
                 .await
                 .map(AgentAlias::from)
@@ -103,6 +105,7 @@ impl LocalAgentGraphStore {
                     new_parent_thread_id: request.new_parent_thread_id,
                     thread_id: request.thread_id,
                     nickname: request.nickname,
+                    task_path: request.task_path,
                     authored_selector: request.authored_selector,
                 })
                 .await
@@ -214,6 +217,7 @@ impl From<codex_state::AgentAliasRecord> for AgentAlias {
             thread_id: value.thread_id,
             agent_ref: value.agent_ref,
             nickname: value.nickname,
+            task_path: value.task_path,
             state: match value.state {
                 codex_state::AgentAliasState::Active => AgentAliasState::Active,
                 codex_state::AgentAliasState::Closed => AgentAliasState::Closed,
@@ -234,11 +238,20 @@ impl From<codex_state::AgentAliasTransfer> for AgentAliasTransfer {
                 previous_session_id,
                 previous_parent_thread_id,
                 transferred_at_ms,
+                task_path_mapping,
             } => Self::Transferred {
                 alias: AgentAlias::from(alias),
                 previous_session_id,
                 previous_parent_thread_id,
                 transferred_at_ms,
+                task_path_mapping: task_path_mapping
+                    .into_iter()
+                    .map(|mapping| crate::AgentTaskPathMapping {
+                        thread_id: mapping.thread_id,
+                        previous_task_path: mapping.previous_task_path,
+                        task_path: mapping.task_path,
+                    })
+                    .collect(),
             },
         }
     }

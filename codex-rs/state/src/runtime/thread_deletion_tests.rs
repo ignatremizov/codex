@@ -35,6 +35,7 @@ async fn preserving_deletion_retains_related_aliases_and_both_incident_edges() -
         parent_thread_id: root,
         child_thread_id: selected,
         nickname: Some("selected".to_string()),
+        task_path: Some("/root/selected".to_string()),
     };
     let mut selected_alias = runtime
         .allocate_agent_alias(selected_request.clone())
@@ -45,6 +46,7 @@ async fn preserving_deletion_retains_related_aliases_and_both_incident_edges() -
             parent_thread_id: selected,
             child_thread_id: child,
             nickname: Some("child".to_string()),
+            task_path: Some("/root/selected/child".to_string()),
         })
         .await?;
     let child_metadata = runtime.get_thread(child).await?;
@@ -124,6 +126,7 @@ async fn preserving_delete_rolls_back_tombstone_with_final_transaction() -> anyh
             parent_thread_id: root,
             child_thread_id: child,
             nickname: None,
+            task_path: None,
         })
         .await?;
     sqlx::query(

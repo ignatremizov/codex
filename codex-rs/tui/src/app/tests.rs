@@ -3247,18 +3247,21 @@ async fn picker_refresh_hydrates_root_and_keeps_transferred_aliases_inspectable(
             }],
             aliases: vec![
                 codex_app_server_protocol::AgentAlias {
+                    task_path: None,
                     thread_id: root.to_string(),
                     agent_ref: "1".to_string(),
                     nickname: Some("Main".to_string()),
                     state: codex_app_server_protocol::AgentAliasState::Active,
                 },
                 codex_app_server_protocol::AgentAlias {
+                    task_path: None,
                     thread_id: displayed_child.to_string(),
                     agent_ref: "2".to_string(),
                     nickname: Some("Hume".to_string()),
                     state: codex_app_server_protocol::AgentAliasState::Active,
                 },
                 codex_app_server_protocol::AgentAlias {
+                    task_path: None,
                     thread_id: transferred.to_string(),
                     agent_ref: "3".to_string(),
                     nickname: Some("Noether".to_string()),
@@ -3488,6 +3491,7 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
         });
     app.agent_navigation
         .replace_aliases(vec![codex_app_server_protocol::AgentAlias {
+            task_path: None,
             thread_id: thread_id.to_string(),
             agent_ref: "2".to_string(),
             nickname: None,
@@ -5786,6 +5790,8 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
                 thread_id.to_string(),
                 "turn-active-approval".to_string(),
                 ThreadItemPayload::AgentMessage {
+                    attribution: None,
+                    input: None,
                     inter_agent_source: None,
                     id: "agent-1".to_string(),
                     text: "streaming".to_string(),
@@ -10432,6 +10438,8 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
                             text: "done".to_string(),
                             phase: None,
                             memory_citation: None,
+                            attribution: None,
+                            input: None,
                             delivery: None,
                             questions: None,
                         }),

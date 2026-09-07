@@ -24,11 +24,7 @@ impl App {
             })
             .map(|(thread_id, entry)| {
                 let is_primary = root == Some(thread_id);
-                let label = format_agent_picker_item_name(
-                    entry.agent_nickname.as_deref(),
-                    entry.agent_role.as_deref(),
-                    is_primary,
-                );
+                let label = self.agent_navigation.display_name(thread_id, root);
                 AgentPromptTarget {
                     thread_id: Some(thread_id),
                     selector: if is_primary {
@@ -46,6 +42,10 @@ impl App {
                 }
             })
             .collect::<Vec<_>>();
+        targets.extend(
+            self.agent_navigation
+                .task_path_completions(current_thread_id, &targets),
+        );
         targets.push(AgentPromptTarget {
             thread_id: None,
             selector: "new".to_string(),
