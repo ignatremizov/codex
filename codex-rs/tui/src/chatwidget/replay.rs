@@ -312,12 +312,26 @@ impl ChatWidget {
             ThreadItem::AgentMessage {
                 id,
                 text,
+                attribution,
+                input,
                 phase,
                 memory_citation,
                 delivery,
                 questions,
                 ..
             } => {
+                if let Some(attribution) = attribution {
+                    self.on_collab_event(
+                        history_cell::AgentInputHistoryCell::new(
+                            attribution,
+                            input.unwrap_or_default(),
+                            text,
+                            self.thread_id,
+                        )
+                        .with_response_preview_lines(self.local_settings.tui.agent_response_preview_lines),
+                    );
+                    return;
+                }
                 let cell = multi_agents::background_completion_history_cell_from_agent_message(
                     &id,
                     &text,
@@ -345,6 +359,8 @@ impl ChatWidget {
                     &turn_id,
                     &ThreadItem::AgentMessage {
                         inter_agent_source: None,
+                        attribution: None,
+                        input: None,
                         id: id.clone(),
                         text: text.clone(),
                         phase: phase.clone(),
@@ -359,6 +375,8 @@ impl ChatWidget {
                 self.on_agent_message_item_completed(
                     AgentMessageItem {
                         id,
+                        attribution: None,
+                        input: None,
                         content: vec![AgentMessageContent::Text { text }],
                         phase,
                         memory_citation: memory_citation.map(|citation| {
@@ -591,6 +609,10 @@ impl ChatWidget {
             item @ ThreadItem::UserAgentControl { .. } => {
                 self.remember_user_agent_control_metadata(&item);
                 if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
+                    let cell = cell.with_reply_recipient_label(|id| {
+                        let id = ThreadId::from_string(id).ok()?;
+                        self.collab_agent_metadata(id).agent_nickname
+                    });
                     self.add_boxed_history(Box::new(cell));
                 }
             }

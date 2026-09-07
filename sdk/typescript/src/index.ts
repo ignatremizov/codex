@@ -15,6 +15,7 @@ export type {
 export type {
   ThreadItem,
   AgentMessageItem,
+  AgentInputItem,
   ReasoningItem,
   CommandExecutionItem,
   FileChangeItem,

@@ -165,6 +165,8 @@ fn joins_respect_actual_turns_and_intervening_items() {
         inter_agent_source: None,
         id: "message".to_string(),
         text: "Visible boundary".to_string(),
+        attribution: None,
+        input: None,
         phase: None,
         memory_citation: None,
         delivery: None,

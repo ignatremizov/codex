@@ -23,6 +23,7 @@ async fn disabling_reply_permission_preserves_an_accepted_user_queue(
     test.codex
         .set_agent_reply_route(
             &child,
+            /*recipient*/ None,
             UserAgentReplyRouteMode::Enabled,
         )
         .await?;
@@ -83,6 +84,7 @@ async fn disabling_reply_permission_preserves_an_accepted_user_queue(
     test.codex
         .set_agent_reply_route(
             &child,
+            /*recipient*/ None,
             UserAgentReplyRouteMode::Disabled,
         )
         .await?;
@@ -105,11 +107,13 @@ async fn disabling_reply_permission_preserves_an_accepted_user_queue(
         test.codex
             .set_agent_reply_route(
                 &child,
+                /*recipient*/ None,
                 UserAgentReplyRouteMode::Disabled
             )
             .await?,
         (
             ThreadId::from_string(&child)?,
+            test.session_configured.thread_id,
             Some(UserAgentReplyRouteMode::Disabled)
         ),
     );

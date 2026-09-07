@@ -233,3 +233,6 @@ async fn agent_prompt_keeps_internal_route_out_of_the_typed_visible_input(attrib
         serde_json::to_value(&expected).expect("serialize expected presentation"),
     );
 }
+
+#[path = "prompt_input_attributed_tests.rs"]
+mod attributed_tests;

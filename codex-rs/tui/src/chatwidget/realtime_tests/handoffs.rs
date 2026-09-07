@@ -190,6 +190,8 @@ async fn delegated_async_question_stays_local_and_expires_when_its_turn_ends() {
         inter_agent_source: None,
         id: "question-answer".into(),
         text: "Which option?".into(),
+        attribution: None,
+        input: None,
         phase: Some(MessagePhase::FinalAnswer),
         questions: Some(vec![AsyncUserInputQuestion {
             title: "Which option?".into(),

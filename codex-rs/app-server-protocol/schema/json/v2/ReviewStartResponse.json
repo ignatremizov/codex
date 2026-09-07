@@ -5,6 +5,78 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
+    "AgentInputAttribution": {
+      "description": "Presentation-only provenance; the original message and attachments are in the item's input.",
+      "properties": {
+        "recipient": {
+          "$ref": "#/definitions/AgentInputIdentity"
+        },
+        "sender": {
+          "$ref": "#/definitions/AgentInputIdentity"
+        },
+        "senderTurnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipient",
+        "sender",
+        "senderTurnId"
+      ],
+      "type": "object"
+    },
+    "AgentInputIdentity": {
+      "description": "Trusted send-time identity, retained even when current aliases or ownership change.",
+      "properties": {
+        "agentRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "taskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "AgentInputOutcome": {
       "description": "Whether a user input submission is known to have been admitted.",
       "enum": [
@@ -29,6 +101,30 @@
         "wake"
       ],
       "type": "string"
+    },
+    "AgentTaskPathMapping": {
+      "description": "Committed adoption label mapping. Thread identity remains unchanged.",
+      "properties": {
+        "previousTaskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "taskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
     },
     "AsyncUserInputQuestion": {
       "additionalProperties": false,
@@ -1090,6 +1186,17 @@
         },
         {
           "properties": {
+            "attribution": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentInputAttribution"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "delivery": {
               "anyOf": [
                 {
@@ -1103,6 +1210,16 @@
             },
             "id": {
               "type": "string"
+            },
+            "input": {
+              "default": null,
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "interAgentSource": {
               "anyOf": [
@@ -1835,6 +1952,12 @@
                 "null"
               ]
             },
+            "replyRecipientThreadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "resumedTarget": {
               "type": "boolean"
             },
@@ -1858,6 +1981,27 @@
                 "string",
                 "null"
               ]
+            },
+            "task": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "taskPath": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "taskPathMapping": {
+              "default": [],
+              "items": {
+                "$ref": "#/definitions/AgentTaskPathMapping"
+              },
+              "type": "array"
             },
             "type": {
               "enum": [
@@ -2326,7 +2470,8 @@
         "interrupt",
         "close",
         "observe",
-        "reply_route"
+        "reply_route",
+        "subtree_messaging"
       ],
       "type": "string"
     },

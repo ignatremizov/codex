@@ -400,6 +400,15 @@ impl ThreadManagerState {
             thread.session.services.agent_control.propagate_config_update(update);
         }
         threads.insert(thread_id, Arc::clone(thread));
+        drop(threads);
+        if self.agent_control_factory.is_none() {
+            let control = thread.session.services.local_agent_runtime.control(thread.session.session_id());
+            tokio::spawn(async move {
+                if let Err(error) = control.refresh_subtree_messaging(thread_id).await {
+                    tracing::warn!(%error, "failed to refresh published messaging context");
+                }
+            });
+        }
         Ok(())
     }
 }

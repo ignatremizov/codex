@@ -1,8 +1,5 @@
 use super::*;
 use crate::CodexThread;
-use crate::context::AgentContextIdentity;
-use crate::context::AttributedAgentMessage;
-use crate::context::ContextualUserFragment;
 
 impl LocalAgentControl {
     pub(super) fn ensure_scoped_reply_route_supported(
@@ -119,10 +116,8 @@ impl LocalAgentControl {
             let source_guard = state.agent_turn_queue.acquire_source_admission(sender.thread_id).await;
             let sender_thread = state.get_thread(sender.thread_id).await?;
             sender_thread.session.submission_admission.check_ready()?;
-            let identity = receiver_control.model_visible_agent_identity_for_version(
-                receiver_thread.multi_agent_version().unwrap_or(MultiAgentVersion::V1),
-                sender.thread_id,
-            ).await?;
+            receiver_control.refresh_subtree_messaging(receiver_thread_id).await?;
+            let input = receiver_control.attribute_model_input(sender, receiver_thread_id, &sender_turn_id, input).await?;
             let admission = receiver_control.acquire_target_message_admission_after_binding(
                 &receiver_thread, receiver, &sender_thread, sender, &sender_turn_id,
                 TargetMessageAdmissionMode::SteerOrWake,
@@ -148,7 +143,16 @@ impl LocalAgentControl {
             let result = receiver_control.dispatch_user_input_locked(
                 &receiver_thread,
                 super::user_dispatch::ObservedUserInputRequest {
-                    input: attributed_agent_input(identity, &sender_turn_id, input),
+                    target_message_wake: match admission {
+                        TargetMessageAdmission::Wake(reservation_id) => Some(crate::agent::turn_queue::QueuedTargetMessageWake {
+                            observer: receiver,
+                            target: sender,
+                            target_turn_id: sender_turn_id.clone(),
+                            reservation_id,
+                        }),
+                        TargetMessageAdmission::Steer | TargetMessageAdmission::PendingWake => None,
+                    },
+                    input,
                     start_options,
                     observer: sender,
                     observation: super::user_dispatch::UserObservation::Install(response_observation),
@@ -158,9 +162,15 @@ impl LocalAgentControl {
             ).await;
             let (mut submission, input_persisted) = match result {
                 Ok(super::user_dispatch::ObservedInputResult::Submitted { submission, input_persisted }) => (submission, input_persisted),
+                Ok(super::user_dispatch::ObservedInputResult::PermissionRejected(reason)) => {
+                    if let TargetMessageAdmission::Wake(id) = admission {
+                        receiver_control.rollback_target_message_wake(receiver, sender, &sender_turn_id, id);
+                    }
+                    return Err(CodexErr::InvalidRequest(reason));
+                }
                 Ok(super::user_dispatch::ObservedInputResult::NotSubmitted(reason)) => {
                     if let TargetMessageAdmission::Wake(id) = admission {
-                        receiver_control.rollback_target_message_wake_reservation(receiver, sender, &sender_turn_id, id);
+                        receiver_control.rollback_target_message_wake(receiver, sender, &sender_turn_id, id);
                     }
                     return Err(CodexErr::InvalidRequest(format!("scoped message was not submitted: {reason:?}")));
                 }
@@ -191,36 +201,5 @@ impl LocalAgentControl {
             submission.await_input_persistence(input_persisted).await;
             submission.into_strict_result()
         }).await.map_err(|error| CodexErr::Fatal(format!("scoped input worker lost; reconcile before retry: {error}")))?
-    }
-}
-
-pub(super) fn attributed_agent_input(
-    sender: AgentContextIdentity,
-    sender_turn_id: &str,
-    input: Vec<UserInput>,
-) -> AgentControlInput {
-    // An explicit `m` grant promotes complete agent-to-agent input. Preserve its payload just like
-    // a successful child completion; generic command-output and error truncation do not apply.
-    let message = render_input_preview(&input);
-    let presentation = input.clone();
-    let agent_id = match &sender {
-        AgentContextIdentity::V1 { agent_id, .. }
-        | AgentContextIdentity::V2 { agent_id, .. }
-        | AgentContextIdentity::Canonical { agent_id } => *agent_id,
-    };
-    let transcript = format!("Agent message from `{agent_id}`:\n\n{message}");
-    let mut content = vec![UserInput::Text {
-        text: AttributedAgentMessage::new(sender, sender_turn_id, message).render(),
-        text_elements: Vec::new(),
-    }];
-    content.extend(
-        input
-            .into_iter()
-            .filter(|item| !matches!(item, UserInput::Text { .. })),
-    );
-    AgentControlInput::AttributedAgent {
-        content,
-        transcript,
-        presentation,
     }
 }

@@ -950,6 +950,8 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 
     let item = AppServerThreadItem::AgentMessage {
         inter_agent_source: None,
+        attribution: None,
+        input: None,
         id: "msg-1".to_string(),
         text: "Yes. What do you need?".to_string(),
         phase: Some(MessagePhase::FinalAnswer),
@@ -1017,6 +1019,8 @@ async fn live_app_server_subagent_commentary_renders_as_agent_notification() {
     );
     let item = AppServerThreadItem::AgentMessage {
         id: "item-stable".to_string(),
+        attribution: None,
+        input: None,
         text: format!("Agent commentary from `{agent_id}`:\n\nAcknowledged."),
         inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
             author: agent_id.to_string(),
@@ -1069,6 +1073,8 @@ async fn unattributed_live_commentary_does_not_become_an_agent_notification() {
         id: "ordinary-provider-item".into(),
         text: format!("Agent commentary from `{agent_id}`:\n\nNot an attributed message."),
         inter_agent_source: None,
+        attribution: None,
+        input: None,
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,
@@ -1983,6 +1989,8 @@ async fn live_app_server_turn_completion_repairs_dropped_message_deltas() {
     completed_turn.items_view = codex_app_server_protocol::TurnItemsView::Summary;
     completed_turn.items = vec![AppServerThreadItem::AgentMessage {
         inter_agent_source: None,
+        attribution: None,
+        input: None,
         id: "msg-1".to_string(),
         text: concat!(
             "The transport kept this.\nAnd dropped this.\n\n",

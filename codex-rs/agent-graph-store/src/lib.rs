@@ -14,6 +14,7 @@ pub use store::AgentGraphStoreFuture;
 pub use types::AgentAlias;
 pub use types::AgentAliasState;
 pub use types::AgentAliasTransfer;
+pub use types::AgentTaskPathMapping;
 pub use types::AllocateAgentAliasRequest;
 pub use types::ReserveForkAgentAliasesRequest;
 pub use types::ThreadSpawnEdgeStatus;

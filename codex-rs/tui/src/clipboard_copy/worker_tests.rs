@@ -44,6 +44,8 @@ async fn blocked_copy_allows_overlay_exit_rejects_backlog_and_wakes_completion()
                     id: "msg-1".into(),
                     text: "café\nsecond line".into(),
                     inter_agent_source: None,
+                    attribution: None,
+                    input: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,

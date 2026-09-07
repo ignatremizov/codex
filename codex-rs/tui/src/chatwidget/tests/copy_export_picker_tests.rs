@@ -9,17 +9,43 @@ use pretty_assertions::assert_eq;
 async fn commentary_copy_preserves_final_answer_and_source_in_live_and_replayed_history() {
     let commentary = r#":codex-followup[Inspect next]{prompt="private"}"#;
     for replay in [false, true] {
-        let (mut chat, _events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
+        let (mut chat, _events, _operations) =
+            make_chatwidget_manual(/*model_override*/ None).await;
         for (id, phase, source, final_answer, copy_text) in [
-            ("final-first", MessagePhase::FinalAnswer, "First final", "First final", "First final"),
-            ("commentary", MessagePhase::Commentary, commentary, "First final", "Inspect next"),
-            ("final-last", MessagePhase::FinalAnswer, "Last final", "Last final", "Last final"),
+            (
+                "final-first",
+                MessagePhase::FinalAnswer,
+                "First final",
+                "First final",
+                "First final",
+            ),
+            (
+                "commentary",
+                MessagePhase::Commentary,
+                commentary,
+                "First final",
+                "Inspect next",
+            ),
+            (
+                "final-last",
+                MessagePhase::FinalAnswer,
+                "Last final",
+                "Last final",
+                "Last final",
+            ),
         ] {
             if replay {
                 chat.replay_thread_item(
                     AppServerThreadItem::AgentMessage {
-                        id: id.into(), text: source.into(), inter_agent_source: None,
-                        phase: Some(phase), memory_citation: None, delivery: None, questions: None,
+                        id: id.into(),
+                        text: source.into(),
+                        inter_agent_source: None,
+                        attribution: None,
+                        input: None,
+                        phase: Some(phase),
+                        memory_citation: None,
+                        delivery: None,
+                        questions: None,
                     },
                     "turn-1".into(),
                     ReplayKind::ThreadSnapshot,

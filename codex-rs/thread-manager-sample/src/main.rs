@@ -386,6 +386,7 @@ async fn new_config(
         web_search_config: None,
         experimental_request_user_input_enabled: true,
         update_plan_enabled: true,
+        list_agents_enabled: false,
         tool_registry: Default::default(),
         code_mode: Default::default(),
         background_terminal_max_timeout: Some(300_000),

@@ -1,4 +1,4 @@
-//! Acknowledged singleton publication, independent of runtime reply permission.
+//! Acknowledged publication of non-waking permission audit records.
 
 use std::sync::Arc;
 
@@ -11,19 +11,19 @@ use super::Session;
 use super::prepared_history_items::PreparedHistoryItems;
 
 #[cfg(test)]
-#[path = "reply_route_publication_tests.rs"]
+#[path = "messaging_context_publication_tests.rs"]
 mod tests;
 
-struct RoutePublication {
+struct MessagingContextPublication {
     session: Arc<Session>,
     finished: bool,
 }
 
-impl Drop for RoutePublication {
+impl Drop for MessagingContextPublication {
     fn drop(&mut self) {
         if !self.finished {
             self.session.quarantine_history(
-                "reply-route context lost its canonical receipt; reload required, do not retry"
+                "messaging context lost its canonical receipt; reload required, do not retry"
                     .to_string(),
             );
         }
@@ -31,21 +31,17 @@ impl Drop for RoutePublication {
 }
 
 impl Session {
-    /// Publish the singleton before a source may acknowledge and activate its live permission.
-    /// Reuse only verified retained context; a failed append is never retried.
-    pub(crate) async fn publish_persistent_reply_route(
+    /// Publish non-waking policy evidence before installing its prepared live mutation.
+    /// The callback is synchronous and must not acquire Session locks.
+    pub(crate) async fn publish_messaging_context(
         self: &Arc<Self>,
         mut item: ResponseItem,
+        on_ack: impl FnOnce() -> CodexResult<()> + Send + 'static,
     ) -> CodexResult<()> {
         Self::assign_missing_response_item_id(&mut item);
         let mut envelope = ResponseItemEnvelope::new(item);
-        let source =
-            codex_history::persistent_agent_reply_route_source(&envelope).ok_or_else(|| {
-                CodexErr::InvalidRequest("invalid persistent reply-route context".into())
-            })?;
         let session = Arc::clone(self);
-        // Capture abandonment ownership before the spawned future's first poll.
-        let outcome = RoutePublication {
+        let outcome = MessagingContextPublication {
             session: Arc::clone(&session),
             finished: false,
         };
@@ -53,19 +49,6 @@ impl Session {
             let mut outcome = outcome;
             let result = async {
                 let permit = session.acquire_history_publication_barrier().await?;
-                if session
-                    .state
-                    .lock()
-                    .await
-                    .history
-                    .annotated_items()
-                    .iter()
-                    .any(|item| {
-                        codex_history::persistent_agent_reply_route_source(item) == Some(source)
-                    })
-                {
-                    return Ok(());
-                }
                 let turn = session.new_history_only_turn().await;
                 let policy = turn.model_info().truncation_policy.into();
                 Self::stamp_response_item_for_history(&mut envelope.item, &turn.sub_id);
@@ -86,6 +69,8 @@ impl Session {
                     PreparedHistoryItems::new(&state.history, vec![envelope.clone()], policy)
                 };
                 let executed_tool_calls = session.services.executed_tool_calls.clone();
+                let installation_session = Arc::clone(&session);
+                let (installed, installation) = tokio::sync::oneshot::channel();
                 let receiver = session.dispatch_completion_publication(
                     permit,
                     prepared.rollout_items(),
@@ -98,22 +83,30 @@ impl Session {
                         if let Some(revision) = mcp_revision {
                             executed_tool_calls.mark_mcp_attribution_persisted(revision);
                         }
+                        let result = on_ack();
+                        if let Err(error) = &result {
+                            installation_session.quarantine_history(error.to_string());
+                        }
+                        let _ = installed.send(result);
                     },
                     || {},
                 )?;
                 session.publication_result(receiver).await?;
+                installation
+                    .await
+                    .map_err(|_| CodexErr::InternalAgentDied)??;
                 Ok(())
             }
             .await;
             if let Err(error) = &result {
                 session.quarantine_history(format!(
-                    "reply-route context publication failed: {error}; do not retry"
+                    "messaging context publication outcome unknown: {error}; do not retry"
                 ));
             }
             outcome.finished = true;
             result
         })
         .await
-        .map_err(|error| CodexErr::Fatal(format!("reply-route context worker failed: {error}")))?
+        .map_err(|error| CodexErr::Fatal(format!("messaging context worker failed: {error}")))?
     }
 }

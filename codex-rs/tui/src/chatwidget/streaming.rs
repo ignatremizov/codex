@@ -422,6 +422,28 @@ impl ChatWidget {
         turn_id: &str,
         from_replay: bool,
     ) {
+        if let Some(attribution) = item.attribution.clone() {
+            self.on_collab_event(
+                history_cell::AgentInputHistoryCell::new(
+                    attribution.into(),
+                    item.input
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                    item.content
+                        .iter()
+                        .map(|content| match content {
+                            AgentMessageContent::Text { text } => text.clone(),
+                        })
+                        .collect(),
+                    self.thread_id,
+                )
+                .with_response_preview_lines(self.config.tui_agent_response_preview_lines),
+            );
+            return;
+        }
         if item.has_sub_agent_completion_identity()
             && let [AgentMessageContent::Text { text }] = item.content.as_slice()
             && let Some(cell) = multi_agents::background_completion_history_cell_from_agent_message(

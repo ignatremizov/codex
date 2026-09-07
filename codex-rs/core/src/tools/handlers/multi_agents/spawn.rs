@@ -5,10 +5,12 @@ use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
+use crate::agent::control::AgentModelInputOrigin;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
@@ -119,44 +121,80 @@ async fn handle_spawn_agent(
     .await
     .map_err(FunctionCallError::RespondToModel)?;
     let config = prepared.config;
-    let result = session
-        .services
-        .agent_control
-        .spawn(SpawnRequest {
-            caller: session.thread_id,
-            config,
-            input: AgentInput::UserInput(input_items),
-            source: thread_spawn_source(
-                session.thread_id,
-                &turn.session_source,
-                child_depth,
-                prepared.role_name.as_deref(),
-                /*task_name*/ None,
-            )?,
-            options: SpawnAgentOptions {
-                fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
-                fork_mode: fork_mode.clone(),
-                parent_thread_id: Some(session.thread_id),
-                parent_turn_id: Some(turn.sub_id.clone()),
-                root_turn_id: turn.turn_metadata_state.root_turn_id(),
-                turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
-                environments: Some(step_context.environments.clone()),
-                multi_agent_v2_usage_hints: None,
-                response_observation: args.w,
-                cyber_access_program: turn.cyber_access_program,
-            },
-        })
-        .await
-        .map_err(|err| {
-            record_collab_spawn_failure(
-                &turn.session_telemetry,
-                turn.config.apps_mcp_product_sku.as_deref(),
-                &err,
-                fork_mode.as_ref(),
-                MultiAgentVersion::V1,
-            );
-            collab_spawn_error(err)
-        });
+    let source = thread_spawn_source(
+        session.thread_id,
+        &turn.session_source,
+        child_depth,
+        prepared.role_name.as_deref(),
+        /*task_name*/ None,
+    )?;
+    let options = SpawnAgentOptions {
+        task: args.task,
+        fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
+        fork_mode: fork_mode.clone(),
+        parent_thread_id: Some(session.thread_id),
+        parent_turn_id: Some(turn.sub_id.clone()),
+        root_turn_id: turn.turn_metadata_state.root_turn_id(),
+        turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+        environments: Some(step_context.environments.clone()),
+        multi_agent_v2_usage_hints: None,
+        response_observation: args.w,
+        cyber_access_program: turn.cyber_access_program,
+    };
+    let result = async {
+        match session
+            .services
+            .local_agent_runtime
+            .user_control(session.session_id())
+        {
+            Ok(control) => {
+                control
+                    .spawn_model_agent_with_metadata(
+                        config,
+                        input_items,
+                        Some(source),
+                        options,
+                        AgentModelInputOrigin {
+                            sender: session.presentation_id(),
+                            sender_turn_id: turn.sub_id.clone(),
+                        },
+                    )
+                    .await
+            }
+            Err(error)
+                if matches!(
+                    error.details(),
+                    codex_protocol::error::CodexErrorDetails::UnsupportedOperation(_)
+                ) =>
+            {
+                // A selected host owns its operation and attribution contract. Never route
+                // its spawn through the accompanying native bookkeeping runtime.
+                session
+                    .services
+                    .agent_control
+                    .spawn(SpawnRequest {
+                        caller: session.thread_id,
+                        config,
+                        input: AgentInput::UserInput(input_items),
+                        source,
+                        options,
+                    })
+                    .await
+            }
+            Err(error) => Err(error),
+        }
+    }
+    .await
+    .map_err(|err| {
+        record_collab_spawn_failure(
+            &turn.session_telemetry,
+            turn.config.apps_mcp_product_sku.as_deref(),
+            &err,
+            fork_mode.as_ref(),
+            MultiAgentVersion::V1,
+        );
+        collab_spawn_error(err)
+    });
     let (new_thread_id, status) = match &result {
         Ok((spawned_agent, _)) => (Some(spawned_agent.thread_id), spawned_agent.status.clone()),
         Err(_) => (None, AgentStatus::NotFound),
@@ -246,6 +284,7 @@ impl CoreToolRuntime for Handler {
 
 #[derive(Debug, Deserialize)]
 struct SpawnAgentArgs {
+    task: Option<String>,
     message: Option<String>,
     items: Option<Vec<UserInput>>,
     agent_type: Option<String>,

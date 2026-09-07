@@ -2,6 +2,7 @@
 
 mod agent_context_identity;
 mod agent_message_board_notification;
+mod agent_messaging_policy;
 mod legacy_agent_reply_route;
 #[cfg(test)]
 mod legacy_agent_reply_route_test_support;
@@ -68,6 +69,8 @@ pub(crate) mod world_state;
 
 pub(crate) use agent_context_identity::AgentContextIdentity;
 pub(crate) use agent_message_board_notification::AgentMessageBoardNotification;
+pub(crate) use agent_messaging_policy::AGENT_MESSAGING_POLICY_PREFIX;
+pub(crate) use agent_messaging_policy::AgentMessagingPolicyNotice;
 pub(crate) use legacy_agent_reply_route::LegacyAgentReplyRoute;
 #[cfg(test)]
 pub(crate) use legacy_agent_reply_route_test_support::AgentReplyRoute;

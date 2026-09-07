@@ -241,6 +241,8 @@ async fn replay_preserves_canonical_identity_time_and_opaque_transcript_content(
                     author: "/root".to_string(),
                     recipient: "/root/worker".to_string(),
                 }),
+                attribution: None,
+                input: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 delivery: None,

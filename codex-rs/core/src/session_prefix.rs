@@ -79,6 +79,7 @@ pub(crate) fn format_subagent_context_line(
             agent_id,
             agent_ref,
             nickname,
+            ..
         } => match agent_ref {
             Some(agent_ref) => (agent_ref.to_string(), nickname.as_deref()),
             None => (

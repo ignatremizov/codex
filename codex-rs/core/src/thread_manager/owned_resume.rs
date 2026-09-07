@@ -212,6 +212,7 @@ impl ThreadManager {
                             parent_thread_id: missing_edge.parent_thread_id,
                             child_thread_id: missing_edge.child_thread_id,
                             nickname: missing_edge.nickname,
+                            task_path: None,
                         })
                         .await
                         .map_err(|err| {
@@ -326,21 +327,33 @@ impl ThreadManager {
         })
     }
 
-    pub(super) async fn resume_thread_with_current_owner(
+    /// Reload an explicit live revert, restoring only its send policy before V1 publication.
+    ///
+    /// Ordinary resume and history fork never take a live permission handoff.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn resume_thread_after_live_revert(
         &self,
         config: Config,
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
+        messaging: Option<crate::LiveRevertMessagingSnapshot>,
     ) -> CodexResult<NewThread> {
-        let manager = Self {
-            state: Arc::clone(&self.state),
-            _test_codex_home_guard: None,
-        };
-        tokio::spawn(async move {
-            manager
-                .resume_owned_thread(
+        match messaging {
+            Some(messaging) => {
+                self.resume_thread_with_current_owner(
+                    config,
+                    initial_history,
+                    auth_manager,
+                    parent_trace,
+                    client_mcp_extensions,
+                    Some(messaging),
+                )
+                .await
+            }
+            None => {
+                self.resume_thread_with_history(
                     config,
                     initial_history,
                     auth_manager,
@@ -348,20 +361,70 @@ impl ThreadManager {
                     client_mcp_extensions,
                 )
                 .await
-        })
-        .await
-        .map_err(|error| CodexErr::Fatal(format!("owned resume worker failed: {error}")))?
+            }
+        }
     }
 
-    async fn resume_owned_thread(
+    pub(super) async fn resume_thread_with_current_owner(
         &self,
         config: Config,
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
+        live_revert_messaging: Option<crate::LiveRevertMessagingSnapshot>,
     ) -> CodexResult<NewThread> {
+        self.resume_thread_with_options_and_current_owner(
+            StartThreadOptions {
+                initial_history,
+                parent_trace,
+                client_mcp_extensions,
+                ..StartThreadOptions::new(config)
+            },
+            auth_manager,
+            live_revert_messaging,
+            /*startup*/ None,
+            /*forked_from_thread_id*/ None,
+        )
+        .await
+    }
+
+    /// Preserve the complete current startup request while recovering its native owner.
+    pub(super) async fn resume_thread_with_options_and_current_owner(
+        &self,
+        options: StartThreadOptions,
+        auth_manager: Arc<AuthManager>,
+        live_revert_messaging: Option<crate::LiveRevertMessagingSnapshot>,
+        startup: Option<Arc<crate::session::startup::SessionStartup>>,
+        forked_from_thread_id: Option<ThreadId>,
+    ) -> CodexResult<NewThread> {
+        let manager = Self {
+            state: Arc::clone(&self.state),
+            _test_codex_home_guard: None,
+        };
+        tokio::spawn(async move {
+            manager.resume_owned_thread(
+                options, auth_manager, live_revert_messaging, startup, forked_from_thread_id,
+            ).await
+        }).await.map_err(|error| CodexErr::Fatal(format!("owned resume worker failed: {error}")))?
+    }
+
+    async fn resume_owned_thread(
+        &self,
+        mut options: StartThreadOptions,
+        auth_manager: Arc<AuthManager>,
+        live_revert_messaging: Option<crate::LiveRevertMessagingSnapshot>,
+        startup: Option<Arc<crate::session::startup::SessionStartup>>,
+        forked_from_thread_id: Option<ThreadId>,
+    ) -> CodexResult<NewThread> {
+        let config = options.config.clone();
+        let initial_history = options.initial_history.clone();
         if self.state.agent_control_factory.is_some() {
+            if live_revert_messaging.is_some() {
+                return Err(CodexErr::UnsupportedOperation(
+                    "a native messaging handoff cannot replace the selected host controller".into(),
+                ));
+            }
             // The selected host owns generic resume. Alias recovery is not permission to
             // bind that request to a concrete local controller or mutate its local graph.
             let _lifecycle = match &initial_history {
@@ -373,12 +436,14 @@ impl ThreadManager {
             let control = self.agent_control_for_resumed_history(&config, &initial_history).await?;
             let (source, thread_source) = initial_history.get_resumed_session_sources()
                 .unwrap_or_else(|| (self.state.session_source.clone(), None));
-            let options = StartThreadOptions {
-                initial_history, session_source: Some(source), thread_source,
-                parent_trace, client_mcp_extensions, ..StartThreadOptions::new(config)
-            };
-            return Box::pin(self.state.spawn_thread(ThreadSpawnRequest::new(options, auth_manager, control)))
-                .await.map(ThreadSpawnResult::into_new_thread);
+            options.session_source = options.session_source.or(Some(source));
+            options.thread_source = options.thread_source.or(thread_source);
+            let mut request = ThreadSpawnRequest::new(options, auth_manager, control);
+            request.startup = startup;
+            request.forked_from_thread_id = forked_from_thread_id;
+            return Box::pin(self.state.spawn_thread(request))
+                .await
+                .map(ThreadSpawnResult::into_new_thread);
         }
         let thread_id = match &initial_history {
             InitialHistory::Resumed(history) => Some(history.conversation_id),
@@ -432,9 +497,11 @@ impl ThreadManager {
             }
             None => None,
         };
-        let (mut source, thread_source) = initial_history
+        let (recorded_source, recorded_thread_source) = initial_history
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));
+        let mut source = options.session_source.take().unwrap_or(recorded_source);
+        let thread_source = options.thread_source.take().or(recorded_thread_source);
         let owner_id = alias.as_ref().map(|alias| ThreadId::from(alias.session_id));
         let _owner_guard = match owner_id.filter(|owner| Some(*owner) != thread_id) {
             Some(owner) => Some(
@@ -449,14 +516,40 @@ impl ThreadManager {
             ),
             None => None,
         };
-        let control = if let Some(alias) = &alias {
-            self.retained_native_control_for_session(alias.session_id).await?
-                .unwrap_or_else(|| self.agent_control_for_config(&config).with_session_id(
-                    alias.session_id,
-                    config.effective_agent_max_threads(MultiAgentVersion::V2).unwrap_or(usize::MAX),
-                ))
+        let control = if let Some(messaging) = &live_revert_messaging {
+            let control = messaging.control_for_resume(thread_id.ok_or_else(|| {
+                CodexErr::InvalidRequest("live revert requires resumed history".into())
+            })?)?;
+            if alias
+                .as_ref()
+                .is_some_and(|alias| alias.session_id != control.session_id())
+            {
+                return Err(CodexErr::InvalidRequest("live revert owner changed".into()));
+            }
+            control
+        } else if let Some(alias) = &alias {
+            self.retained_native_control_for_session(alias.session_id)
+                .await?
+                .unwrap_or_else(|| {
+                    self.agent_control_for_config(&config).with_session_id(
+                        alias.session_id,
+                        config
+                            .effective_agent_max_threads(MultiAgentVersion::V2)
+                            .unwrap_or(usize::MAX),
+                    )
+                })
+        } else if let Some(thread) = loaded_thread.as_ref().filter(|thread| thread.is_running()) {
+            // A live aliasless thread already owns its native runtime. Constructing a
+            // cold-resume fallback here makes the later exact-tree check reject that
+            // same actor. Alias validation and host-controller dispatch stay separate.
+            thread
+                .session
+                .services
+                .local_agent_runtime
+                .control(thread.session.session_id())
         } else {
-            self.agent_control_for_resumed_history(&config, &initial_history).await?
+            self.agent_control_for_resumed_history(&config, &initial_history)
+                .await?
         };
         if let Some(id) = thread_id
             && alias.is_some()
@@ -501,15 +594,27 @@ impl ThreadManager {
         };
         if let Some(thread) = loaded_thread {
             let id = thread.session.thread_id();
+            if live_revert_messaging.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "live revert cannot adopt an already published runtime".into(),
+                ));
+            }
             if thread.is_running() {
-                if alias.as_ref().is_some_and(|alias| thread.session.session_id() != alias.session_id)
-                    || !control.runtime.shares_tree_with(&thread.session.services.local_agent_runtime)
+                if alias
+                    .as_ref()
+                    .is_some_and(|alias| thread.session.session_id() != alias.session_id)
+                    || !control
+                        .runtime
+                        .shares_tree_with(&thread.session.services.local_agent_runtime)
                 {
-                    return Err(CodexErr::InvalidRequest("thread is live under a different owner".into()));
+                    return Err(CodexErr::InvalidRequest(
+                        "thread is live under a different owner".into(),
+                    ));
                 }
                 return Ok(NewThread {
                     thread_id: id,
-                    session_configured: thread.startup_metadata()
+                    session_configured: thread
+                        .startup_metadata()
                         .to_session_configured_event(initial_history.get_event_msgs()),
                     thread,
                 });
@@ -536,14 +641,8 @@ impl ThreadManager {
         } else {
             None
         };
-        let mut options = StartThreadOptions {
-            initial_history,
-            session_source: Some(source.clone()),
-            thread_source,
-            parent_trace,
-            client_mcp_extensions,
-            ..StartThreadOptions::new(config)
-        };
+        options.session_source = Some(source.clone());
+        options.thread_source = thread_source;
         if controlled_child {
             options
                 .thread_extension_init
@@ -553,6 +652,8 @@ impl ThreadManager {
         }
         let mut request = ThreadSpawnRequest::new(options, auth_manager, control.clone());
         request.registration = ThreadRegistration::Deferred;
+        request.startup = startup;
+        request.forked_from_thread_id = forked_from_thread_id;
         request.parent_thread_id = source.parent_thread_id();
         let resumed = Box::pin(self.state.spawn_thread(request)).await?;
         if resumed.runtime_origin == ThreadRuntimeOrigin::Existing {
@@ -561,6 +662,14 @@ impl ThreadManager {
             ));
         }
         let setup = async {
+            let messaging_publication = match live_revert_messaging {
+                Some(messaging) => Some(
+                    messaging
+                        .restore_before_publication(&resumed.thread)
+                        .await?,
+                ),
+                None => None,
+            };
             if controlled_child {
                 control
                     .publish_restored_agent(&resumed.thread, parent.as_ref(), || {
@@ -574,6 +683,9 @@ impl ThreadManager {
                 self.state
                     .publish_restored_thread(&resumed.thread, parent.as_ref(), || Ok(()))
                     .await?;
+            }
+            if let Some(messaging) = messaging_publication {
+                messaging.published();
             }
             Ok::<(), CodexErr>(())
         }

@@ -1,0 +1,91 @@
+use super::*;
+use crate::context::AgentReplyRoute;
+use codex_history::CodexHarnessMetadata;
+use codex_protocol::ResponseItemId;
+use pretty_assertions::assert_eq;
+
+#[test]
+fn unchanged_policy_preserves_item_ids_order_and_harness_metadata() {
+    let notice = ContextualUserFragment::into(PermissionNotice {
+        key: format!("directed.{}", ThreadId::new()),
+        text: "User disabled send_input to Pascal (3).".to_string(),
+    });
+    let mut stored = notice.clone();
+    stored.set_id(Some(ResponseItemId::new("msg")));
+    let snapshot = MessagingContextSnapshot {
+        notices: vec![notice],
+        ..Default::default()
+    };
+    let mut items = vec![ResponseItemEnvelope {
+        item: stored,
+        metadata: Some(CodexHarnessMetadata {
+            client_authored: false,
+            history_truncation_token_limit: Some(123),
+            ..Default::default()
+        }),
+    }];
+    let expected = items.clone();
+    snapshot.reconcile_annotated(&mut items);
+    snapshot.reconcile_annotated(&mut items);
+    assert_eq!(items, expected);
+}
+
+#[test]
+fn reconstructed_history_reconciles_policy_without_rewriting_legacy_route_evidence() {
+    let recipient = ThreadId::new();
+    let key = format!("directed.{recipient}");
+    let enabled = ContextualUserFragment::into(PermissionNotice {
+        key: key.clone(),
+        text: "User enabled send_input to Pascal (3).".to_string(),
+    });
+    let disabled = ContextualUserFragment::into(PermissionNotice {
+        key,
+        text: "User disabled send_input to Pascal (3).".to_string(),
+    });
+    let route =
+        ContextualUserFragment::into(AgentReplyRoute::until_disabled(AgentContextIdentity::V1 {
+            agent_id: recipient,
+            agent_ref: Some(3),
+            nickname: Some("Pascal".to_string()),
+            task_path: None,
+        }));
+    let original = vec![
+        ResponseItemEnvelope::new(enabled),
+        ResponseItemEnvelope::new(route),
+    ];
+    let mut projected = original.clone();
+    let snapshot = MessagingContextSnapshot {
+        notices: vec![disabled.clone()],
+        ..Default::default()
+    };
+    snapshot.reconcile_annotated(&mut projected);
+    assert_eq!(
+        projected,
+        vec![original[1].clone(), ResponseItemEnvelope::new(disabled)],
+    );
+    let stable = projected.clone();
+    snapshot.reconcile_annotated(&mut projected);
+    assert_eq!(projected, stable);
+    assert_ne!(
+        projected, original,
+        "projection does not mutate stored history"
+    );
+}
+
+#[test]
+fn cold_runtime_discards_historical_enable_without_restoring_authority() {
+    let notice = ContextualUserFragment::into(PermissionNotice {
+        key: format!("subtree.{}", ThreadId::new()),
+        text: "User enabled send_input within Main's subtree.".to_string(),
+    });
+    let mut items = vec![notice];
+    let snapshot = MessagingContextSnapshot::default();
+    snapshot.reconcile(&mut items);
+    assert_eq!(
+        items.iter().filter_map(notice_parts).collect::<Vec<_>>(),
+        vec![("baseline", "No live user messaging overrides are active.")],
+    );
+    let first = items.clone();
+    snapshot.reconcile(&mut items);
+    assert_eq!(items, first);
+}

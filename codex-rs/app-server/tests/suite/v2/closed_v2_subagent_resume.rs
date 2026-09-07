@@ -855,6 +855,8 @@ async fn generic_resume_restores_closed_v2_subagent_through_live_owner(
         completion_item,
         ThreadItem::AgentMessage {
             id: completion_item.id().to_string(),
+            attribution: None,
+            input: None,
             text: expected_completion,
             inter_agent_source: None,
             phase: Some(MessagePhase::Commentary),

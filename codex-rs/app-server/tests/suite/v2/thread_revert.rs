@@ -137,6 +137,9 @@ async fn thread_revert_rejects_ephemeral_without_losing_context(
     Ok(())
 }
 
+#[path = "thread_revert_messaging.rs"]
+mod messaging_tests;
+
 #[test_case::test_case(false; "live_reload")]
 #[test_case::test_case(true; "cold_resume")]
 #[tokio::test]
