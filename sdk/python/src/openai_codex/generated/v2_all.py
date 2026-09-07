@@ -266,6 +266,15 @@ class AgentResponseHandling(BaseModel):
     ]
 
 
+class AgentTaskPathMapping(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    previous_task_path: Annotated[str | None, Field(alias="previousTaskPath")] = None
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class AllowDenyRequirement(Enum):
     allow = "allow"
     deny = "deny"
@@ -6656,7 +6665,7 @@ class UserAgentControlAction(Enum):
     close = "close"
     observe = "observe"
     reply_route = "reply_route"
-
+    subtree_messaging = "subtree_messaging"
 
 
 class UserAgentControlStatus(Enum):
@@ -7013,6 +7022,13 @@ class AgentAlias(BaseModel):
     nickname: str | None = None
     ref: str
     state: AgentAliasState
+    task_path: Annotated[
+        str | None,
+        Field(
+            alias="taskPath",
+            description="Current root-scoped assignment label, independent of lifecycle ancestry.",
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
@@ -7043,6 +7059,12 @@ class SpawnAgentControlAction(BaseModel):
     ] = None
     role: Annotated[
         str | None, Field(description="Omitted selects the default child configuration.")
+    ] = None
+    task: Annotated[
+        str | None,
+        Field(
+            description="Optional assignment label, resolved within the issuing agent's root namespace."
+        ),
     ] = None
     type: Annotated[Literal["spawn"], Field(title="SpawnAgentControlActionType")]
 
@@ -7100,6 +7122,12 @@ class ResumeAgentControlAction(BaseModel):
             description="Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption."
         ),
     ]
+    task: Annotated[
+        str | None,
+        Field(
+            description="New assignment for cross-root adoption only; same-root resume cannot rename a task."
+        ),
+    ] = None
     type: Annotated[Literal["resume"], Field(title="ResumeAgentControlActionType")]
 
 
@@ -7141,17 +7169,53 @@ class ReplyRouteAgentControlAction(BaseModel):
         populate_by_name=True,
     )
     mode: AgentReplyRouteMode
+    recipient: Annotated[
+        str | None, Field(description="Omitted means the source thread issuing the user command.")
+    ] = None
     target: str
     type: Annotated[Literal["replyRoute"], Field(title="ReplyRouteAgentControlActionType")]
 
 
+class SubtreeMessagingAgentControlAction(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    type: Annotated[
+        Literal["subtreeMessaging"], Field(title="SubtreeMessagingAgentControlActionType")
+    ]
+
+
 class AgentControlAction(
-    RootModel[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction | ReplyRouteAgentControlAction]
+    RootModel[
+        SpawnAgentControlAction
+        | PromptAgentControlAction
+        | ReservedPromptAgentControlAction
+        | QueuedPromptAgentControlAction
+        | ResumeAgentControlAction
+        | InterruptAgentControlAction
+        | CloseAgentControlAction
+        | ObserveAgentControlAction
+        | ReplyRouteAgentControlAction
+        | SubtreeMessagingAgentControlAction
+    ]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[SpawnAgentControlAction | PromptAgentControlAction | ReservedPromptAgentControlAction | QueuedPromptAgentControlAction | ResumeAgentControlAction | InterruptAgentControlAction | CloseAgentControlAction | ObserveAgentControlAction | ReplyRouteAgentControlAction, Field(description='A user-authored multi-agent control operation.')]
+    root: Annotated[
+        SpawnAgentControlAction
+        | PromptAgentControlAction
+        | ReservedPromptAgentControlAction
+        | QueuedPromptAgentControlAction
+        | ResumeAgentControlAction
+        | InterruptAgentControlAction
+        | CloseAgentControlAction
+        | ObserveAgentControlAction
+        | ReplyRouteAgentControlAction
+        | SubtreeMessagingAgentControlAction,
+        Field(description="A user-authored multi-agent control operation."),
+    ]
 
 
 class SpawnedAgentControlOutcome(BaseModel):
@@ -7168,6 +7232,7 @@ class SpawnedAgentControlOutcome(BaseModel):
     ] = None
     ref: str | None = None
     target_thread_id: str
+    task_path: str | None = None
     type: Annotated[Literal["spawned"], Field(title="SpawnedAgentControlOutcomeType")]
 
 
@@ -7225,6 +7290,8 @@ class ResumedAgentControlOutcome(BaseModel):
     ] = None
     ref: str | None = None
     target_thread_id: str
+    task_path: str | None = None
+    task_path_mapping: list[AgentTaskPathMapping] | None = []
     type: Annotated[Literal["resumed"], Field(title="ResumedAgentControlOutcomeType")]
 
 
@@ -7261,19 +7328,69 @@ class ReplyRouteChangedAgentControlOutcome(BaseModel):
     )
     mode: AgentReplyRouteMode
     previous_mode: AgentReplyRouteMode | None = None
+    recipient_thread_id: str
     target_thread_id: str
     type: Annotated[
         Literal["replyRouteChanged"], Field(title="ReplyRouteChangedAgentControlOutcomeType")
     ]
 
 
+class SubtreeMessagingChangedAgentControlOutcome(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode: AgentReplyRouteMode
+    previous_mode: AgentReplyRouteMode | None = None
+    root_thread_id: str
+    type: Annotated[
+        Literal["subtreeMessagingChanged"],
+        Field(title="SubtreeMessagingChangedAgentControlOutcomeType"),
+    ]
+
+
 class AgentControlOutcome(
-    RootModel[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome | ReplyRouteChangedAgentControlOutcome]
+    RootModel[
+        SpawnedAgentControlOutcome
+        | PromptedAgentControlOutcome
+        | ReservedPromptedAgentControlOutcome
+        | ResumedAgentControlOutcome
+        | InterruptedAgentControlOutcome
+        | ClosedAgentControlOutcome
+        | ObservedAgentControlOutcome
+        | ReplyRouteChangedAgentControlOutcome
+        | SubtreeMessagingChangedAgentControlOutcome
+    ]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[SpawnedAgentControlOutcome | PromptedAgentControlOutcome | ReservedPromptedAgentControlOutcome | ResumedAgentControlOutcome | InterruptedAgentControlOutcome | ClosedAgentControlOutcome | ObservedAgentControlOutcome | ReplyRouteChangedAgentControlOutcome, Field(description='Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.')]
+    root: Annotated[
+        SpawnedAgentControlOutcome
+        | PromptedAgentControlOutcome
+        | ReservedPromptedAgentControlOutcome
+        | ResumedAgentControlOutcome
+        | InterruptedAgentControlOutcome
+        | ClosedAgentControlOutcome
+        | ObservedAgentControlOutcome
+        | ReplyRouteChangedAgentControlOutcome
+        | SubtreeMessagingChangedAgentControlOutcome,
+        Field(
+            description="Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue."
+        ),
+    ]
+
+
+class AgentInputIdentity(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_ref: Annotated[str | None, Field(alias="agentRef")] = None
+    model: str | None = None
+    nickname: str | None = None
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
+    role: str | None = None
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
 
 
 class AgentQueueEntry(BaseModel):
@@ -10562,22 +10679,6 @@ class UserMessageThreadItem(BaseModel):
     type: Annotated[Literal["userMessage"], Field(title="UserMessageThreadItemType")]
 
 
-class AgentMessageThreadItem(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    delivery: AgentMessageDelivery | None = None
-    id: str
-    inter_agent_source: Annotated[
-        InterAgentMessageSource | None, Field(alias="interAgentSource")
-    ] = None
-    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
-    phase: MessagePhase | None = None
-    questions: list[AsyncUserInputQuestion] | None = None
-    text: str
-    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
-
-
 class CommandExecutionThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10754,11 +10855,17 @@ class UserAgentControlThreadItem(BaseModel):
     queue_input: Annotated[bool | None, Field(alias="queueInput")] = None
     reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
     ref: str | None = None
+    reply_recipient_thread_id: Annotated[str | None, Field(alias="replyRecipientThreadId")] = None
     resumed_target: Annotated[bool, Field(alias="resumedTarget")]
     role: str | None = None
     status: UserAgentControlStatus
     target_messages: Annotated[bool | None, Field(alias="targetMessages")] = None
     target_thread_id: Annotated[str | None, Field(alias="targetThreadId")] = None
+    task: str | None = None
+    task_path: Annotated[str | None, Field(alias="taskPath")] = None
+    task_path_mapping: Annotated[
+        list[AgentTaskPathMapping] | None, Field(alias="taskPathMapping")
+    ] = []
     type: Annotated[Literal["userAgentControl"], Field(title="UserAgentControlThreadItemType")]
 
 
@@ -11274,6 +11381,15 @@ class AccountRateLimitsUpdatedNotification(BaseModel):
         populate_by_name=True,
     )
     rate_limits: Annotated[RateLimitSnapshot, Field(alias="rateLimits")]
+
+
+class AgentInputAttribution(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    recipient: AgentInputIdentity
+    sender: AgentInputIdentity
+    sender_turn_id: Annotated[str, Field(alias="senderTurnId")]
 
 
 class AppInfo(BaseModel):
@@ -12244,6 +12360,24 @@ class SubAgentSessionSource(BaseModel):
 
 class SessionSource(RootModel[SessionSourceValue | CustomSessionSource | SubAgentSessionSource]):
     root: SessionSourceValue | CustomSessionSource | SubAgentSessionSource
+
+
+class AgentMessageThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    attribution: AgentInputAttribution | None = None
+    delivery: AgentMessageDelivery | None = None
+    id: str
+    input: list[UserInput] | None = None
+    inter_agent_source: Annotated[
+        InterAgentMessageSource | None, Field(alias="interAgentSource")
+    ] = None
+    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
+    phase: MessagePhase | None = None
+    questions: list[AsyncUserInputQuestion] | None = None
+    text: str
+    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
 
 
 class FunctionCallOutputThreadItem(BaseModel):

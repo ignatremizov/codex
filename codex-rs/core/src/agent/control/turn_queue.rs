@@ -18,7 +18,7 @@ use codex_protocol::protocol::WarningEvent;
 
 pub(crate) struct QueuedInputObservationParams {
     pub(crate) agent_id: ThreadId,
-    pub(crate) input: Vec<UserInput>,
+    pub(crate) input: AgentControlInput,
     pub(crate) start_options: TurnStartOptions,
     pub(crate) observer: SessionPresentationId,
     pub(crate) response_observation: ResponseObservationPolicy,
@@ -71,7 +71,7 @@ impl LocalAgentControl {
                 control: self.clone(),
                 source: observer,
                 target_thread_id: agent_id,
-                input: AgentControlInput::User(input),
+                input,
                 start_options,
                 response_observation,
                 task_preview,
@@ -119,13 +119,11 @@ impl LocalAgentControl {
             .await;
         sender_thread.session.submission_admission.check_ready()?;
         receiver_thread.session.submission_admission.check_ready()?;
-        let sender_identity = receiver_control
-            .model_visible_agent_identity_for_version(
-                receiver_thread
-                    .multi_agent_version()
-                    .unwrap_or(MultiAgentVersion::V1),
-                sender.thread_id,
-            )
+        receiver_control
+            .refresh_subtree_messaging(receiver_thread_id)
+            .await?;
+        let attributed_input = receiver_control
+            .attribute_model_input(sender, receiver_thread_id, sender_turn_id, input)
             .await?;
         let admission = receiver_control
             .acquire_target_message_admission_after_binding(
@@ -142,8 +140,6 @@ impl LocalAgentControl {
                 "agent message route already reserved or consumed its idle wake".to_string(),
             ));
         };
-        let attributed_input =
-            super::scoped_messages::attributed_agent_input(sender_identity, sender_turn_id, input);
         let queue_id = uuid::Uuid::now_v7();
         Self::enqueue_agent_turn(
             &state,
@@ -169,7 +165,7 @@ impl LocalAgentControl {
         Ok(QueuedResponseObservationSubmission { queue_id })
     }
 
-    fn enqueue_agent_turn(
+    pub(in crate::agent::control) fn enqueue_agent_turn(
         state: &Arc<ThreadManagerState>,
         membership: AgentTreeMembership,
         turn: QueuedAgentTurn,
@@ -321,6 +317,7 @@ impl LocalAgentControl {
                     .dispatch_user_input_locked(
                         &target,
                         ObservedUserInputRequest {
+                            target_message_wake: entry.target_message_wake.clone(),
                             input: entry.input.clone(),
                             start_options: entry.start_options.clone(),
                             observer: entry.source,
@@ -336,6 +333,15 @@ impl LocalAgentControl {
                     )
                     .await;
                 match result {
+                    Ok(ObservedInputResult::PermissionRejected(reason)) => {
+                        entry.rollback_target_message_wake();
+                        state
+                            .agent_turn_queue
+                            .finish_front(target_thread_id, entry.id);
+                        drop(source_guard);
+                        drop(lifecycle);
+                        publish_queued_turn_warning(&state, &entry, "permission", reason).await;
+                    }
                     Ok(ObservedInputResult::NotSubmitted(NotSubmittedReason::NotIdle)) => {
                         state
                             .agent_turn_queue

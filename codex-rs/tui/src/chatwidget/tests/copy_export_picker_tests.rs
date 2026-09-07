@@ -40,6 +40,8 @@ async fn commentary_copy_preserves_final_answer_and_source_in_live_and_replayed_
                         id: id.into(),
                         text: source.into(),
                         inter_agent_source: None,
+                        attribution: None,
+                        input: None,
                         phase: Some(phase),
                         memory_citation: None,
                         delivery: None,

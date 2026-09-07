@@ -51,6 +51,10 @@ const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
 #[allow(clippy::large_enum_variant)]
 pub(super) enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
+    ModelInput {
+        input: Vec<UserInput>,
+        origin: AgentModelInputOrigin,
+    },
     UserControlled {
         input: Option<Vec<UserInput>>,
         task_preview: Option<String>,
@@ -175,6 +179,24 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
 }
 
 impl LocalAgentControl {
+    /// Model authorship is an internal capability, not part of the public spawn options.
+    pub(crate) async fn spawn_model_agent_with_metadata(
+        &self,
+        config: Config,
+        input: Vec<UserInput>,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+        origin: AgentModelInputOrigin,
+    ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
+        Box::pin(self.spawn_agent_internal(
+            config,
+            SpawnInitialInput::ModelInput { input, origin },
+            session_source,
+            options,
+        ))
+        .await
+    }
+
     /// Spawn a new agent thread and submit the initial prompt.
     #[cfg(test)]
     pub(crate) async fn spawn_agent(
@@ -231,6 +253,12 @@ impl LocalAgentControl {
         options: SpawnAgentOptions,
         membership: AgentTreeMembership,
     ) -> CodexResult<SpawnedAgent> {
+        let (model_input_origin, initial_input) = match initial_input {
+            SpawnInitialInput::ModelInput { input, origin } => {
+                (Some(origin), SpawnInitialInput::UserInput(input))
+            }
+            initial_input => (None, initial_input),
+        };
         if options.response_observation.target_messages()
             && config.multi_agent_version_from_features() == MultiAgentVersion::V2
         {
@@ -276,6 +304,27 @@ impl LocalAgentControl {
             }
             parent.session.submission_admission.check_ready()?;
         }
+        if let Some(origin) = &model_input_origin
+            && parent
+                .as_ref()
+                .is_none_or(|parent| parent.session.presentation_id() != origin.sender)
+        {
+            return Err(CodexErr::InvalidRequest(
+                "model spawn source no longer matches its captured parent".into(),
+            ));
+        }
+        let task_path = match options.task.as_deref() {
+            Some(task) => {
+                let parent = parent.as_ref().ok_or_else(|| {
+                    CodexErr::InvalidRequest("task requires a parent agent".into())
+                })?;
+                Some(
+                    self.resolve_new_agent_task_path(parent.session.thread_id(), task)
+                        .await?,
+                )
+            }
+            None => None,
+        };
         self.sync_durable_agent_nickname_reservations().await?;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
@@ -464,7 +513,7 @@ impl LocalAgentControl {
         pending_spawn.set_edge_write(tokio::spawn(async move {
             control.persist_thread_spawn_for_source(
                 &child, child.session.thread_id(), source.as_ref(),
-                super::aliases::ThreadSpawnPersistence::New,
+                super::aliases::ThreadSpawnPersistence::New { task_path },
             ).await
         }));
         let persisted = pending_spawn.wait_for_edge().await?;
@@ -566,6 +615,7 @@ impl LocalAgentControl {
                     Some(input) => self.dispatch_user_input_locked(
                         &new_thread.thread,
                         super::user_dispatch::ObservedUserInputRequest {
+                            target_message_wake: None,
                             input: super::AgentControlInput::User(input), start_options, observer: observer.session.presentation_id(),
                             observation: super::user_dispatch::UserObservation::Install(options.response_observation),
                             dispatch: super::user_dispatch::UserDispatch::Prompt(codex_protocol::turn_input::TurnInputMode::StartOrSteer),
@@ -592,10 +642,17 @@ impl LocalAgentControl {
                     if !Arc::ptr_eq(&new_thread.thread, &state.get_thread(new_thread.thread_id).await?) {
                         return Err(CodexErr::ThreadNotFound(new_thread.thread_id));
                     }
+                    let input = match &model_input_origin {
+                        Some(origin) => self.attribute_model_input(
+                            origin.sender, new_thread.thread_id, &origin.sender_turn_id, input,
+                        ).await?,
+                        None => super::AgentControlInput::User(input),
+                    };
                     self.dispatch_user_input_locked(
                         &new_thread.thread,
                         super::user_dispatch::ObservedUserInputRequest {
-                            input: super::AgentControlInput::User(input), start_options,
+                            target_message_wake: None,
+                            input, start_options,
                             observer: observer.session.presentation_id(),
                             observation: super::user_dispatch::UserObservation::Install(options.response_observation),
                             dispatch: super::user_dispatch::UserDispatch::Prompt(codex_protocol::turn_input::TurnInputMode::StartOrSteer),
@@ -625,6 +682,9 @@ impl LocalAgentControl {
                         Err(error) => Err(error),
                     }
                 }
+            }
+            SpawnInitialInput::ModelInput { .. } => {
+                unreachable!("model authorship was separated before spawn setup")
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(
