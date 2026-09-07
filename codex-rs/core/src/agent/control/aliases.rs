@@ -470,7 +470,14 @@ impl AgentControl {
                 V1AgentTarget::Id(_) | V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) => {
                     match self.resolve_agent_task_path(caller_thread_id, target).await {
                         Ok(path) => Some(path),
-                        Err(CodexErr::InvalidRequest(_)) => None,
+                        Err(err)
+                            if matches!(
+                                err.details(),
+                                codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
+                            ) =>
+                        {
+                            None
+                        }
                         Err(err) => return Err(err),
                     }
                 }

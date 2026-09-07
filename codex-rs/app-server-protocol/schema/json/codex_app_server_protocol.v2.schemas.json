@@ -328,6 +328,13 @@
         "state": {
           "$ref": "#/definitions/AgentAliasState"
         },
+        "taskPath": {
+          "description": "Current root-scoped assignment label, independent of lifecycle ancestry.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         }
@@ -398,6 +405,13 @@
             },
             "role": {
               "description": "Omitted selects the default child configuration.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task": {
+              "description": "Optional assignment label, resolved within the issuing agent's root namespace.",
               "type": [
                 "string",
                 "null"
@@ -545,6 +559,13 @@
               "description": "Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.",
               "type": "string"
             },
+            "task": {
+              "description": "New assignment for cross-root adoption only; same-root resume cannot rename a task.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "resume"
@@ -659,10 +680,17 @@
           "type": "object"
         },
         {
-          "description": "Enable or disable the target's attributed reply route back to the source.",
+          "description": "Enable or disable the target's attributed reply route to a controlled recipient.",
           "properties": {
             "mode": {
               "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "recipient": {
+              "description": "Omitted means the source thread issuing the user command.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "target": {
               "type": "string"
@@ -681,6 +709,27 @@
             "type"
           ],
           "title": "ReplyRouteAgentControlAction",
+          "type": "object"
+        },
+        {
+          "description": "Live default for communication within the source's current and future subtree. Explicit directed routes override this default. Not restored from history.",
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "type": {
+              "enum": [
+                "subtreeMessaging"
+              ],
+              "title": "SubtreeMessagingAgentControlActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "type"
+          ],
+          "title": "SubtreeMessagingAgentControlAction",
           "type": "object"
         }
       ]
@@ -711,6 +760,12 @@
             },
             "target_thread_id": {
               "type": "string"
+            },
+            "task_path": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "enum": [
@@ -832,6 +887,19 @@
             "target_thread_id": {
               "type": "string"
             },
+            "task_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task_path_mapping": {
+              "default": [],
+              "items": {
+                "$ref": "#/definitions/AgentTaskPathMapping"
+              },
+              "type": "array"
+            },
             "type": {
               "enum": [
                 "resumed"
@@ -947,6 +1015,9 @@
                 }
               ]
             },
+            "recipient_thread_id": {
+              "type": "string"
+            },
             "target_thread_id": {
               "type": "string"
             },
@@ -960,10 +1031,45 @@
           },
           "required": [
             "mode",
+            "recipient_thread_id",
             "target_thread_id",
             "type"
           ],
           "title": "ReplyRouteChangedAgentControlOutcome",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "mode": {
+              "$ref": "#/definitions/AgentReplyRouteMode"
+            },
+            "previous_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentReplyRouteMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "root_thread_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "subtreeMessagingChanged"
+              ],
+              "title": "SubtreeMessagingChangedAgentControlOutcomeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode",
+            "root_thread_id",
+            "type"
+          ],
+          "title": "SubtreeMessagingChangedAgentControlOutcome",
           "type": "object"
         }
       ]
@@ -1036,6 +1142,78 @@
           "type": "object"
         }
       ]
+    },
+    "AgentInputAttribution": {
+      "description": "Presentation-only provenance; the original message and attachments are in the item's input.",
+      "properties": {
+        "recipient": {
+          "$ref": "#/definitions/AgentInputIdentity"
+        },
+        "sender": {
+          "$ref": "#/definitions/AgentInputIdentity"
+        },
+        "senderTurnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipient",
+        "sender",
+        "senderTurnId"
+      ],
+      "type": "object"
+    },
+    "AgentInputIdentity": {
+      "description": "Trusted send-time identity, retained even when current aliases or ownership change.",
+      "properties": {
+        "agentRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "taskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
     },
     "AgentMessageDelivery": {
       "enum": [
@@ -1238,6 +1416,30 @@
         "finalResponse",
         "queueInput",
         "targetMessages"
+      ],
+      "type": "object"
+    },
+    "AgentTaskPathMapping": {
+      "description": "Committed adoption label mapping. Thread identity remains unchanged.",
+      "properties": {
+        "previousTaskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "taskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
       ],
       "type": "object"
     },
@@ -19656,6 +19858,17 @@
         },
         {
           "properties": {
+            "attribution": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentInputAttribution"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "delivery": {
               "anyOf": [
                 {
@@ -19669,6 +19882,16 @@
             },
             "id": {
               "type": "string"
+            },
+            "input": {
+              "default": null,
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "memoryCitation": {
               "anyOf": [
@@ -20366,6 +20589,12 @@
               ],
               "default": null
             },
+            "replyRecipientThreadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "resumedTarget": {
               "type": "boolean"
             },
@@ -20389,6 +20618,27 @@
                 "string",
                 "null"
               ]
+            },
+            "task": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "taskPath": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "taskPathMapping": {
+              "default": [],
+              "items": {
+                "$ref": "#/definitions/AgentTaskPathMapping"
+              },
+              "type": "array"
             },
             "type": {
               "enum": [
@@ -23912,7 +24162,8 @@
         "interrupt",
         "close",
         "observe",
-        "replyRoute"
+        "replyRoute",
+        "subtreeMessaging"
       ],
       "type": "string"
     },

@@ -2,7 +2,6 @@
 
 use super::*;
 use codex_protocol::items::AgentMessageContent;
-use codex_protocol::items::AgentMessageItem;
 use codex_protocol::protocol::attributed_agent_message_transcript_parts;
 
 impl AgentControl {

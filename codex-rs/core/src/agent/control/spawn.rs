@@ -3492,7 +3492,7 @@ impl AgentControl {
             },
         ));
         let mut registered_by_attempt = false;
-        let resumed_setup_result: CodexResult<Option<AgentAlias>> = async {
+        let resumed_setup_result: CodexResult<Option<PersistedAgentAlias>> = async {
             if multi_agent_version == MultiAgentVersion::V2 {
                 self.validate_loaded_v2_agent(&resumed_thread.thread, Some(&notification_source))?;
                 self.validate_loaded_rollout_path(

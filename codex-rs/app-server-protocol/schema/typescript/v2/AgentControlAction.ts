@@ -13,6 +13,10 @@ import type { UserInput } from "./UserInput";
  */
 export type AgentControlAction = { "type": "spawn",
 /**
+ * Optional assignment label, resolved within the issuing agent's root namespace.
+ */
+task?: string | null,
+/**
  * Omitted selects the default child configuration.
  */
 role: string | null,
@@ -54,6 +58,10 @@ target: string, input: Array<UserInput>,
  */
 responseHandling: AgentResponseHandling | null, } | { "type": "resume",
 /**
+ * New assignment for cross-root adoption only; same-root resume cannot rename a task.
+ */
+task?: string | null,
+/**
  * Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.
  */
 target: string,
@@ -68,4 +76,8 @@ responseHandling: AgentResponseHandling | null, } | { "type": "close", target: s
 /**
  * Omitted replays a completed response passively when it is absent from model context.
  */
-responseHandling: AgentResponseHandling | null, } | { "type": "observe", target: string, responseHandling: AgentObservationMode, } | { "type": "replyRoute", target: string, mode: AgentReplyRouteMode, };
+responseHandling: AgentResponseHandling | null, } | { "type": "observe", target: string, responseHandling: AgentObservationMode, } | { "type": "replyRoute", target: string,
+/**
+ * Omitted means the source thread issuing the user command.
+ */
+recipient?: string | null, mode: AgentReplyRouteMode, } | { "type": "subtreeMessaging", mode: AgentReplyRouteMode, };

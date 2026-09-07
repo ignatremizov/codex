@@ -35,6 +35,78 @@
       ],
       "type": "string"
     },
+    "AgentInputAttribution": {
+      "description": "Presentation-only provenance; the original message and attachments are in the item's input.",
+      "properties": {
+        "recipient": {
+          "$ref": "#/definitions/AgentInputIdentity"
+        },
+        "sender": {
+          "$ref": "#/definitions/AgentInputIdentity"
+        },
+        "senderTurnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipient",
+        "sender",
+        "senderTurnId"
+      ],
+      "type": "object"
+    },
+    "AgentInputIdentity": {
+      "description": "Trusted send-time identity, retained even when current aliases or ownership change.",
+      "properties": {
+        "agentRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "taskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "AgentMessageDelivery": {
       "enum": [
         "async"
@@ -43,6 +115,30 @@
     },
     "AgentPath": {
       "type": "string"
+    },
+    "AgentTaskPathMapping": {
+      "description": "Committed adoption label mapping. Thread identity remains unchanged.",
+      "properties": {
+        "previousTaskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "taskPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
     },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
@@ -1596,6 +1692,17 @@
         },
         {
           "properties": {
+            "attribution": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentInputAttribution"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "delivery": {
               "anyOf": [
                 {
@@ -1609,6 +1716,16 @@
             },
             "id": {
               "type": "string"
+            },
+            "input": {
+              "default": null,
+              "items": {
+                "$ref": "#/definitions/UserInput"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "memoryCitation": {
               "anyOf": [
@@ -2306,6 +2423,12 @@
               ],
               "default": null
             },
+            "replyRecipientThreadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "resumedTarget": {
               "type": "boolean"
             },
@@ -2329,6 +2452,27 @@
                 "string",
                 "null"
               ]
+            },
+            "task": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "taskPath": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "taskPathMapping": {
+              "default": [],
+              "items": {
+                "$ref": "#/definitions/AgentTaskPathMapping"
+              },
+              "type": "array"
             },
             "type": {
               "enum": [
@@ -2924,7 +3068,8 @@
         "interrupt",
         "close",
         "observe",
-        "replyRoute"
+        "replyRoute",
+        "subtreeMessaging"
       ],
       "type": "string"
     },

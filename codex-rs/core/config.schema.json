@@ -1925,6 +1925,17 @@
     "LegacyAppPathString": {
       "type": "string"
     },
+    "ListAgentsToolConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Disabled unless explicitly enabled; does not affect V2 tools or messaging.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "MarketplaceConfig": {
       "additionalProperties": false,
       "properties": {
@@ -3860,6 +3871,14 @@
       "properties": {
         "experimental_request_user_input": {
           "$ref": "#/definitions/ExperimentalRequestUserInput"
+        },
+        "list_agents": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ListAgentsToolConfig"
+            }
+          ],
+          "description": "User opt-in for the read-only V1 agent directory."
         },
         "update_plan": {
           "$ref": "#/definitions/UpdatePlanToolConfig"

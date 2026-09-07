@@ -217,7 +217,7 @@ pub(crate) enum AgentControlInput {
     },
     AttributedAgentInput {
         content: Vec<UserInput>,
-        attribution: Box<codex_protocol::protocol::AgentInputAttribution>,
+        attribution: Box<codex_protocol::AgentInputAttribution>,
         presentation: Vec<UserInput>,
     },
 }
