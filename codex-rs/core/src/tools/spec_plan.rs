@@ -35,6 +35,7 @@ use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
+use crate::tools::handlers::multi_agents::ListAgentsHandler;
 use crate::tools::handlers::multi_agents::ResumeAgentHandler;
 use crate::tools::handlers::multi_agents::SendInputHandler;
 use crate::tools::handlers::multi_agents::SpawnAgentHandler;
@@ -1434,6 +1435,9 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 );
             }
             registry.add_with_exposure(SendInputHandler, exposure);
+            if turn_context.config.list_agents_enabled {
+                registry.add_with_exposure(ListAgentsHandler, exposure);
+            }
             if lifecycle_tools_enabled {
                 registry.add_with_exposure(ResumeAgentHandler, exposure);
                 registry.add_with_exposure(

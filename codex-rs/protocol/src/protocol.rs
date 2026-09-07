@@ -114,6 +114,8 @@ pub use crate::request_permissions::RequestPermissionsArgs;
 pub use crate::request_user_input::RequestUserInputEvent;
 pub use crate::sub_agent_completion::SubAgentCompletionModelVisibility;
 pub use crate::sub_agent_completion::SubAgentCompletionStatus;
+pub use crate::sub_agent_completion::agent_message_audit_transcript_parts;
+pub use crate::sub_agent_completion::attributed_agent_message_transcript_parts;
 pub use crate::sub_agent_completion::is_attributed_agent_message_response_item_id;
 pub use crate::sub_agent_completion::is_sub_agent_completion_context_response_item_id;
 pub use crate::sub_agent_completion::is_user_agent_task_context_response_item_id;
@@ -611,6 +613,11 @@ pub enum AgentInputPresentation {
     Delegated(Vec<UserInput>),
     /// Attributed reverse input presented as a canonical agent message.
     Attributed(String),
+    /// Trusted send-time metadata with the original structured input, separate from model context.
+    AttributedInput {
+        attribution: Box<crate::AgentInputAttribution>,
+        input: Vec<UserInput>,
+    },
 }
 
 /// Submission operation

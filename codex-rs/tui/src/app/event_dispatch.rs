@@ -2852,7 +2852,7 @@ impl App {
                     .await?;
             }
             AppEvent::OpenAgentTarget(selector) => {
-                match self.resolve_agent_selector(app_server, &selector).await {
+                match self.resolve_agent_selector(app_server, &selector, self.current_displayed_thread_id()).await {
                     Ok(thread_id) => {
                         self.open_agent_picker_for_thread(app_server, thread_id)
                             .await;
@@ -2907,7 +2907,7 @@ impl App {
                 .await;
             }
             AppEvent::OpenAgentPromptQueue(selector) => {
-                match self.resolve_agent_selector(app_server, &selector).await {
+                match self.resolve_agent_selector(app_server, &selector, self.current_displayed_thread_id()).await {
                     Ok(thread_id) => {
                         self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                             .await;
@@ -2947,6 +2947,7 @@ impl App {
             }
             AppEvent::SpawnAgent {
                 source_thread_id,
+                task,
                 role,
                 authored_selector,
                 model,
@@ -2961,6 +2962,7 @@ impl App {
                         app_server,
                         SpawnAgentCommandArgs {
                             source_thread_id,
+                            task,
                             role,
                             authored_selector,
                             model,
@@ -2980,6 +2982,7 @@ impl App {
             AppEvent::ResumeAgent {
                 source_thread_id,
                 selector,
+                task,
                 response_handling,
                 prompt,
             } => {
@@ -2987,6 +2990,7 @@ impl App {
                     app_server,
                     source_thread_id,
                     selector,
+                    task,
                     response_handling,
                     prompt,
                 )
@@ -3036,12 +3040,14 @@ impl App {
             AppEvent::SetAgentReplyRoute {
                 source_thread_id,
                 selector,
+                recipient,
                 mode,
             } => {
                 self.set_agent_reply_route_from_selector(
                     app_server,
                     source_thread_id,
                     selector,
+                    recipient,
                     mode,
                 )
                 .await;

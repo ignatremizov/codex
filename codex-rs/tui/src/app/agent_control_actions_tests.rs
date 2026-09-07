@@ -45,6 +45,38 @@ fn action_matrix(state: AgentControlTargetState) -> String {
 }
 
 #[test]
+fn current_thread_messaging_action_prepares_an_explicit_recipient() {
+    let params = agent_control_actions_view_params(
+        ThreadId::new(),
+        "Main",
+        "Main".into(),
+        AgentControlTargetState {
+            is_current: true,
+            is_primary: true,
+            is_running: false,
+            is_closed: false,
+            needs_adoption: false,
+            is_side_thread: false,
+        },
+    );
+    let item = params
+        .items
+        .iter()
+        .find(|item| item.name == "Messaging permissions")
+        .expect("messaging action");
+    assert!(!item.is_disabled);
+    let (tx, mut rx) = unbounded_channel::<AppEvent>();
+    let sender = AppEventSender::new(tx);
+    for action in &item.actions {
+        action(&sender);
+    }
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PrepareAgentCommand(command)) if command == "/agent sends Main to "
+    ));
+}
+
+#[test]
 fn action_availability_snapshot() {
     let running_child = action_matrix(AgentControlTargetState {
         is_current: false,
@@ -97,6 +129,7 @@ fn action_availability_snapshot() {
     Interrupt turn: enabled
     Resume agent: Agent is already open.
     Observe response: enabled
+    Messaging permissions: enabled
     Close agent: enabled
 
     closed child:
@@ -106,6 +139,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Agent is closed.
     Resume agent: enabled
     Observe response: Resume the closed agent first.
+    Messaging permissions: Resume the closed agent first.
     Close agent: Agent is already closed.
 
     current main:
@@ -115,6 +149,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Use the normal interrupt shortcut for the current agent.
     Resume agent: Agent is already open.
     Observe response: An agent cannot observe itself.
+    Messaging permissions: enabled
     Close agent: Main cannot be closed.
 
     transferred child:
@@ -124,6 +159,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Agent is not controlled by this root.
     Resume agent: enabled
     Observe response: Agent is not controlled by this root.
+    Messaging permissions: Agent is not controlled by this root.
     Close agent: Agent is not controlled by this root.
 
     side thread:
@@ -133,6 +169,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Switch to the side conversation to interrupt it.
     Resume agent: Side conversations use the normal TUI lifecycle.
     Observe response: Side conversations do not use agent response observation.
+    Messaging permissions: Side conversations do not use agent response observation.
     Close agent: Side conversations use the normal TUI lifecycle.
     ");
 }
@@ -164,7 +201,8 @@ fn contextual_controls_render_labels_disabled_reasons_and_confirmation_hint() {
     4. Interrupt turn Stop the active turn, optionally with a follow-up
     Resume agent (disabled) Reopen this controlled agent (disabled: Agent is already open.)
     5. Observe response Choose passive, wake, or presentation delivery
-    6. Close agent End the agent runtime and revoke observation
+    6. Messaging permissions Choose who this agent may message
+    7. Close agent End the agent runtime and revoke observation
     Prepared commands return to the current composer for confirmation.
     Press enter to confirm or esc to go back
     ");

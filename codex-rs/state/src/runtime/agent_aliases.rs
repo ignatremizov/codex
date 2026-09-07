@@ -16,6 +16,7 @@ use queries::require_active_parent_alias;
 
 mod namespace;
 mod queries;
+mod task_paths;
 mod transfer;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, AsRefStr, EnumString)]
@@ -186,6 +187,7 @@ WHERE session_id = ?
             parent_thread_id,
             child_thread_id,
             nickname,
+            task_path,
         } = allocation;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         ensure_agent_alias_namespace_in_transaction(&mut tx, session_id).await?;
@@ -231,6 +233,7 @@ WHERE session_id = ?
             session_id,
             child_thread_id,
             nickname.as_deref(),
+            task_path.as_deref(),
             crate::AgentAliasState::Active,
         )
         .await?;
@@ -256,6 +259,7 @@ WHERE session_id = ?
             parent_thread_id,
             child_thread_id,
             nickname,
+            task_path,
         } = allocation;
         let root_thread_id = ThreadId::from(session_id);
         if child_thread_id == root_thread_id {
@@ -306,6 +310,7 @@ WHERE session_id = ?
                         session_id,
                         child_thread_id,
                         nickname.as_deref(),
+                        task_path.as_deref(),
                         crate::AgentAliasState::Active,
                     )
                     .await?

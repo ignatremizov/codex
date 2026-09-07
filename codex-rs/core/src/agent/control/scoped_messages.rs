@@ -2,6 +2,8 @@ use super::*;
 use crate::context::AgentReplyRoute;
 use crate::context::AttributedAgentMessage;
 use crate::session::SteerInputError;
+use codex_protocol::AgentInputAttribution;
+use codex_protocol::AgentInputIdentity;
 
 #[derive(Clone, Copy)]
 enum AgentReplyRouteLifetime {
@@ -10,6 +12,78 @@ enum AgentReplyRouteLifetime {
 }
 
 impl AgentControl {
+    /// Capture trusted send-time attribution without changing admission or reply permission.
+    pub(crate) async fn attribute_model_input(
+        &self,
+        sender: SessionPresentationId,
+        recipient: ThreadId,
+        sender_turn_id: &str,
+        input: Vec<UserInput>,
+    ) -> CodexResult<AgentControlInput> {
+        let state = self.upgrade()?;
+        let sender_thread = state.get_thread_including_pending(sender.thread_id).await?;
+        if sender_thread.session.presentation_id() != sender {
+            return Err(CodexErr::ThreadNotFound(sender.thread_id));
+        }
+        let (sender_context, sender_identity) = self.agent_input_identity(sender.thread_id).await?;
+        let (_, recipient_identity) = self.agent_input_identity(recipient).await?;
+        // The original typed items, including attachment metadata and text-element spans,
+        // remain in the durable presentation. Only model-facing text is enveloped.
+        let message = render_input_preview(&input);
+        let mut content = vec![UserInput::Text {
+            text: AttributedAgentMessage::new(sender_context, message).render(),
+            text_elements: Vec::new(),
+        }];
+        content.extend(
+            input
+                .iter()
+                .filter(|item| !matches!(item, UserInput::Text { .. }))
+                .cloned(),
+        );
+        Ok(AgentControlInput::AttributedAgentInput {
+            content,
+            attribution: Box::new(AgentInputAttribution {
+                sender: sender_identity,
+                recipient: recipient_identity,
+                sender_turn_id: sender_turn_id.to_string(),
+            }),
+            presentation: input,
+        })
+    }
+
+    async fn agent_input_identity(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<(AgentContextIdentity, AgentInputIdentity)> {
+        let identity = self
+            .model_visible_agent_identity_for_version(MultiAgentVersion::V1, thread_id)
+            .await?;
+        let AgentContextIdentity::V1 {
+            agent_ref,
+            nickname,
+            task_path,
+            ..
+        } = &identity
+        else {
+            unreachable!("V1 identity resolution always returns a V1 identity")
+        };
+        let snapshot = self.get_agent_config_snapshot(thread_id).await;
+        let metadata = self.get_agent_metadata(thread_id);
+        let audit = AgentInputIdentity {
+            thread_id,
+            nickname: nickname.clone(),
+            agent_ref: agent_ref.map(|agent_ref| agent_ref.to_string()),
+            task_path: task_path.clone(),
+            role: snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.session_source.get_agent_role())
+                .or_else(|| metadata.and_then(|metadata| metadata.agent_role)),
+            model: snapshot.as_ref().map(|snapshot| snapshot.model.clone()),
+            reasoning_effort: snapshot.and_then(|snapshot| snapshot.reasoning_effort),
+        };
+        Ok((identity, audit))
+    }
+
     pub(super) fn ensure_scoped_reply_route_supported(
         &self,
         target_thread: &CodexThread,
@@ -200,6 +274,7 @@ impl AgentControl {
         target_turn_id: &str,
         mode: TargetMessageAdmissionMode,
     ) -> CodexResult<TargetMessageAdmission> {
+        self.refresh_subtree_messaging(target.thread_id).await?;
         loop {
             let changed = self.response_observation_changed().notified();
             tokio::pin!(changed);
@@ -264,10 +339,9 @@ impl AgentControl {
             .await?;
 
         let sender_thread = state.get_thread_including_pending(sender.thread_id).await?;
-        let sender_identity = receiver_control
-            .model_visible_agent_identity(&receiver_thread, sender.thread_id)
+        let attributed_input = receiver_control
+            .attribute_model_input(sender, receiver_thread_id, sender_turn_id, input)
             .await?;
-        let attributed_input = attributed_agent_input(sender_identity, sender_turn_id, input);
         loop {
             let admission = receiver_control
                 .acquire_target_message_admission_after_binding(
@@ -279,9 +353,22 @@ impl AgentControl {
                     TargetMessageAdmissionMode::SteerOrWake,
                 )
                 .await?;
-            let admission_mode = match admission {
-                TargetMessageAdmission::Steer => InputTurnAdmissionMode::SteerOnly,
-                TargetMessageAdmission::Wake(_) => InputTurnAdmissionMode::AnyTurn,
+            let (admission_mode, scoped_authorization) = match admission {
+                TargetMessageAdmission::Steer => (
+                    InputTurnAdmissionMode::SteerOnly(SteerTargetTurn::Current),
+                    ScopedInputAuthorization::Steer {
+                        receiver,
+                        sender_turn_id: sender_turn_id.to_string(),
+                    },
+                ),
+                TargetMessageAdmission::Wake(reservation_id) => (
+                    InputTurnAdmissionMode::AnyTurn,
+                    ScopedInputAuthorization::Wake {
+                        receiver,
+                        sender_turn_id: sender_turn_id.to_string(),
+                        reservation_id,
+                    },
+                ),
                 TargetMessageAdmission::PendingWake => {
                     return Err(CodexErr::InvalidRequest(
                         "agent message wake is still being admitted; retry this message"
@@ -301,6 +388,7 @@ impl AgentControl {
                         response_observation,
                         admission_mode,
                         task_context: ObservedInputTaskContext::None,
+                        scoped_authorization,
                     },
                 )
                 .await;
@@ -369,36 +457,5 @@ impl AgentControl {
             }
             return submission.into_strict_result();
         }
-    }
-}
-
-pub(super) fn attributed_agent_input(
-    sender: AgentContextIdentity,
-    sender_turn_id: &str,
-    input: Vec<UserInput>,
-) -> AgentControlInput {
-    // An explicit `m` grant promotes complete agent-to-agent input. Preserve its payload just like
-    // a successful child completion; generic command-output and error truncation do not apply.
-    let message = render_input_preview(&input);
-    let presentation = input.clone();
-    let agent_id = match &sender {
-        AgentContextIdentity::V1 { agent_id, .. }
-        | AgentContextIdentity::V2 { agent_id, .. }
-        | AgentContextIdentity::Canonical { agent_id } => *agent_id,
-    };
-    let transcript = format!("Agent message from `{agent_id}`:\n\n{message}");
-    let mut content = vec![UserInput::Text {
-        text: AttributedAgentMessage::new(sender, sender_turn_id, message).render(),
-        text_elements: Vec::new(),
-    }];
-    content.extend(
-        input
-            .into_iter()
-            .filter(|item| !matches!(item, UserInput::Text { .. })),
-    );
-    AgentControlInput::AttributedAgent {
-        content,
-        transcript,
-        presentation,
     }
 }

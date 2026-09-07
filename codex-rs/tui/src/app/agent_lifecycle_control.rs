@@ -10,6 +10,7 @@ use crate::chatwidget::agent_command::AgentSelector;
 
 pub(crate) struct SpawnAgentCommandArgs {
     pub source_thread_id: ThreadId,
+    pub task: Option<String>,
     pub role: Option<String>,
     pub authored_selector: Option<String>,
     pub model: Option<String>,
@@ -27,6 +28,7 @@ impl App {
     ) -> Option<ThreadId> {
         let SpawnAgentCommandArgs {
             source_thread_id,
+            task,
             role,
             authored_selector,
             model,
@@ -43,6 +45,7 @@ impl App {
         let result = app_server
             .spawn_agent(crate::app_server_session::SpawnAgentRequest {
                 source_thread_id,
+                task,
                 role,
                 authored_selector,
                 model,
@@ -68,6 +71,7 @@ impl App {
                 target_thread_id,
                 agent_ref,
                 nickname,
+                task_path,
                 post_admission_warning,
             } => {
                 let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id) else {
@@ -101,6 +105,8 @@ impl App {
                         ),
                     }
                 }
+                self.agent_navigation
+                    .update_task_path(target_thread_id, task_path);
                 self.refresh_primary_agent_aliases(app_server).await;
                 self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
                     .await;
@@ -379,10 +385,25 @@ impl App {
         app_server: &mut AppServerSession,
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        recipient: Option<AgentSelector>,
         mode: codex_app_server_protocol::AgentReplyRouteMode,
     ) {
-        let target = match selector.control_target() {
+        let target = match if selector.authored() == "all" && recipient.is_none() {
+            Ok("all".to_string())
+        } else {
+            selector.control_target()
+        } {
             Ok(target) => target,
+            Err(message) => {
+                self.chat_widget.add_error_message(message);
+                return;
+            }
+        };
+        let recipient = match recipient
+            .map(|recipient| recipient.control_target())
+            .transpose()
+        {
+            Ok(recipient) => recipient,
             Err(message) => {
                 self.chat_widget.add_error_message(message);
                 return;
@@ -393,6 +414,7 @@ impl App {
                 source_thread_id,
                 target,
                 selector.authored().to_string(),
+                recipient,
                 mode,
             )
             .await;
@@ -408,17 +430,35 @@ impl App {
             }
         };
         match outcome {
+            codex_app_server_protocol::AgentControlOutcome::SubtreeMessagingChanged {
+                root_thread_id,
+                mode,
+                ..
+            } => {
+                if let Ok(root) = ThreadId::from_string(&root_thread_id) {
+                    self.agent_navigation.set_subtree_messaging(
+                        root,
+                        mode == codex_app_server_protocol::AgentReplyRouteMode::Enabled,
+                    );
+                }
+                if let Some(warning) = audit_warning {
+                    self.chat_widget.add_error_message(warning);
+                }
+            }
             codex_app_server_protocol::AgentControlOutcome::ReplyRouteChanged {
                 target_thread_id,
+                recipient_thread_id,
                 previous_mode: _,
                 mode,
             } => {
-                if let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id) {
+                if let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id)
+                    && let Ok(recipient_thread_id) = ThreadId::from_string(&recipient_thread_id)
+                {
                     self.refresh_primary_agent_aliases(app_server).await;
                     self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
                         .await;
                     self.agent_navigation.replace_user_reply_route(
-                        source_thread_id,
+                        recipient_thread_id,
                         target_thread_id,
                         mode == codex_app_server_protocol::AgentReplyRouteMode::Enabled,
                     );
@@ -443,6 +483,7 @@ impl App {
         app_server: &mut AppServerSession,
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        task: Option<String>,
         response_handling: Option<AgentResponseHandling>,
         prompt: Option<UserMessage>,
     ) {
@@ -458,6 +499,7 @@ impl App {
                 source_thread_id,
                 target,
                 selector.authored().to_string(),
+                task,
                 response_handling,
             )
             .await;
@@ -477,6 +519,8 @@ impl App {
                 target_thread_id,
                 agent_ref,
                 nickname,
+                task_path,
+                task_path_mapping,
                 observation_binding,
                 post_commit_warning,
             } => {
@@ -514,6 +558,14 @@ impl App {
                             agent_ref,
                             "agent resume returned an invalid durable ref"
                         ),
+                    }
+                }
+                self.agent_navigation
+                    .update_task_path(target_thread_id, task_path);
+                for mapping in task_path_mapping {
+                    if let Ok(thread_id) = ThreadId::from_string(&mapping.thread_id) {
+                        self.agent_navigation
+                            .update_task_path(thread_id, mapping.task_path);
                     }
                 }
                 self.refresh_primary_agent_aliases(app_server).await;

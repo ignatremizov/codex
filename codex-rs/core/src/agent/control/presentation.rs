@@ -18,7 +18,12 @@ use tokio::sync::Notify;
 use tokio::sync::OwnedMutexGuard;
 use uuid::Uuid;
 
+mod live_revert_messaging;
 mod response_observation;
+mod subtree_messaging;
+
+use live_revert_messaging::LiveRevertMessagingContinuity;
+pub use live_revert_messaging::LiveRevertMessagingSnapshot;
 
 pub(in crate::agent::control) use self::response_observation::CommentaryDeliveryRoute;
 pub(in crate::agent::control) use self::response_observation::FinalResponseObservationReplacement;
@@ -38,10 +43,44 @@ pub(crate) struct WaitAgentPresentations {
     state: Mutex<PresentationState>,
     response_observation_changed: Notify,
     pub(super) watcher_terminal_changed: Notify,
+    messaging_refresh: AsyncMutex<()>,
+    #[cfg(test)]
+    pub(in crate::agent::control) scoped_steer_submission_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(in crate::agent::control) scoped_permission_check_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(crate) messaging_refresh_capture_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(crate) messaging_refresh_attempted:
+        Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<SessionPresentationId>>>>,
 }
 
 #[derive(Default)]
 struct PresentationState {
+    live_revert_messaging: HashMap<SessionPresentationId, LiveRevertMessagingContinuity>,
+    // Delivery dedupe only: live policy remains in subtree defaults and directed relationships.
+    pending_messaging_context: HashMap<
+        (SessionPresentationId, String),
+        (Option<String>, codex_protocol::models::ResponseItem),
+    >,
+    subtree_messaging: HashMap<SessionPresentationId, (u64, TargetMessageRouteMode)>,
+    inherited_message_routes:
+        HashMap<(SessionPresentationId, SessionPresentationId), TargetMessageRouteMode>,
     next_wait_id: u64,
     next_terminal_presentation_sequence: u64,
     active_targeted_waits: HashMap<(SessionPresentationId, ThreadId), HashSet<u64>>,
@@ -288,7 +327,7 @@ impl AgentControl {
         child: SessionPresentationId,
     ) -> bool {
         self.wait_agent_presentations
-            .revoke_response_observation_for_presentation(parent, child)
+            .revoke_response_observation_for_presentation(parent, child, self)
     }
 
     pub(crate) fn revoke_response_observation_if_registration_is_current(
@@ -298,7 +337,12 @@ impl AgentControl {
         registration_id: Uuid,
     ) -> ConditionalResponseObservationRevocation {
         self.wait_agent_presentations
-            .revoke_response_observation_if_registration_is_current(parent, child, registration_id)
+            .revoke_response_observation_if_registration_is_current(
+                parent,
+                child,
+                registration_id,
+                self,
+            )
     }
 
     /// Re-emits idle lifecycle only for the still-current live observer presentation.
@@ -1056,8 +1100,29 @@ fn remove_response_observation_for_presentation(
     state: &mut PresentationState,
     parent: SessionPresentationId,
     child: SessionPresentationId,
+    control: &AgentControl,
 ) -> bool {
     let observer_child = (parent, child);
+    let retained_route = [parent, child]
+        .into_iter()
+        .any(|endpoint| {
+            state
+                .live_revert_messaging
+                .get(&endpoint)
+                .is_some_and(|marker| {
+                    control.agent_lifecycle_generation_is_current(
+                        endpoint.thread_id,
+                        marker.generation,
+                    )
+                })
+        })
+        .then(|| {
+            state
+                .response_observation_by_observer_child
+                .get(&observer_child)
+                .and_then(|relationship| relationship.reply_route)
+        })
+        .flatten();
     let removed_bound_wake = state
         .response_observation_by_observer_child
         .get(&observer_child)
@@ -1080,6 +1145,16 @@ fn remove_response_observation_for_presentation(
     state
         .response_observation_by_observer_child
         .remove(&observer_child);
+    if let Some(mode) = retained_route {
+        state.response_observation_by_observer_child.insert(
+            observer_child,
+            ResponseObserverRelationship {
+                persistence: ResponseObservationPersistence::Durable,
+                reply_route: Some(mode),
+                ..Default::default()
+            },
+        );
+    }
     state
         .response_observer_terminal_turns
         .retain(|(terminal_parent, terminal_child, _)| {
@@ -1382,6 +1457,15 @@ impl WaitAgentPresentations {
         child_thread_id: ThreadId,
     ) -> Vec<SessionPresentationId> {
         let mut state = self.state();
+        // Authoritative close/transfer ends continuity even if a revert handoff is outstanding.
+        state
+            .live_revert_messaging
+            .retain(|endpoint, _| endpoint.thread_id != child_thread_id);
+        state
+            .subtree_messaging
+            .retain(|root, _| root.thread_id != child_thread_id);
+        // This cache is derived from live membership; rebuild it at the next admission.
+        state.inherited_message_routes.clear();
         let affected_wake_observers = state
             .response_observation_by_observer_child
             .iter()
@@ -1404,7 +1488,9 @@ impl WaitAgentPresentations {
             .retain(|(_, child), _| child.thread_id != child_thread_id);
         state
             .response_observation_by_observer_child
-            .retain(|(_, child), _| child.thread_id != child_thread_id);
+            .retain(|(parent, child), _| {
+                parent.thread_id != child_thread_id && child.thread_id != child_thread_id
+            });
         state
             .response_observer_terminal_turns
             .retain(|(_, child, _)| child.thread_id != child_thread_id);
@@ -1440,10 +1526,11 @@ impl WaitAgentPresentations {
         &self,
         parent: SessionPresentationId,
         child: SessionPresentationId,
+        control: &AgentControl,
     ) -> bool {
         let mut state = self.state();
         let removed_bound_wake =
-            remove_response_observation_for_presentation(&mut state, parent, child);
+            remove_response_observation_for_presentation(&mut state, parent, child, control);
         drop(state);
         self.response_observation_changed.notify_waiters();
         removed_bound_wake
@@ -1454,6 +1541,7 @@ impl WaitAgentPresentations {
         parent: SessionPresentationId,
         child: SessionPresentationId,
         registration_id: Uuid,
+        control: &AgentControl,
     ) -> ConditionalResponseObservationRevocation {
         let mut state = self.state();
         match state.completion_watcher_sessions.get(&(parent, child)) {
@@ -1464,7 +1552,7 @@ impl WaitAgentPresentations {
             Some(_) => {}
         }
         let removed_bound_wake =
-            remove_response_observation_for_presentation(&mut state, parent, child);
+            remove_response_observation_for_presentation(&mut state, parent, child, control);
         drop(state);
         self.response_observation_changed.notify_waiters();
         ConditionalResponseObservationRevocation::Revoked { removed_bound_wake }

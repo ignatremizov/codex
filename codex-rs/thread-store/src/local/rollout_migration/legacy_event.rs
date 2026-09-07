@@ -89,6 +89,8 @@ pub(super) fn completed_item(
         EventMsg::AgentMessage(event) if !event.message.is_empty() => Some((
             TurnItem::AgentMessage(AgentMessageItem {
                 id: next_item_id()?,
+                attribution: None,
+                input: None,
                 content: vec![AgentMessageContent::Text {
                     text: event.message.clone(),
                 }],

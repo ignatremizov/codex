@@ -40,6 +40,8 @@ fn agent_message_does_not_invent_background_completion_provenance() {
         (
             TurnItem::AgentMessage(AgentMessageItem {
                 id: "item-1".to_string(),
+                attribution: None,
+                input: None,
                 content: vec![AgentMessageContent::Text {
                     text: "ordinary assistant output".to_string(),
                 }],

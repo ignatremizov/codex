@@ -41,6 +41,7 @@ impl ThreadRequestProcessor {
         let operation = async {
             match action {
                 AgentControlAction::Spawn {
+                    task,
                     role,
                     model,
                     reasoning_effort,
@@ -75,6 +76,7 @@ impl ThreadRequestProcessor {
                         .unwrap_or_default();
                     let result = source_thread
                         .spawn_agent(UserAgentSpawnOptions {
+                            task,
                             role,
                             model,
                             reasoning_effort,
@@ -92,11 +94,13 @@ impl ThreadRequestProcessor {
                     audit_item.target_thread_id = Some(result.target_thread_id);
                     audit_item.agent_ref = result.agent_ref;
                     audit_item.nickname = result.nickname.clone();
+                    audit_item.task_path = result.task_path.clone();
                     audit_item.error = result.post_admission_warning.clone();
                     Ok(AgentControlOutcome::Spawned {
                         target_thread_id: result.target_thread_id.to_string(),
                         agent_ref: result.agent_ref.map(|agent_ref| agent_ref.to_string()),
                         nickname: result.nickname,
+                        task_path: result.task_path,
                         post_admission_warning: result.post_admission_warning,
                     })
                 }
@@ -207,6 +211,7 @@ impl ThreadRequestProcessor {
                     })
                 }
                 AgentControlAction::Resume {
+                    task,
                     target,
                     response_handling,
                 } => {
@@ -214,7 +219,7 @@ impl ThreadRequestProcessor {
                         .map(user_agent_response_handling)
                         .unwrap_or_default();
                     let result = source_thread
-                        .resume_agent(&target, response_handling)
+                        .resume_agent(&target, task, response_handling)
                         .await
                         .map_err(agent_control_error)?;
                     self.try_attach_thread_listener(
@@ -227,12 +232,29 @@ impl ThreadRequestProcessor {
                         audit_item.previous_owner_session_id =
                             ownership_transfer.previous_session_id;
                         audit_item.new_owner_session_id = Some(ownership_transfer.new_session_id);
+                        audit_item.task_path_mapping = ownership_transfer
+                            .task_path_mapping
+                            .into_iter()
+                            .map(|mapping| codex_protocol::AgentTaskPathMapping {
+                                thread_id: mapping.thread_id,
+                                previous_task_path: mapping.previous_task_path,
+                                task_path: mapping.task_path,
+                            })
+                            .collect();
                     }
+                    audit_item.task_path = result.task_path.clone();
                     audit_item.error = result.post_commit_warning.clone();
                     Ok(AgentControlOutcome::Resumed {
                         target_thread_id: result.target_thread_id.to_string(),
                         agent_ref: result.agent_ref.map(|agent_ref| agent_ref.to_string()),
                         nickname: result.nickname,
+                        task_path: result.task_path,
+                        task_path_mapping: audit_item
+                            .task_path_mapping
+                            .iter()
+                            .cloned()
+                            .map(Into::into)
+                            .collect(),
                         observation_binding: result
                             .observation_binding
                             .map(agent_observation_binding),
@@ -322,10 +344,27 @@ impl ThreadRequestProcessor {
                         binding: agent_observation_binding(binding),
                     })
                 }
-                AgentControlAction::ReplyRoute { target, mode } => {
+                AgentControlAction::SubtreeMessaging { mode } => {
+                    let previous = source_thread
+                        .set_agent_subtree_messaging(user_agent_reply_route_mode(mode))
+                        .await
+                        .map_err(agent_control_error)?;
+                    audit_item.target_thread_id = Some(source_thread_id);
+                    audit_item.authored_selector = Some("all".into());
+                    Ok(AgentControlOutcome::SubtreeMessagingChanged {
+                        root_thread_id: source_thread_id.to_string(),
+                        previous_mode: previous.map(agent_reply_route_mode),
+                        mode,
+                    })
+                }
+                AgentControlAction::ReplyRoute {
+                    target,
+                    recipient,
+                    mode,
+                } => {
                     let core_mode = user_agent_reply_route_mode(mode);
-                    let (target_thread_id, previous_mode) = source_thread
-                        .set_agent_reply_route(&target, core_mode)
+                    let (target_thread_id, recipient_thread_id, previous_mode) = source_thread
+                        .set_agent_reply_route(&target, recipient.as_deref(), core_mode)
                         .await
                         .map_err(agent_control_error)?;
                     self.try_attach_thread_listener(
@@ -334,8 +373,10 @@ impl ThreadRequestProcessor {
                     )
                     .await;
                     audit_item.target_thread_id = Some(target_thread_id);
+                    audit_item.reply_recipient_thread_id = Some(recipient_thread_id);
                     Ok(AgentControlOutcome::ReplyRouteChanged {
                         target_thread_id: target_thread_id.to_string(),
+                        recipient_thread_id: recipient_thread_id.to_string(),
                         previous_mode: previous_mode.map(agent_reply_route_mode),
                         mode,
                     })
@@ -355,6 +396,7 @@ impl ThreadRequestProcessor {
                             Ok(Some(alias)) => {
                                 audit_item.agent_ref = Some(alias.agent_ref);
                                 audit_item.nickname = alias.nickname.or(audit_item.nickname);
+                                audit_item.task_path = audit_item.task_path.or(alias.task_path);
                             }
                             Ok(None) => {}
                             Err(err) => {
@@ -407,7 +449,7 @@ impl ThreadRequestProcessor {
 
 fn agent_control_action_target(action: &AgentControlAction) -> Option<&str> {
     match action {
-        AgentControlAction::Spawn { .. } => None,
+        AgentControlAction::Spawn { .. } | AgentControlAction::SubtreeMessaging { .. } => None,
         AgentControlAction::Prompt { target, .. }
         | AgentControlAction::ReservedPrompt { target, .. }
         | AgentControlAction::QueuedPrompt { target, .. }

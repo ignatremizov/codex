@@ -23,6 +23,8 @@ fn attributed_agent_input_presentation_is_persisted_in_every_history_mode() {
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: new_attributed_agent_message_response_item_id().to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Agent message from `agent-id`:\n\nReview this.".to_string(),
             }],

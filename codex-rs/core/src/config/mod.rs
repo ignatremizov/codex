@@ -1084,6 +1084,8 @@ pub struct Config {
 
     /// Whether to register the update_plan tool.
     pub update_plan_enabled: bool,
+    /// User-controlled V1 directory discovery, independent of messaging and spawn permission.
+    pub list_agents_enabled: bool,
 
     /// Policy for collecting and validating tool runtimes.
     pub tool_registry: ToolRegistryConfig,
@@ -3772,6 +3774,11 @@ impl Config {
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
         let update_plan_enabled = resolve_update_plan_enabled(&cfg);
+        let list_agents_enabled = cfg
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.list_agents.as_ref())
+            .is_some_and(|config| config.enabled);
         let tool_registry = ToolRegistryConfig {
             error_on_tool_collisions: cfg
                 .features
@@ -4413,6 +4420,7 @@ impl Config {
             web_search_config,
             experimental_request_user_input_enabled,
             update_plan_enabled,
+            list_agents_enabled,
             tool_registry,
             code_mode,
             background_terminal_max_timeout,

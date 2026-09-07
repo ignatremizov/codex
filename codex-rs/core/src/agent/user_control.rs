@@ -141,6 +141,8 @@ pub enum UserAgentForkMode {
 /// Inputs for spawning a user-controlled default or configured-role child.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UserAgentSpawnOptions {
+    /// Optional assignment label, resolved relative to the issuing thread's task path.
+    pub task: Option<String>,
     /// Configured role selected for the child, or the default role when omitted.
     pub role: Option<String>,
     /// Explicit child model override.
@@ -245,7 +247,7 @@ impl CodexThread {
         self.session
             .services
             .agent_control
-            .resolve_resumable_agent_target(target)
+            .resolve_resumable_agent_target(self.session.thread_id(), target)
             .await
     }
 
@@ -343,6 +345,8 @@ pub struct UserAgentResumeResult {
     pub agent_ref: Option<u64>,
     /// Authoritative root-scoped nickname, when one is assigned.
     pub nickname: Option<String>,
+    /// Current assignment label from the root-scoped alias store.
+    pub task_path: Option<String>,
     /// Target status after the live control relationship is established.
     pub status: AgentStatus,
     /// Exclusive ownership transition committed by an explicit out-of-root adoption.
@@ -360,6 +364,8 @@ pub struct UserAgentOwnershipTransfer {
     pub previous_session_id: Option<SessionId>,
     /// Root that now exclusively controls the adopted subtree.
     pub new_session_id: SessionId,
+    /// Committed assignment-label remapping; unavailable after some post-commit failures.
+    pub task_path_mapping: Vec<codex_agent_graph_store::AgentTaskPathMapping>,
 }
 
 /// Canonical result of spawning a user-controlled agent.
@@ -371,6 +377,8 @@ pub struct UserAgentSpawnResult {
     pub agent_ref: Option<u64>,
     /// Generated user-facing nickname.
     pub nickname: Option<String>,
+    /// Current assignment label from the root-scoped alias store.
+    pub task_path: Option<String>,
     /// Child status after optional first-turn admission.
     pub status: AgentStatus,
     /// Non-retryable degradation that occurred after child input admission.

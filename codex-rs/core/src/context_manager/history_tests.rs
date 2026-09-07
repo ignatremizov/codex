@@ -1252,6 +1252,7 @@ fn drop_last_n_user_turns_preserves_persistent_agent_reply_route() {
             agent_id: codex_protocol::ThreadId::new(),
             agent_ref: Some(1),
             nickname: Some("Main".to_string()),
+            task_path: None,
         }));
     let mut history =
         create_history_with_items(vec![user_msg("u1"), assistant_msg("a1"), route.clone()]);

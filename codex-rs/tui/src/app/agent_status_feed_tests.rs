@@ -38,6 +38,8 @@ fn agent_status_uses_bounded_buffered_activity() {
                 text: "Finished checking the focused TUI tests.".to_string(),
                 phase: None,
                 memory_citation: None,
+                attribution: None,
+                input: None,
                 delivery: None,
                 questions: None,
             },

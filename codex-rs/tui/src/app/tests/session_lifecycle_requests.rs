@@ -488,16 +488,25 @@ async fn start_recording_app_server_with_history(
                                 )),
                                 codex_app_server_protocol::AgentControlAction::ReplyRoute {
                                     target,
+                                    recipient,
                                     mode,
                                 } => Some(agent_control_success(
                                     serde_json::json!({
                                         "type": "replyRouteChanged",
                                         "targetThreadId": target,
+                                        "recipientThreadId": recipient.as_ref().unwrap_or(&params.source_thread_id),
                                         "previousMode": null,
                                         "mode": mode,
                                     }),
                                     None,
                                 )),
+                                codex_app_server_protocol::AgentControlAction::SubtreeMessaging { mode } =>
+                                    Some(agent_control_success(serde_json::json!({
+                                        "type": "subtreeMessagingChanged",
+                                        "rootThreadId": params.source_thread_id,
+                                        "previousMode": null,
+                                        "mode": mode,
+                                    }), None)),
                             },
                             _ => None,
                         };
@@ -634,6 +643,7 @@ async fn promptless_spawn_routes_first_child_input_through_reserved_control() ->
             &mut app_server,
             crate::app::SpawnAgentCommandArgs {
                 source_thread_id,
+                task: None,
                 role: None,
                 authored_selector: Some("new".to_string()),
                 model: Some("gpt-5.6-luna".to_string()),
@@ -722,6 +732,7 @@ async fn promptless_resume_routes_next_child_input_through_reserved_control() ->
             &mut app_server,
             crate::app::SpawnAgentCommandArgs {
                 source_thread_id,
+                task: None,
                 role: None,
                 authored_selector: Some("new".to_string()),
                 model: None,
@@ -746,6 +757,7 @@ async fn promptless_resume_routes_next_child_input_through_reserved_control() ->
             kind: AgentSelectorKind::Id(target_thread_id),
             authored: target_thread_id.to_string(),
         },
+        /*task*/ None,
         Some(codex_app_server_protocol::AgentResponseHandling::Wake),
         /*prompt*/ None,
     )
@@ -912,6 +924,7 @@ async fn degraded_adoption_clears_optimistic_observation_and_renders_recovery() 
             kind: AgentSelectorKind::Id(target_thread_id),
             authored: "degraded-resume".to_string(),
         },
+        /*task*/ None,
         Some(codex_app_server_protocol::AgentResponseHandling::Wake),
         /*prompt*/ None,
     )
@@ -1538,6 +1551,7 @@ async fn direct_agent_prompt_materializes_a_known_alias_missing_from_navigation(
         .thread_id;
     app.agent_navigation
         .replace_aliases(vec![codex_app_server_protocol::AgentAlias {
+            task_path: None,
             thread_id: target_thread_id.to_string(),
             agent_ref: "2".to_string(),
             nickname: Some("Robie".to_string()),
@@ -1592,6 +1606,7 @@ async fn interrupt_without_follow_up_refreshes_target_liveness() -> Result<()> {
             &mut app_server,
             crate::app::SpawnAgentCommandArgs {
                 source_thread_id,
+                task: None,
                 role: None,
                 authored_selector: Some("new".to_string()),
                 model: None,
@@ -2977,6 +2992,8 @@ async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> 
             }],
             phase: None,
             memory_citation: None,
+            attribution: None,
+            input: None,
             delivery: None,
             questions: None,
             sub_agent_completion: None,
@@ -3228,6 +3245,8 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
                 }],
                 phase: None,
                 memory_citation: None,
+                attribution: None,
+                input: None,
                 delivery: None,
                 questions: None,
                 sub_agent_completion: None,
@@ -3669,6 +3688,8 @@ async fn underfilled_scrollback_fetches_older_pages_without_opening_the_transcri
                 }],
                 phase: None,
                 memory_citation: None,
+                attribution: None,
+                input: None,
                 delivery: None,
                 questions: None,
                 sub_agent_completion: None,

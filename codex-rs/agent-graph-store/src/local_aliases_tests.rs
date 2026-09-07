@@ -11,6 +11,9 @@ use super::*;
 use crate::AgentGraphStore;
 use crate::ThreadSpawnEdgeStatus;
 
+#[path = "task_path_tests.rs"]
+mod task_path_tests;
+
 struct TestRuntime {
     state_db: Arc<StateRuntime>,
     _codex_home: TempDir,
@@ -50,6 +53,7 @@ async fn local_alias_store_allocates_stable_refs_and_retains_closed_aliases() {
         .expect("root alias should initialize");
     let first_alias = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id: first_child_thread_id,
@@ -59,6 +63,7 @@ async fn local_alias_store_allocates_stable_refs_and_retains_closed_aliases() {
         .expect("first child alias should allocate");
     let repeated_alias = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id: first_child_thread_id,
@@ -68,6 +73,7 @@ async fn local_alias_store_allocates_stable_refs_and_retains_closed_aliases() {
         .expect("repeated allocation should be idempotent");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id: thread_id(/*suffix*/ 103),
@@ -77,6 +83,7 @@ async fn local_alias_store_allocates_stable_refs_and_retains_closed_aliases() {
         .expect_err("reserved nickname should reject a different child");
     let second_alias = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: first_child_thread_id,
             child_thread_id: second_child_thread_id,
@@ -91,6 +98,7 @@ async fn local_alias_store_allocates_stable_refs_and_retains_closed_aliases() {
             session_id,
             thread_id: root_thread_id,
             agent_ref: 1,
+            task_path: Some("/root".to_string()),
             nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
             state: AgentAliasState::Active,
         }
@@ -175,6 +183,7 @@ async fn main_nickname_is_case_insensitive_and_reserved_from_children() {
     for nickname in ["main", "MAIN"] {
         store
             .allocate_agent_alias(AllocateAgentAliasRequest {
+                task_path: None,
                 session_id,
                 parent_thread_id: root_thread_id,
                 child_thread_id: ThreadId::new(),
@@ -197,12 +206,14 @@ async fn concurrent_alias_allocations_are_unique_and_monotonic() {
         .expect("root alias should initialize");
 
     let first = store.allocate_agent_alias(AllocateAgentAliasRequest {
+        task_path: None,
         session_id,
         parent_thread_id: root_thread_id,
         child_thread_id: thread_id(/*suffix*/ 201),
         nickname: Some("Curie".to_string()),
     });
     let second = store.allocate_agent_alias(AllocateAgentAliasRequest {
+        task_path: None,
         session_id,
         parent_thread_id: root_thread_id,
         child_thread_id: thread_id(/*suffix*/ 202),
@@ -232,12 +243,14 @@ async fn concurrent_nickname_collision_is_retryable_without_consuming_a_ref() {
         .expect("root alias should initialize");
 
     let first = store.allocate_agent_alias(AllocateAgentAliasRequest {
+        task_path: None,
         session_id,
         parent_thread_id: root_thread_id,
         child_thread_id: first_child_thread_id,
         nickname: Some("Curie".to_string()),
     });
     let second = store.allocate_agent_alias(AllocateAgentAliasRequest {
+        task_path: None,
         session_id,
         parent_thread_id: root_thread_id,
         child_thread_id: second_child_thread_id,
@@ -260,6 +273,7 @@ async fn concurrent_nickname_collision_is_retryable_without_consuming_a_ref() {
 
     let retried = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id: loser_thread_id,
@@ -283,6 +297,7 @@ async fn activating_closed_alias_preserves_identity_and_reopens_edge() {
         .expect("root alias should initialize");
     let original = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id,
@@ -299,6 +314,7 @@ async fn activating_closed_alias_preserves_identity_and_reopens_edge() {
 
     let activated = store
         .activate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id,
@@ -335,6 +351,7 @@ async fn activating_alias_fills_previously_missing_nickname() {
         .expect("root alias should initialize");
     let original = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id,
@@ -351,6 +368,7 @@ async fn activating_alias_fills_previously_missing_nickname() {
 
     let activated = store
         .activate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id,
             parent_thread_id: root_thread_id,
             child_thread_id,
@@ -417,6 +435,7 @@ async fn namespace_initialization_backfills_graph_in_stable_order() {
                 session_id,
                 thread_id: root_thread_id,
                 agent_ref: 1,
+                task_path: Some("/root".to_string()),
                 nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
                 state: AgentAliasState::Active,
             },
@@ -424,6 +443,7 @@ async fn namespace_initialization_backfills_graph_in_stable_order() {
                 session_id,
                 thread_id: earlier_child_thread_id,
                 agent_ref: 2,
+                task_path: None,
                 nickname: None,
                 state: AgentAliasState::Closed,
             },
@@ -431,6 +451,7 @@ async fn namespace_initialization_backfills_graph_in_stable_order() {
                 session_id,
                 thread_id: later_child_thread_id,
                 agent_ref: 3,
+                task_path: None,
                 nickname: None,
                 state: AgentAliasState::Active,
             },
@@ -438,6 +459,7 @@ async fn namespace_initialization_backfills_graph_in_stable_order() {
                 session_id,
                 thread_id: grandchild_thread_id,
                 agent_ref: 4,
+                task_path: None,
                 nickname: None,
                 state: AgentAliasState::Active,
             },
@@ -513,6 +535,7 @@ async fn one_thread_cannot_be_current_in_two_roots() {
         .expect("second root alias should initialize");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: first_root_thread_id,
             child_thread_id,
@@ -523,6 +546,7 @@ async fn one_thread_cannot_be_current_in_two_roots() {
 
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: second_session_id,
             parent_thread_id: second_root_thread_id,
             child_thread_id,
@@ -540,6 +564,7 @@ async fn one_thread_cannot_be_current_in_two_roots() {
             session_id: first_session_id,
             thread_id: child_thread_id,
             agent_ref: 2,
+            task_path: None,
             nickname: Some("Hopper".to_string()),
             state: AgentAliasState::Active,
         }
@@ -565,6 +590,7 @@ async fn concurrent_alias_transfers_commit_one_exclusive_owner() {
     }
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: first_root_thread_id,
             child_thread_id,
@@ -574,6 +600,7 @@ async fn concurrent_alias_transfers_commit_one_exclusive_owner() {
         .expect("initial owner should allocate child");
 
     let second_transfer = store.transfer_agent_alias(TransferAgentAliasRequest {
+        task_path: None,
         expected_previous_session_id: Some(first_session_id),
         expected_descendant_thread_ids: Vec::new(),
         new_session_id: second_session_id,
@@ -583,6 +610,7 @@ async fn concurrent_alias_transfers_commit_one_exclusive_owner() {
         authored_selector: child_thread_id.to_string(),
     });
     let third_transfer = store.transfer_agent_alias(TransferAgentAliasRequest {
+        task_path: None,
         expected_previous_session_id: Some(first_session_id),
         expected_descendant_thread_ids: Vec::new(),
         new_session_id: third_session_id,
@@ -653,6 +681,7 @@ async fn repeated_transfer_requires_the_current_owner_as_its_expected_owner() {
     }
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: first_root_thread_id,
             child_thread_id,
@@ -661,6 +690,7 @@ async fn repeated_transfer_requires_the_current_owner_as_its_expected_owner() {
         .await
         .expect("initial owner should allocate child");
     let request = TransferAgentAliasRequest {
+        task_path: None,
         expected_previous_session_id: Some(first_session_id),
         expected_descendant_thread_ids: Vec::new(),
         new_session_id: second_session_id,
@@ -690,6 +720,7 @@ async fn repeated_transfer_requires_the_current_owner_as_its_expected_owner() {
     assert!(matches!(
         store
             .transfer_agent_alias(TransferAgentAliasRequest {
+                task_path: None,
                 expected_previous_session_id: Some(second_session_id),
                 expected_descendant_thread_ids: Vec::new(),
                 new_session_id: second_session_id,
@@ -722,6 +753,7 @@ async fn alias_transfer_moves_the_complete_persisted_subtree() {
     }
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: first_root_thread_id,
             child_thread_id,
@@ -731,6 +763,7 @@ async fn alias_transfer_moves_the_complete_persisted_subtree() {
         .expect("child alias should allocate");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: child_thread_id,
             child_thread_id: grandchild_thread_id,
@@ -741,6 +774,7 @@ async fn alias_transfer_moves_the_complete_persisted_subtree() {
 
     let stale_snapshot = store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(first_session_id),
             expected_descendant_thread_ids: Vec::new(),
             new_session_id: second_session_id,
@@ -759,6 +793,7 @@ async fn alias_transfer_moves_the_complete_persisted_subtree() {
 
     let transferred = store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(first_session_id),
             expected_descendant_thread_ids: vec![grandchild_thread_id],
             new_session_id: second_session_id,
@@ -778,6 +813,7 @@ async fn alias_transfer_moves_the_complete_persisted_subtree() {
             session_id: second_session_id,
             thread_id: child_thread_id,
             agent_ref: 2,
+            task_path: None,
             nickname: Some("Hopper".to_string()),
             state: AgentAliasState::Active,
         }
@@ -806,6 +842,7 @@ async fn alias_transfer_moves_the_complete_persisted_subtree() {
                 session_id: second_session_id,
                 thread_id: second_root_thread_id,
                 agent_ref: 1,
+                task_path: Some("/root".to_string()),
                 nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
                 state: AgentAliasState::Active,
             },
@@ -814,6 +851,7 @@ async fn alias_transfer_moves_the_complete_persisted_subtree() {
                 session_id: second_session_id,
                 thread_id: grandchild_thread_id,
                 agent_ref: 3,
+                task_path: None,
                 nickname: Some("Noether".to_string()),
                 state: AgentAliasState::Active,
             },
@@ -876,6 +914,7 @@ async fn alias_transfer_omits_unavailable_descendant_nickname() {
     }
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: first_root_thread_id,
             child_thread_id,
@@ -885,6 +924,7 @@ async fn alias_transfer_omits_unavailable_descendant_nickname() {
         .expect("source child alias should allocate");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: child_thread_id,
             child_thread_id: grandchild_thread_id,
@@ -894,6 +934,7 @@ async fn alias_transfer_omits_unavailable_descendant_nickname() {
         .expect("source grandchild alias should allocate");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: second_session_id,
             parent_thread_id: second_root_thread_id,
             child_thread_id: destination_child_thread_id,
@@ -904,6 +945,7 @@ async fn alias_transfer_omits_unavailable_descendant_nickname() {
 
     store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(first_session_id),
             expected_descendant_thread_ids: vec![grandchild_thread_id],
             new_session_id: second_session_id,
@@ -935,6 +977,7 @@ async fn alias_transfer_omits_unavailable_descendant_nickname() {
 
     store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(second_session_id),
             expected_descendant_thread_ids: vec![grandchild_thread_id],
             new_session_id: third_session_id,
@@ -947,6 +990,7 @@ async fn alias_transfer_omits_unavailable_descendant_nickname() {
         .expect("subtree should transfer to a third root");
     store
         .activate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: third_session_id,
             parent_thread_id: child_thread_id,
             child_thread_id: grandchild_thread_id,
@@ -956,6 +1000,7 @@ async fn alias_transfer_omits_unavailable_descendant_nickname() {
         .expect("the third root should restore the descendant nickname");
     store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(third_session_id),
             expected_descendant_thread_ids: vec![grandchild_thread_id],
             new_session_id: second_session_id,
@@ -1003,6 +1048,7 @@ async fn alias_transfer_rejects_an_unavailable_target_nickname_before_ownership_
     }
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: source_session_id,
             parent_thread_id: source_root_thread_id,
             child_thread_id: source_child_thread_id,
@@ -1012,6 +1058,7 @@ async fn alias_transfer_rejects_an_unavailable_target_nickname_before_ownership_
         .expect("source child alias should allocate");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: destination_session_id,
             parent_thread_id: destination_root_thread_id,
             child_thread_id: destination_child_thread_id,
@@ -1022,6 +1069,7 @@ async fn alias_transfer_rejects_an_unavailable_target_nickname_before_ownership_
 
     let error = store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(source_session_id),
             expected_descendant_thread_ids: Vec::new(),
             new_session_id: destination_session_id,
@@ -1064,6 +1112,7 @@ async fn transferring_back_to_a_prior_root_reactivates_its_reserved_alias() {
     }
     let original = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: first_session_id,
             parent_thread_id: first_root_thread_id,
             child_thread_id,
@@ -1073,6 +1122,7 @@ async fn transferring_back_to_a_prior_root_reactivates_its_reserved_alias() {
         .expect("initial alias should allocate");
     let transferred = store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(first_session_id),
             expected_descendant_thread_ids: Vec::new(),
             new_session_id: second_session_id,
@@ -1093,6 +1143,7 @@ async fn transferring_back_to_a_prior_root_reactivates_its_reserved_alias() {
 
     let mismatched_return = store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(second_session_id),
             expected_descendant_thread_ids: Vec::new(),
             new_session_id: first_session_id,
@@ -1119,6 +1170,7 @@ async fn transferring_back_to_a_prior_root_reactivates_its_reserved_alias() {
 
     let transferred_back = store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(second_session_id),
             expected_descendant_thread_ids: Vec::new(),
             new_session_id: first_session_id,
@@ -1179,6 +1231,7 @@ async fn history_fork_reserves_refs_and_nicknames_without_copying_targets() {
         .expect("source namespace should initialize");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: source_session_id,
             parent_thread_id: source_root_thread_id,
             child_thread_id: first_source_child,
@@ -1188,6 +1241,7 @@ async fn history_fork_reserves_refs_and_nicknames_without_copying_targets() {
         .expect("first source alias should allocate");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: source_session_id,
             parent_thread_id: source_root_thread_id,
             child_thread_id: second_source_child,
@@ -1213,6 +1267,7 @@ async fn history_fork_reserves_refs_and_nicknames_without_copying_targets() {
             session_id: fork_session_id,
             thread_id: fork_root_thread_id,
             agent_ref: 1,
+            task_path: Some("/root".to_string()),
             nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
             state: AgentAliasState::Active,
         }]
@@ -1240,6 +1295,7 @@ async fn history_fork_reserves_refs_and_nicknames_without_copying_targets() {
     );
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: fork_session_id,
             parent_thread_id: fork_root_thread_id,
             child_thread_id: thread_id(/*suffix*/ 611),
@@ -1250,6 +1306,7 @@ async fn history_fork_reserves_refs_and_nicknames_without_copying_targets() {
 
     let adopted = store
         .transfer_agent_alias(TransferAgentAliasRequest {
+            task_path: None,
             expected_previous_session_id: Some(source_session_id),
             expected_descendant_thread_ids: Vec::new(),
             new_session_id: fork_session_id,
@@ -1275,6 +1332,7 @@ async fn history_fork_reserves_refs_and_nicknames_without_copying_targets() {
 
     let new_alias = store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: fork_session_id,
             parent_thread_id: fork_root_thread_id,
             child_thread_id: thread_id(/*suffix*/ 612),
@@ -1299,6 +1357,7 @@ async fn history_fork_carries_forward_inherited_nickname_reservations() {
         .expect("source namespace should initialize");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: source_session_id,
             parent_thread_id: source_root_thread_id,
             child_thread_id: thread_id(/*suffix*/ 701),
@@ -1344,6 +1403,7 @@ async fn unpublished_fork_reservations_can_only_be_discarded_before_child_owners
         .expect("source namespace should initialize");
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: source_session_id,
             parent_thread_id: source_root,
             child_thread_id: thread_id(/*suffix*/ 731),
@@ -1383,6 +1443,7 @@ async fn unpublished_fork_reservations_can_only_be_discarded_before_child_owners
     let fork_child = thread_id(/*suffix*/ 741);
     store
         .allocate_agent_alias(AllocateAgentAliasRequest {
+            task_path: None,
             session_id: fork_session_id,
             parent_thread_id: fork_root,
             child_thread_id: fork_child,

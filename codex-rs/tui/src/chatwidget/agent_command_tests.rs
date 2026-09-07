@@ -15,6 +15,35 @@ fn empty_command_opens_the_control_pane() {
 }
 
 #[test]
+fn response_flags_accept_reordering_repetition_and_counted_cancellation() {
+    for (input, canonical) in [
+        ("qfx", "q"),
+        ("qfxx", "qx"),
+        ("xqc", "cqx"),
+        ("xq", "qx"),
+        ("ccmmqqxff", "cfmq"),
+        ("xxff", "fx"),
+    ] {
+        let input_command = format!("2 w:{input} prompt");
+        let canonical_command = format!("2 w:{canonical} prompt");
+        assert_eq!(
+            parse_agent_command(&input_command),
+            parse_agent_command(&canonical_command),
+            "{input}"
+        );
+    }
+    assert_eq!(
+        parse_response_mode("ffxx").unwrap(),
+        AgentResponseHandling::new(
+            /*commentary*/ false,
+            AgentFinalResponseHandling::Passive,
+            /*target_messages*/ false,
+            /*queue_input*/ false,
+        )
+    );
+}
+
+#[test]
 fn parses_uuid_target_and_preserves_multiline_prompt() {
     let parsed = parse_agent_command(
         "019faa07-aa3d-78d3-9eca-66cd8626adad \nReview this change.\nDo not run tests.",
@@ -24,6 +53,7 @@ fn parses_uuid_target_and_preserves_multiline_prompt() {
     assert_eq!(
         parsed,
         AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(
                 AgentSelectorKind::Id(
                     ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
@@ -48,6 +78,7 @@ fn parses_selectors_and_forced_namespaces() {
     assert_eq!(
         parse_agent_command("ref:2 Review"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(AgentSelectorKind::Ref(2), "ref:2"),
             fork: None,
             model: None,
@@ -62,6 +93,7 @@ fn parses_selectors_and_forced_namespaces() {
     assert_eq!(
         parse_agent_command("nick:\"Ada Lovelace\" Review"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(
                 AgentSelectorKind::Nickname("Ada Lovelace".to_string()),
                 "nick:\"Ada Lovelace\"",
@@ -79,6 +111,7 @@ fn parses_selectors_and_forced_namespaces() {
     assert_eq!(
         parse_agent_command("role:\"2\" w:f"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(AgentSelectorKind::Role("2".to_string()), "role:\"2\""),
             fork: None,
             model: None,
@@ -90,6 +123,7 @@ fn parses_selectors_and_forced_namespaces() {
     assert_eq!(
         parse_agent_command("Robie"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(
                 AgentSelectorKind::UnprefixedName("Robie".to_string()),
                 "Robie",
@@ -104,6 +138,7 @@ fn parses_selectors_and_forced_namespaces() {
     assert_eq!(
         parse_agent_command("mAiN w:x Check status"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(
                 AgentSelectorKind::Nickname(MAIN_AGENT_NICKNAME.to_string()),
                 "mAiN",
@@ -121,6 +156,7 @@ fn parses_selectors_and_forced_namespaces() {
     assert_eq!(
         parse_agent_command("role:main"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(AgentSelectorKind::Role("main".to_string()), "role:main"),
             fork: None,
             model: None,
@@ -138,6 +174,7 @@ fn parses_spawn_options_in_either_order() {
             "new w:cx model:\"provider/model:latest\" effort:xhigh fork:3 Review this"
         ),
         Ok(AgentCommand::New {
+            task: None,
             fork: Some(AgentForkMode::LastNTurns { turns: 3 }),
             model: Some("provider/model:latest".to_string()),
             reasoning_effort: Some(ReasoningEffort::XHigh),
@@ -151,6 +188,7 @@ fn parses_spawn_options_in_either_order() {
     assert_eq!(
         parse_agent_command("reviewer fork:none w:cf"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(
                 AgentSelectorKind::UnprefixedName("reviewer".to_string()),
                 "reviewer",
@@ -169,6 +207,7 @@ fn double_dash_preserves_option_shaped_prompt_text() {
     assert_eq!(
         parse_agent_command("2 w:f -- w:x is prompt text"),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(AgentSelectorKind::Ref(2), "2"),
             fork: None,
             model: None,
@@ -183,6 +222,7 @@ fn double_dash_preserves_option_shaped_prompt_text() {
     assert_eq!(
         parse_agent_command("new -- model:gpt-5 effort:high is prompt text"),
         Ok(AgentCommand::New {
+            task: None,
             fork: None,
             response: None,
             model: None,
@@ -193,6 +233,42 @@ fn double_dash_preserves_option_shaped_prompt_text() {
             }),
         })
     );
+}
+
+#[test]
+fn reply_routes_support_explicit_recipients_in_both_command_orders() {
+    for input in ["sends 2 to 3 enable", "2 sends to 3 enable"] {
+        assert_eq!(
+            parse_agent_command(input),
+            Ok(AgentCommand::ReplyRoute {
+                selector: selector(AgentSelectorKind::Ref(2), "2"),
+                recipient: Some(selector(AgentSelectorKind::Ref(3), "3")),
+                mode: AgentReplyRouteMode::Enabled,
+            })
+        );
+    }
+    for input in ["sends 2 to", "sends 2 to 3", "sends 2 to 3 enable extra"] {
+        assert!(parse_agent_command(input).is_err(), "{input}");
+    }
+}
+
+#[test]
+fn subtree_sends_requires_only_a_mode() {
+    assert_eq!(
+        parse_agent_command("sends all enable"),
+        Ok(AgentCommand::ReplyRoute {
+            selector: selector(AgentSelectorKind::UnprefixedName("all".into()), "all"),
+            recipient: None,
+            mode: AgentReplyRouteMode::Enabled,
+        })
+    );
+    for invalid in [
+        "sends all",
+        "sends all to 2 enable",
+        "sends all enable extra",
+    ] {
+        assert!(parse_agent_command(invalid).is_err(), "{invalid}");
+    }
 }
 
 #[test]
@@ -243,6 +319,7 @@ fn parses_lifecycle_actions() {
     assert_eq!(
         parse_agent_command("2 \"close\""),
         Ok(AgentCommand::SelectOrDispatch {
+            task: None,
             selector: selector(AgentSelectorKind::Ref(2), "2"),
             fork: None,
             model: None,
@@ -257,6 +334,7 @@ fn parses_lifecycle_actions() {
     assert_eq!(
         parse_agent_command("resume id:019faa07-aa3d-78d3-9eca-66cd8626adad w:cf"),
         Ok(AgentCommand::Resume {
+            task: None,
             selector: selector(
                 AgentSelectorKind::Id(
                     ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad")
@@ -271,6 +349,7 @@ fn parses_lifecycle_actions() {
     assert_eq!(
         parse_agent_command("resume 2 w:f continue from the saved state"),
         Ok(AgentCommand::Resume {
+            task: None,
             selector: selector(AgentSelectorKind::Ref(2), "2"),
             response: Some(AgentResponseHandling::Wake),
             prompt: Some(AgentCommandPrompt {
@@ -287,16 +366,18 @@ fn parses_lifecycle_actions() {
         })
     );
     assert_eq!(
-        parse_agent_command("replies 2 enable"),
+        parse_agent_command("sends 2 enable"),
         Ok(AgentCommand::ReplyRoute {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
+            recipient: None,
             mode: AgentReplyRouteMode::Enabled,
         })
     );
     assert_eq!(
-        parse_agent_command("2 replies disable"),
+        parse_agent_command("2 sends disable"),
         Ok(AgentCommand::ReplyRoute {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
+            recipient: None,
             mode: AgentReplyRouteMode::Disabled,
         })
     );
@@ -338,6 +419,7 @@ fn attached_input_satisfies_prompt_requirements_for_response_handling() {
     assert_matches!(
         parse_agent_command_with_attached_input("resume 2 w:f", /*has_attached_input*/ true),
         Ok(AgentCommand::Resume {
+            task: None,
             response: Some(AgentResponseHandling::Wake),
             prompt: None,
             ..
@@ -364,8 +446,8 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
         ("new model:", "`model` requires a nonempty model slug"),
         ("new effort:", "reasoning_effort must not be empty"),
         ("2 w:f w:x prompt", "`w` may be specified only once"),
-        ("2 w:qm prompt", "use unique c, f, m, q, or x flags"),
-        ("2 w:mm prompt", "use unique c, f, m, q, or x flags"),
+        ("2 w:qz prompt", "unknown flag `z`"),
+        ("2 w:M prompt", "unknown flag `M`"),
         ("queue 2 w:f", "`w` requires a queued prompt"),
         ("interrupt 2 w:x", "`w` requires a follow-up prompt"),
         ("2 fork:all prompt", "`fork` is valid only when spawning"),
@@ -384,7 +466,7 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
             "`close` accepts response handling but not a prompt",
         ),
         ("observe 2 maybe", "Invalid observation mode `maybe`"),
-        ("replies 2 maybe", "Invalid reply-route mode `maybe`"),
+        ("sends 2 maybe", "Invalid reply-route mode `maybe`"),
         ("nick:\"unterminated", "Unterminated double quote"),
         ("nick:\"bad\\q\"", "Unsupported escape `\\q`"),
     ] {

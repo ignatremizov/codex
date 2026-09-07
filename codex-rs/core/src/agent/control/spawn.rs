@@ -1,3 +1,5 @@
+use super::aliases::AgentAdoptionResult;
+use super::aliases::PersistedAgentAlias;
 use super::residency::is_v2_resident_session_source;
 use super::setup_cleanup::SetupCleanupGuard;
 use super::*;
@@ -94,14 +96,14 @@ struct DeferredResumeResponseObserver {
 struct ResumeAgentControlOutcome {
     thread_id: ThreadId,
     initial_submission: Option<ResponseObservationSubmission>,
-    persisted_alias: Option<AgentAlias>,
+    persisted_alias: Option<PersistedAgentAlias>,
 }
 
 struct ResumeSingleAgentOutcome {
     thread: Arc<CodexThread>,
     multi_agent_version: MultiAgentVersion,
     runtime_origin: crate::thread_manager::ThreadRuntimeOrigin,
-    persisted_alias: Option<AgentAlias>,
+    persisted_alias: Option<PersistedAgentAlias>,
     setup_cleanup: Option<SetupCleanupGuard>,
 }
 
@@ -1204,6 +1206,33 @@ impl AgentControl {
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
         let state = self.upgrade()?;
+        let task_path = match options.task.as_deref() {
+            Some(task) => {
+                let caller_thread_id = session_source
+                    .as_ref()
+                    .and_then(SessionSource::parent_thread_id)
+                    .ok_or_else(|| {
+                        CodexErr::InvalidRequest(
+                            "a task-labeled spawn requires a caller thread".to_string(),
+                        )
+                    })?;
+                let task_path = self
+                    .resolve_new_agent_task_path(caller_thread_id, task)
+                    .await?;
+                if config.ephemeral
+                    || self.bound_session_id().is_none()
+                    || !state
+                        .agent_graph_store()
+                        .is_some_and(|store| store.supports_agent_aliases())
+                {
+                    return Err(CodexErr::InvalidRequest(
+                        "task-labeled agents require durable root-scoped alias storage".to_string(),
+                    ));
+                }
+                Some(task_path)
+            }
+            None => None,
+        };
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -1390,7 +1419,7 @@ impl AgentControl {
                 new_thread.thread.as_ref(),
                 new_thread.thread_id,
                 notification_source.as_ref(),
-                ThreadSpawnPersistence::New,
+                ThreadSpawnPersistence::New { task_path },
             )
             .await
         {
@@ -1497,7 +1526,18 @@ impl AgentControl {
                 } => {
                     let observed_task_preview =
                         non_empty_task_message(render_input_preview(&input));
-                    let input = AgentControlInput::User(input);
+                    let input = match &options.model_input_origin {
+                        Some(origin) => {
+                            self.attribute_model_input(
+                                origin.sender,
+                                new_thread.thread_id,
+                                &origin.sender_turn_id,
+                                input,
+                            )
+                            .await?
+                        }
+                        None => AgentControlInput::User(input),
+                    };
                     let input =
                         if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                             parent_thread_id,
@@ -1729,7 +1769,10 @@ impl AgentControl {
             thread_id: new_thread.thread_id,
             metadata: agent_metadata,
             status: self.get_status(new_thread.thread_id).await,
-            agent_ref: persisted_alias.map(|alias| alias.agent_ref),
+            agent_ref: persisted_alias
+                .as_ref()
+                .map(|persisted| persisted.alias.agent_ref),
+            task_path: persisted_alias.and_then(|persisted| persisted.alias.task_path),
             post_admission_warning,
         })
     }
@@ -2058,6 +2101,7 @@ impl AgentControl {
         .map(|outcome| outcome.thread_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn resume_agent_from_rollout_adopting(
         &self,
         config: Config,
@@ -2066,7 +2110,8 @@ impl AgentControl {
         response_observation: ResponseObservationPolicy,
         expected_previous_session_id: Option<SessionId>,
         authored_selector: String,
-    ) -> CodexResult<ThreadId> {
+        task: Option<String>,
+    ) -> CodexResult<AgentAdoptionResult> {
         self.resume_agent_from_rollout_with_persistence(
             config,
             thread_id,
@@ -2081,11 +2126,22 @@ impl AgentControl {
                     expected_previous_session_id,
                     reserved_descendant_thread_ids: None,
                     authored_selector,
+                    task_path: task,
                 },
             },
         )
         .await
-        .map(|outcome| outcome.thread_id)
+        .map(|outcome| {
+            let (task_path, task_path_mapping) = outcome
+                .persisted_alias
+                .map(|persisted| (persisted.alias.task_path, persisted.task_path_mapping))
+                .unwrap_or_default();
+            AgentAdoptionResult {
+                thread_id: outcome.thread_id,
+                task_path,
+                task_path_mapping,
+            }
+        })
     }
 
     pub(crate) async fn resume_user_agent_from_rollout(
@@ -2111,7 +2167,7 @@ impl AgentControl {
             },
         )
         .await
-        .map(|outcome| outcome.persisted_alias)
+        .map(|outcome| outcome.persisted_alias.map(|persisted| persisted.alias))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2123,7 +2179,8 @@ impl AgentControl {
         response_observation: ResponseObservationPolicy,
         expected_previous_session_id: Option<SessionId>,
         authored_selector: String,
-    ) -> CodexResult<Option<AgentAlias>> {
+        task: Option<String>,
+    ) -> CodexResult<Option<PersistedAgentAlias>> {
         let durable_response_observer_source = session_source.clone();
         self.resume_agent_from_rollout_with_persistence(
             config,
@@ -2140,6 +2197,7 @@ impl AgentControl {
                     expected_previous_session_id,
                     reserved_descendant_thread_ids: None,
                     authored_selector,
+                    task_path: task,
                 },
             },
         )
@@ -2192,12 +2250,32 @@ impl AgentControl {
             initial_user_input,
             mut thread_spawn_persistence,
         } = options;
+        if let ThreadSpawnPersistence::Transfer {
+            task_path: Some(task),
+            expected_previous_session_id,
+            ..
+        } = &mut thread_spawn_persistence
+        {
+            if *expected_previous_session_id == self.bound_session_id() {
+                return Err(CodexErr::InvalidRequest(
+                    "task is only supported when adopting an agent from another root; \
+                     same-root resume does not rename its assignment"
+                        .to_string(),
+                ));
+            }
+            let caller_thread_id = session_source.parent_thread_id().ok_or_else(|| {
+                CodexErr::InvalidRequest("task assignment requires an adopting caller".to_string())
+            })?;
+            *task = self
+                .resolve_new_agent_task_path(caller_thread_id, task)
+                .await?;
+        }
         let transfer_previous_session_id = match &thread_spawn_persistence {
             ThreadSpawnPersistence::Transfer {
                 expected_previous_session_id,
                 ..
             } => Some(*expected_previous_session_id),
-            ThreadSpawnPersistence::New
+            ThreadSpawnPersistence::New { .. }
             | ThreadSpawnPersistence::Resume
             | ThreadSpawnPersistence::ControlledResume => None,
         };
@@ -2526,6 +2604,7 @@ impl AgentControl {
                                     ObservedInputTaskContext::None,
                                     ObservedInputTaskContext::UserAuthored,
                                 ),
+                                scoped_authorization: ScopedInputAuthorization::NotRequired,
                             },
                         )
                         .await?,
@@ -2738,7 +2817,7 @@ impl AgentControl {
                 expected_previous_session_id,
                 ..
             } => *expected_previous_session_id == session_id,
-            ThreadSpawnPersistence::New => false,
+            ThreadSpawnPersistence::New { .. } => false,
         };
         if !preserves_existing_parent {
             return Ok(session_source);
@@ -2897,6 +2976,7 @@ impl AgentControl {
             ThreadSpawnPersistence::ControlledResume,
         )
         .await
+        .map(|persisted| persisted.map(|persisted| persisted.alias))
     }
 
     /// Reopen a V2 child while the caller holds its direct parent's lifecycle guard.

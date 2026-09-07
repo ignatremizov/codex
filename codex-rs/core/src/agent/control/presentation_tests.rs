@@ -116,6 +116,19 @@ fn target_message_grant_allows_one_idle_wake_and_only_steers_that_wake_turn() {
         "message-wake-turn",
     ));
     assert_eq!(
+        [Some("message-wake-turn"), Some("another-turn"), None].map(|active_turn_id| {
+            control.target_message_admission_is_current(
+                observer,
+                target,
+                "target-turn",
+                TargetMessageAdmission::Steer,
+                active_turn_id,
+            )
+        }),
+        [true, false, false],
+        "read-only admission validation cannot broaden a consumed scoped wake",
+    );
+    assert_eq!(
         control
             .target_message_admission(
                 observer,

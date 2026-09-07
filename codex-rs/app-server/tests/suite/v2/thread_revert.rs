@@ -51,6 +51,9 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[path = "thread_revert_messaging.rs"]
+mod messaging_tests;
+
 #[test_case::test_case(false; "live_reload")]
 #[test_case::test_case(true; "cold_resume")]
 #[tokio::test]

@@ -292,6 +292,16 @@ impl AgentControl {
     ) -> CodexResult<TargetMessageAdmission> {
         let may_steer = mode == TargetMessageAdmissionMode::SteerOrWake;
         let mut state = self.wait_agent_presentations.state();
+        let inherited = state
+            .inherited_message_routes
+            .get(&(observer, target))
+            .copied();
+        if inherited.is_some() {
+            state
+                .response_observation_by_observer_child
+                .entry((observer, target))
+                .or_default();
+        }
         let relationship = state
             .response_observation_by_observer_child
             .get_mut(&(observer, target))
@@ -301,13 +311,14 @@ impl AgentControl {
                     target.thread_id, observer.thread_id
                 ))
             })?;
-        if relationship.reply_route == Some(TargetMessageRouteMode::Disabled) {
+        let route = relationship.reply_route.or(inherited);
+        if route == Some(TargetMessageRouteMode::Disabled) {
             return Err(CodexErr::InvalidRequest(format!(
                 "agent replies to {} are disabled by the user",
                 observer.thread_id
             )));
         }
-        let persistent_route = relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+        let persistent_route = route == Some(TargetMessageRouteMode::Enabled);
         if persistent_route && observer_active_turn_id.is_some() && may_steer {
             return Ok(TargetMessageAdmission::Steer);
         }
@@ -368,12 +379,16 @@ impl AgentControl {
         observer: SessionPresentationId,
         target: SessionPresentationId,
     ) -> bool {
-        self.wait_agent_presentations
-            .state()
+        let state = self.wait_agent_presentations.state();
+        let inherited = state
+            .inherited_message_routes
+            .get(&(observer, target))
+            .copied();
+        state
             .response_observation_by_observer_child
             .get(&(observer, target))
             .is_some_and(|relationship| {
-                relationship.reply_route != Some(TargetMessageRouteMode::Disabled)
+                relationship.reply_route.or(inherited) != Some(TargetMessageRouteMode::Disabled)
                     && (relationship
                         .pending_next_turn
                         .as_ref()
@@ -390,15 +405,89 @@ impl AgentControl {
         observer: SessionPresentationId,
         target: SessionPresentationId,
     ) -> Option<TargetMessageRouteMode> {
-        self.wait_agent_presentations
-            .state()
+        let state = self.wait_agent_presentations.state();
+        state
             .response_observation_by_observer_child
             .get(&(observer, target))
             .and_then(|relationship| relationship.reply_route)
+            .or_else(|| {
+                state
+                    .inherited_message_routes
+                    .get(&(observer, target))
+                    .copied()
+            })
     }
 
     pub(crate) fn response_observation_changed(&self) -> &Notify {
         &self.wait_agent_presentations.response_observation_changed
+    }
+
+    pub(crate) fn target_message_wake_is_current(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        reservation_id: Uuid,
+    ) -> bool {
+        self.target_message_admission_is_current(
+            observer,
+            target,
+            target_turn_id,
+            TargetMessageAdmission::Wake(reservation_id),
+            /*observer_active_turn_id*/ None,
+        )
+    }
+
+    /// Recheck a previously selected admission without reserving another wake or
+    /// changing the route. Steers remain limited to the granted active turn.
+    pub(crate) fn target_message_admission_is_current(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        target_turn_id: &str,
+        admission: TargetMessageAdmission,
+        observer_active_turn_id: Option<&str>,
+    ) -> bool {
+        let state = self.wait_agent_presentations.state();
+        let Some(relationship) = state
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+        else {
+            return false;
+        };
+        let route = relationship.reply_route.or_else(|| {
+            state
+                .inherited_message_routes
+                .get(&(observer, target))
+                .copied()
+        });
+        if route == Some(TargetMessageRouteMode::Disabled) {
+            return false;
+        }
+        match admission {
+            TargetMessageAdmission::Wake(reservation_id) => relationship
+                .turns
+                .get(target_turn_id)
+                .is_some_and(|observation| {
+                    (route == Some(TargetMessageRouteMode::Enabled) || observation.target_messages)
+                        && observation.message_wake_reservation_id == Some(reservation_id)
+                }),
+            TargetMessageAdmission::Steer => {
+                observer_active_turn_id.is_some()
+                    && (route == Some(TargetMessageRouteMode::Enabled)
+                        || relationship
+                            .turns
+                            .get(target_turn_id)
+                            .is_some_and(|observation| {
+                                observation.target_messages
+                                    && (observation.message_wake_reservation_id.is_some()
+                                        || observation.message_wake_turn_id.is_none()
+                                        || observation.message_wake_turn_id.as_deref()
+                                            == observer_active_turn_id)
+                            }))
+            }
+            TargetMessageAdmission::PendingWake => false,
+        }
     }
 
     pub(crate) fn commit_target_message_wake(
@@ -410,13 +499,18 @@ impl AgentControl {
         wake_turn_id: &str,
     ) -> bool {
         let mut state = self.wait_agent_presentations.state();
+        let inherited = state
+            .inherited_message_routes
+            .get(&(observer, target))
+            .copied();
         let Some(relationship) = state
             .response_observation_by_observer_child
             .get_mut(&(observer, target))
         else {
             return false;
         };
-        let persistent_route = relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+        let persistent_route =
+            relationship.reply_route.or(inherited) == Some(TargetMessageRouteMode::Enabled);
         let Some(observation) = relationship.turns.get_mut(target_turn_id) else {
             return false;
         };
@@ -493,12 +587,15 @@ impl AgentControl {
     ) {
         let mut changed_children = Vec::new();
         let mut state = self.wait_agent_presentations.state();
+        let inherited_routes = state.inherited_message_routes.clone();
         for ((parent, child), relationship) in &mut state.response_observation_by_observer_child {
             if *parent != observer {
                 continue;
             }
-            let persistent_route =
-                relationship.reply_route == Some(TargetMessageRouteMode::Enabled);
+            let persistent_route = relationship
+                .reply_route
+                .or_else(|| inherited_routes.get(&(*parent, *child)).copied())
+                == Some(TargetMessageRouteMode::Enabled);
             let mut empty_turns = Vec::new();
             for observation in relationship.turns.values_mut() {
                 if observation.message_wake_turn_id.as_deref() == Some(wake_turn_id)

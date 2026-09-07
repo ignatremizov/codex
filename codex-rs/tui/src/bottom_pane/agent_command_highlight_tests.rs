@@ -61,6 +61,21 @@ fn highlighted_tokens(input: &str) -> Vec<(&str, AgentCommandHighlightKind)> {
 }
 
 #[test]
+fn highlights_explicit_reply_route_endpoints() {
+    assert_eq!(
+        highlighted_tokens("/agent sends 2 to Sagan enable"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("sends", AgentCommandHighlightKind::Action),
+            ("2", AgentCommandHighlightKind::KnownTarget),
+            ("to", AgentCommandHighlightKind::Action),
+            ("Sagan", AgentCommandHighlightKind::KnownTarget),
+            ("enable", AgentCommandHighlightKind::Option),
+        ]
+    );
+}
+
+#[test]
 fn highlights_action_first_and_target_first_agent_commands() {
     assert_eq!(
         highlighted_tokens("/agent close 2 w:x"),
@@ -89,20 +104,20 @@ fn highlights_action_first_and_target_first_agent_commands() {
         ]
     );
     assert_eq!(
-        highlighted_tokens("/agent replies 2 enable"),
+        highlighted_tokens("/agent sends 2 enable"),
         vec![
             ("/agent", AgentCommandHighlightKind::Command),
-            ("replies", AgentCommandHighlightKind::Action),
+            ("sends", AgentCommandHighlightKind::Action),
             ("2", AgentCommandHighlightKind::KnownTarget),
             ("enable", AgentCommandHighlightKind::Option),
         ]
     );
     assert_eq!(
-        highlighted_tokens("/agent Sagan replies disable"),
+        highlighted_tokens("/agent Sagan sends disable"),
         vec![
             ("/agent", AgentCommandHighlightKind::Command),
             ("Sagan", AgentCommandHighlightKind::KnownTarget),
-            ("replies", AgentCommandHighlightKind::Action),
+            ("sends", AgentCommandHighlightKind::Action),
             ("disable", AgentCommandHighlightKind::Option),
         ]
     );
@@ -137,7 +152,7 @@ fn highlights_spawn_options_but_leaves_prompt_text_plain() {
 #[test]
 fn distinguishes_unresolved_targets_and_rejects_invalid_options() {
     assert_eq!(
-        highlighted_tokens("/agent missing w:fc prompt"),
+        highlighted_tokens("/agent missing w:fz prompt"),
         vec![
             ("/agent", AgentCommandHighlightKind::Command),
             ("missing", AgentCommandHighlightKind::UnknownTarget),
@@ -181,11 +196,35 @@ fn distinguishes_unresolved_targets_and_rejects_invalid_options() {
         ]
     );
     assert_eq!(
-        highlighted_tokens("/agent replies 2 maybe"),
+        highlighted_tokens("/agent sends 2 maybe"),
         vec![
             ("/agent", AgentCommandHighlightKind::Command),
-            ("replies", AgentCommandHighlightKind::Action),
+            ("sends", AgentCommandHighlightKind::Action),
             ("2", AgentCommandHighlightKind::KnownTarget),
         ]
     );
+}
+
+#[test]
+fn response_flag_highlights_accept_any_order_and_repetition() {
+    let highlighted = ["qfx", "qfxx", "xqc", "xq", "ccmmqq", "ffxx"]
+        .into_iter()
+        .map(|flags| {
+            let command = format!("/agent 2 w:{flags} prompt");
+            highlighted_tokens(&command)
+                .into_iter()
+                .map(|(token, kind)| format!("{kind:?}:{token}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(highlighted, @r###"
+    Command:/agent | KnownTarget:2 | Option:w:qfx
+    Command:/agent | KnownTarget:2 | Option:w:qfxx
+    Command:/agent | KnownTarget:2 | Option:w:xqc
+    Command:/agent | KnownTarget:2 | Option:w:xq
+    Command:/agent | KnownTarget:2 | Option:w:ccmmqq
+    Command:/agent | KnownTarget:2 | Option:w:ffxx
+    "###);
 }

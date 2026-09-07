@@ -31,6 +31,7 @@ pub(super) struct AgentControlSummary {
     pub(super) reasoning_effort: Option<String>,
     pub(super) task_preview: Option<String>,
     pub(super) response_preview: Option<String>,
+    pub(super) received_preview: Option<(ThreadId, String)>,
     pub(super) running_for: Option<Duration>,
     pub(super) terminal_outcome: Option<AgentTerminalOutcome>,
 }
@@ -76,10 +77,54 @@ impl AgentControlSummary {
             _ => None,
         });
         let response_preview = thread_items_newest_first(store).find_map(|item| match item {
-            ThreadItem::AgentMessage { id, text, .. }
-                if sub_agent_completion_status_from_response_item_id(id).is_none() =>
+            ThreadItem::AgentMessage {
+                id,
+                text,
+                attribution: None,
+                ..
+            } if sub_agent_completion_status_from_response_item_id(id).is_none()
+                && !codex_protocol::protocol::is_attributed_agent_message_response_item_id(id) =>
             {
                 detailed_agent_preview(text)
+            }
+            _ => None,
+        });
+        let received_preview = thread_items_newest_first(store).find_map(|item| match item {
+            ThreadItem::AgentMessage {
+                attribution: Some(attribution),
+                input,
+                text,
+                ..
+            } => {
+                let recipient = ThreadId::from_string(&attribution.recipient.thread_id).ok()?;
+                if store
+                    .session
+                    .as_ref()
+                    .is_none_or(|session| session.thread_id != recipient)
+                {
+                    return None;
+                }
+                Some((
+                    ThreadId::from_string(&attribution.sender.thread_id).ok()?,
+                    input
+                        .as_deref()
+                        .and_then(user_input_preview)
+                        .or_else(|| detailed_agent_preview(text))?,
+                ))
+            }
+            ThreadItem::AgentMessage {
+                id,
+                text,
+                phase: Some(codex_protocol::models::MessagePhase::Commentary),
+                ..
+            } if codex_protocol::protocol::is_attributed_agent_message_response_item_id(id) => {
+                let (sender, text) =
+                    codex_protocol::protocol::attributed_agent_message_transcript_parts(text)?;
+                // Main's directed display copies are not messages received by Main.
+                Some((
+                    ThreadId::from_string(sender).ok()?,
+                    detailed_agent_preview(text)?,
+                ))
             }
             _ => None,
         });
@@ -91,6 +136,7 @@ impl AgentControlSummary {
             reasoning_effort,
             task_preview,
             response_preview,
+            received_preview,
             running_for,
             terminal_outcome,
         }

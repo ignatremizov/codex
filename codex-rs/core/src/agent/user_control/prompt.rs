@@ -58,7 +58,7 @@ impl CodexThread {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
-            .resolve_controlled_agent_target(target)
+            .resolve_controlled_agent_target(self.session.thread_id(), target)
             .await?;
         if target_thread_id == source_thread_id {
             return Err(CodexErr::InvalidRequest(
@@ -83,7 +83,7 @@ impl CodexThread {
             let submission = agent_control
                 .queue_input_observing_response(QueuedInputObservationParams {
                     agent_id: target_thread_id,
-                    input,
+                    input: crate::agent::control::AgentControlInput::User(input),
                     start_options: TurnStartOptions::default(),
                     observer: self.session.presentation_id(),
                     response_observation,
@@ -136,7 +136,7 @@ impl CodexThread {
         let source_thread_id = self.session.thread_id();
         let agent_control = &self.session.services.agent_control;
         let target_thread_id = agent_control
-            .resolve_controlled_agent_target(target)
+            .resolve_controlled_agent_target(self.session.thread_id(), target)
             .await?;
         if target_thread_id == source_thread_id {
             return Err(CodexErr::InvalidRequest(

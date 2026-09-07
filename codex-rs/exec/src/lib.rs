@@ -109,6 +109,7 @@ use event_processor_with_human_output::EventProcessorWithHumanOutput;
 pub use event_processor_with_jsonl_output::CodexStatus;
 pub use event_processor_with_jsonl_output::CollectedThreadEvents;
 pub use event_processor_with_jsonl_output::EventProcessorWithJsonOutput;
+pub use exec_events::AgentInputItem;
 pub use exec_events::AgentMessageItem;
 pub use exec_events::CollabAgentState;
 pub use exec_events::CollabAgentStatus;

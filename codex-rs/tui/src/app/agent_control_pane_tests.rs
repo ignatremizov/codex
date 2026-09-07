@@ -65,8 +65,12 @@ async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> List
             action: UserAgentControlAction::Spawn,
             authored_selector: Some("reviewer".to_string()),
             target_thread_id: Some(child_thread_id.to_string()),
+            reply_recipient_thread_id: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
+            task_path: None,
+            task_path_mapping: Vec::new(),
+            task: None,
             agent_ref: Some("2".to_string()),
             nickname: Some("Hume".to_string()),
             role: Some("reviewer".to_string()),
@@ -110,6 +114,8 @@ async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> List
                     .to_string(),
                 phase: Some(MessagePhase::FinalAnswer),
                 memory_citation: None,
+                attribution: None,
+                input: None,
                 delivery: None,
                 questions: None,
             },
@@ -125,12 +131,14 @@ async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> List
         .insert(child_thread_id, child_channel);
     app.apply_primary_agent_aliases(vec![
         AgentAlias {
+            task_path: None,
             thread_id: main_thread_id.to_string(),
             agent_ref: "1".to_string(),
             nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
             state: AgentAliasState::Active,
         },
         AgentAlias {
+            task_path: None,
             thread_id: child_thread_id.to_string(),
             agent_ref: "2".to_string(),
             nickname: Some("Hume".to_string()),
@@ -435,12 +443,14 @@ async fn child_primary_view_uses_durable_ref_one_as_agent_tree_main() {
 
     app.apply_primary_agent_aliases(vec![
         codex_app_server_protocol::AgentAlias {
+            task_path: None,
             thread_id: main_thread_id.to_string(),
             agent_ref: "1".to_string(),
             nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
             state: codex_app_server_protocol::AgentAliasState::Active,
         },
         codex_app_server_protocol::AgentAlias {
+            task_path: None,
             thread_id: child_thread_id.to_string(),
             agent_ref: "2".to_string(),
             nickname: Some("Hume".to_string()),

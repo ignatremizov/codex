@@ -58,6 +58,7 @@ pub use agent::UserAgentResponseHandling;
 pub use agent::UserAgentResumeResult;
 pub use agent::UserAgentSpawnOptions;
 pub use agent::UserAgentSpawnResult;
+pub use agent::control::LiveRevertMessagingSnapshot;
 pub use codex_protocol::protocol::EnvironmentConfig;
 pub use codex_thread::BackgroundTerminalInfo;
 pub use codex_thread::CodexThread;

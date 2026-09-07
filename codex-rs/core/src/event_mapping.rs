@@ -171,6 +171,8 @@ fn parse_agent_message(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     AgentMessageItem {
         id,
+        attribution: None,
+        input: None,
         content,
         phase,
         memory_citation: None,

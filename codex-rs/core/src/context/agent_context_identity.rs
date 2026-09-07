@@ -11,6 +11,7 @@ pub(crate) enum AgentContextIdentity {
         agent_id: ThreadId,
         agent_ref: Option<u64>,
         nickname: Option<String>,
+        task_path: Option<String>,
     },
     /// V2 targets use their routed agent path.
     V2 {
@@ -29,6 +30,7 @@ impl AgentContextIdentity {
                 agent_id,
                 agent_ref,
                 nickname,
+                task_path,
             } => {
                 fields.insert("agent_id".to_string(), Value::String(agent_id.to_string()));
                 if let Some(agent_ref) = agent_ref {
@@ -36,6 +38,9 @@ impl AgentContextIdentity {
                 }
                 if let Some(nickname) = nickname {
                     fields.insert("nickname".to_string(), Value::String(nickname.clone()));
+                }
+                if let Some(task_path) = task_path {
+                    fields.insert("task_path".to_string(), Value::String(task_path.clone()));
                 }
             }
             Self::V2 {

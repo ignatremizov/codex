@@ -85,7 +85,10 @@ impl App {
                 return;
             }
         };
-        let target_thread_id = match self.resolve_agent_selector(app_server, &selector).await {
+        let target_thread_id = match self
+            .resolve_agent_selector(app_server, &selector, Some(source_thread_id))
+            .await
+        {
             Ok(thread_id) => thread_id,
             Err(message) => {
                 self.chat_widget.add_error_message(message);

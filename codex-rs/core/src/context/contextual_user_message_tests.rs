@@ -96,8 +96,7 @@ fn detects_scoped_agent_route_and_attributed_message_fragments() {
     let route = route_fragment.render();
     let persistent_route_fragment = AgentReplyRoute::until_disabled(identity);
     let persistent_route = persistent_route_fragment.render();
-    let message =
-        AttributedAgentMessage::new(v1_agent_identity(), "turn-1", "Question for Main.").render();
+    let message = AttributedAgentMessage::new(v1_agent_identity(), "Question for Main.").render();
 
     assert!(route.contains("\"send_input\":\"allowed_this_turn\""));
     assert!(persistent_route.contains("\"send_input\":\"allowed_until_disabled\""));
@@ -124,6 +123,7 @@ fn v1_agent_identity() -> AgentContextIdentity {
             .expect("valid thread id"),
         agent_ref: Some(2),
         nickname: Some("Pascal".to_string()),
+        task_path: None,
     }
 }
 

@@ -18,6 +18,9 @@ use tracing::warn;
 use super::AgentControl;
 use super::AgentStatus;
 
+#[path = "task_paths.rs"]
+mod task_paths;
+
 pub(crate) fn agent_alias_lifecycle_status(
     state: AgentAliasState,
 ) -> Option<ThreadSpawnEdgeStatus> {
@@ -29,7 +32,9 @@ pub(crate) fn agent_alias_lifecycle_status(
 }
 
 pub(super) enum ThreadSpawnPersistence {
-    New,
+    New {
+        task_path: Option<String>,
+    },
     /// Internal descendant restoration after the owning control plane has already been selected.
     Resume,
     /// An existing same-root target; ownership must be revalidated under the target lifecycle
@@ -39,6 +44,7 @@ pub(super) enum ThreadSpawnPersistence {
         expected_previous_session_id: Option<SessionId>,
         reserved_descendant_thread_ids: Option<Vec<ThreadId>>,
         authored_selector: String,
+        task_path: Option<String>,
     },
 }
 
@@ -46,6 +52,19 @@ pub(crate) struct AgentResumePlan {
     pub(crate) status: AgentStatus,
     pub(crate) current_alias: Option<AgentAlias>,
     pub(crate) ownership: AgentResumeOwnership,
+}
+
+#[derive(Debug)]
+pub(crate) struct PersistedAgentAlias {
+    pub(crate) alias: AgentAlias,
+    pub(crate) task_path_mapping: Vec<codex_agent_graph_store::AgentTaskPathMapping>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AgentAdoptionResult {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) task_path: Option<String>,
+    pub(crate) task_path_mapping: Vec<codex_agent_graph_store::AgentTaskPathMapping>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +91,7 @@ enum V1AgentTarget {
     Id(ThreadId),
     Ref(u64),
     Nickname(String),
+    TaskPath(String),
 }
 
 impl AgentControl {
@@ -173,32 +193,42 @@ impl AgentControl {
 
     pub(crate) async fn resolve_controlled_v1_agent_target(
         &self,
+        caller_thread_id: ThreadId,
         target: &str,
     ) -> CodexResult<ThreadId> {
-        self.resolve_controlled_agent_target(target).await
+        self.resolve_controlled_agent_target(caller_thread_id, target)
+            .await
     }
 
     pub(crate) async fn resolve_controlled_agent_target(
         &self,
+        caller_thread_id: ThreadId,
         target: &str,
     ) -> CodexResult<ThreadId> {
-        self.resolve_v1_agent_target(target, V1AgentTargetScope::ControlledOnly)
+        self.resolve_v1_agent_target(caller_thread_id, target, V1AgentTargetScope::ControlledOnly)
             .await
     }
 
     pub(crate) async fn resolve_resumable_v1_agent_target(
         &self,
+        caller_thread_id: ThreadId,
         target: &str,
     ) -> CodexResult<ThreadId> {
-        self.resolve_resumable_agent_target(target).await
+        self.resolve_resumable_agent_target(caller_thread_id, target)
+            .await
     }
 
     pub(crate) async fn resolve_resumable_agent_target(
         &self,
+        caller_thread_id: ThreadId,
         target: &str,
     ) -> CodexResult<ThreadId> {
-        self.resolve_v1_agent_target(target, V1AgentTargetScope::AllowUuidAdoption)
-            .await
+        self.resolve_v1_agent_target(
+            caller_thread_id,
+            target,
+            V1AgentTargetScope::AllowUuidAdoption,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -322,6 +352,7 @@ impl AgentControl {
 
     async fn resolve_v1_agent_target(
         &self,
+        caller_thread_id: ThreadId,
         target: &str,
         scope: V1AgentTargetScope,
     ) -> CodexResult<ThreadId> {
@@ -362,7 +393,9 @@ impl AgentControl {
                         .is_ok();
                 (has_metadata || is_unbound_local, exists)
             }
-            V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) => (false, false),
+            V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) | V1AgentTarget::TaskPath(_) => {
+                (false, false)
+            }
         };
         let Some(agent_graph_store) = state.agent_graph_store() else {
             return resolve_without_alias_store(
@@ -400,7 +433,7 @@ impl AgentControl {
                 ))
             })?;
 
-        let alias = match &parsed {
+        let mut alias = match &parsed {
             V1AgentTarget::Id(thread_id) => {
                 agent_graph_store
                     .find_agent_alias_by_thread(session_id, *thread_id)
@@ -416,12 +449,43 @@ impl AgentControl {
                     .find_agent_alias_by_nickname(session_id, nickname)
                     .await
             }
+            V1AgentTarget::TaskPath(_) => Ok(None),
         }
         .map_err(|err| {
             CodexErr::Fatal(format!(
                 "failed to resolve agent target {target:?} in root {session_id}: {err}"
             ))
         })?;
+        // Forced identity selectors never fall back to task labels. For other selectors,
+        // durable UUID/ref/nickname lookup retains priority over the semantic namespace.
+        if alias.is_none()
+            && !["id:", "ref:", "nick:"]
+                .iter()
+                .any(|prefix| target.starts_with(prefix))
+        {
+            let path = match &parsed {
+                V1AgentTarget::TaskPath(path) => {
+                    Some(self.resolve_agent_task_path(caller_thread_id, path).await?)
+                }
+                V1AgentTarget::Id(_) | V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) => {
+                    match self.resolve_agent_task_path(caller_thread_id, target).await {
+                        Ok(path) => Some(path),
+                        Err(CodexErr::InvalidRequest(_)) => None,
+                        Err(err) => return Err(err),
+                    }
+                }
+            };
+            if let Some(path) = path {
+                alias = self
+                    .list_session_agent_aliases()
+                    .await?
+                    .into_iter()
+                    .find(|alias| {
+                        alias.state != AgentAliasState::Transferred
+                            && alias.task_path.as_deref() == Some(path.as_str())
+                    });
+            }
+        }
         let Some(alias) = alias else {
             if let V1AgentTarget::Id(thread_id) = &parsed
                 && process_local_controlled
@@ -450,9 +514,11 @@ impl AgentControl {
                 V1AgentTarget::Ref(agent_ref) => CodexErr::UnsupportedOperation(format!(
                     "agent ref {agent_ref:?} was not found in this root"
                 )),
-                V1AgentTarget::Nickname(nickname) => CodexErr::UnsupportedOperation(format!(
-                    "agent target {nickname:?} was not found"
-                )),
+                V1AgentTarget::Nickname(nickname) | V1AgentTarget::TaskPath(nickname) => {
+                    CodexErr::UnsupportedOperation(format!(
+                        "agent target {nickname:?} was not found"
+                    ))
+                }
             });
         };
         match alias.state {
@@ -473,7 +539,7 @@ impl AgentControl {
         child_thread_id: ThreadId,
         session_source: Option<&SessionSource>,
         persistence: ThreadSpawnPersistence,
-    ) -> CodexResult<Option<AgentAlias>> {
+    ) -> CodexResult<Option<PersistedAgentAlias>> {
         let Some(parent_thread_id) = session_source.and_then(SessionSource::parent_thread_id)
         else {
             return Ok(None);
@@ -515,9 +581,18 @@ impl AgentControl {
             child_thread_id,
             nickname: metadata_nickname
                 .or_else(|| session_source.and_then(SessionSource::get_nickname)),
+            task_path: match &persistence {
+                ThreadSpawnPersistence::New { task_path } => task_path.clone(),
+                ThreadSpawnPersistence::Resume
+                | ThreadSpawnPersistence::ControlledResume
+                | ThreadSpawnPersistence::Transfer { .. } => None,
+            },
         };
+        let mut task_path_mapping = Vec::new();
         let alias = match persistence {
-            ThreadSpawnPersistence::New => agent_graph_store.allocate_agent_alias(request).await,
+            ThreadSpawnPersistence::New { .. } => {
+                agent_graph_store.allocate_agent_alias(request).await
+            }
             ThreadSpawnPersistence::Resume | ThreadSpawnPersistence::ControlledResume => {
                 agent_graph_store.activate_agent_alias(request).await
             }
@@ -525,6 +600,7 @@ impl AgentControl {
                 expected_previous_session_id,
                 reserved_descendant_thread_ids,
                 authored_selector,
+                task_path,
             } => match reserved_descendant_thread_ids {
                 Some(expected_descendant_thread_ids) => {
                     match agent_graph_store
@@ -536,13 +612,21 @@ impl AgentControl {
                             thread_id: child_thread_id,
                             nickname: request.nickname.clone(),
                             authored_selector,
+                            task_path,
                         })
                         .await
                     {
                         Ok(AgentAliasTransfer::AlreadyOwned { .. }) => {
                             agent_graph_store.activate_agent_alias(request).await
                         }
-                        Ok(AgentAliasTransfer::Transferred { alias, .. }) => Ok(alias),
+                        Ok(AgentAliasTransfer::Transferred {
+                            alias,
+                            task_path_mapping: mapping,
+                            ..
+                        }) => {
+                            task_path_mapping = mapping;
+                            Ok(alias)
+                        }
                         Err(err) => Err(err),
                     }
                 }
@@ -554,12 +638,20 @@ impl AgentControl {
                 }),
             },
         }
-        .map_err(|err| {
-            CodexErr::Fatal(format!(
-                "failed to persist durable alias for spawned agent {child_thread_id}: {err}"
-            ))
+        .map_err(|err| match err {
+            codex_agent_graph_store::AgentGraphStoreError::InvalidRequest { message } => {
+                CodexErr::InvalidRequest(message)
+            }
+            codex_agent_graph_store::AgentGraphStoreError::Internal { message } => {
+                CodexErr::Fatal(format!(
+                    "failed to persist durable alias for spawned agent {child_thread_id}: {message}"
+                ))
+            }
         })?;
-        Ok(Some(alias))
+        Ok(Some(PersistedAgentAlias {
+            alias,
+            task_path_mapping,
+        }))
     }
 
     pub(super) async fn set_persisted_agent_lifecycle_state(
@@ -624,6 +716,12 @@ fn resolve_without_alias_store(
     thread_exists: bool,
     root_thread_id: Option<ThreadId>,
 ) -> CodexResult<ThreadId> {
+    if let V1AgentTarget::TaskPath(path) = &target
+        && path == "/root"
+        && let Some(root_thread_id) = root_thread_id
+    {
+        return Ok(root_thread_id);
+    }
     if let V1AgentTarget::Nickname(nickname) = &target
         && nickname.eq_ignore_ascii_case(MAIN_AGENT_NICKNAME)
         && let Some(root_thread_id) = root_thread_id
@@ -646,7 +744,7 @@ fn resolve_without_alias_store(
                 Err(CodexErr::ThreadNotFound(thread_id))
             }
         }
-        (V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_), _) => {
+        (V1AgentTarget::Ref(_) | V1AgentTarget::Nickname(_) | V1AgentTarget::TaskPath(_), _) => {
             Err(CodexErr::UnsupportedOperation(
                 "short agent targets are unavailable; use the full agent UUID".to_string(),
             ))
@@ -655,6 +753,12 @@ fn resolve_without_alias_store(
 }
 
 fn parse_v1_agent_target(target: &str) -> CodexResult<V1AgentTarget> {
+    if let Some(path) = target.strip_prefix("task:") {
+        return Ok(V1AgentTarget::TaskPath(path.to_string()));
+    }
+    if target.starts_with('/') {
+        return Ok(V1AgentTarget::TaskPath(target.to_string()));
+    }
     if let Some(thread_id) = target.strip_prefix("id:") {
         return ThreadId::from_string(thread_id)
             .map(V1AgentTarget::Id)

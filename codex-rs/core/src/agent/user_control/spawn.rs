@@ -22,6 +22,7 @@ impl CodexThread {
         options: UserAgentSpawnOptions,
     ) -> CodexResult<UserAgentSpawnResult> {
         let UserAgentSpawnOptions {
+            task,
             role,
             model,
             reasoning_effort,
@@ -80,6 +81,8 @@ impl CodexThread {
             .as_ref()
             .map(|_| format!("user-agent-spawn-{spawn_id}"));
         let options = SpawnAgentOptions {
+            task,
+            model_input_origin: None,
             fork_parent_spawn_call_id,
             fork_mode,
             parent_thread_id: Some(self.session.thread_id()),
@@ -121,6 +124,7 @@ impl CodexThread {
             target_thread_id: agent.thread_id,
             agent_ref: agent.agent_ref,
             nickname: agent.metadata.agent_nickname,
+            task_path: agent.task_path,
             status: agent.status,
             post_admission_warning: agent.post_admission_warning,
         })

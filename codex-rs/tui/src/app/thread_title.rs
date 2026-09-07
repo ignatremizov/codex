@@ -243,9 +243,12 @@ where
 
                 (!text.trim().is_empty()).then_some(("user", text))
             }
-            ThreadItem::AgentMessage { text, phase, .. }
-                if !matches!(phase, Some(MessagePhase::Commentary)) && !text.trim().is_empty() =>
-            {
+            ThreadItem::AgentMessage {
+                text,
+                phase,
+                attribution: None,
+                ..
+            } if !matches!(phase, Some(MessagePhase::Commentary)) && !text.trim().is_empty() => {
                 Some(("assistant", text.clone()))
             }
             _ => None,

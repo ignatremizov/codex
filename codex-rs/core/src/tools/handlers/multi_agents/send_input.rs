@@ -117,59 +117,72 @@ impl Handler {
             cyber_access_program: turn.cyber_access_program,
             ..Default::default()
         };
-        let result = if args.w.queue_input() && sends_to_descendant {
-            agent_control
-                .queue_input_observing_response(QueuedInputObservationParams {
-                    agent_id: receiver_thread_id,
-                    input: input_items,
-                    start_options,
-                    observer: session.presentation_id(),
-                    response_observation: args.w,
-                    task_preview: None,
-                    authored_selector: None,
-                })
-                .await
-                .map(|submission| SendInputResult {
-                    submission_id: submission.queue_id.to_string(),
-                })
-        } else if args.w.queue_input() {
-            agent_control
-                .queue_scoped_agent_input_observing_response(
-                    session.presentation_id(),
-                    &turn.sub_id,
-                    receiver_thread_id,
-                    input_items,
-                    start_options,
-                    args.w,
-                )
-                .await
-                .map(|submission| SendInputResult {
-                    submission_id: submission.queue_id.to_string(),
-                })
-        } else if sends_to_descendant {
-            agent_control
-                .send_input_observing_response(
-                    receiver_thread_id,
-                    input_items,
-                    start_options,
-                    session.presentation_id(),
-                    args.w,
-                )
-                .await
-                .map(|submission_id| SendInputResult { submission_id })
-        } else {
-            agent_control
-                .send_scoped_agent_input_observing_response(
-                    session.presentation_id(),
-                    &turn.sub_id,
-                    receiver_thread_id,
-                    input_items,
-                    start_options,
-                    args.w,
-                )
-                .await
-                .map(|submission_id| SendInputResult { submission_id })
+        let result = async {
+            if sends_to_descendant {
+                let input = agent_control
+                    .attribute_model_input(
+                        session.presentation_id(),
+                        receiver_thread_id,
+                        &turn.sub_id,
+                        input_items,
+                    )
+                    .await?;
+                if args.w.queue_input() {
+                    agent_control
+                        .queue_input_observing_response(QueuedInputObservationParams {
+                            agent_id: receiver_thread_id,
+                            input,
+                            start_options,
+                            observer: session.presentation_id(),
+                            response_observation: args.w,
+                            task_preview: None,
+                            authored_selector: None,
+                        })
+                        .await
+                        .map(|submission| SendInputResult {
+                            submission_id: submission.queue_id.to_string(),
+                        })
+                } else {
+                    agent_control
+                        .send_agent_input_observing_response(
+                            receiver_thread_id,
+                            input,
+                            start_options,
+                            session.presentation_id(),
+                            args.w,
+                        )
+                        .await
+                        .map(|submission_id| SendInputResult { submission_id })
+                }
+            } else if args.w.queue_input() {
+                agent_control
+                    .queue_scoped_agent_input_observing_response(
+                        session.presentation_id(),
+                        &turn.sub_id,
+                        receiver_thread_id,
+                        input_items,
+                        start_options,
+                        args.w,
+                    )
+                    .await
+                    .map(|submission| SendInputResult {
+                        submission_id: submission.queue_id.to_string(),
+                    })
+            } else {
+                agent_control
+                    .send_scoped_agent_input_observing_response(
+                        session.presentation_id(),
+                        &turn.sub_id,
+                        receiver_thread_id,
+                        input_items,
+                        start_options,
+                        args.w,
+                    )
+                    .await
+                    .map(|submission_id| SendInputResult { submission_id })
+            }
         }
+        .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err));
         let status = session
             .services

@@ -1,7 +1,6 @@
 use super::presentation::FinalResponseObservationReplacement;
 use super::presentation::ReplacedFinalResponseObservationBinding;
 use super::*;
-use crate::context::AgentReplyRoute;
 use crate::session::AgentResponseSubscription;
 use crate::session::agent_response_events_from_rollout;
 use codex_history::rollout::rollout_without_exact_rollback_ranges;
@@ -347,7 +346,7 @@ impl AgentControl {
     pub(crate) async fn replace_durable_target_message_route(
         &self,
         target_thread_id: ThreadId,
-        parent: SessionPresentationId,
+        recipient_thread_id: ThreadId,
         mode: TargetMessageRouteMode,
     ) -> CodexResult<ReplacedTargetMessageRoute> {
         let state = self.upgrade()?;
@@ -355,9 +354,16 @@ impl AgentControl {
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         self.require_current_agent_ownership(target_thread_id)
             .await?;
+        self.require_current_agent_ownership(recipient_thread_id)
+            .await?;
+        let parent_thread = state
+            .get_thread_including_pending(recipient_thread_id)
+            .await?;
+        let parent = parent_thread.session.presentation_id();
         let _submission_permit = self
             .acquire_mailbox_submission_permit(target_thread_id)
             .await?;
+        let permission = self.acquire_messaging_permission_transaction().await;
         let _transaction_permit = self.acquire_response_observation_transaction(parent).await;
         let child_thread = state.get_thread_including_pending(target_thread_id).await?;
         let child = child_thread.session.presentation_id();
@@ -370,40 +376,7 @@ impl AgentControl {
                     .to_string(),
             ));
         }
-        let mut prepared = self.prepare_target_message_route_replacement(parent, child, mode);
-        let parent_thread = state.get_thread_including_pending(parent.thread_id).await?;
-        if parent_thread.session.presentation_id() != parent {
-            return Err(CodexErr::InvalidRequest(
-                "agent response observer is no longer current".to_string(),
-            ));
-        }
-        let route_context_installed = if prepared
-            .replacement_relationship
-            .reply_route_context_installed
-        {
-            true
-        } else if mode == TargetMessageRouteMode::Enabled {
-            let child_history = child_thread.session.clone_history().await;
-            child_history
-                .raw_items()
-                .any(|item| AgentReplyRoute::persistent_agent_id(item) == Some(parent.thread_id))
-        } else {
-            false
-        };
-        let install_route_context =
-            mode == TargetMessageRouteMode::Enabled && !route_context_installed;
-        prepared
-            .replacement_relationship
-            .reply_route_context_installed =
-            route_context_installed || mode == TargetMessageRouteMode::Enabled;
-        let route_item = if install_route_context {
-            Some(
-                self.prepare_persistent_agent_reply_route(&child_thread, parent)
-                    .await?,
-            )
-        } else {
-            None
-        };
+        let prepared = self.prepare_target_message_route_replacement(parent, child, mode);
         let observations = self.prepared_response_observation_replacement_snapshots(
             parent,
             child,
@@ -432,22 +405,21 @@ impl AgentControl {
             ));
         }
         commit_guard.commit();
-        let route_injection = route_item.map(|route_item| {
-            let child_thread = Arc::clone(&child_thread);
-            tokio::spawn(async move {
-                child_thread
-                    .session
-                    .inject_no_new_turn(vec![route_item], /*current_turn_context*/ None)
-                    .await;
-            })
+        // Context refresh takes its own observer transactions. Release admission locks before
+        // updating notices, including disables and later re-enables of an existing route hint.
+        drop(_transaction_permit);
+        drop(permission);
+        drop(_submission_permit);
+        drop(_lifecycle_guard);
+        let control = self.clone();
+        let route_injection = tokio::spawn(async move {
+            if let Err(error) = control.refresh_subtree_messaging(target_thread_id).await {
+                tracing::warn!(%error, "committed messaging permission context refresh failed");
+            }
         });
-        if let Some(route_injection) = route_injection
-            && let Err(err) = route_injection.await
-        {
-            // The durable permission already committed. Keep the one-time context write detached
-            // from request cancellation so dropping the RPC cannot leave an authorized child
-            // without its route. A panic cannot be retried safely because doing so could duplicate
-            // the context item.
+        if let Err(err) = route_injection.await {
+            // The durable permission already committed. Keep context delivery detached from
+            // request cancellation; a later refresh reconciles any incomplete notification.
             tracing::error!(
                 observer_thread_id = %parent.thread_id,
                 target_thread_id = %target_thread_id,

@@ -49,6 +49,7 @@ pub(crate) struct CollabAgentHistoryCell {
 struct CollabAgentTitle {
     thread_id: ThreadId,
     metadata: AgentMetadata,
+    recipient: Option<(ThreadId, AgentMetadata)>,
     suffix: Vec<Span<'static>>,
 }
 
@@ -70,6 +71,7 @@ impl CollabAgentHistoryCell {
         let agent_title = CollabAgentTitle {
             thread_id,
             metadata: metadata.clone(),
+            recipient: None,
             suffix,
         };
         Self {
@@ -84,15 +86,25 @@ impl CollabAgentHistoryCell {
         mut agent_metadata: impl FnMut(ThreadId) -> Option<AgentMetadata>,
     ) -> Option<Self> {
         let mut agent_title = self.agent_title.clone()?;
-        let metadata = agent_metadata(agent_title.thread_id)?;
-        if metadata.agent_nickname.is_some() {
-            agent_title.metadata.agent_nickname = metadata.agent_nickname;
-        }
-        if metadata.agent_role.is_some() {
-            agent_title.metadata.agent_role = metadata.agent_role;
-        }
-        if metadata.spawn_request.is_some() {
-            agent_title.metadata.spawn_request = metadata.spawn_request;
+        for (thread_id, stored) in
+            std::iter::once((agent_title.thread_id, &mut agent_title.metadata)).chain(
+                agent_title
+                    .recipient
+                    .as_mut()
+                    .map(|(id, metadata)| (*id, metadata)),
+            )
+        {
+            if let Some(metadata) = agent_metadata(thread_id) {
+                if metadata.agent_nickname.is_some() {
+                    stored.agent_nickname = metadata.agent_nickname;
+                }
+                if metadata.agent_role.is_some() {
+                    stored.agent_role = metadata.agent_role;
+                }
+                if metadata.spawn_request.is_some() {
+                    stored.spawn_request = metadata.spawn_request;
+                }
+            }
         }
         let title = agent_title.render();
         (title != self.title).then(|| Self {
@@ -106,6 +118,10 @@ impl CollabAgentHistoryCell {
 impl CollabAgentTitle {
     fn render(&self) -> Line<'static> {
         let mut title = agent_label_spans(agent_label(self.thread_id, &self.metadata));
+        if let Some((recipient, metadata)) = &self.recipient {
+            title.push(" sends to ".bold());
+            title.extend(agent_label_spans(agent_label(*recipient, metadata)));
+        }
         title.extend(self.suffix.clone());
         title_spans_line(title)
     }
@@ -132,6 +148,24 @@ impl HistoryCell for CollabAgentHistoryCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         self.display_lines(u16::MAX)
+    }
+
+    fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if width == 0 {
+            return Vec::new();
+        }
+        let mut lines = vec![self.title.clone()];
+        let mut first_detail = true;
+        for detail in &self.details {
+            let (CollabDetail::Lines(source) | CollabDetail::Preview { lines: source, .. }) =
+                detail;
+            let detail_lines = wrap_detail_lines(source, width, first_detail);
+            if !detail_lines.is_empty() {
+                first_detail = false;
+                lines.extend(detail_lines);
+            }
+        }
+        lines
     }
 }
 
@@ -210,7 +244,7 @@ fn wrap_detail_lines(
     word_wrap_lines(lines.iter().cloned(), opts)
 }
 
-fn cap_preview_rows(
+pub(crate) fn cap_preview_rows(
     mut lines: Vec<Line<'static>>,
     max_rows: usize,
     first_detail: bool,

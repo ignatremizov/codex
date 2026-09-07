@@ -71,6 +71,9 @@ use crate::tools::spec_plan::build_core_tool_registry;
 
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 
+#[path = "list_agents_gate_tests.rs"]
+mod list_agents_gate_tests;
+
 #[derive(Default)]
 struct ToolPlanInputs {
     tool_runtimes: Vec<RegisteredTool>,

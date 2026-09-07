@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::control::AgentModelInputOrigin;
 use crate::agent::control::ResponseObserverKind;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
@@ -131,6 +132,11 @@ async fn handle_spawn_agent(
             /*task_name*/ None,
         )?),
         SpawnAgentOptions {
+            task: args.task,
+            model_input_origin: Some(AgentModelInputOrigin {
+                sender: session.presentation_id(),
+                sender_turn_id: turn.sub_id.clone(),
+            }),
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
@@ -245,6 +251,7 @@ impl CoreToolRuntime for Handler {
 
 #[derive(Debug, Deserialize)]
 struct SpawnAgentArgs {
+    task: Option<String>,
     message: Option<String>,
     items: Option<Vec<UserInput>>,
     agent_type: Option<String>,

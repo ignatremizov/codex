@@ -100,6 +100,7 @@ fn persistent_agent_reply_route(agent_id: ThreadId, nickname: &str) -> ResponseI
         agent_id,
         agent_ref: Some(2),
         nickname: Some(nickname.to_string()),
+        task_path: None,
     }))
 }
 

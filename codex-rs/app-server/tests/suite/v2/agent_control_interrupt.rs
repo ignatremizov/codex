@@ -102,6 +102,7 @@ async fn user_control_interrupt_admits_structured_follow_up(multi_agent_v2: bool
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,

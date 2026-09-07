@@ -121,13 +121,16 @@ User shell commands accept an optional response policy immediately after `!`:
 Omitting `w` preserves passive model delivery without a wake. `f` wakes the thread when the
 command finishes. `q` waits for every earlier user-shell submission in the thread before starting
 this command; later commands without `q` still start immediately. `x` keeps the result out of model
-context while preserving normal command presentation. Flags are unique and ordered as `fqx`;
-`f` and `x` together cancel to passive delivery, while `q` still controls execution order. `c` and
+context while preserving normal command presentation. Flags accept any order and repetitions.
+Count `f` and `x` and cancel them pairwise: equal counts mean passive delivery, more `f` means
+wake, and more `x` means presentation-only. Repeated `q` has the same effect as one `q` and
+still controls execution order. For example, `qfx` is equivalent to `q`, and `qfxx` to `qx`. `c` and
 `m` are agent-only flags and are rejected here. Stopping a wake-enabled command cancels its wake
 and retains the stopped result as passive context; other delivery policies are unchanged.
 Live command rows, replayed transcript entries, and `/ps` label the authored policy as `(passive)`,
 `(wake)`, or `(presentation only)`; a queued command also includes `· queued`.
-The unspaced `!w:` prefix is reserved for response policy. To run a command or Windows
+The unspaced `!w:` prefix is reserved for response policy; unknown flags produce an error.
+To run a command or Windows
 drive-relative path that literally begins with `w:`, put a space after `!`, for example
 `! w:f arg`.
 

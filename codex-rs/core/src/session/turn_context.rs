@@ -943,7 +943,28 @@ impl Session {
             .as_ref()
             .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let per_turn_config = self.build_per_turn_config(&session_configuration, cwd.clone());
+        let mut per_turn_config = self.build_per_turn_config(&session_configuration, cwd.clone());
+        // Discovery is a root-owned user setting, not a capability supplied by an agent role.
+        // Refresh its projection each turn; the tool also checks the current root at execution.
+        if self
+            .services
+            .agent_control
+            .bound_session_id()
+            .is_some_and(|root| codex_protocol::ThreadId::from(root) != self.thread_id)
+        {
+            per_turn_config.list_agents_enabled = match self
+                .services
+                .agent_control
+                .agent_directory_enabled(self.thread_id)
+                .await
+            {
+                Ok(enabled) => enabled,
+                Err(error) => {
+                    tracing::warn!(%error, "could not resolve root agent directory permission");
+                    false
+                }
+            };
+        }
         let network_permission_profile = primary_turn_environment
             .map(TurnEnvironment::permission_profile)
             .cloned()

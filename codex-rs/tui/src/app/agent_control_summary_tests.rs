@@ -43,6 +43,52 @@ fn summary_uses_latest_task_and_own_response_from_canonical_turns() {
 }
 
 #[test]
+fn summary_separates_received_peer_input_from_own_response() {
+    let sender = ThreadId::new();
+    let recipient = ThreadId::new();
+    let received = codex_protocol::protocol::new_attributed_agent_message_response_item_id();
+    let mirror = codex_protocol::protocol::new_attributed_agent_message_response_item_id();
+    let mut store = ThreadEventStore::new(/*capacity*/ 4);
+    store.set_turns(vec![turn(
+        "turn",
+        vec![
+            agent_message("own", "I finished the implementation."),
+            ThreadItem::AgentMessage {
+                id: received.to_string(),
+                text: format!("Agent message from `{sender}`:\n\nPlease use revision 2."),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+                attribution: None,
+                input: None,
+                delivery: None,
+                questions: None,
+            },
+            ThreadItem::AgentMessage {
+                id: mirror.to_string(),
+                text: format!(
+                    "Agent message from `{sender}` to `{recipient}`:\n\nPeer-only update."
+                ),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+                attribution: None,
+                input: None,
+                delivery: None,
+                questions: None,
+            },
+        ],
+    )]);
+    assert_eq!(
+        AgentControlSummary::from_store(&store),
+        AgentControlSummary {
+            response_preview: Some("I finished the implementation.".into()),
+            received_preview: Some((sender, "Please use revision 2.".into())),
+            terminal_outcome: Some(AgentTerminalOutcome::Completed),
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
 fn spawned_agent_settings_merge_user_control_and_v1_spawn_items() {
     let target_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
@@ -61,8 +107,12 @@ fn spawned_agent_settings_merge_user_control_and_v1_spawn_items() {
                 action: UserAgentControlAction::Spawn,
                 authored_selector: Some("reviewer".to_string()),
                 target_thread_id: Some(target_thread_id.to_string()),
+                reply_recipient_thread_id: None,
                 previous_owner_session_id: None,
                 new_owner_session_id: None,
+                task_path: None,
+                task: None,
+                task_path_mapping: Vec::new(),
                 agent_ref: Some("2".to_string()),
                 nickname: Some("Anscombe".to_string()),
                 role: Some("reviewer".to_string()),
@@ -99,8 +149,12 @@ fn spawned_agent_settings_merge_user_control_and_v1_spawn_items() {
                 action: UserAgentControlAction::Spawn,
                 authored_selector: Some("reviewer".to_string()),
                 target_thread_id: Some(model_only_thread_id.to_string()),
+                reply_recipient_thread_id: None,
                 previous_owner_session_id: None,
                 new_owner_session_id: None,
+                task_path: None,
+                task: None,
+                task_path_mapping: Vec::new(),
                 agent_ref: Some("4".to_string()),
                 nickname: Some("Hopper".to_string()),
                 role: Some("reviewer".to_string()),
@@ -121,8 +175,12 @@ fn spawned_agent_settings_merge_user_control_and_v1_spawn_items() {
                 action: UserAgentControlAction::Spawn,
                 authored_selector: Some("worker".to_string()),
                 target_thread_id: Some(reasoning_only_thread_id.to_string()),
+                reply_recipient_thread_id: None,
                 previous_owner_session_id: None,
                 new_owner_session_id: None,
+                task_path: None,
+                task: None,
+                task_path_mapping: Vec::new(),
                 agent_ref: Some("5".to_string()),
                 nickname: Some("Noether".to_string()),
                 role: Some("worker".to_string()),
@@ -247,6 +305,8 @@ fn agent_message(id: &str, text: &str) -> ThreadItem {
         text: text.to_string(),
         phase: Some(MessagePhase::FinalAnswer),
         memory_citation: None,
+        attribution: None,
+        input: None,
         delivery: None,
         questions: None,
     }

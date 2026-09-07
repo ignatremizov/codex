@@ -73,6 +73,19 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Request(_)
             | ThreadBufferedEvent::McpInventoryResult(_)
             | ThreadBufferedEvent::FeedbackSubmission(_) => true,
+            // Peer-message mirrors have no root rollout record to reload. Keep the live copy
+            // through an in-process refresh, just like other transient presentation events.
+            ThreadBufferedEvent::Notification(notification)
+                if matches!(notification.as_ref(), ServerNotification::ItemCompleted(event)
+                    if matches!(&event.item, ThreadItem::AgentMessage {
+                        id, text, attribution, phase: Some(codex_protocol::models::MessagePhase::Commentary), ..
+                    } if codex_protocol::protocol::is_attributed_agent_message_response_item_id(id)
+                        && (attribution.as_ref().is_some_and(|attribution| {
+                            attribution.recipient.thread_id != event.thread_id
+                        }) || codex_protocol::protocol::agent_message_audit_transcript_parts(text).is_some()))) =>
+            {
+                true
+            }
             ThreadBufferedEvent::Notification(notification) => matches!(
                 notification.as_ref(),
                 ServerNotification::HookStarted(_)
@@ -299,6 +312,45 @@ impl ThreadEventStore {
             // optional composer state so first-time replay remains lifecycle-correct.
             active_turn_timing: self.active_turn_timing(),
         };
+        // A live app-server turn snapshot can already include these transient items. Keep the
+        // original buffer for later disk-only refreshes, but render each item only once.
+        let hydrated_mirror_ids = {
+            let buffered_mirror_ids = snapshot
+                .events
+                .iter()
+                .filter(|event| Self::event_survives_session_refresh(event))
+                .filter_map(|event| match event {
+                    ThreadBufferedEvent::Notification(notification) => {
+                        if let ServerNotification::ItemCompleted(event) = notification.as_ref() {
+                            Some(event.item.id())
+                        } else {
+                            None
+                        }
+                    }
+                    ThreadBufferedEvent::Request(_)
+                    | ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::McpInventoryResult(_)
+                    | ThreadBufferedEvent::FeedbackSubmission(_) => None,
+                })
+                .collect::<HashSet<_>>();
+            if buffered_mirror_ids.is_empty() {
+                HashSet::new()
+            } else {
+                snapshot
+                    .turns
+                    .iter()
+                    .flat_map(|turn| &turn.items)
+                    .map(ThreadItem::id)
+                    .filter(|id| buffered_mirror_ids.contains(id))
+                    .map(str::to_string)
+                    .collect()
+            }
+        };
+        snapshot.events.retain(|event| {
+            !matches!(event, ThreadBufferedEvent::Notification(notification)
+                if matches!(notification.as_ref(), ServerNotification::ItemCompleted(event)
+                    if hydrated_mirror_ids.contains(event.item.id())))
+        });
         if let Some(latest_turn_id) = &self.latest_turn_id {
             replay_filter::omit_resolved_misalignment_errors(&mut snapshot, latest_turn_id);
         }

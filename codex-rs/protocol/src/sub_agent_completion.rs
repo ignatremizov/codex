@@ -130,6 +130,26 @@ pub fn is_attributed_agent_message_response_item_id(id: &str) -> bool {
     has_uuid_v7_suffix(id, ATTRIBUTED_AGENT_MESSAGE_ID_PREFIX)
 }
 
+/// Parses a received, core-authored agent input presentation.
+pub fn attributed_agent_message_transcript_parts(text: &str) -> Option<(&str, &str)> {
+    text.strip_prefix("Agent message from `")?
+        .split_once("`:\n\n")
+}
+
+/// Parses a live presentation-only copy of an agent message in its owning root's transcript.
+/// UUIDs identify both endpoints; display names are resolved by the client.
+pub fn agent_message_audit_transcript_parts(
+    text: &str,
+) -> Option<(crate::ThreadId, crate::ThreadId, &str)> {
+    let (endpoints, message) = attributed_agent_message_transcript_parts(text)?;
+    let (sender, recipient) = endpoints.split_once("` to `")?;
+    Some((
+        crate::ThreadId::from_string(sender).ok()?,
+        crate::ThreadId::from_string(recipient).ok()?,
+        message,
+    ))
+}
+
 /// Returns the terminal status encoded in a canonical background-completion item ID.
 pub fn sub_agent_completion_status_from_response_item_id(
     id: &str,
@@ -309,6 +329,8 @@ pub fn sub_agent_completion_item_with_visibility(
         memory_citation: None,
         delivery: None,
         questions: None,
+        attribution: None,
+        input: None,
         sub_agent_completion: Some(SubAgentCompletionMetadata {
             agent_reference: agent_reference.to_string(),
             status: completion_status,

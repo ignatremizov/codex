@@ -54,6 +54,9 @@ use wiremock::MockServer;
 
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
+#[path = "thread_manager/live_revert_messaging_tests.rs"]
+mod live_revert_messaging_tests;
+
 /// Controls without a custom allocation policy still produce distinct thread identifiers.
 #[test]
 fn thread_id_generator_defaults_to_standard_ids() {
@@ -920,6 +923,7 @@ async fn adopted_resume_is_not_discoverable_before_alias_transfer_commits() {
                 crate::agent::response_observation::ResponseObservationPolicy::default(),
                 previous_owner,
                 child_thread_id.to_string(),
+                /*task*/ None,
             )
             .await
     });
@@ -1176,6 +1180,7 @@ async fn legacy_v1_child_self_session_id_recovers_owner_from_spawn_ancestry() {
             crate::agent::response_observation::ResponseObservationPolicy::default(),
             Some(SessionId::from(root.thread_id)),
             child_thread_id.to_string(),
+            /*task*/ None,
         )
         .await
         .expect("transfer recovered legacy child");

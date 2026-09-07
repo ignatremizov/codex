@@ -316,6 +316,8 @@ fn complete_commentary_item_becomes_observable_response() {
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: "message-1".to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "I understand the revised scope.".to_string(),
             }],
@@ -347,6 +349,8 @@ fn attributed_agent_input_presentation_is_not_observed_as_a_response() {
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: new_attributed_agent_message_response_item_id().to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Agent message from `01900000-0000-7000-8000-000000000001`:\n\nQuestion"
                     .to_string(),
@@ -394,6 +398,8 @@ fn canonical_commentary_recovery_matches_legacy_and_paginated_representations() 
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: item_id.clone(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Recovered acknowledgement.".to_string(),
             }],
@@ -452,6 +458,8 @@ fn final_answer_item_is_not_observed_as_commentary() {
         turn_id: "turn-1".to_string(),
         item: TurnItem::AgentMessage(AgentMessageItem {
             id: "message-1".to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Done.".to_string(),
             }],
@@ -692,6 +700,8 @@ fn response_snapshot_excludes_exactly_rolled_back_turns_for_resume_and_fork() {
             turn_id: rolled_back_turn_id.to_string(),
             item: TurnItem::AgentMessage(AgentMessageItem {
                 id: rolled_back_item_id.to_string(),
+                attribution: None,
+                input: None,
                 content: vec![AgentMessageContent::Text {
                     text: "rolled back acknowledgement".to_string(),
                 }],
@@ -806,6 +816,8 @@ async fn live_terminal_remains_observable_after_child_rollout_persistence_fails(
                 turn_id: "turn-1".to_string(),
                 item: TurnItem::AgentMessage(AgentMessageItem {
                     id: "commentary-1".to_string(),
+                    attribution: None,
+                    input: None,
                     content: vec![AgentMessageContent::Text {
                         text: "This source item was not persisted.".to_string(),
                     }],

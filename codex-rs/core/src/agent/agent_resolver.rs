@@ -37,7 +37,7 @@ pub(crate) async fn resolve_controlled_v1_agent_target(
     session
         .services
         .agent_control
-        .resolve_controlled_v1_agent_target(target)
+        .resolve_controlled_v1_agent_target(session.thread_id, target)
         .await
         .map_err(agent_target_error)
 }
@@ -50,7 +50,7 @@ pub(crate) async fn resolve_resumable_v1_agent_target(
     session
         .services
         .agent_control
-        .resolve_resumable_v1_agent_target(target)
+        .resolve_resumable_v1_agent_target(session.thread_id, target)
         .await
         .map_err(agent_target_error)
 }

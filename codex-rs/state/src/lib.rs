@@ -49,6 +49,7 @@ pub use model::AgentAliasRecord;
 pub use model::AgentAliasState;
 pub use model::AgentAliasTransfer;
 pub use model::AgentAliasTransferRequest;
+pub use model::AgentTaskPathMapping;
 pub use model::Anchor;
 pub use model::BackfillState;
 pub use model::BackfillStats;

@@ -22,6 +22,7 @@ use crate::session::multi_agents::ResolvedMultiAgentV2UsageHints;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::session_prefix::format_subagent_context_line;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
+use crate::thread_manager::SteerTargetTurn;
 use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::default_thread_id_generator;
@@ -93,6 +94,7 @@ pub(crate) use self::execution::AgentExecutionLimiter;
 pub(crate) use self::legacy::LiveAgentMetadataDisposition;
 pub(crate) use self::presentation::AgentTerminalPresentation;
 use self::presentation::CommentaryDeliveryRoute;
+pub use self::presentation::LiveRevertMessagingSnapshot;
 pub(crate) use self::presentation::ReplacedFinalResponseObservationBinding;
 use self::presentation::ResponseObservationBinding;
 use self::presentation::ResponseObservationBindingPublication;
@@ -167,7 +169,7 @@ pub(crate) struct QueuedResponseObservationSubmission {
 pub(crate) enum InputTurnAdmissionMode {
     AnyTurn,
     Queued(codex_protocol::protocol::AgentQueueTurnMetadata),
-    SteerOnly,
+    SteerOnly(SteerTargetTurn),
 }
 
 pub(crate) struct ResumeUserInputAdmission {
@@ -213,9 +215,9 @@ pub(crate) enum AgentControlInput {
         content: Vec<UserInput>,
         presentation: Vec<UserInput>,
     },
-    AttributedAgent {
+    AttributedAgentInput {
         content: Vec<UserInput>,
-        transcript: String,
+        attribution: Box<codex_protocol::protocol::AgentInputAttribution>,
         presentation: Vec<UserInput>,
     },
 }
@@ -225,16 +227,15 @@ impl AgentControlInput {
         match self {
             Self::User(content)
             | Self::Delegated { content, .. }
-            | Self::AttributedAgent { content, .. } => content,
+            | Self::AttributedAgentInput { content, .. } => content,
         }
     }
 
     pub(crate) fn presentation(&self) -> &[UserInput] {
         match self {
             Self::User(content) => content,
-            Self::Delegated { presentation, .. } | Self::AttributedAgent { presentation, .. } => {
-                presentation
-            }
+            Self::Delegated { presentation, .. }
+            | Self::AttributedAgentInput { presentation, .. } => presentation,
         }
     }
 
@@ -249,7 +250,7 @@ impl AgentControlInput {
                     presentation,
                 };
             }
-            Self::Delegated { content, .. } | Self::AttributedAgent { content, .. } => {
+            Self::Delegated { content, .. } | Self::AttributedAgentInput { content, .. } => {
                 content.push(input);
             }
         }
@@ -265,13 +266,13 @@ impl AgentControlInput {
                 items,
                 presentation: AgentInputPresentation::Delegated(presentation),
             },
-            Self::AttributedAgent {
+            Self::AttributedAgentInput {
                 content: items,
-                transcript,
-                presentation: _,
+                attribution,
+                presentation: input,
             } => Op::AgentInput {
                 items,
-                presentation: AgentInputPresentation::Attributed(transcript),
+                presentation: AgentInputPresentation::AttributedInput { attribution, input },
             },
         }
     }
@@ -289,13 +290,13 @@ impl AgentControlInput {
                 content,
                 presentation: AgentInputPresentation::Delegated(presentation),
             },
-            Self::AttributedAgent {
+            Self::AttributedAgentInput {
                 content,
-                transcript,
-                presentation: _,
+                attribution,
+                presentation: input,
             } => codex_protocol::turn_input::TurnInput::AgentInput {
                 content,
-                presentation: AgentInputPresentation::Attributed(transcript),
+                presentation: AgentInputPresentation::AttributedInput { attribution, input },
             },
         };
         TurnInputRequest::new(input).on_start(start_options)
@@ -309,6 +310,22 @@ struct ObservedInputAdmission {
     response_observation: ResponseObservationPolicy,
     admission_mode: InputTurnAdmissionMode,
     task_context: ObservedInputTaskContext,
+    scoped_authorization: ScopedInputAuthorization,
+}
+
+/// A scoped grant must survive until exact admission; supervisor task dispatch does
+/// not require one. Preserve the receiver presentation selected with the grant.
+enum ScopedInputAuthorization {
+    NotRequired,
+    Wake {
+        receiver: SessionPresentationId,
+        sender_turn_id: String,
+        reservation_id: uuid::Uuid,
+    },
+    Steer {
+        receiver: SessionPresentationId,
+        sender_turn_id: String,
+    },
 }
 
 impl InitialTerminalObservation {
@@ -391,8 +408,10 @@ impl InitialTerminalObservation {
 
 mod aliases;
 mod close_response;
+mod directory;
 mod execution;
 mod legacy;
+mod message_audit;
 mod presentation;
 mod residency;
 mod response_delivery;
@@ -404,6 +423,13 @@ mod spawn;
 mod turn_queue;
 mod user_authorization;
 
+#[cfg(test)]
+pub(crate) use directory::AgentDirectoryEntry;
+#[cfg(test)]
+pub(crate) use directory::AgentDirectoryEntryStatus;
+pub(crate) use directory::AgentDirectoryPage;
+pub(crate) use directory::AgentDirectoryStatus;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SpawnAgentForkMode {
     FullHistory,
@@ -412,6 +438,8 @@ pub(crate) enum SpawnAgentForkMode {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SpawnAgentOptions {
+    pub(crate) task: Option<String>,
+    pub(crate) model_input_origin: Option<AgentModelInputOrigin>,
     pub(crate) fork_parent_spawn_call_id: Option<String>,
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
@@ -422,6 +450,13 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
     pub(crate) response_observation: ResponseObservationPolicy,
     pub(crate) response_observer: ResponseObserverKind,
+}
+
+/// Authorship captured by model tools before the child receives its canonical identity.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentModelInputOrigin {
+    pub(crate) sender: SessionPresentationId,
+    pub(crate) sender_turn_id: String,
 }
 
 /// Selects how a spawned agent's response observation is presented to its source thread.
@@ -490,6 +525,7 @@ pub(crate) struct LiveAgent {
     pub(crate) metadata: AgentMetadata,
     pub(crate) status: AgentStatus,
     pub(crate) agent_ref: Option<u64>,
+    pub(crate) task_path: Option<String>,
     pub(crate) post_admission_warning: Option<String>,
 }
 
@@ -637,9 +673,27 @@ impl AgentControl {
         observer: SessionPresentationId,
         response_observation: ResponseObservationPolicy,
     ) -> CodexResult<String> {
-        self.send_input_observing_response_with_policy(
+        self.send_agent_input_observing_response(
             agent_id,
             AgentControlInput::User(input),
+            start_options,
+            observer,
+            response_observation,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_agent_input_observing_response(
+        &self,
+        agent_id: ThreadId,
+        input: AgentControlInput,
+        start_options: TurnStartOptions,
+        observer: SessionPresentationId,
+        response_observation: ResponseObservationPolicy,
+    ) -> CodexResult<String> {
+        self.send_input_observing_response_with_policy(
+            agent_id,
+            input,
             start_options,
             observer,
             response_observation,
@@ -697,6 +751,7 @@ impl AgentControl {
                 response_observation,
                 admission_mode: InputTurnAdmissionMode::AnyTurn,
                 task_context,
+                scoped_authorization: ScopedInputAuthorization::NotRequired,
             },
         )
         .await
@@ -729,6 +784,7 @@ impl AgentControl {
             response_observation,
             admission_mode,
             task_context,
+            scoped_authorization,
         } = admission;
         self.require_current_agent_ownership(agent_id).await?;
         let is_queued_admission = matches!(&admission_mode, InputTurnAdmissionMode::Queued(_));
@@ -739,14 +795,28 @@ impl AgentControl {
                 "agent {agent_id} has queued turns reserved; wait for the next queued turn to start"
             )));
         }
-        let admission_mode = if queue_reserves_next_turn {
-            InputTurnAdmissionMode::SteerOnly
+        let mut admission_mode = if queue_reserves_next_turn {
+            InputTurnAdmissionMode::SteerOnly(SteerTargetTurn::Current)
         } else {
             admission_mode
         };
         self.ensure_execution_capacity_for_retained_thread_start(thread)
             .await?;
         let _submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
+        #[cfg(test)]
+        if !matches!(scoped_authorization, ScopedInputAuthorization::NotRequired) {
+            let gate = self
+                .wait_agent_presentations
+                .scoped_permission_check_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some((reached, proceed)) = gate {
+                let _ = reached.send(());
+                let _ = proceed.await;
+            }
+        }
+        let permission = self.acquire_messaging_permission_transaction().await;
         let child_lifecycle_generation = state.agent_lifecycle_generation(agent_id);
         // Durable observation semantics belong to this caller. A V2 target still publishes the
         // common response stream and must not silently discard a V1 tool or user-control policy.
@@ -799,6 +869,74 @@ impl AgentControl {
             /*task_preview*/ None,
         )
         .await?;
+        let revoked_message = if is_queued_admission {
+            "queued message permission was revoked or its scoped wake expired"
+        } else {
+            "agent message permission was revoked or its scoped grant expired"
+        };
+        let authorization_error = match &scoped_authorization {
+            ScopedInputAuthorization::NotRequired => None,
+            ScopedInputAuthorization::Wake {
+                receiver,
+                sender_turn_id,
+                reservation_id,
+            } => (*receiver != child
+                || !self.target_message_wake_is_current(
+                    *receiver,
+                    observer,
+                    sender_turn_id,
+                    *reservation_id,
+                ))
+            .then_some(revoked_message),
+            ScopedInputAuthorization::Steer {
+                receiver,
+                sender_turn_id,
+            } => match thread.session.active_agent_response_turn_id() {
+                None => Some(crate::session::STEER_ONLY_TARGET_ENDED_ERROR),
+                Some(active_turn_id) => {
+                    if *receiver != child
+                        || !self.target_message_admission_is_current(
+                            *receiver,
+                            observer,
+                            sender_turn_id,
+                            TargetMessageAdmission::Steer,
+                            Some(&active_turn_id),
+                        )
+                    {
+                        Some(revoked_message)
+                    } else {
+                        admission_mode = InputTurnAdmissionMode::SteerOnly(
+                            SteerTargetTurn::Expected(active_turn_id),
+                        );
+                        None
+                    }
+                }
+            },
+        };
+        if let Some(message) = authorization_error {
+            self.restore_response_observation_relationship_snapshot(
+                observer,
+                child,
+                previous_relationship,
+            );
+            return Err(CodexErr::InvalidRequest(message.to_string()));
+        }
+        #[cfg(test)]
+        if matches!(
+            &admission_mode,
+            InputTurnAdmissionMode::SteerOnly(SteerTargetTurn::Expected(_))
+        ) {
+            let gate = self
+                .wait_agent_presentations
+                .scoped_steer_submission_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some((validated, proceed)) = gate {
+                let _ = validated.send(());
+                let _ = proceed.await;
+            }
+        }
         let send_result = self
             .send_input_to_retained_thread(
                 agent_id,
@@ -809,6 +947,7 @@ impl AgentControl {
                 admission_mode,
             )
             .await;
+        drop(permission);
         let crate::session::SubmittedInputTurn {
             submission_id,
             resolution,
@@ -987,6 +1126,7 @@ impl AgentControl {
         self.ensure_execution_capacity_for_thread_start(agent_id, /*starts_turn*/ true)
             .await?;
         let _submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
+        let permission = self.acquire_messaging_permission_transaction().await;
         let thread = state.get_thread_including_pending(agent_id).await?;
         let child = thread.session.presentation_id();
         let _response_observation_transaction = self
@@ -1030,6 +1170,7 @@ impl AgentControl {
                 InputTurnAdmissionMode::AnyTurn,
             )
             .await;
+        drop(permission);
         let crate::session::SubmittedInputTurn {
             submission_id,
             resolution,
@@ -1263,6 +1404,7 @@ impl AgentControl {
         match multi_agent_version {
             MultiAgentVersion::V1 => {
                 let agent_ref = alias.as_ref().map(|alias| alias.agent_ref);
+                let task_path = alias.as_ref().and_then(|alias| alias.task_path.clone());
                 let nickname = alias
                     .and_then(|alias| alias.nickname)
                     .or(metadata_nickname)
@@ -1271,6 +1413,7 @@ impl AgentControl {
                     agent_id,
                     agent_ref,
                     nickname,
+                    task_path,
                 }
             }
             MultiAgentVersion::Disabled | MultiAgentVersion::V2 => {
@@ -1335,8 +1478,10 @@ impl AgentControl {
                     .send_queued_user_input_to_thread(thread, request, agent_queue_turn)
                     .await
             }
-            InputTurnAdmissionMode::SteerOnly => {
-                state.send_steer_only_input_to_thread(thread, request).await
+            InputTurnAdmissionMode::SteerOnly(target_turn) => {
+                state
+                    .send_steer_only_input_to_thread(thread, request, target_turn)
+                    .await
             }
         };
         let result = self
@@ -1939,6 +2084,7 @@ impl AgentControl {
                     ObservedInputTaskContext::None,
                     ObservedInputTaskContext::UserAuthored,
                 ),
+                scoped_authorization: ScopedInputAuthorization::NotRequired,
             },
         )
         .await

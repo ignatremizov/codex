@@ -20,6 +20,8 @@ fn agent_message_notification(turn_id: &str, text: &str) -> ServerNotification {
             text: text.to_string(),
             phase: None,
             memory_citation: None,
+            attribution: None,
+            input: None,
             delivery: None,
             questions: None,
         },

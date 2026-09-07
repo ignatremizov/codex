@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 pub(crate) const MAX_AGENT_MESSAGE_PAYLOAD_BYTES: usize = 8 * 1024;
-const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.";
+pub(crate) const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Main is case-insensitive), or full UUID; prefer spawn_agent's ref.";
 
 const SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE: &str = "Spawn settings resolve from parent, configured subagent defaults, then selected role; explicit model and reasoning override all three.";
 const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str =
@@ -21,7 +21,7 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
 const SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION: &str = "Reasoning override for the resolved child model. Overrides selected role and configured defaults; an explicit model without this field uses that model's catalog default.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
-const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags may combine in cfmqx order.";
+const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags accept any order and repetitions. Count f and x and cancel them pairwise: equal counts mean passive final delivery, more f means wake, and more x means presentation-only. c, m, and q are idempotent presence flags.";
 const RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION: &str =
     "Same target-turn handling as send_input.w.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
@@ -77,6 +77,15 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let return_value_description =
         "Returns canonical agent id and, when available, compact ref and user-facing nickname.";
     let mut properties = spawn_agent_common_properties_v1(&options.agent_type_description);
+    properties.insert(
+        "task".to_string(),
+        JsonSchema::string(Some(
+            "Optional task-path label. Relative labels resolve against your task path, or /root \
+             if unset; absolute /root/... labels are root-scoped. Labels must be unique among \
+             all owned members, including closed agents. Does not enable directory discovery."
+                .to_string(),
+        )),
+    );
     if !options.expose_agent_type {
         properties.remove("agent_type");
     }
@@ -288,6 +297,13 @@ pub fn create_resume_agent_tool() -> ToolSpec {
             JsonSchema::string(Some("Agent to resume.".to_string())),
         ),
         (
+            "task".to_string(),
+            JsonSchema::string(Some(
+                "Optional assignment path for cross-root adoption of a closed agent. Relative paths resolve from the caller. Cannot relabel an agent already owned by this root."
+                    .to_string(),
+            )),
+        ),
+        (
             "w".to_string(),
             response_observation_schema(RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION),
         ),
@@ -367,7 +383,7 @@ pub fn create_close_agent_tool_v1() -> ToolSpec {
         (
             "w".to_string(),
             response_observation_schema(
-                "Optional completed-response handling. Omit for passive replay when the exact response is absent from current model context. f: wake for replay. q: queue replay for your next turn. x: keep replay presentation-only. c and m have no effect because close starts no target turn. Flags may combine in cfmqx order.",
+                "Optional completed-response handling. Omit for passive replay when the exact response is absent from current model context. f: wake for replay. q: queue replay for your next turn. x: keep replay presentation-only. c and m have no effect because close starts no target turn. Flags accept any order and repetitions. f and x cancel pairwise: equal counts mean passive replay, more f means wake, and more x means presentation-only. Repeated q has the same effect as one q.",
             ),
         ),
     ]);
@@ -542,7 +558,29 @@ fn resume_agent_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "status": agent_status_output_schema()
+            "status": agent_status_output_schema(),
+            "adoption": {
+                "type": "object",
+                "description": "Committed assignment labels after cross-root adoption; omitted for ordinary resume.",
+                "properties": {
+                    "task_path": {"type": ["string", "null"]},
+                    "task_path_mapping": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "threadId": {"type": "string"},
+                                "previousTaskPath": {"type": ["string", "null"]},
+                                "taskPath": {"type": ["string", "null"]}
+                            },
+                            "required": ["threadId", "previousTaskPath", "taskPath"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["task_path", "task_path_mapping"],
+                "additionalProperties": false
+            }
         },
         "required": ["status"],
         "additionalProperties": false

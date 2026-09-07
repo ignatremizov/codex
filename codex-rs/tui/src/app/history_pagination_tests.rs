@@ -12,6 +12,8 @@ fn item(id: &str, text: &str) -> ThreadItem {
         text: text.to_string(),
         phase: None,
         memory_citation: None,
+        attribution: None,
+        input: None,
         delivery: None,
         questions: None,
     }

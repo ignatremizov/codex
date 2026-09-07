@@ -17,6 +17,7 @@ pub use graph::AgentAliasRecord;
 pub use graph::AgentAliasState;
 pub use graph::AgentAliasTransfer;
 pub use graph::AgentAliasTransferRequest;
+pub use graph::AgentTaskPathMapping;
 pub use graph::DirectionalThreadSpawnEdgeStatus;
 pub use log::LogEntry;
 pub use log::LogQuery;
