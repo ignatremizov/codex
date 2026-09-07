@@ -274,7 +274,9 @@ impl App {
             self.agent_navigation
                 .set_parent_thread_id(thread_id, parent_thread_id);
             if !live && update_liveness {
-                self.agent_navigation.set_running(thread_id, is_running);
+                // A picker snapshot has no exact-turn authority over subscriptions.
+                self.agent_navigation
+                    .update_visual_status(thread_id, &thread.status);
             }
         }
         for thread_id in refresh.archived_thread_ids {
@@ -288,6 +290,7 @@ impl App {
         self.agent_navigation.prune_untracked_picker_exclusions();
         self.agent_navigation.order_by_agent_ref();
 
+        self.sync_active_agent_label();
         self.replace_agent_picker_view(selected_thread_id);
         if completion.follow_up_requested {
             self.refresh_agent_picker_threads(app_server, root);
@@ -301,6 +304,7 @@ impl App {
     ) {
         let selected_thread_id = self.selected_agent_picker_thread_id();
         self.update_agent_picker_thread_visibility(thread_id, visibility);
+        self.sync_active_agent_label();
         self.replace_agent_picker_view(selected_thread_id);
     }
 
@@ -367,5 +371,20 @@ impl App {
         let params = self.agent_picker_selection_view_params(selected);
         self.chat_widget
             .replace_selection_view_if_present(AGENT_PICKER_VIEW_ID, params);
+    }
+
+    pub(super) fn refresh_open_agent_picker(&mut self, selected: Option<usize>) {
+        if !self.chat_widget.has_view(AGENT_PICKER_VIEW_ID) {
+            return;
+        }
+        let selected_thread_id = selected
+            .and_then(|selected| {
+                self.agent_navigation
+                    .visible_threads()
+                    .get(selected)
+                    .map(|(thread_id, _)| *thread_id)
+            })
+            .or_else(|| self.selected_agent_picker_thread_id());
+        self.replace_agent_picker_view(selected_thread_id);
     }
 }
