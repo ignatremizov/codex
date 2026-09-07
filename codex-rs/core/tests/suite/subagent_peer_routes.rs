@@ -387,9 +387,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
                 if !item.is_attributed_agent_input_presentation() {
                     return None;
                 }
-                if item.attribution.is_none() {
-                    return None;
-                }
+                item.attribution.as_ref()?;
                 Some(serde_json::to_value(item).expect("serialize rich audit"))
             })
             .await,
