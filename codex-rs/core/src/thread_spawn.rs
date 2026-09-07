@@ -154,6 +154,7 @@ pub(crate) async fn spawn(
             },
             source: spawn_source,
             options: SpawnAgentOptions {
+                task: None,
                 fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.to_string()),
                 fork_mode,
                 parent_thread_id: Some(session.thread_id),

@@ -1,13 +1,14 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserAgentForkMode;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::attributed_agent_input_text;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::strip_user_message_prefix;
 use futures::TryStreamExt;
 use pulldown_cmark::Event;
@@ -131,7 +132,11 @@ FROM (
           items.item_type IN ('userMessage', 'userAgentControl')
           OR (
               items.item_type = 'agentMessage'
-              AND json_extract(items.item_json, '$.phase') = 'partial_answer'
+              AND (
+                  json_extract(items.item_json, '$.phase') = 'partial_answer'
+                  OR json_type(items.item_json, '$.attribution') = 'object'
+                  OR json_type(items.item_json, '$.interAgentSource') = 'object'
+              )
           )
       )
       AND items.rollout_ordinal >= ?
@@ -154,6 +159,8 @@ FROM (
      AND items.item_id = turns.final_agent_item_id
     WHERE turns.thread_id = ?
       AND turns.final_agent_item_id IS NOT NULL
+      AND json_type(items.item_json, '$.attribution') IS NOT 'object'
+      AND json_type(items.item_json, '$.interAgentSource') IS NOT 'object'
       AND items.rollout_ordinal >= ?
       AND items.rollout_ordinal < ?
       AND turns.rollout_ordinal >= ?
@@ -312,6 +319,9 @@ fn invalid_cursor(cursor: &str) -> ThreadStoreError {
 }
 
 fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
+    if let Some(text) = attributed_agent_input_text(item) {
+        return Some(Cow::Owned(text));
+    }
     match item {
         ThreadItem::UserMessage { content, .. } => {
             let mut text_parts = content
@@ -345,6 +355,7 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
             action,
             authored_selector,
             target_thread_id,
+            reply_recipient_thread_id,
             previous_owner_session_id,
             new_owner_session_id,
             agent_ref,
@@ -370,6 +381,7 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
                 UserAgentControlAction::Close => "close",
                 UserAgentControlAction::Observe => "observe",
                 UserAgentControlAction::ReplyRoute => "reply route",
+                UserAgentControlAction::SubtreeMessaging => "subtree messaging",
             };
             let status = match status {
                 UserAgentControlStatus::Succeeded => "succeeded",
@@ -384,10 +396,10 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
                 }
             });
             let final_response = final_response.map(|final_response| match final_response {
-                AgentFinalResponseHandling::None => "ignore final response",
-                AgentFinalResponseHandling::Passive => "passive response",
-                AgentFinalResponseHandling::Wake => "wake on response",
-                AgentFinalResponseHandling::Presentation => "presentation only response",
+                AgentResponseFinalDelivery::None => "ignore final response",
+                AgentResponseFinalDelivery::Passive => "passive response",
+                AgentResponseFinalDelivery::Wake => "wake on response",
+                AgentResponseFinalDelivery::PresentationOnly => "presentation only response",
             });
             let reasoning_effort = reasoning_effort.as_ref().map(ToString::to_string);
             let text = [
@@ -396,6 +408,7 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
                 resumed_target.then_some("resumed target"),
                 authored_selector.as_deref(),
                 target_thread_id.as_deref(),
+                reply_recipient_thread_id.as_deref(),
                 previous_owner_session_id.as_deref(),
                 new_owner_session_id.as_deref(),
                 agent_ref.as_deref(),

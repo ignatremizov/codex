@@ -101,6 +101,7 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout::state_db::StateDbHandle;
 use codex_skills_extension::HostSkillsService;
 use codex_thread_store::InMemoryThreadStore;
+use codex_thread_store::LoadForkSourceByRolloutPathParams;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
@@ -136,6 +137,12 @@ use tracing::warn;
 mod external_fork;
 mod v2_spawn_resume;
 use external_fork::ForkSourceScope;
+
+#[cfg(test)]
+#[path = "thread_manager/agent_operation_capture_tests.rs"]
+mod agent_operation_capture;
+#[cfg(test)]
+pub(crate) use agent_operation_capture::CapturedAgentOperation;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 
@@ -501,6 +508,8 @@ pub(crate) struct ThreadManagerState {
     agent_lifecycle_changed: Arc<Notify>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
+    #[cfg(test)]
+    agent_operations: std::sync::Mutex<Vec<(ThreadId, CapturedAgentOperation)>>,
 }
 
 pub fn build_models_manager(
@@ -676,6 +685,8 @@ impl ThreadManager {
                 agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
+                #[cfg(test)]
+                agent_operations: std::sync::Mutex::new(Vec::new()),
             }),
             _test_codex_home_guard: None,
         }
@@ -872,6 +883,8 @@ impl ThreadManager {
                 agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
+                #[cfg(test)]
+                agent_operations: std::sync::Mutex::new(Vec::new()),
             }),
             _test_codex_home_guard: None,
         }
@@ -1260,23 +1273,33 @@ impl ThreadManager {
                 "a captured internal parent requires a new or forked internal session".to_owned(),
             ));
         }
-        if options.reserved_thread_id.is_some()
-            && matches!(&options.initial_history, InitialHistory::Resumed(_))
-        {
-            return Err(CodexErr::InvalidRequest(
-                "reserved thread ID cannot be used when resuming a thread".to_string(),
-            ));
-        }
-        if parent.is_none()
-            && let Some(restored) = self
+        if matches!(options.initial_history, InitialHistory::Resumed(_)) {
+            if options.reserved_thread_id.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "reserved thread ID cannot be used when resuming a thread".to_string(),
+                ));
+            }
+            if let Some(restored) = self
                 .try_resume_persisted_v2_spawn(
                     &options.config,
                     &options.initial_history,
                     &options.client_mcp_extensions,
                 )
                 .await?
-        {
-            return Ok(restored);
+            {
+                return Ok(restored);
+            }
+            // The options-based API must retain the same owner as legacy resume,
+            // including when surviving children still hold that control plane.
+            return self
+                .resume_thread_with_options_and_current_owner(
+                    options,
+                    Arc::clone(&self.state.auth_manager),
+                    /*live_revert_messaging*/ None,
+                    startup,
+                    forked_from_thread_id,
+                )
+                .await;
         }
         let mut request = if let Some(parent) = parent {
             let mut request =
@@ -1392,6 +1415,7 @@ impl ThreadManager {
             auth_manager,
             parent_trace,
             client_mcp_extensions,
+            /*live_revert_messaging*/ None,
         )
         .await
     }
@@ -1597,7 +1621,7 @@ impl ThreadManager {
         rollout_path: PathBuf,
     ) -> CodexResult<InitialHistory> {
         let requested_rollout_path = rollout_path.clone();
-        let stored_thread = self
+        let stored_thread = match self
             .state
             .thread_store
             .read_thread_by_rollout_path(ReadThreadByRolloutPathParams {
@@ -1606,7 +1630,32 @@ impl ThreadManager {
                 include_history: true,
             })
             .await
-            .map_err(thread_store_rollout_read_error)?;
+        {
+            Ok(thread) => thread,
+            Err(ThreadStoreError::Unsupported {
+                operation: "paginated_threads",
+            }) => {
+                // Full legacy reads deliberately reject paginated history. Resolve its
+                // complete lineage from the requested file, never a same-ID active-home row.
+                let source = self
+                    .state
+                    .thread_store
+                    .load_fork_source_by_rollout_path(LoadForkSourceByRolloutPathParams {
+                        rollout_path: requested_rollout_path.clone(),
+                    })
+                    .await
+                    .map_err(thread_store_rollout_read_error)?;
+                if source.thread.thread_id != source.history.thread_id {
+                    return Err(CodexErr::InvalidRequest(
+                        "rollout source history belongs to another thread".to_string(),
+                    ));
+                }
+                let mut thread = source.thread;
+                thread.history = Some(source.history);
+                thread
+            }
+            Err(error) => return Err(thread_store_rollout_read_error(error)),
+        };
         stored_thread_to_initial_history(stored_thread, Some(requested_rollout_path))
     }
 
@@ -1886,6 +1935,10 @@ impl ThreadManagerState {
         } else {
             None
         };
+        #[cfg(test)]
+        if matches!(&op, Op::Interrupt) {
+            self.capture_agent_operation(thread_id, CapturedAgentOperation::Interrupt);
+        }
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
             && let Some(captured_op) = capture_test_op(&op)

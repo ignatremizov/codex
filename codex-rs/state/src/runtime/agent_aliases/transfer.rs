@@ -21,6 +21,7 @@ struct TransferMember {
     previous_parent_thread_id: Option<ThreadId>,
     state: crate::AgentAliasState,
     nickname: Option<String>,
+    task_path: Option<String>,
     current_owner: Option<crate::AgentAliasRecord>,
 }
 
@@ -37,6 +38,7 @@ impl StateRuntime {
             new_parent_thread_id,
             thread_id,
             nickname,
+            task_path,
             authored_selector,
         } = request;
         validate_transfer_request(
@@ -46,6 +48,7 @@ impl StateRuntime {
             nickname.as_deref(),
             &authored_selector,
         )?;
+        super::task_paths::validate_task_path(task_path.as_deref())?;
 
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         super::require_not_deleted(&mut tx, thread_id).await?;
@@ -106,7 +109,7 @@ impl StateRuntime {
                  {new_session_id}; retry adoption to choose another nickname"
             );
         }
-        let members = load_transfer_members(
+        let mut members = load_transfer_members(
             &mut tx,
             thread_id,
             previous_parent_thread_id,
@@ -138,6 +141,26 @@ impl StateRuntime {
             );
         }
 
+        let task_path_mapping = super::task_paths::resolve_imported_task_paths(
+            &mut tx,
+            new_session_id,
+            thread_id,
+            task_path.as_deref(),
+            members
+                .iter()
+                .map(|member| (member.thread_id, member.task_path.clone()))
+                .collect(),
+        )
+        .await?;
+        let resolved_paths = task_path_mapping
+            .iter()
+            .map(|mapping| (mapping.thread_id, &mapping.task_path))
+            .collect::<std::collections::HashMap<_, _>>();
+        for member in &mut members {
+            if let Some(task_path) = resolved_paths.get(&member.thread_id) {
+                member.task_path = (*task_path).clone();
+            }
+        }
         tombstone_previous_aliases(&mut tx, &members).await?;
         let transferred_at_ms = Utc::now().timestamp_millis();
         let (target, descendants) = members
@@ -184,6 +207,7 @@ impl StateRuntime {
             previous_session_id: actual_previous_session_id,
             previous_parent_thread_id,
             transferred_at_ms,
+            task_path_mapping,
         })
     }
 }
@@ -243,6 +267,9 @@ async fn load_transfer_members(
         previous_parent_thread_id,
         state: crate::AgentAliasState::Active,
         nickname: target_nickname,
+        task_path: target_owner
+            .as_ref()
+            .and_then(|alias| alias.task_path.clone()),
         current_owner: target_owner,
     }];
 
@@ -301,6 +328,9 @@ ORDER BY subtree.thread_id
                 .as_ref()
                 .and_then(|alias| alias.nickname.clone())
                 .or(row.try_get::<Option<String>, _>("agent_nickname")?),
+            task_path: current_owner
+                .as_ref()
+                .and_then(|alias| alias.task_path.clone()),
             current_owner,
         });
     }
@@ -376,6 +406,7 @@ async fn activate_transferred_member(
             new_session_id,
             member.thread_id,
             nickname.as_deref(),
+            member.task_path.as_deref(),
             member.state,
         )
         .await;
@@ -405,10 +436,12 @@ async fn activate_transferred_member(
         nickname.as_deref(),
     )
     .await?;
+    super::task_paths::require_available_task_path(tx, new_session_id, member.task_path.as_deref())
+        .await?;
     let result = sqlx::query(
         r#"
 UPDATE agent_aliases
-SET ownership_state = ?, nickname = ?
+SET ownership_state = ?, nickname = ?, task_path = ?
 WHERE session_id = ?
   AND thread_id = ?
   AND ownership_state = ?
@@ -416,6 +449,7 @@ WHERE session_id = ?
     )
     .bind(super::AgentAliasOwnershipState::Current.as_ref())
     .bind(&nickname)
+    .bind(&member.task_path)
     .bind(new_session_id.to_string())
     .bind(member.thread_id.to_string())
     .bind(super::AgentAliasOwnershipState::Transferred.as_ref())
@@ -432,6 +466,7 @@ WHERE session_id = ?
         thread_id: member.thread_id,
         agent_ref: existing.agent_ref,
         nickname,
+        task_path: member.task_path.clone(),
         state: member.state,
     })
 }
