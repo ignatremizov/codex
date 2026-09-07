@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/host_turn_admission.rs
+assertion_line: 226
 expression: "context_snapshot::format_request_history_snapshot(\"The admitted turn receives input retained after denial and interruption, then completes its tool call.\",\n&responses::received_responses_requests(&server).await,\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: The admitted turn receives input retained after denial and interruption, then completes its tool call.
@@ -22,7 +23,7 @@ Scenario: The admitted turn receives input retained after denial and interruptio
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <tools>
         Deferred tool namespaces:
-        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        - multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, n...insensitive), or full UUID; prefer spawn_agent's ref. [hash=6cd3c538277771e3]
         </tools>
 06:message/user:
     <ENVIRONMENT_CONTEXT>

@@ -15,6 +15,9 @@ use crate::PINNED_THREAD_SECTION_NAME;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
 
+#[path = "task_path_migration_tests.rs"]
+mod task_path_migration_tests;
+
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
         migrations: Cow::Owned(

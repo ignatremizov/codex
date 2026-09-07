@@ -142,6 +142,13 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Request(_)
             | ThreadBufferedEvent::Mcp(_)
             | ThreadBufferedEvent::FeedbackSubmission(_) => true,
+            // Peer-message mirrors and delivery receipts have no root rollout record to reload.
+            // Keep the live copy through an in-process refresh, like other transient events.
+            ThreadBufferedEvent::Notification(notification)
+                if replay_filter::mirrored_completion_item_id(notification).is_some() =>
+            {
+                true
+            }
             ThreadBufferedEvent::Notification(notification) => matches!(
                 notification.as_ref(),
                 ServerNotification::HookStarted(_)
@@ -461,6 +468,40 @@ impl ThreadEventStore {
         {
             snapshot.turns.push(started.clone());
         }
+        // A live app-server turn snapshot can already include these transient items. Keep the
+        // original buffer for later disk-only refreshes, but render each item only once.
+        let hydrated_mirror_ids = {
+            let buffered_mirror_ids = snapshot
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    ThreadBufferedEvent::Notification(notification) => {
+                        replay_filter::mirrored_completion_item_id(notification)
+                    }
+                    ThreadBufferedEvent::Request(_)
+                    | ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::Mcp(_)
+                    | ThreadBufferedEvent::FeedbackSubmission(_) => None,
+                })
+                .collect::<HashSet<_>>();
+            if buffered_mirror_ids.is_empty() {
+                HashSet::new()
+            } else {
+                snapshot
+                    .turns
+                    .iter()
+                    .flat_map(|turn| &turn.items)
+                    .map(codex_app_server_protocol::ThreadItem::id)
+                    .filter(|id| buffered_mirror_ids.contains(id))
+                    .map(str::to_string)
+                    .collect()
+            }
+        };
+        snapshot.events.retain(|event| {
+            !matches!(event, ThreadBufferedEvent::Notification(notification)
+                if replay_filter::mirrored_completion_item_id(notification)
+                    .is_some_and(|id| hydrated_mirror_ids.contains(id)))
+        });
         if let Some(latest_turn_id) = &self.latest_turn_id {
             replay_filter::omit_resolved_misalignment_errors(&mut snapshot, latest_turn_id);
         }
@@ -1126,20 +1167,86 @@ mod tests {
                 "item": {
                     "type": "agentMessage", "id": "question", "text": "already in the snapshot",
                     "startedAtMs": 10, "completedAtMs": 20,
-                    "phase": null, "memoryCitation": null, "delivery": null,
+                    "interAgentSource": null, "attribution": null, "input": null,
+                    "phase": null, "memoryCitation": null, "delivery": null, "moderation": null,
                     "questions": [{"title": "Which way?", "options": null}]
                 }
             }
         });
         let mut store = ThreadEventStore::new(/*capacity*/ 8);
         store.push_notification(serde_json::from_value(expected.clone()).unwrap());
+        let mut hydrated_turn = test_turn("turn", TurnStatus::Completed, Vec::new());
+        hydrated_turn.items =
+            vec![serde_json::from_value(expected["params"]["item"].clone()).unwrap()];
+        store.set_turns(vec![hydrated_turn]);
+        let snapshot = store.snapshot();
+        let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
+            panic!("hydrated text must not consume the live question");
+        };
+        assert_eq!(serde_json::to_value(actual).unwrap(), expected);
         store.rebase_buffer_after_session_refresh();
         expected["params"]["item"]["text"] = serde_json::json!("");
-        expected["params"]["item"]["moderation"] = serde_json::Value::Null;
         let ThreadBufferedEvent::Notification(actual) = &store.snapshot().events[0] else {
             panic!("missing live question");
         };
         assert_eq!(serde_json::to_value(actual).unwrap(), expected);
+    }
+
+    #[test]
+    fn receipt_buffer_survives_disk_refresh_without_duplicating_hydrated_items() {
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        let receipt = codex_protocol::protocol::agent_delivery_receipt_item(
+            sender,
+            recipient,
+            codex_protocol::models::MessagePhase::FinalAnswer,
+            codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible,
+            codex_protocol::protocol::new_sub_agent_completion_context_response_item_id().as_str(),
+            "Main's delivered answer",
+        )
+        .expect("receipt");
+        let item = ThreadItemPayload::AgentMessage {
+            moderation: None,
+            id: receipt.id,
+            text: "Main's delivered answer".to_string(),
+            phase: receipt.phase,
+            inter_agent_source: None,
+            memory_citation: None,
+            attribution: None,
+            input: None,
+            delivery: None,
+            questions: None,
+        };
+        let completed = codex_app_server_protocol::ItemCompletedNotification::new(
+            sender.to_string(),
+            "turn-receipt".to_string(),
+            item,
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        );
+        let item = completed.item.clone();
+        let notification = ServerNotification::ItemCompleted(completed);
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification_ref(&notification);
+        store.rebase_buffer_after_session_refresh();
+        assert_eq!(store.snapshot().events.len(), 1);
+        let mut hydrated_turn = test_turn("turn-receipt", TurnStatus::Completed, Vec::new());
+        hydrated_turn.items.push(item);
+        store.set_turns(vec![hydrated_turn]);
+        assert!(
+            store.snapshot().events.is_empty(),
+            "hydrated receipt is not replayed twice"
+        );
+        store.set_turns(Vec::new());
+        store.rebase_buffer_after_session_refresh();
+        let snapshot = store.snapshot();
+        let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
+            panic!("disk-only refresh must retain the raw receipt");
+        };
+        assert_eq!(
+            serde_json::to_value(actual).expect("serialize receipt"),
+            serde_json::to_value(notification).expect("serialize expected receipt")
+        );
     }
 
     #[test]

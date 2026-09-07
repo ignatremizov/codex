@@ -36,6 +36,8 @@ fn raw_response_item_uses_persisted_turn_without_starting_it() {
             moderation: None,
             id: "amsg_task".to_string(),
             text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),
+            attribution: None,
+            input: None,
             phase: Some(codex_protocol::models::MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,

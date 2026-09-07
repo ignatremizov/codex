@@ -398,6 +398,7 @@ pub(crate) struct AppServerBootstrap {
 
 pub(crate) struct SpawnAgentRequest {
     pub(crate) source_thread_id: ThreadId,
+    pub(crate) task: Option<String>,
     pub(crate) role: Option<String>,
     pub(crate) authored_selector: Option<String>,
     pub(crate) model: Option<String>,
@@ -2354,6 +2355,7 @@ impl AppServerSession {
     ) -> Result<AgentControlResponse> {
         let SpawnAgentRequest {
             source_thread_id,
+            task,
             role,
             authored_selector,
             model,
@@ -2370,6 +2372,7 @@ impl AppServerSession {
                     source_thread_id: source_thread_id.to_string(),
                     authored_selector,
                     action: AgentControlAction::Spawn {
+                        task,
                         role,
                         model,
                         reasoning_effort,
@@ -2388,6 +2391,7 @@ impl AppServerSession {
         source_thread_id: ThreadId,
         target: String,
         authored_selector: String,
+        task: Option<String>,
         response_handling: Option<AgentResponseHandling>,
     ) -> Result<AgentControlResponse> {
         let request_id = self.next_request_id();
@@ -2398,6 +2402,7 @@ impl AppServerSession {
                     source_thread_id: source_thread_id.to_string(),
                     authored_selector: Some(authored_selector),
                     action: AgentControlAction::Resume {
+                        task,
                         target,
                         response_handling,
                     },
@@ -2486,6 +2491,7 @@ impl AppServerSession {
         source_thread_id: ThreadId,
         target: String,
         authored_selector: String,
+        recipient: Option<String>,
         mode: codex_app_server_protocol::AgentReplyRouteMode,
     ) -> Result<AgentControlResponse> {
         let request_id = self.next_request_id();
@@ -2495,7 +2501,15 @@ impl AppServerSession {
                 params: AgentControlParams {
                     source_thread_id: source_thread_id.to_string(),
                     authored_selector: Some(authored_selector),
-                    action: AgentControlAction::ReplyRoute { target, mode },
+                    action: if target == "all" && recipient.is_none() {
+                        AgentControlAction::SubtreeMessaging { mode }
+                    } else {
+                        AgentControlAction::ReplyRoute {
+                            target,
+                            recipient,
+                            mode,
+                        }
+                    },
                 },
             })
             .await
@@ -5414,6 +5428,8 @@ mod tests {
                             codex_app_server_protocol::ThreadItemPayload::AgentMessage {
                                 moderation: None,
                                 inter_agent_source: None,
+                                attribution: None,
+                                input: None,
                                 id: "assistant-1".to_string(),
                                 text: "assistant reply".to_string(),
                                 phase: None,

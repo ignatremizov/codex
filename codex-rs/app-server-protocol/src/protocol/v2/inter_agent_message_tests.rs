@@ -33,6 +33,8 @@ fn unwraps_known_matching_envelope() {
                 author: "/root".into(),
                 recipient: "/root/worker".into(),
             }),
+            attribution: None,
+            input: None,
             phase: Some(codex_protocol::models::MessagePhase::Commentary),
             memory_citation: None,
             delivery: None,
@@ -206,6 +208,8 @@ fn preserves_legacy_wire_shape_and_serializes_nullable_source() {
             id: "amsg_old".into(),
             text: "old".into(),
             inter_agent_source: None,
+            attribution: None,
+            input: None,
             phase: None,
             memory_citation: None,
             delivery: None,
@@ -217,6 +221,8 @@ fn preserves_legacy_wire_shape_and_serializes_nullable_source() {
         id: "amsg_new".into(),
         text: "new".into(),
         inter_agent_source: None,
+        attribution: None,
+        input: None,
         phase: None,
         memory_citation: None,
         delivery: None,
@@ -243,7 +249,10 @@ fn v1_commentary_aliases_keep_canonical_uuid_and_require_the_root_route() {
     assert_eq!(
         inter_agent_message_thread_item(&item(&text)),
         Some(ThreadItem::untimed(ThreadItemPayload::AgentMessage {
+            moderation: None,
             id: "amsg_test".into(),
+            attribution: None,
+            input: None,
             text: format!("Agent commentary from `{agent_id}`:\n\nacknowledged"),
             inter_agent_source: Some(InterAgentMessageSource {
                 author: "/root".into(),

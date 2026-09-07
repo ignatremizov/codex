@@ -168,6 +168,8 @@ pub(super) fn completed_item(
                     .moderation
                     .as_ref()
                     .map_or(next_item_id()?, |decision| decision.item_id.clone()),
+                attribution: None,
+                input: None,
                 content: vec![AgentMessageContent::Text {
                     text: event.message.clone(),
                 }],

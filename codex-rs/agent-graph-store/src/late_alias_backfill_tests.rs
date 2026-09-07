@@ -21,6 +21,7 @@ async fn late_alias_backfill_preserves_lifecycle_existing_labels_and_stable_refs
             parent_thread_id: root,
             child_thread_id: known,
             nickname: Some("Kepler".into()),
+            task_path: Some("/root/known".into()),
         })
         .await?;
 
@@ -44,6 +45,7 @@ async fn late_alias_backfill_preserves_lifecycle_existing_labels_and_stable_refs
             thread_id: closed,
             agent_ref: 3,
             nickname: None,
+            task_path: None,
             state: AgentAliasState::Closed,
         },
         AgentAlias {
@@ -51,6 +53,7 @@ async fn late_alias_backfill_preserves_lifecycle_existing_labels_and_stable_refs
             thread_id: descendant,
             agent_ref: 4,
             nickname: None,
+            task_path: None,
             state: AgentAliasState::Active,
         },
     ];
@@ -74,6 +77,7 @@ async fn late_alias_backfill_preserves_lifecycle_existing_labels_and_stable_refs
             parent_thread_id: root,
             child_thread_id: thread_id(/*suffix*/ 1804),
             nickname: None,
+            task_path: None,
         })
         .await?;
     assert_eq!(
@@ -83,6 +87,7 @@ async fn late_alias_backfill_preserves_lifecycle_existing_labels_and_stable_refs
             thread_id: thread_id(/*suffix*/ 1804),
             agent_ref: 5,
             nickname: None,
+            task_path: None,
             state: AgentAliasState::Active,
         }
     );
@@ -133,6 +138,7 @@ async fn late_alias_backfill_cannot_replace_an_existing_foreign_owner() -> Agent
             parent_thread_id: foreign_root,
             child_thread_id: child,
             nickname: Some("Hopper".into()),
+            task_path: Some("/root/owned".into()),
         })
         .await?;
     // Stale topology alone cannot authorize an ownership transfer.

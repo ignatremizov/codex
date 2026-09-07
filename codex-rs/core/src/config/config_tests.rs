@@ -647,6 +647,33 @@ async fn load_config_resolves_non_prefixed_mcp_tool_servers() -> std::io::Result
 }
 
 #[tokio::test]
+async fn load_config_resolves_list_agents_opt_in() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    for (config_toml, expected_enabled) in [
+        ("", false),
+        ("[tools]", false),
+        ("[tools.list_agents]", false),
+        ("[tools.list_agents]\nenabled = false", false),
+        ("[tools.list_agents]\nenabled = true", true),
+        ("[tools.update_plan]\nenabled = true", false),
+        ("[agents]\nenabled = true", false),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(config_toml).expect("TOML deserialization should succeed"),
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+
+        assert_eq!(
+            config.list_agents_enabled, expected_enabled,
+            "{config_toml}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_resolves_update_plan_enabled() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     for (config_toml, expected_enabled) in [

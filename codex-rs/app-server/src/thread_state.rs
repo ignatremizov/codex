@@ -443,6 +443,7 @@ mod tests {
         );
         let expected_item =
             ThreadItem::untimed(codex_app_server_protocol::ThreadItemPayload::AgentMessage {
+                moderation: None,
                 id: "amsg_task".to_string(),
                 text: "Agent message from `/root`:\n\nInspect the repository.".to_string(),
                 inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
@@ -453,6 +454,8 @@ mod tests {
                 memory_citation: None,
                 delivery: None,
                 questions: None,
+                attribution: None,
+                input: None,
             });
 
         assert_eq!(

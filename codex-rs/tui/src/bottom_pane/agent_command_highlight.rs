@@ -66,7 +66,16 @@ pub(super) fn agent_command_highlights(
             let Some(target_range) = token_ranges.get(index) else {
                 return highlights;
             };
-            highlights.push(target_highlight(first_line, target_range.clone(), targets));
+            highlights.push(
+                if first == "sends" && &first_line[target_range.clone()] == "all" {
+                    AgentCommandHighlight {
+                        range: target_range.clone(),
+                        kind: AgentCommandHighlightKind::Option,
+                    }
+                } else {
+                    target_highlight(first_line, target_range.clone(), targets)
+                },
+            );
             index += 1;
         }
     } else {
@@ -74,7 +83,7 @@ pub(super) fn agent_command_highlights(
         highlights.push(target_highlight(first_line, first_range.clone(), targets));
         if let Some(target_first_action) = token_ranges.get(index).and_then(|range| {
             let action = &first_line[range.clone()];
-            matches!(action, "close" | "replies").then_some(action)
+            matches!(action, "close" | "resume" | "sends").then_some(action)
         }) {
             let range = token_ranges[index].clone();
             highlights.push(AgentCommandHighlight {
@@ -87,18 +96,40 @@ pub(super) fn agent_command_highlights(
         }
     }
 
+    if action == Some("sends")
+        && let Some(range) = token_ranges.get(index)
+        && &first_line[range.clone()] == "to"
+    {
+        highlights.push(AgentCommandHighlight {
+            range: range.clone(),
+            kind: AgentCommandHighlightKind::Action,
+        });
+        index += 1;
+        if let Some(range) = token_ranges.get(index) {
+            highlights.push(target_highlight(first_line, range.clone(), targets));
+            index += 1;
+        }
+    }
     while let Some(range) = token_ranges.get(index) {
         let token = &first_line[range.clone()];
-        let recognized = (action != Some("observe") && is_response_option(token))
+        let recognized = (!matches!(action, Some("observe" | "sends"))
+            && is_response_option(token))
+            || (action == Some("resume")
+                && token
+                    .strip_prefix("task:")
+                    .is_some_and(|path| !path.is_empty()))
             || (spawn_options_allowed
                 && (is_fork_option(token)
+                    || token
+                        .strip_prefix("task:")
+                        .is_some_and(|path| !path.is_empty())
                     || is_model_option(token, models)
                     || is_effort_option(token, selected_model)))
             || (action == Some("observe")
                 && AGENT_OBSERVATION_MODE_CHOICES
                     .iter()
                     .any(|(mode, _description)| token == *mode))
-            || (action == Some("replies")
+            || (action == Some("sends")
                 && AGENT_REPLY_ROUTE_MODE_CHOICES
                     .iter()
                     .any(|(mode, _description)| token == *mode));
@@ -151,7 +182,12 @@ fn is_spawn_role_selector(token: &str, targets: &[AgentPromptTarget]) -> bool {
     if token.starts_with("role:") {
         return true;
     }
-    if token.starts_with("id:") || token.starts_with("ref:") || token.starts_with("nick:") {
+    if token.starts_with("id:")
+        || token.starts_with("ref:")
+        || token.starts_with("nick:")
+        || token.starts_with("task:")
+        || token.starts_with('/')
+    {
         return false;
     }
     targets.iter().any(|target| {
@@ -164,6 +200,16 @@ fn is_spawn_role_selector(token: &str, targets: &[AgentPromptTarget]) -> bool {
 
 fn target_matches(target: &AgentPromptTarget, token: &str) -> bool {
     let token = token.trim_matches('"');
+    if let Some(path) = target.selector.strip_prefix("task:") {
+        return token
+            .strip_prefix("task:")
+            .unwrap_or(token)
+            .trim_matches('"')
+            == path;
+    }
+    if token.starts_with("task:") || token.starts_with('/') {
+        return false;
+    }
     if target.selector.eq_ignore_ascii_case(token) {
         return true;
     }
@@ -200,15 +246,7 @@ fn is_response_option(token: &str) -> bool {
     let Some(flags) = token.strip_prefix("w:") else {
         return false;
     };
-    let mut previous = None;
-    !flags.is_empty()
-        && flags.chars().all(|flag| {
-            let position = "cfmqx".find(flag);
-            let valid = position
-                .is_some_and(|position| previous.is_none_or(|previous| previous < position));
-            previous = position;
-            valid
-        })
+    codex_protocol::WakeEventFlags::parse(flags, codex_protocol::WakeEventSurface::Agent).is_ok()
 }
 
 fn is_fork_option(token: &str) -> bool {
@@ -237,3 +275,7 @@ fn is_effort_option(token: &str, selected_model: Option<&ModelPreset>) -> bool {
 #[cfg(test)]
 #[path = "agent_command_highlight_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_task_highlight_tests.rs"]
+mod task_tests;

@@ -427,6 +427,18 @@ impl ThreadManagerState {
         if let Some(accepted) = tier_acceptance {
             let _ = accepted.await;
         }
+        if self.agent_control_factory.is_none() {
+            let control = thread
+                .session
+                .services
+                .local_agent_runtime
+                .control(thread.session.session_id());
+            tokio::spawn(async move {
+                if let Err(error) = control.refresh_subtree_messaging(thread_id).await {
+                    tracing::warn!(%error, "failed to refresh published messaging context");
+                }
+            });
+        }
         Ok(())
     }
 }

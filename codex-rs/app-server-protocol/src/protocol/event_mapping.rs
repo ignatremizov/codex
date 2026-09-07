@@ -593,6 +593,8 @@ mod tests {
     fn assistant_completion_count_is_optional_envelope_metadata() {
         let item = codex_protocol::items::TurnItem::AgentMessage(
             codex_protocol::items::AgentMessageItem {
+                attribution: None,
+                input: None,
                 sub_agent_completion: None,
                 moderation: None,
                 id: "answer".into(),

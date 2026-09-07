@@ -60,6 +60,20 @@ fn completion_tip_waits_for_a_local_answer_after_incoming_communication() {
         });
     }
     tips.observe(&incoming, now);
+    let mut attributed = answer(thread, /*turn*/ 3);
+    if let ServerNotification::ItemCompleted(completed) = &mut attributed
+        && let ThreadItemPayload::AgentMessage { attribution, .. } = &mut completed.item.payload
+    {
+        *attribution = Some(
+            serde_json::from_value(serde_json::json!({
+                "sender": {"threadId": ThreadId::new().to_string()},
+                "recipient": {"threadId": thread.to_string()},
+                "senderTurnId": "sender-turn",
+            }))
+            .expect("valid attributed-input fixture"),
+        );
+    }
+    tips.observe(&attributed, now);
     let completed = notification("turn/completed", thread, /*turn*/ 3, "completed");
     assert!(tips.observe(&completed, now).is_none());
     tips.observe(

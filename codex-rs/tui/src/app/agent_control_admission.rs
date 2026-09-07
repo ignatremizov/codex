@@ -13,7 +13,9 @@ impl App {
             .await
             .map_err(|error| error.to_string())?;
         selector.control_target()?;
-        let target = self.resolve_agent_selector(app_server, selector).await?;
+        let target = self
+            .resolve_agent_selector(app_server, selector, Some(source))
+            .await?;
         self.ensure_agent_control_admission(source, Some(target))
             .await
             .map_err(|error| error.to_string())?;

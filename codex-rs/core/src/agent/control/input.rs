@@ -7,9 +7,9 @@ use codex_protocol::turn_input::TurnInput;
 #[derive(Clone)]
 pub(crate) enum AgentControlInput {
     User(Vec<UserInput>),
-    AttributedAgent {
+    AttributedAgentInput {
         content: Vec<UserInput>,
-        transcript: String,
+        attribution: Box<codex_protocol::AgentInputAttribution>,
         presentation: Vec<UserInput>,
     },
 }
@@ -22,20 +22,23 @@ impl AgentControlInput {
     pub(crate) fn presentation(&self) -> &[UserInput] {
         match self {
             Self::User(input) => input,
-            Self::AttributedAgent { presentation, .. } => presentation,
+            Self::AttributedAgentInput { presentation, .. } => presentation,
         }
     }
 
     pub(super) fn into_request(self) -> TurnInputRequest {
         match self {
             Self::User(content) => TurnInputRequest::user_input(content),
-            Self::AttributedAgent {
+            Self::AttributedAgentInput {
                 content,
-                transcript,
-                ..
+                attribution,
+                presentation,
             } => TurnInputRequest::new(TurnInput::AgentInput {
                 content,
-                presentation: AgentInputPresentation::Attributed(transcript),
+                presentation: AgentInputPresentation::AttributedInput {
+                    attribution,
+                    input: presentation,
+                },
             }),
         }
     }

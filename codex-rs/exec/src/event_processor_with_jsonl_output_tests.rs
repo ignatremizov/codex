@@ -1,5 +1,7 @@
 use super::*;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::Turn;
+use codex_app_server_protocol::TurnCompletedNotification;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;
@@ -19,6 +21,8 @@ fn failed_turn_does_not_overwrite_output_last_message_file() {
             ThreadItemPayload::AgentMessage {
                 moderation: None,
                 id: "msg-1".to_string(),
+                attribution: None,
+                input: None,
                 text: "partial answer".to_string(),
                 inter_agent_source: None,
                 phase: None,
@@ -80,6 +84,8 @@ fn inter_agent_item_remains_visible_without_replacing_final_message() {
                 id: "ordinary".to_string(),
                 text: "ordinary answer".to_string(),
                 inter_agent_source: None,
+                attribution: None,
+                input: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -101,6 +107,8 @@ fn inter_agent_item_remains_visible_without_replacing_final_message() {
                     author: "/root".to_string(),
                     recipient: "/root/worker".to_string(),
                 }),
+                attribution: None,
+                input: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -128,7 +136,10 @@ fn inter_agent_item_remains_visible_without_replacing_final_message() {
             "thread-1".to_string(),
             "turn-1".to_string(),
             ThreadItemPayload::AgentMessage {
+                moderation: None,
                 id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
+                attribution: None,
+                input: None,
                 text: "Agent final answer from `/root/reviewer`:\n\nDone.".to_string(),
                 inter_agent_source: None,
                 phase: Some(codex_protocol::models::MessagePhase::Commentary),
@@ -162,6 +173,8 @@ fn transcript_only_completed_turn_has_no_final_message() {
                         author: "/root".to_string(),
                         recipient: "/root/worker".to_string(),
                     }),
+                    attribution: None,
+                    input: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,
@@ -191,10 +204,13 @@ fn canonical_completion_only_completed_turn_has_no_final_message() {
                 id: "turn-1".to_string(),
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: vec![ThreadItem::untimed(ThreadItemPayload::AgentMessage {
+                    moderation: None,
                     id: "msg_c_01900000-0000-7000-8000-000000000001".to_string(),
                     text: "Agent final answer from `/root/reviewer`:\n\nworker transcript"
                         .to_string(),
                     inter_agent_source: None,
+                    attribution: None,
+                    input: None,
                     phase: Some(codex_protocol::models::MessagePhase::Commentary),
                     memory_citation: None,
                     delivery: None,

@@ -79,6 +79,16 @@ export type AgentMessageItem = {
   text: string;
 };
 
+/** Input received from another agent, not this thread's final response. */
+export type AgentInputItem = {
+  id: string;
+  type: "agent_input";
+  sender_thread_id: string;
+  recipient_thread_id: string;
+  /** Complete input text with media represented by attachment markers. */
+  text: string;
+};
+
 /** Agent's reasoning summary. */
 export type ReasoningItem = {
   id: string;
@@ -119,6 +129,7 @@ export type TodoListItem = {
 /** Canonical union of thread items and their type-specific payloads. */
 export type ThreadItem =
   | AgentMessageItem
+  | AgentInputItem
   | ReasoningItem
   | CommandExecutionItem
   | FileChangeItem

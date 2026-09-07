@@ -56,6 +56,8 @@ fn agent_status_uses_bounded_buffered_activity() {
                 text: "Finished checking the focused TUI tests.".to_string(),
                 phase: None,
                 memory_citation: None,
+                attribution: None,
+                input: None,
                 delivery: None,
                 questions: None,
             },
@@ -71,6 +73,8 @@ fn agent_status_uses_bounded_buffered_activity() {
             ThreadItemPayload::AgentMessage {
                 moderation: None,
                 id: "incoming-task".to_string(),
+                attribution: None,
+                input: None,
                 text: "Incoming task must not replace the agent's own activity.".to_string(),
                 inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
                     author: "/root".to_string(),

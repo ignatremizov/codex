@@ -139,6 +139,8 @@ fn attributed_agent_input_presentation_is_persisted_in_every_history_mode() {
         item: TurnItem::AgentMessage(AgentMessageItem {
             moderation: None,
             id: new_attributed_agent_message_response_item_id().to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Agent message from `agent-id`:\n\nReview this.".to_string(),
             }],

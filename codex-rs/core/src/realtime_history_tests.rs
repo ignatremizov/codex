@@ -229,6 +229,8 @@ fn promotes_backing_agent_artifacts_once_without_a_client_request() {
     let completed = completed_item(TurnItem::AgentMessage(AgentMessageItem {
         moderation: None,
         id: "message-1".to_string(),
+        attribution: None,
+        input: None,
         content: vec![AgentMessageContent::Text {
             text: "[analysis] ::codex-realtime-inline{}\nVisible explanation".to_string(),
         }],
@@ -311,6 +313,8 @@ fn promotes_distinct_visualizations_once_and_ignores_markdown_fences() {
     let completed = completed_item(TurnItem::AgentMessage(AgentMessageItem {
         moderation: None,
         id: "message-1".to_string(),
+        attribution: None,
+        input: None,
         content: vec![AgentMessageContent::Text {
             text: text.to_string(),
         }],

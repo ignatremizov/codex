@@ -15066,6 +15066,8 @@ async fn steer_input_returns_the_response_boundary_captured_during_admission() {
         item: TurnItem::AgentMessage(AgentMessageItem {
             moderation: None,
             id: "commentary-before-steer".to_string(),
+            attribution: None,
+            input: None,
             content: vec![AgentMessageContent::Text {
                 text: "Working on the earlier instruction.".to_string(),
             }],

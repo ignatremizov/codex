@@ -145,6 +145,8 @@ pub(super) fn item_summary(item: cloud::ItemSummary) -> Option<protocol::ThreadI
             text,
             questions,
         } => protocol::ThreadItemPayload::AgentMessage {
+            attribution: None,
+            input: None,
             inter_agent_source: None,
             moderation: None,
             id,

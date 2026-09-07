@@ -266,6 +266,8 @@ mod tests {
             Some(&ThreadItemPayload::AgentMessage {
                 moderation: None,
                 id: "item-4".into(),
+                attribution: None,
+                input: None,
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
                 inter_agent_source: None,
                 phase: None,
@@ -302,6 +304,8 @@ mod tests {
             Some(&ThreadItemPayload::AgentMessage {
                 moderation: None,
                 id: "item-3".into(),
+                attribution: None,
+                input: None,
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
                 inter_agent_source: None,
                 phase: None,

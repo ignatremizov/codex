@@ -1,5 +1,7 @@
 pub mod account;
+mod agent_input_attribution;
 mod agent_path;
+mod agent_subtree_policy;
 pub mod auth;
 mod context_window_id;
 mod item_id_generator;
@@ -8,9 +10,16 @@ mod response_usage;
 mod sanitized_git_url;
 mod session_id;
 mod sub_agent_completion;
+mod task_path;
 mod thread_id;
 mod tool_name;
+mod wake_event_flags;
+pub use agent_input_attribution::AgentInputAttribution;
+pub use agent_input_attribution::AgentInputIdentity;
+pub use agent_input_attribution::AgentTaskPathMapping;
 pub use agent_path::AgentPath;
+pub use agent_subtree_policy::inherited_subtree_policy;
+pub use agent_subtree_policy::is_agent_descendant;
 pub use context_window_id::ContextWindowId;
 pub use item_id_generator::ItemIdGenerator;
 #[cfg(test)]
@@ -23,10 +32,15 @@ pub use sanitized_git_url::SanitizedGitUrl;
 pub use session_id::SessionId;
 pub use sub_agent_completion::SubAgentCompletionMetadata;
 pub use sub_agent_completion::SubAgentCompletionModelVisibility;
+pub use task_path::TaskPathValidationError;
+pub use task_path::validate_canonical_task_path;
 pub use thread_id::RolloutId;
 pub use thread_id::ThreadId;
 pub use tool_name::DEFAULT_FUNCTION_NAMESPACE;
 pub use tool_name::ToolName;
+pub use wake_event_flags::WakeEventFinalDelivery;
+pub use wake_event_flags::WakeEventFlags;
+pub use wake_event_flags::WakeEventSurface;
 
 /// Reserved root-scoped nickname for the primary agent thread.
 pub const MAIN_AGENT_NICKNAME: &str = "Main";

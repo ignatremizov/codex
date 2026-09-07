@@ -173,6 +173,8 @@ fn parse_agent_message(
     AgentMessageItem {
         moderation: None,
         id,
+        attribution: None,
+        input: None,
         content,
         phase,
         memory_citation: None,
