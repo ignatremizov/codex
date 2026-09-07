@@ -905,6 +905,7 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
     use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
     use crate::state::ActiveTurn;
     use crate::tools::sandboxing::ToolError;
+    use anyhow::Context;
     use codex_features::Feature;
     use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::protocol::AskForApproval;
@@ -961,12 +962,19 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         assert!(queued.as_mut().poll(&mut task_context).is_pending());
         assert!(original.interaction_lock().try_lock_owned().is_err());
     }
-    // Empty polling must complete without an approval response.
-    tokio::time::timeout(
-        Duration::from_secs(/*secs*/ 5),
+    // Empty polling must complete without an approval response. Its requested 250ms
+    // yield is clamped to the empty-poll minimum, so the watchdog must start beyond
+    // that intentional wait rather than racing the same five-second deadline.
+    let empty_poll_wait = Duration::from_millis(
+        manager.effective_write_stdin_yield_time_ms("", /*yield_time_ms*/ 250),
+    );
+    let polled = tokio::time::timeout(
+        empty_poll_wait + Duration::from_secs(/*secs*/ 5),
         write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 250),
     )
-    .await??;
+    .await
+    .context("empty terminal poll did not complete after its effective yield deadline")??;
+    assert_eq!(polled.process_id, Some(process_id));
     let input = "rejected\n";
     let denied = write_stdin(
         &session, &turn, process_id, input, /*yield_time_ms*/ 250,
