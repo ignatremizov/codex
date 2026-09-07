@@ -15,6 +15,10 @@ pub(super) struct AgentActivityFooter {
 }
 
 impl super::BottomPane {
+    pub(crate) fn has_running_agents(&self) -> bool {
+        self.agent_activity_footer.running > 0
+    }
+
     pub(crate) fn set_running_agent_count(&mut self, running: usize) {
         if self.agent_activity_footer.running != running {
             self.agent_activity_footer.running = running;

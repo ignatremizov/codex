@@ -47,6 +47,12 @@ the existing live agent cache and lifecycle notifications, not a rollout scan or
 It neither marks Main busy nor changes response subscriptions; queued turns are not counted
 until running.
 
+The terminal title's `activity`/`spinner` item also animates while that count is nonzero,
+even when the displayed thread is idle. It uses the existing braille animation and stops
+when the last other agent finishes. Action-required indicators retain priority, and disabling
+animations or omitting the activity item still disables the spinner. This does not change
+the displayed thread's Ready state or input availability.
+
 ## Consolidating the earlier standalone supervisor design
 
 The earlier standalone supervisor design remains useful as an operator-UX inventory. Its features
