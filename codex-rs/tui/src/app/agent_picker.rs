@@ -260,6 +260,18 @@ impl App {
         }
         self.agent_navigation.order_by_agent_ref();
 
+        self.sync_active_agent_label();
+        self.refresh_open_agent_picker(selected);
+    }
+
+    pub(super) fn refresh_open_agent_picker(&mut self, selected: Option<usize>) {
+        if !self.chat_widget.has_view(AGENT_PICKER_VIEW_ID) {
+            return;
+        }
+        let selected = selected.or_else(|| {
+            self.chat_widget
+                .selected_index_for_present_view(AGENT_PICKER_VIEW_ID)
+        });
         let params = self.agent_picker_selection_view_params(selected);
         self.chat_widget
             .replace_selection_view_if_present(AGENT_PICKER_VIEW_ID, params);
