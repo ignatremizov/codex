@@ -29,6 +29,7 @@ fn observed_communication(
         turn_id: "actual-child-turn".to_string(),
         response_item_id,
         kind: ResponseObservationDeliveryKind::Commentary,
+        model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
     };
     (communication, commit)
 }

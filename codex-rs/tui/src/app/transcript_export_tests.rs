@@ -32,6 +32,8 @@ fn inter_agent_export_keeps_full_projected_source_without_interpreting_directive
         [ThreadItem::AgentMessage {
             id: "item-2".into(),
             text: source.into(),
+            attribution: None,
+            input: None,
             inter_agent_source: Some(InterAgentMessageSource {
                 author: "/root/worker".into(),
                 recipient: "/root".into(),

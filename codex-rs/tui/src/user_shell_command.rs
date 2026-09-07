@@ -1,5 +1,8 @@
 use codex_app_server_protocol::ThreadShellCommandFinalDelivery;
 use codex_app_server_protocol::ThreadShellCommandResponseHandling;
+use codex_protocol::WakeEventFinalDelivery;
+use codex_protocol::WakeEventFlags;
+use codex_protocol::WakeEventSurface;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ParsedUserShellCommand<'a> {
@@ -23,66 +26,21 @@ pub(crate) fn parse_user_shell_command(input: &str) -> Result<ParsedUserShellCom
     } else {
         (options, "")
     };
-    if !flags
-        .chars()
-        .all(|flag| matches!(flag, 'c' | 'f' | 'm' | 'q' | 'x'))
-    {
-        return Ok(ParsedUserShellCommand {
-            command: input,
-            response_handling: ThreadShellCommandResponseHandling::default(),
-            response_option_prefix_len: None,
-        });
-    }
-    if flags.is_empty() {
-        return Err(
-            "invalid empty shell wake/event state; use unique f, q, or x flags in fqx order"
-                .to_string(),
-        );
-    }
-
-    let mut final_wake = false;
-    let mut queue_command = false;
-    let mut presentation_only = false;
-    let mut previous_position = None;
-    for flag in flags.chars() {
-        let position = match flag {
-            'f' if !final_wake => {
-                final_wake = true;
-                0
-            }
-            'q' if !queue_command => {
-                queue_command = true;
-                1
-            }
-            'x' if !presentation_only => {
-                presentation_only = true;
-                2
-            }
-            _ => {
-                return Err(format!(
-                    "invalid shell wake/event state `{flags}`; use unique f, q, or x flags in fqx order"
-                ));
-            }
-        };
-        if previous_position.is_some_and(|previous| position <= previous) {
-            return Err(format!(
-                "invalid shell wake/event state `{flags}`; use unique f, q, or x flags in fqx order"
-            ));
+    let parsed = WakeEventFlags::parse(flags, WakeEventSurface::UserShell)
+        .map_err(|error| format!("invalid shell wake/event state `{flags}`; {error}"))?;
+    let final_delivery = match parsed.final_delivery {
+        WakeEventFinalDelivery::Wake => ThreadShellCommandFinalDelivery::Wake,
+        WakeEventFinalDelivery::PresentationOnly => {
+            ThreadShellCommandFinalDelivery::PresentationOnly
         }
-        previous_position = Some(position);
-    }
-
-    let final_delivery = match (final_wake, presentation_only) {
-        (true, false) => ThreadShellCommandFinalDelivery::Wake,
-        (false, true) => ThreadShellCommandFinalDelivery::PresentationOnly,
-        (false, false) | (true, true) => ThreadShellCommandFinalDelivery::Passive,
+        WakeEventFinalDelivery::Passive => ThreadShellCommandFinalDelivery::Passive,
     };
 
     Ok(ParsedUserShellCommand {
         command: command.trim_start(),
         response_handling: ThreadShellCommandResponseHandling {
             final_delivery,
-            queue_command,
+            queue_command: parsed.queue_input,
         },
         response_option_prefix_len: Some("w:".len() + flags.len()),
     })

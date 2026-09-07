@@ -52,10 +52,18 @@ impl LocalAgentControl {
                 .get_agent_metadata(child_thread_id)
                 .and_then(|metadata| metadata.agent_nickname)
                 .or_else(|| session_source.and_then(SessionSource::get_nickname)),
+            task_path: match &persistence {
+                ThreadSpawnPersistence::New { task_path } => task_path.clone(),
+                ThreadSpawnPersistence::Resume
+                | ThreadSpawnPersistence::ControlledResume
+                | ThreadSpawnPersistence::Transfer { .. } => None,
+            },
         };
         let mut transfer = None;
         let alias = match persistence {
-            ThreadSpawnPersistence::New => agent_graph_store.allocate_agent_alias(request).await,
+            ThreadSpawnPersistence::New { .. } => {
+                agent_graph_store.allocate_agent_alias(request).await
+            }
             ThreadSpawnPersistence::Resume | ThreadSpawnPersistence::ControlledResume => {
                 agent_graph_store.activate_agent_alias(request).await
             }
@@ -63,6 +71,7 @@ impl LocalAgentControl {
                 expected_previous_session_id,
                 reserved_descendant_thread_ids,
                 authored_selector,
+                task_path,
             } => match reserved_descendant_thread_ids {
                 Some(expected_descendant_thread_ids) => {
                     match agent_graph_store
@@ -74,6 +83,7 @@ impl LocalAgentControl {
                             thread_id: child_thread_id,
                             nickname: request.nickname.clone(),
                             authored_selector,
+                            task_path,
                         })
                         .await
                     {
@@ -98,10 +108,15 @@ impl LocalAgentControl {
                 }),
             },
         }
-        .map_err(|err| {
-            CodexErr::Fatal(format!(
-                "failed to persist durable alias for spawned agent {child_thread_id}: {err}"
-            ))
+        .map_err(|err| match err {
+            codex_agent_graph_store::AgentGraphStoreError::InvalidRequest { message } => {
+                CodexErr::InvalidRequest(message)
+            }
+            codex_agent_graph_store::AgentGraphStoreError::Internal { message } => {
+                CodexErr::Fatal(format!(
+                    "failed to persist durable alias for spawned agent {child_thread_id}: {message}"
+                ))
+            }
         })?;
         Ok(PersistedAgentSpawn {
             alias: Some(alias),

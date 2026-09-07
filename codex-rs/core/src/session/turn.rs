@@ -1801,6 +1801,28 @@ async fn run_sampling_request(
                 .for_prompt(&step_context.settings.model_info.input_modalities)
         };
         let mut prompt_input = prompt_input;
+        // Owned agents use their resolved instructions, not an initial-context fragment
+        // inherited from another role or a previous resume. Root and snapshot-only
+        // sessions retain their existing history semantics.
+        if turn_context.session_source.is_non_root_agent()
+            && sess.isolation != codex_extension_api::SessionIsolation::Isolated
+            && !crate::guardian::is_basic_session_source(&turn_context.session_source)
+            && sess
+                .services
+                .thread_extension_data
+                .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+                .is_none()
+        {
+            crate::context::project_developer_instructions(
+                &mut prompt_input,
+                turn_context.developer_instructions.as_deref(),
+            );
+        }
+        sess.services
+            .agent_control
+            .messaging_context_snapshot(sess.presentation_id())
+            .await?
+            .reconcile(&mut prompt_input);
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
@@ -2488,6 +2510,8 @@ async fn emit_agent_message_in_plan_mode(
             .unwrap_or_else(|| {
                 TurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
                     id: agent_message_id.clone(),
+                    attribution: None,
+                    input: None,
                     content: Vec::new(),
                     phase: None,
                     memory_citation: None,

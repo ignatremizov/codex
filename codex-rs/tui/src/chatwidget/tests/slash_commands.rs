@@ -344,6 +344,7 @@ async fn slash_agent_new_with_only_remote_image_starts_the_first_turn() {
         .expect("spawn agent event");
     let AppEvent::SpawnAgent {
         source_thread_id: actual_source_thread_id,
+        task: None,
         role,
         authored_selector,
         model,
@@ -397,6 +398,7 @@ async fn slash_agent_resume_preserves_source_selector_and_response_handling() {
         AppEvent::ResumeAgent {
             source_thread_id: actual_source,
             selector,
+            task: None,
             response_handling: Some(
                 codex_app_server_protocol::AgentResponseHandling::CommentaryWake
             ),
@@ -440,6 +442,7 @@ async fn slash_agent_new_preserves_spawn_overrides_and_response_handling() {
         event,
         AppEvent::SpawnAgent {
             source_thread_id: actual_source,
+            task: None,
             role: None,
             authored_selector: Some(ref authored_selector),
             model: Some(ref model),
@@ -2455,6 +2458,8 @@ async fn slash_copy_picker_uses_completed_commentary_during_active_turn() {
                 inter_agent_source: None,
                 id: "active-commentary".to_string(),
                 text: commentary.to_string(),
+                attribution: None,
+                input: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 delivery: None,
@@ -2465,6 +2470,18 @@ async fn slash_copy_picker_uses_completed_commentary_during_active_turn() {
     );
     while rx.try_recv().is_ok() {}
 
+    assert_eq!(
+        chat.last_agent_markdown_text(),
+        Some("Previous final response")
+    );
+    let mut shortcut_copy = None;
+    chat.copy_last_agent_markdown_with(|text| {
+        shortcut_copy = Some(text.to_string());
+        Ok(crate::clipboard_copy::CopyOutcome::Requested)
+    });
+    assert_eq!(shortcut_copy.as_deref(), Some(commentary));
+    // Clear the shortcut's local feedback before checking the picker's exact event order.
+    while rx.try_recv().is_ok() {}
     chat.dispatch_command(SlashCommand::Copy);
     insta::assert_snapshot!(render_bottom_popup(&chat, /*width*/ 80));
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
@@ -2472,6 +2489,19 @@ async fn slash_copy_picker_uses_completed_commentary_during_active_turn() {
         next_copy_selection(&mut rx),
         (commentary.to_string(), "Whole response".to_string(),)
     );
+    chat.dispatch_command(SlashCommand::Copy);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    assert_eq!(
+        next_copy_selection(&mut rx),
+        ("echo current\n".to_string(), "sh code".to_string())
+    );
+    complete_turn_with_message(&mut chat, "active", Some("New final response"));
+    assert_eq!(
+        chat.transcript.copyable_agent_message(),
+        Some(("New final response", "New final response")),
+    );
+    chat.transcript.reset_copy_history();
+    assert_eq!(chat.transcript.copyable_agent_message(), None);
 }
 
 #[tokio::test]

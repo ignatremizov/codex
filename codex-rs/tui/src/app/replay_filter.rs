@@ -4,10 +4,43 @@ use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadItem;
+use codex_protocol::models::MessagePhase;
 use std::collections::HashSet;
 
 use super::ThreadBufferedEvent;
 use super::ThreadEventSnapshot;
+
+/// Root-side peer mirrors have no root rollout record. Identify them without modifying
+/// live question state, which must still replay even when its message was hydrated.
+pub(super) fn mirrored_completion_item_id(notification: &ServerNotification) -> Option<&str> {
+    let ServerNotification::ItemCompleted(event) = notification else {
+        return None;
+    };
+    let ThreadItem::AgentMessage {
+        id,
+        text,
+        attribution,
+        input,
+        phase: Some(MessagePhase::Commentary),
+        ..
+    } = &event.item
+    else {
+        return None;
+    };
+    let mirrored = codex_protocol::protocol::agent_delivery_receipt_from_response_item_id(id)
+        .is_some()
+        || (codex_protocol::is_mailbox_acceptance_receipt_id(id)
+            && input.is_some()
+            && attribution
+                .as_ref()
+                .is_some_and(|attribution| attribution.recipient.thread_id != event.thread_id))
+        || (codex_protocol::protocol::is_attributed_agent_message_response_item_id(id)
+            && (attribution
+                .as_ref()
+                .is_some_and(|attribution| attribution.recipient.thread_id != event.thread_id)
+                || codex_protocol::protocol::agent_message_audit_transcript_parts(text).is_some()));
+    mirrored.then_some(id.as_str())
+}
 
 pub(super) fn snapshot_has_pending_interactive_request(snapshot: &ThreadEventSnapshot) -> bool {
     snapshot.events.iter().any(|event| {

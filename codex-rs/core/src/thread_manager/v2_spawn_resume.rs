@@ -295,6 +295,13 @@ impl ThreadManagerState {
         };
         commit_metadata()?;
         threads.insert(thread_id, Arc::clone(thread));
+        drop(threads);
+        let control = thread.session.services.agent_control.clone();
+        tokio::spawn(async move {
+            if let Err(error) = control.refresh_subtree_messaging(thread_id).await {
+                tracing::warn!(%error, "failed to refresh published messaging context");
+            }
+        });
         Ok(())
     }
 }

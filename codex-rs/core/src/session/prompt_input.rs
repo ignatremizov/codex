@@ -56,6 +56,16 @@ impl Session {
                 Some(TurnItem::UserMessage(item))
             }
             PromptInputKind::Agent {
+                presentation: AgentInputPresentation::AttributedInput { attribution, input },
+            } => {
+                let mut item = AgentMessageItem::new(&[]);
+                item.id = new_attributed_agent_message_response_item_id().to_string();
+                item.attribution = Some(*attribution);
+                item.input = Some(input);
+                item.phase = Some(MessagePhase::Commentary);
+                Some(TurnItem::AgentMessage(item))
+            }
+            PromptInputKind::Agent {
                 presentation: AgentInputPresentation::Attributed(text),
             } => {
                 let mut item = AgentMessageItem::new(&[AgentMessageContent::Text { text }]);
@@ -75,10 +85,16 @@ impl Session {
             prepared,
             images,
             /*acknowledgement*/ None,
-            ConversationBoundary::Prompt,
+            ConversationBoundary::Prompt {
+                presentation: turn_item.as_ref().filter(|item| {
+                    matches!(item, TurnItem::AgentMessage(message) if message.attribution.is_some())
+                }).cloned(),
+            },
         )
         .await?;
-        if let Some(item) = turn_item {
+        if let Some(item) = turn_item
+            && !matches!(&item, TurnItem::AgentMessage(message) if message.attribution.is_some())
+        {
             self.emit_turn_item_started(turn_context, &item).await;
             self.emit_turn_item_completed(turn_context, item).await;
         }

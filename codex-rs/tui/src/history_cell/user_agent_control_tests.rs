@@ -9,6 +9,48 @@ use codex_protocol::openai_models::ReasoningEffort;
 use super::*;
 
 #[test]
+fn renders_live_subtree_default_with_future_members() {
+    let cell = new_user_agent_control(ThreadItem::UserAgentControl {
+        id: "subtree-control".into(),
+        input_outcome: None,
+        action: UserAgentControlAction::SubtreeMessaging,
+        authored_selector: Some("all".into()),
+        target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67268".into()),
+        reply_recipient_thread_id: None,
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
+        agent_ref: Some("1".into()),
+        nickname: Some("Main".into()),
+        role: None,
+        model: None,
+        reasoning_effort: None,
+        prompt_preview: None,
+        resumed_target: false,
+        fork_mode: None,
+        observe_commentary: None,
+        final_response: None,
+        target_messages: Some(true),
+        queue_input: None,
+        status: UserAgentControlStatus::Succeeded,
+        error: None,
+    })
+    .expect("subtree audit cell");
+    let text = cell
+        .display_lines(/*width*/ 160)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(text, @r"
+    • User changed subtree messaging for Main [default] (ref 1) (enabled)
+      └ Applies to this supervisor and current/future descendants; explicit pair settings take precedence.
+    ");
+}
+
+#[test]
 fn renders_unknown_prompt_with_reconciliation_warning() {
     let cell = new_user_agent_control(ThreadItem::UserAgentControl {
         id: "control-unknown".to_string(),
@@ -18,8 +60,12 @@ fn renders_unknown_prompt_with_reconciliation_warning() {
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
@@ -54,8 +100,12 @@ fn renders_successful_user_agent_prompt() {
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
@@ -93,8 +143,12 @@ fn renders_legacy_child_to_main_prompt_without_claiming_admission() {
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("main".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67268".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("1".to_string()),
         nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
         role: None,
@@ -132,8 +186,12 @@ fn renders_successful_prompt_with_post_admission_warning() {
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
@@ -172,8 +230,12 @@ fn renders_successful_prompt_that_resumed_the_target() {
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
@@ -210,8 +272,12 @@ fn renders_successful_queued_prompt_that_resumed_the_target() {
         action: UserAgentControlAction::QueuedPrompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
@@ -250,8 +316,12 @@ fn renders_successful_close_with_queued_response_replay() {
         action: UserAgentControlAction::Close,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("2".to_string()),
         nickname: Some("Anscombe".to_string()),
         role: Some("reviewer".to_string()),
@@ -288,8 +358,12 @@ fn renders_user_reply_route_changes() {
             action: UserAgentControlAction::ReplyRoute,
             authored_selector: Some("2".to_string()),
             target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+            reply_recipient_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67270".to_string()),
             previous_owner_session_id: None,
             new_owner_session_id: None,
+            task_path: None,
+            task: None,
+            task_path_mapping: Vec::new(),
             agent_ref: Some("2".to_string()),
             nickname: Some("Anscombe".to_string()),
             role: Some("reviewer".to_string()),
@@ -305,7 +379,12 @@ fn renders_user_reply_route_changes() {
             status: UserAgentControlStatus::Succeeded,
             error: None,
         })
-        .expect("control item should render");
+        .expect("control item should render")
+        .with_reply_recipient_label(|_| Some("Franklin".to_string()));
+        assert!(cell.raw_lines().iter().any(|line| {
+            line.to_string()
+                .contains("Recipient: 019ff050-d466-73b0-b133-72ecc7c67270")
+        }));
         cell.display_lines(/*width*/ 80)
             .into_iter()
             .map(|line| line.to_string())
@@ -319,10 +398,10 @@ fn renders_user_reply_route_changes() {
         format!("enabled:\n{enabled}\n\ndisabled:\n{disabled}"),
         @r"
     enabled:
-    • User changed reply route for Anscombe [reviewer] (ref 2) (allow replies)
+    • User enabled messages: Anscombe [reviewer] (ref 2) → Franklin
 
     disabled:
-    • User changed reply route for Anscombe [reviewer] (ref 2) (no replies)
+    • User disabled messages: Anscombe [reviewer] (ref 2) → Franklin
     "
     );
 }
@@ -335,8 +414,12 @@ fn renders_failed_user_agent_spawn() {
         action: UserAgentControlAction::Spawn,
         authored_selector: None,
         target_thread_id: None,
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: None,
         nickname: None,
         role: Some("reviewer".to_string()),
@@ -375,8 +458,12 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
         action: UserAgentControlAction::Resume,
         authored_selector: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: Some("019ff050-d466-73b0-b133-72ecc7c67270".to_string()),
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         agent_ref: Some("2".to_string()),
         nickname: Some("Noether".to_string()),
         role: None,

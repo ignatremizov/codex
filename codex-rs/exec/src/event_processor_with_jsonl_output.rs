@@ -14,6 +14,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::WebSearchAction as ApiWebSearchAction;
+use codex_app_server_protocol::attributed_agent_input_text;
 use codex_core::config::Config;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::SessionConfiguredEvent;
@@ -23,6 +24,7 @@ use serde_json::json;
 pub use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
+use crate::exec_events::AgentInputItem;
 use crate::exec_events::AgentMessageItem;
 use crate::exec_events::CollabAgentState;
 use crate::exec_events::CollabAgentStatus;
@@ -146,6 +148,21 @@ impl EventProcessorWithJsonOutput {
         item: ThreadItem,
         make_id: impl FnOnce() -> String,
     ) -> Option<ExecThreadItem> {
+        if let ThreadItem::AgentMessage {
+            attribution: Some(attribution),
+            ..
+        } = &item
+            && let Some(text) = attributed_agent_input_text(&item)
+        {
+            return Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::AgentInput(AgentInputItem {
+                    sender_thread_id: attribution.sender.thread_id.clone(),
+                    recipient_thread_id: attribution.recipient.thread_id.clone(),
+                    text,
+                }),
+            });
+        }
         match item {
             ThreadItem::AgentMessage { id, text, .. }
                 if sub_agent_completion_status_from_response_item_id(&id).is_none() =>
@@ -400,6 +417,7 @@ impl EventProcessorWithJsonOutput {
                     id,
                     text,
                     inter_agent_source: None,
+                    attribution: None,
                     ..
                 } if sub_agent_completion_status_from_response_item_id(id).is_none() => {
                     Some(text.clone())

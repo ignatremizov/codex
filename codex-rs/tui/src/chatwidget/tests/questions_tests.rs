@@ -163,7 +163,7 @@ async fn local_shell_command_preserves_unanswered_questions() {
     assert_eq!(question_count(&chat), 2);
     assert_matches!(
         op_rx.try_recv(),
-        Ok(Op::RunUserShellCommand { command }) if command == "echo hi"
+        Ok(Op::RunUserShellCommand { command, response_handling }) if command == "echo hi" && response_handling == Default::default()
     );
 }
 
@@ -651,6 +651,8 @@ fn open_questions(chat: &mut ChatWidget, options: Option<Vec<String>>) {
     chat.on_agent_message_item_completed(
         AgentMessageItem {
             id: "review".into(),
+            attribution: None,
+            input: None,
             content: Vec::new(),
             phase: None,
             memory_citation: None,
@@ -786,6 +788,8 @@ async fn question_drafts_survive_navigation_and_snapshot_replay() {
         inter_agent_source: None,
         id: "buffered".into(),
         text: String::new(),
+        attribution: None,
+        input: None,
         phase: None,
         memory_citation: None,
         delivery: None,

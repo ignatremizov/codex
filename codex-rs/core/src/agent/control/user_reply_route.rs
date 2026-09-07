@@ -32,13 +32,13 @@ impl LocalAgentControl {
     pub(crate) async fn replace_durable_target_message_route(
         &self,
         target_thread_id: ThreadId,
-        parent: SessionPresentationId,
+        recipient_thread_id: ThreadId,
         mode: TargetMessageRouteMode,
     ) -> CodexResult<ReplacedTargetMessageRoute> {
         let control = self.clone();
         tokio::spawn(async move {
             let state = control.upgrade()?;
-            if parent.thread_id == target_thread_id {
+            if recipient_thread_id == target_thread_id {
                 return Err(CodexErr::InvalidRequest("an agent cannot grant itself a reply route".into()));
             }
             let _lifecycle = state.acquire_live_agent_lifecycle(target_thread_id).await?;
@@ -49,11 +49,10 @@ impl LocalAgentControl {
                     "V2 targets use native inter-agent messaging and do not support V1 reply routes".into(),
                 ));
             }
-            let _source = state.agent_turn_queue.acquire_source_admission(parent.thread_id).await;
-            let observer = state.get_thread(parent.thread_id).await?;
-            if observer.session.presentation_id() != parent {
-                return Err(CodexErr::ThreadNotFound(parent.thread_id));
-            }
+            let _source = state.agent_turn_queue.acquire_source_admission(recipient_thread_id).await;
+            control.require_current_agent_ownership(recipient_thread_id).await?;
+            let observer = state.get_thread(recipient_thread_id).await?;
+            let parent = observer.session.presentation_id();
             observer.session.submission_admission.check_ready()?;
             target.session.submission_admission.check_ready()?;
             let _observer_admission = observer.session.submission_admission
@@ -62,6 +61,7 @@ impl LocalAgentControl {
             let _target_admission = target.session.submission_admission
                 .try_accept_completion_delivery()
                 .ok_or_else(|| CodexErr::InvalidRequest("target is closing".into()))?;
+            let _permission = control.acquire_messaging_permission_transaction().await;
             let transaction = control.acquire_response_observation_transaction(parent).await;
             let child = target.session.presentation_id();
             let prepared = control.prepare_reply_route(parent, child, mode)?;
@@ -100,6 +100,9 @@ impl LocalAgentControl {
                 )));
             }
             mutation.committed = true;
+            control.refresh_messaging_context_locked(target_thread_id).await.map_err(|error| {
+                CodexErr::Fatal(format!("send permission committed but context refresh failed: {error}; do not retry"))
+            })?;
             Ok(ReplacedTargetMessageRoute { target_thread_id, previous })
         }).await.map_err(|error| {
             CodexErr::Fatal(format!("reply-route replacement worker failed: {error}; do not retry"))

@@ -1192,11 +1192,21 @@ impl Session {
             .as_ref()
             .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
             .unwrap_or_else(|| session_configuration.cwd().clone());
-        let per_turn_config = self.build_per_turn_config(
+        let mut per_turn_config = self.build_per_turn_config(
             &session_configuration,
             cwd.clone(),
             turn_environments.primary_workspace_roots(),
         );
+        if self.services.agent_control.bound_session_id().is_some() {
+            // Discovery is a root-owned opt-in, not a permission a child role can grant.
+            // Keep the saved child config intact, and fail closed when its owner is absent.
+            per_turn_config.list_agents_enabled = self
+                .services
+                .agent_control
+                .agent_directory_enabled(self.thread_id)
+                .await
+                .unwrap_or(false);
+        }
         let network_permission_profile = primary_turn_environment
             .map(TurnEnvironment::permission_profile)
             .cloned()

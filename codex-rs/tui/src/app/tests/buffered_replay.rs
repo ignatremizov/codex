@@ -28,6 +28,8 @@ fn completed(thread: &str) -> ServerNotification {
             text: "Final **answer**".into(),
             phase: None,
             memory_citation: None,
+            attribution: None,
+            input: None,
             delivery: None,
             questions: None,
         },
@@ -183,6 +185,107 @@ async fn refreshed_active_reasoning_accepts_later_deltas_and_complete_summary() 
     }
 }
 
+#[tokio::test]
+async fn live_peer_message_remains_visible_in_history_and_transcript_after_refresh() {
+    for presentation in [
+        "live",
+        "thread switch",
+        "history refresh",
+        "live turn refresh",
+        "disk refresh after live turn refresh",
+    ] {
+        let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+        let sender = ThreadId::new();
+        let recipient = ThreadId::new();
+        for (id, nickname) in [(sender, "Banach"), (recipient, "Franklin")] {
+            app.upsert_agent_picker_thread(
+                id,
+                Some(nickname.to_string()),
+                Some("coder".to_string()),
+                /*is_closed*/ false,
+            );
+        }
+        let id = codex_protocol::protocol::new_attributed_agent_message_response_item_id();
+        let notification = ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: id.to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::AgentMessage {
+                id: id.to_string(),
+                text: format!(
+                    "Agent message from `{sender}` to `{recipient}`:\n\nUse API revision 2.\nThe field is optional."
+                ),
+                phase: Some(codex_protocol::models::MessagePhase::Commentary),
+                inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+                    author: sender.to_string(),
+                    recipient: recipient.to_string(),
+                }),
+                memory_citation: None,
+                attribution: None,
+                input: None,
+                delivery: None,
+                questions: None,
+            },
+        });
+        if presentation == "live" {
+            app.chat_widget
+                .handle_server_notification(notification, /*replay_kind*/ None);
+        } else {
+            let mut store = ThreadEventStore::new(/*capacity*/ 16);
+            if presentation.contains("live turn refresh") {
+                let ServerNotification::ItemCompleted(event) = &notification else {
+                    unreachable!();
+                };
+                store.set_turns(vec![test_turn(
+                    &event.turn_id,
+                    TurnStatus::InProgress,
+                    vec![event.item.clone()],
+                )]);
+            }
+            store.push_notification(notification);
+            if presentation == "history refresh" {
+                // A fresh stored snapshot has no copy of the live-only root notification.
+                store.set_turns(Vec::new());
+                store.rebase_buffer_after_session_refresh();
+            } else if presentation.contains("live turn refresh") {
+                store.rebase_buffer_after_session_refresh();
+                assert!(store.snapshot().events.is_empty());
+                if presentation == "disk refresh after live turn refresh" {
+                    store.set_turns(Vec::new());
+                    store.rebase_buffer_after_session_refresh();
+                }
+            }
+            app.replay_thread_snapshot(store.snapshot(), /*resume_restored_queue*/ false);
+        }
+        let cells = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                AppEvent::InsertHistoryCell(cell) => Some(cell),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let history = cells
+            .iter()
+            .flat_map(|cell| cell.display_lines(/*width*/ 100))
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let transcript = cells
+            .iter()
+            .flat_map(|cell| cell.transcript_lines(/*width*/ 100))
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(history, @r"
+            • Banach [coder] sends to Franklin [coder] (○ not visible):
+              └ Use API revision 2.
+                The field is optional.
+            ");
+        }
+        assert_eq!(transcript, history, "{presentation}");
+    }
+}
+
 #[test]
 fn buffered_replay_keeps_unfinished_and_unrelated_deltas_in_order() {
     let completion = completed("thread");
@@ -253,6 +356,8 @@ fn evicted_voice_delegation_marker_still_suppresses_private_replay() {
             inter_agent_source: None,
             id: "reasoning".into(),
             text: "[ANALYSIS] private".into(),
+            attribution: None,
+            input: None,
             phase: None,
             memory_citation: None,
             delivery: None,
@@ -378,6 +483,8 @@ fn snapshot_keeps_typed_output_before_voice_handoff_in_the_same_turn() {
         inter_agent_source: None,
         id: id.into(),
         text: text.into(),
+        attribution: None,
+        input: None,
         phase: Some(codex_protocol::models::MessagePhase::Commentary),
         questions: None,
         memory_citation: None,
@@ -436,6 +543,8 @@ fn snapshot_keeps_typed_item_completed_after_voice_handoff() {
         inter_agent_source: None,
         id: "typed".into(),
         text: "Typed commentary completed late".into(),
+        attribution: None,
+        input: None,
         phase: Some(codex_protocol::models::MessagePhase::Commentary),
         questions: None,
         memory_citation: None,
@@ -445,6 +554,8 @@ fn snapshot_keeps_typed_item_completed_after_voice_handoff() {
         inter_agent_source: None,
         id: "private".into(),
         text: "Voice-private commentary".into(),
+        attribution: None,
+        input: None,
         phase: Some(codex_protocol::models::MessagePhase::Commentary),
         questions: None,
         memory_citation: None,
@@ -566,6 +677,8 @@ async fn evicted_voice_marker_survives_widget_snapshot_for_late_reasoning() {
                 inter_agent_source: None,
                 id: "private-commentary".into(),
                 text: "[COMMENTARY] private after switch".into(),
+                attribution: None,
+                input: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,

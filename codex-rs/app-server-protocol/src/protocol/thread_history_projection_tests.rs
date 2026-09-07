@@ -73,6 +73,7 @@ fn projects_turn_lifecycle_without_prior_builder_state() {
             started_at: Some(10),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         },
     )));
     let completed = project(RolloutItem::EventMsg(EventMsg::TurnComplete(
@@ -174,6 +175,8 @@ fn projects_completed_canonical_turn_items() {
         memory_citation: None,
         delivery: None,
         questions: None,
+        attribution: None,
+        input: None,
         sub_agent_completion: None,
     });
 
@@ -237,6 +240,61 @@ fn projects_optional_completed_item_lifecycle_timestamps() {
 }
 
 #[test]
+fn peer_message_audit_replays_without_completing_active_root_turn() {
+    let root = ThreadId::new();
+    let sender = ThreadId::new();
+    let recipient = ThreadId::new();
+    let mut message = AgentMessageItem::new(&[AgentMessageContent::Text {
+        text: format!("Agent message from `{sender}` to `{recipient}`:\n\nUse the new API."),
+    }]);
+    message.id =
+        codex_protocol::protocol::new_attributed_agent_message_response_item_id().to_string();
+    message.phase = Some(MessagePhase::Commentary);
+    let expected = ThreadItem::from(TurnItem::AgentMessage(message.clone()));
+
+    for turn_id in [message.id.as_str(), "active-root-turn"] {
+        let event = item_completed(root, turn_id, TurnItem::AgentMessage(message.clone()));
+        assert_eq!(
+            project(event.clone()).changed_items,
+            vec![ThreadHistoryItemChange {
+                turn_id: turn_id.to_string(),
+                item: expected.clone(),
+                started_at_ms: Some(100),
+                completed_at_ms: Some(123),
+            }]
+        );
+        let mut builder = crate::ThreadHistoryBuilder::new();
+        if turn_id == "active-root-turn" {
+            builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+                root_turn_id: None,
+            }));
+            builder.handle_rollout_item(&event);
+            let active = builder
+                .active_turn_snapshot()
+                .expect("Main is still active");
+            assert_eq!(
+                (active.id, active.status, active.items),
+                (
+                    turn_id.to_string(),
+                    TurnStatus::InProgress,
+                    vec![expected.clone()]
+                )
+            );
+        } else {
+            let turns = build_turns_from_rollout_items(&[event]);
+            assert_eq!(turns.len(), 1);
+            assert_eq!(&turns[0].items, &vec![expected.clone()]);
+        }
+    }
+}
+
+#[test]
 fn projects_user_agent_control_as_a_completed_standalone_turn() {
     let target_thread_id = ThreadId::new();
     let expected_target_thread_id = target_thread_id.to_string();
@@ -245,10 +303,14 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some(target_thread_id),
+        reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         agent_ref: Some(2),
         nickname: Some("Anscombe".to_string()),
+        task_path: None,
+        task: None,
+        task_path_mapping: Vec::new(),
         role: Some("reviewer".to_string()),
         model: None,
         reasoning_effort: None,
@@ -282,7 +344,7 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
             }],
             changed_items: vec![ThreadHistoryItemChange {
                 turn_id: "control-1".to_string(),
-                item: ThreadItem::from(item),
+                item: ThreadItem::from(item.clone()),
                 started_at_ms: Some(100),
                 completed_at_ms: Some(123),
             }],
@@ -316,7 +378,9 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
 #[test]
 fn projects_detached_user_shell_as_a_completed_standalone_turn() {
     let item = TurnItem::CommandExecution(CommandExecutionItem {
+        model_context: None,
         id: "shell-turn".to_string(),
+        deadline_at_ms: None,
         plugin_id: None,
         script_path: None,
         process_id: Some("12345".to_string()),
@@ -433,6 +497,8 @@ fn projects_inter_agent_response_items_into_paginated_history() {
                         author: "/root".to_string(),
                         recipient: "/root/worker".to_string(),
                     }),
+                    attribution: None,
+                    input: None,
                     phase: Some(MessagePhase::Commentary),
                     memory_citation: None,
                     delivery: None,
@@ -475,6 +541,8 @@ fn projects_legacy_inter_agent_communication_into_paginated_history() {
                     memory_citation: None,
                     delivery: None,
                     questions: None,
+                    attribution: None,
+                    input: None,
                 },
                 started_at_ms: None,
                 completed_at_ms: None,

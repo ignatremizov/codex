@@ -3,9 +3,35 @@ use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ListSelectionView;
 use crate::render::renderable::Renderable;
+use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::unbounded_channel;
+
+#[test]
+fn controls_title_uses_the_agent_identity_color() {
+    let params = agent_control_actions_view_params(
+        ThreadId::new(),
+        "2",
+        "Hopper [reviewer] /root/review".into(),
+        "Hopper".into(),
+        AgentControlTargetState {
+            is_current: false,
+            is_primary: false,
+            is_running: true,
+            is_closed: false,
+            needs_adoption: false,
+            is_side_thread: false,
+        },
+    );
+    let area = Rect::new(0, 0, 80, 2);
+    let mut buffer = Buffer::empty(area);
+    params.header.render(area, &mut buffer);
+    assert_eq!(
+        (buffer[(10, 0)].symbol(), buffer[(10, 0)].fg),
+        ("H", crate::agent_color::nickname_color("Hopper")),
+    );
+}
 
 fn render_normalized(params: SelectionViewParams) -> String {
     let (tx, _rx) = unbounded_channel::<AppEvent>();
@@ -42,6 +68,39 @@ fn action_matrix(state: AgentControlTargetState) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[test]
+fn current_thread_messaging_action_prepares_an_explicit_recipient() {
+    let params = agent_control_actions_view_params(
+        ThreadId::new(),
+        "Main",
+        "Main".into(),
+        "Main".into(),
+        AgentControlTargetState {
+            is_current: true,
+            is_primary: true,
+            is_running: false,
+            is_closed: false,
+            needs_adoption: false,
+            is_side_thread: false,
+        },
+    );
+    let item = params
+        .items
+        .iter()
+        .find(|item| item.name == "Messaging permissions")
+        .expect("messaging action");
+    assert!(!item.is_disabled);
+    let (tx, mut rx) = unbounded_channel::<AppEvent>();
+    let sender = AppEventSender::new(tx);
+    for action in &item.actions {
+        action(&sender);
+    }
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PrepareAgentCommand(command)) if command == "/agent sends Main to "
+    ));
 }
 
 #[test]
@@ -97,6 +156,7 @@ fn action_availability_snapshot() {
     Interrupt turn: enabled
     Resume agent: Agent is already open.
     Observe response: enabled
+    Messaging permissions: enabled
     Close agent: enabled
 
     closed child:
@@ -106,6 +166,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Agent is closed.
     Resume agent: enabled
     Observe response: Resume the closed agent first.
+    Messaging permissions: Resume the closed agent first.
     Close agent: Agent is already closed.
 
     current main:
@@ -115,6 +176,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Use the normal interrupt shortcut for the current agent.
     Resume agent: Agent is already open.
     Observe response: An agent cannot observe itself.
+    Messaging permissions: enabled
     Close agent: Main cannot be closed.
 
     transferred child:
@@ -124,6 +186,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Agent is not controlled by this root.
     Resume agent: enabled
     Observe response: Agent is not controlled by this root.
+    Messaging permissions: Agent is not controlled by this root.
     Close agent: Agent is not controlled by this root.
 
     side thread:
@@ -133,6 +196,7 @@ fn action_availability_snapshot() {
     Interrupt turn: Switch to the side conversation to interrupt it.
     Resume agent: Side conversations use the normal TUI lifecycle.
     Observe response: Side conversations do not use agent response observation.
+    Messaging permissions: Side conversations do not use agent response observation.
     Close agent: Side conversations use the normal TUI lifecycle.
     ");
 }
@@ -145,6 +209,7 @@ fn contextual_controls_render_labels_disabled_reasons_and_confirmation_hint() {
         thread_id,
         "2",
         "Hopper [reviewer]".to_string(),
+        "Hopper".to_string(),
         AgentControlTargetState {
             is_current: false,
             is_primary: false,
@@ -164,7 +229,8 @@ fn contextual_controls_render_labels_disabled_reasons_and_confirmation_hint() {
     4. Interrupt turn Stop the active turn, optionally with a follow-up
     Resume agent (disabled) Reopen this controlled agent (disabled: Agent is already open.)
     5. Observe response Choose passive, wake, or presentation delivery
-    6. Close agent End the agent runtime and revoke observation
+    6. Messaging permissions Choose who this agent may message
+    7. Close agent End the agent runtime and revoke observation
     Prepared commands return to the current composer for confirmation.
     Press enter to confirm or esc to go back
     ");
@@ -180,6 +246,7 @@ fn inspect_action_keeps_thread_switch_distinct() {
             thread_id,
             "2",
             "Hopper [reviewer]".to_string(),
+            "Hopper".to_string(),
             AgentControlTargetState {
                 is_current: false,
                 is_primary: false,

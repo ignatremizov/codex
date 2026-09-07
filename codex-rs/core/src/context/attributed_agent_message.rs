@@ -4,23 +4,20 @@ use serde_json::Value;
 use super::AgentContextIdentity;
 use super::ContextualUserFragment;
 
-/// Attributed input accepted through an exact-turn agent reply route.
+/// Model-authored input with a trusted send-time identity snapshot.
+///
+/// Canonical identities and source-turn metadata belong to the separate audit presentation,
+/// not this compact model-visible envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttributedAgentMessage {
     agent: AgentContextIdentity,
-    turn_id: String,
     message: String,
 }
 
 impl AttributedAgentMessage {
-    pub(crate) fn new(
-        agent: AgentContextIdentity,
-        turn_id: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
+    pub(crate) fn new(agent: AgentContextIdentity, message: impl Into<String>) -> Self {
         Self {
             agent,
-            turn_id: turn_id.into(),
             message: message.into(),
         }
     }
@@ -45,8 +42,19 @@ impl ContextualUserFragment for AttributedAgentMessage {
 
     fn body(&self) -> String {
         let mut fields = self.agent.json_fields();
-        fields.insert("turn_id".to_string(), Value::String(self.turn_id.clone()));
+        fields.remove("agent_id");
         fields.insert("message".to_string(), Value::String(self.message.clone()));
-        format!("\n{}\n", Value::Object(fields))
+        // JSON quotes/newlines protect header values and payload boundaries. Escape angle
+        // brackets too: serde_json otherwise leaves embedded envelope markers literal.
+        // These JSON escapes decode to the exact original text, without a payload cap.
+        let body = Value::Object(fields)
+            .to_string()
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e");
+        format!("\n{body}\n")
     }
 }
+
+#[cfg(test)]
+#[path = "attributed_agent_message_tests.rs"]
+mod tests;

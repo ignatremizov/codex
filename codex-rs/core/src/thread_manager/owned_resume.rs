@@ -325,6 +325,44 @@ impl ThreadManager {
         })
     }
 
+    /// Reload an explicit live revert, restoring only its send policy before V1 publication.
+    ///
+    /// Ordinary resume and history fork never take a live permission handoff.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn resume_thread_after_live_revert(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        parent_trace: Option<W3cTraceContext>,
+        client_mcp_extensions: ClientMcpExtensions,
+        messaging: Option<crate::LiveRevertMessagingSnapshot>,
+    ) -> CodexResult<NewThread> {
+        match messaging {
+            Some(messaging) => {
+                self.resume_thread_with_current_owner(
+                    config,
+                    initial_history,
+                    auth_manager,
+                    parent_trace,
+                    client_mcp_extensions,
+                    Some(messaging),
+                )
+                .await
+            }
+            None => {
+                self.resume_thread_with_history(
+                    config,
+                    initial_history,
+                    auth_manager,
+                    parent_trace,
+                    client_mcp_extensions,
+                )
+                .await
+            }
+        }
+    }
+
     pub(super) async fn resume_thread_with_current_owner(
         &self,
         config: Config,
@@ -332,6 +370,7 @@ impl ThreadManager {
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
+        live_revert_messaging: Option<crate::LiveRevertMessagingSnapshot>,
     ) -> CodexResult<NewThread> {
         let manager = Self {
             state: Arc::clone(&self.state),
@@ -345,6 +384,7 @@ impl ThreadManager {
                     auth_manager,
                     parent_trace,
                     client_mcp_extensions,
+                    live_revert_messaging,
                 )
                 .await
         })
@@ -359,6 +399,7 @@ impl ThreadManager {
         auth_manager: Arc<AuthManager>,
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
+        live_revert_messaging: Option<crate::LiveRevertMessagingSnapshot>,
     ) -> CodexResult<NewThread> {
         let thread_id = match &initial_history {
             InitialHistory::Resumed(history) => Some(history.conversation_id),
@@ -406,7 +447,18 @@ impl ThreadManager {
             ),
             None => None,
         };
-        let control = if let Some(alias) = &alias {
+        let control = if let Some(messaging) = &live_revert_messaging {
+            let control = messaging.control_for_resume(thread_id.ok_or_else(|| {
+                CodexErr::InvalidRequest("live revert requires resumed history".into())
+            })?)?;
+            if alias
+                .as_ref()
+                .is_some_and(|alias| alias.session_id != control.session_id())
+            {
+                return Err(CodexErr::InvalidRequest("live revert owner changed".into()));
+            }
+            control
+        } else if let Some(alias) = &alias {
             let threads = self.state.threads.read().await;
             threads
                 .get(&ThreadId::from(alias.session_id))
@@ -490,6 +542,11 @@ impl ThreadManager {
         };
         if let Some(thread) = loaded_thread {
             let id = thread.session.thread_id();
+            if live_revert_messaging.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "live revert cannot adopt an already published runtime".into(),
+                ));
+            }
             if alias.as_ref().is_some_and(|alias| {
                 thread.session.services.agent_control.session_id() != alias.session_id
             }) {
@@ -541,6 +598,14 @@ impl ThreadManager {
             ));
         }
         let setup = async {
+            let messaging_publication = match live_revert_messaging {
+                Some(messaging) => Some(
+                    messaging
+                        .restore_before_publication(&resumed.thread)
+                        .await?,
+                ),
+                None => None,
+            };
             if controlled_child {
                 control
                     .publish_restored_agent(&resumed.thread, parent.as_ref(), || {
@@ -554,6 +619,9 @@ impl ThreadManager {
                 self.state
                     .publish_restored_thread(&resumed.thread, parent.as_ref(), || Ok(()))
                     .await?;
+            }
+            if let Some(messaging) = messaging_publication {
+                messaging.published();
             }
             Ok::<(), CodexErr>(())
         }

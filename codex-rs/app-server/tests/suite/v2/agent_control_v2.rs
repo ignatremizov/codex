@@ -213,6 +213,7 @@ async fn user_reply_route_changes_are_persistent_and_audited_for_v1() -> Result<
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -230,62 +231,94 @@ async fn user_reply_route_changes_are_persistent_and_audited_for_v1() -> Result<
         panic!("user control should spawn an idle V1 child");
     };
 
-    for (mode, previous_mode, expected_target_messages) in [
-        (AgentReplyRouteMode::Enabled, None, true),
-        (
-            AgentReplyRouteMode::Disabled,
-            Some(AgentReplyRouteMode::Enabled),
-            false,
-        ),
-    ] {
-        let response: AgentControlResponse = app
-            .request(|request_id| ClientRequest::AgentControl {
-                request_id,
-                params: AgentControlParams {
-                    source_thread_id: root.thread.id.clone(),
-                    authored_selector: Some("2".to_string()),
-                    action: AgentControlAction::ReplyRoute {
-                        target: target_thread_id.clone(),
-                        mode,
-                    },
+    let sibling: AgentControlResponse = app
+        .request(|request_id| ClientRequest::AgentControl {
+            request_id,
+            params: AgentControlParams {
+                source_thread_id: root.thread.id.clone(),
+                authored_selector: None,
+                action: AgentControlAction::Spawn {
+                    task: None,
+                    role: None,
+                    model: None,
+                    reasoning_effort: None,
+                    input: None,
+                    fork_mode: AgentForkMode::None,
+                    response_handling: Some(AgentResponseHandling::Presentation),
                 },
-            })
-            .await?;
-        assert_eq!(
-            agent_control_outcome(response),
-            AgentControlOutcome::ReplyRouteChanged {
-                target_thread_id: target_thread_id.clone(),
-                previous_mode,
-                mode,
-            }
-        );
-
-        let audit = timeout(DEFAULT_READ_TIMEOUT, async {
-            loop {
-                let completed: ItemCompletedNotification =
-                    app.read_notification("item/completed").await?;
-                if matches!(
-                    &completed.item,
-                    ThreadItem::UserAgentControl {
-                        action: AuditAgentControlAction::ReplyRoute,
-                        target_thread_id: Some(audit_target),
-                        target_messages: Some(audit_target_messages),
-                        ..
-                    } if audit_target == &target_thread_id
-                        && *audit_target_messages == expected_target_messages
-                ) {
-                    return Ok::<_, anyhow::Error>(completed);
-                }
-            }
+            },
         })
-        .await??;
-        assert!(matches!(
-            audit.item,
-            ThreadItem::UserAgentControl {
-                status: UserAgentControlStatus::Succeeded,
-                ..
-            }
-        ));
+        .await?;
+    let AgentControlOutcome::Spawned {
+        target_thread_id: sibling_id,
+        ..
+    } = agent_control_outcome(sibling)
+    else {
+        panic!("spawn sibling");
+    };
+    for recipient in [None, Some(sibling_id)] {
+        let expected_recipient = recipient.as_ref().unwrap_or(&root.thread.id);
+        for (mode, previous_mode, expected_target_messages) in [
+            (AgentReplyRouteMode::Enabled, None, true),
+            (
+                AgentReplyRouteMode::Disabled,
+                Some(AgentReplyRouteMode::Enabled),
+                false,
+            ),
+        ] {
+            let response: AgentControlResponse = app
+                .request(|request_id| ClientRequest::AgentControl {
+                    request_id,
+                    params: AgentControlParams {
+                        source_thread_id: root.thread.id.clone(),
+                        authored_selector: Some("2".to_string()),
+                        action: AgentControlAction::ReplyRoute {
+                            target: target_thread_id.clone(),
+                            recipient: recipient.clone(),
+                            mode,
+                        },
+                    },
+                })
+                .await?;
+            assert_eq!(
+                agent_control_outcome(response),
+                AgentControlOutcome::ReplyRouteChanged {
+                    target_thread_id: target_thread_id.clone(),
+                    recipient_thread_id: expected_recipient.clone(),
+                    previous_mode,
+                    mode,
+                }
+            );
+
+            let audit = timeout(DEFAULT_READ_TIMEOUT, async {
+                loop {
+                    let completed: ItemCompletedNotification =
+                        app.read_notification("item/completed").await?;
+                    if matches!(
+                        &completed.item,
+                        ThreadItem::UserAgentControl {
+                            action: AuditAgentControlAction::ReplyRoute,
+                            target_thread_id: Some(audit_target),
+                            reply_recipient_thread_id: Some(audit_recipient),
+                            target_messages: Some(audit_target_messages),
+                            ..
+                        } if audit_target == &target_thread_id
+                            && audit_recipient == expected_recipient
+                            && *audit_target_messages == expected_target_messages
+                    ) {
+                        return Ok::<_, anyhow::Error>(completed);
+                    }
+                }
+            })
+            .await??;
+            assert!(matches!(
+                audit.item,
+                ThreadItem::UserAgentControl {
+                    status: UserAgentControlStatus::Succeeded,
+                    ..
+                }
+            ));
+        }
     }
     Ok(())
 }
@@ -310,6 +343,7 @@ async fn user_reply_route_rejects_v2_targets_before_mutation() -> Result<()> {
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -335,6 +369,7 @@ async fn user_reply_route_rejects_v2_targets_before_mutation() -> Result<()> {
                 authored_selector: Some("2".to_string()),
                 action: AgentControlAction::ReplyRoute {
                     target: target_thread_id,
+                    recipient: None,
                     mode: AgentReplyRouteMode::Enabled,
                 },
             })?),
@@ -428,6 +463,7 @@ async fn user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2: b
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -455,6 +491,7 @@ async fn user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2: b
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -484,6 +521,7 @@ async fn user_control_fork_modes_cross_the_app_server_boundary(multi_agent_v2: b
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -578,6 +616,8 @@ config_file = "./reviewer.toml"
 
     let mut spawned = Vec::new();
     for expected_ref in ["2", "3"] {
+        let task = (expected_ref == "2").then(|| "backend/review".to_string());
+        let expected_task_path = task.as_ref().map(|task| format!("/root/{task}"));
         let response: AgentControlResponse = app
             .request(|request_id| ClientRequest::AgentControl {
                 request_id,
@@ -585,6 +625,7 @@ config_file = "./reviewer.toml"
                     source_thread_id: root.thread.id.clone(),
                     authored_selector: Some("reviewer".to_string()),
                     action: AgentControlAction::Spawn {
+                        task: task.clone(),
                         role: Some("reviewer".to_string()),
                         model: Some("gpt-5.4".to_string()),
                         reasoning_effort: Some(ReasoningEffort::High),
@@ -598,12 +639,14 @@ config_file = "./reviewer.toml"
         let AgentControlOutcome::Spawned {
             target_thread_id,
             agent_ref,
+            task_path,
             ..
         } = agent_control_outcome(response)
         else {
             panic!("configured-role dispatch should spawn");
         };
         assert_eq!(agent_ref.as_deref(), Some(expected_ref));
+        assert_eq!(task_path, expected_task_path);
         let audit = timeout(DEFAULT_READ_TIMEOUT, async {
             loop {
                 let completed: ItemCompletedNotification =
@@ -626,8 +669,12 @@ config_file = "./reviewer.toml"
             ThreadItem::UserAgentControl {
                 model: Some(ref model),
                 reasoning_effort: Some(ReasoningEffort::High),
+                task: ref audit_task,
+                task_path: ref audit_task_path,
                 ..
             } if model == "gpt-5.4"
+                && audit_task == &task
+                && audit_task_path == &expected_task_path
         ));
         if multi_agent_v2 {
             let closed: AgentControlResponse = app
@@ -656,6 +703,7 @@ config_file = "./reviewer.toml"
                         source_thread_id: root.thread.id.clone(),
                         authored_selector: Some(expected_ref.to_string()),
                         action: AgentControlAction::Resume {
+                            task: None,
                             target: expected_ref.to_string(),
                             response_handling: Some(AgentResponseHandling::Presentation),
                         },
@@ -666,8 +714,10 @@ config_file = "./reviewer.toml"
                 agent_control_outcome(resumed),
                 AgentControlOutcome::Resumed {
                     target_thread_id: ref resumed_thread_id,
+                    task_path: ref resumed_task_path,
                     ..
                 } if resumed_thread_id == &target_thread_id
+                    && resumed_task_path == &expected_task_path
             ));
         }
         let resumed: ThreadResumeResponse = app
@@ -737,6 +787,7 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
                 source_thread_id: main.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -911,6 +962,7 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -1152,6 +1204,7 @@ async fn commentary_presentation_keeps_user_task_context(multi_agent_v2: bool) -
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -1181,6 +1234,7 @@ async fn commentary_presentation_keeps_user_task_context(multi_agent_v2: bool) -
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -1229,6 +1283,7 @@ async fn commentary_presentation_keeps_user_task_context(multi_agent_v2: bool) -
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -1357,6 +1412,7 @@ async fn queued_prompt_observation_failure_before_admission_requires_reload(
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -1485,6 +1541,7 @@ async fn queued_prompt_binding_failure_preserves_input_without_unacknowledged_ha
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -1712,6 +1769,7 @@ async fn queued_prompt_waits_for_idle_target(
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -1955,6 +2013,7 @@ async fn agent_queue_delete_removes_pending_input_and_rejects_a_stale_id() -> Re
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2164,6 +2223,7 @@ async fn user_control_prompt_reopens_closed_target(
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2324,6 +2384,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2348,6 +2409,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: first_child_id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2372,6 +2434,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: max_depth_child_id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2431,6 +2494,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: foreign_root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2468,6 +2532,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: max_depth_child_id.clone(),
                 authored_selector: Some(foreign_child_id.clone()),
                 action: AgentControlAction::Resume {
+                    task: None,
                     target: foreign_child_id.clone(),
                     response_handling: Some(AgentResponseHandling::Presentation),
                 },
@@ -2523,6 +2588,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2548,6 +2614,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: max_depth_child_id.clone(),
                 authored_selector: Some(sibling_id.clone()),
                 action: AgentControlAction::Resume {
+                    task: None,
                     target: sibling_id.clone(),
                     response_handling: Some(AgentResponseHandling::Presentation),
                 },
@@ -2584,6 +2651,7 @@ async fn max_depth_agent_can_observe_and_resume_existing_same_root_target(
                 source_thread_id: max_depth_child_id,
                 authored_selector: Some(sibling_id.clone()),
                 action: AgentControlAction::Resume {
+                    task: None,
                     target: sibling_id.clone(),
                     response_handling: Some(AgentResponseHandling::Presentation),
                 },
@@ -2708,6 +2776,7 @@ async fn user_control_adopts_a_stored_standalone_rollout(multi_agent_v2: bool) -
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some(foreign.thread.id.clone()),
                 action: AgentControlAction::Resume {
+                    task: None,
                     target: foreign.thread.id.clone(),
                     response_handling: Some(AgentResponseHandling::Presentation),
                 },
@@ -2721,6 +2790,7 @@ async fn user_control_adopts_a_stored_standalone_rollout(multi_agent_v2: bool) -
             nickname: Some(nickname),
             observation_binding: Some(AgentObservationBinding::NextTurn),
             post_commit_warning: None,
+            ..
         } if target_thread_id == foreign.thread.id && agent_ref == "2" => nickname,
         other => panic!("unexpected standalone adoption response: {other:?}"),
     };
@@ -2876,6 +2946,7 @@ async fn user_control_adoption_records_the_previous_owner(multi_agent_v2: bool) 
                 source_thread_id: previous_owner.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -2927,6 +2998,7 @@ async fn user_control_adoption_records_the_previous_owner(multi_agent_v2: bool) 
                 source_thread_id: new_owner.thread.id.clone(),
                 authored_selector: Some(target_thread_id.clone()),
                 action: AgentControlAction::Resume {
+                    task: None,
                     target: target_thread_id.clone(),
                     response_handling: Some(AgentResponseHandling::Presentation),
                 },
@@ -2969,6 +3041,7 @@ async fn user_control_adoption_records_the_previous_owner(multi_agent_v2: bool) 
                 source_thread_id: new_owner.thread.id.clone(),
                 authored_selector: Some(target_thread_id.clone()),
                 action: AgentControlAction::Resume {
+                    task: None,
                     target: target_thread_id.clone(),
                     response_handling: Some(AgentResponseHandling::Presentation),
                 },
@@ -2983,6 +3056,7 @@ async fn user_control_adoption_records_the_previous_owner(multi_agent_v2: bool) 
             nickname: Some(_),
             observation_binding: Some(AgentObservationBinding::NextTurn),
             post_commit_warning: None,
+            ..
         } if resumed_thread_id == &target_thread_id && agent_ref == "2"
     ));
 
@@ -3094,6 +3168,7 @@ async fn passive_close_replay_precedes_the_next_user_prompt() -> Result<()> {
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -3271,6 +3346,7 @@ async fn close_with_none_does_not_replay_a_completed_response() -> Result<()> {
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -3408,6 +3484,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,
@@ -3486,6 +3563,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 source_thread_id: root.thread.id.clone(),
                 authored_selector: Some("new".to_string()),
                 action: AgentControlAction::Spawn {
+                    task: None,
                     role: None,
                     model: None,
                     reasoning_effort: None,

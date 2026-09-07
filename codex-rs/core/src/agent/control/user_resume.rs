@@ -15,6 +15,7 @@ pub(super) enum ResumeAuthority {
         previous_session_id: Option<SessionId>,
         descendants: Vec<ThreadId>,
         authored_selector: String,
+        task_path: Option<String>,
     },
 }
 
@@ -27,10 +28,12 @@ impl ResumeAuthority {
                 previous_session_id,
                 descendants,
                 authored_selector,
+                task_path,
             } => ThreadSpawnPersistence::Transfer {
                 expected_previous_session_id: previous_session_id,
                 reserved_descendant_thread_ids: Some(descendants),
                 authored_selector,
+                task_path,
             },
         }
     }
@@ -49,6 +52,18 @@ pub(crate) struct UserResumeOutcome {
     pub(crate) post_commit_warning: Option<String>,
 }
 
+pub(crate) struct AgentAdoptionResult {
+    pub(crate) task_path: Option<String>,
+    pub(crate) task_path_mapping: Vec<codex_agent_graph_store::AgentTaskPathMapping>,
+}
+
+/// The explicit ownership transfer and assignment requested by a resume caller.
+pub(crate) struct AgentAdoptionRequest {
+    pub(crate) previous_session_id: Option<SessionId>,
+    pub(crate) authored_selector: String,
+    pub(crate) task: Option<String>,
+}
+
 impl LocalAgentControl {
     /// Model-authored transfer retains the autonomous new-edge depth budget.
     pub(crate) async fn resume_agent_from_rollout_adopting(
@@ -57,9 +72,13 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         source: SessionSource,
         policy: ResponseObservationPolicy,
-        previous_session_id: Option<SessionId>,
-        authored_selector: String,
-    ) -> CodexResult<ThreadId> {
+        adoption: AgentAdoptionRequest,
+    ) -> CodexResult<AgentAdoptionResult> {
+        let AgentAdoptionRequest {
+            previous_session_id,
+            authored_selector,
+            task,
+        } = adoption;
         if thread_spawn_depth(&source).is_some_and(|depth| depth > config.agent_max_depth) {
             return Err(CodexErr::InvalidRequest(
                 "agent adoption exceeds the model delegation depth limit".into(),
@@ -77,6 +96,18 @@ impl LocalAgentControl {
                 "adoption requires the target's canonical UUID".into(),
             ));
         }
+        let task_path = match task {
+            Some(task) => Some(
+                self.resolve_new_agent_task_path(
+                    source.parent_thread_id().ok_or_else(|| {
+                        CodexErr::InvalidRequest("adoption requires a source agent".into())
+                    })?,
+                    &task,
+                )
+                .await?,
+            ),
+            None => None,
+        };
         let result = self
             .resume_with_observation(
                 config,
@@ -87,13 +118,22 @@ impl LocalAgentControl {
                     previous_session_id,
                     descendants: Vec::new(),
                     authored_selector,
+                    task_path,
                 },
             )
             .await?;
         if let Some(warning) = result.post_commit_warning {
             return Err(CodexErr::Fatal(warning));
         }
-        Ok(thread_id)
+        Ok(AgentAdoptionResult {
+            task_path: result.alias.and_then(|alias| alias.task_path),
+            task_path_mapping: match result.transfer {
+                Some(AgentAliasTransfer::Transferred {
+                    task_path_mapping, ..
+                }) => task_path_mapping,
+                Some(AgentAliasTransfer::AlreadyOwned { .. }) | None => Vec::new(),
+            },
+        })
     }
     pub(crate) async fn resume_user_agent_from_rollout(
         &self,
@@ -118,9 +158,13 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         observer_source: SessionSource,
         policy: ResponseObservationPolicy,
-        previous_session_id: Option<SessionId>,
-        authored_selector: String,
+        adoption: AgentAdoptionRequest,
     ) -> CodexResult<UserResumeOutcome> {
+        let AgentAdoptionRequest {
+            previous_session_id,
+            authored_selector,
+            task,
+        } = adoption;
         if ThreadId::from_string(
             authored_selector
                 .strip_prefix("id:")
@@ -133,6 +177,18 @@ impl LocalAgentControl {
                 "adoption requires the target's canonical UUID".into(),
             ));
         }
+        let task_path = match task {
+            Some(task) => Some(
+                self.resolve_new_agent_task_path(
+                    observer_source.parent_thread_id().ok_or_else(|| {
+                        CodexErr::InvalidRequest("adoption requires a source agent".into())
+                    })?,
+                    &task,
+                )
+                .await?,
+            ),
+            None => None,
+        };
         self.resume_with_observation(
             config,
             thread_id,
@@ -142,6 +198,7 @@ impl LocalAgentControl {
                 previous_session_id,
                 descendants: Vec::new(),
                 authored_selector,
+                task_path,
             },
         )
         .await
@@ -434,7 +491,7 @@ impl LocalAgentControl {
             }
             (Some(parent), None) if needs_v2_path => Some(
                 parent
-                    .join(&format!("agent-{thread_id}"))
+                    .join(&format!("agent_{thread_id}").replace('-', "_"))
                     .map_err(CodexErr::InvalidRequest)?,
             ),
             (_, path) => path,

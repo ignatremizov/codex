@@ -63,6 +63,8 @@ fn goal_accounting_ignores_plan_mode_turns() {
 fn empty_continuations_require_three_turns_without_activity_or_goal_changes() {
     let empty_final = TurnItem::AgentMessage(AgentMessageItem {
         id: "empty".into(),
+        attribution: None,
+        input: None,
         content: vec![AgentMessageContent::Text { text: " \n".into() }],
         phase: Some(MessagePhase::FinalAnswer),
         memory_citation: None,

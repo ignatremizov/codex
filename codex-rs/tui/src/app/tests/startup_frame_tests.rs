@@ -21,6 +21,8 @@ async fn owned_startup_preserves_loading_until_resume_replay_is_applied() -> Res
             inter_agent_source: None,
             id: "answer".into(),
             text: "Retained **answer** after resume.".into(),
+            attribution: None,
+            input: None,
             phase: None,
             memory_citation: None,
             delivery: None,

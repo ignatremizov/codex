@@ -76,6 +76,8 @@ pub(super) async fn completed_history_app(
             }),
             TurnItem::AgentMessage(AgentMessageItem {
                 id: format!("answer-{index}"),
+                attribution: None,
+                input: None,
                 content: vec![AgentMessageContent::Text {
                     text: format!("{name} answer"),
                 }],

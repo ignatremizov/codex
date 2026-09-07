@@ -1,4 +1,7 @@
 use codex_protocol::ThreadId;
+use codex_protocol::WakeEventFinalDelivery;
+use codex_protocol::WakeEventFlags;
+use codex_protocol::WakeEventSurface;
 use serde::Deserialize;
 use serde::Deserializer;
 
@@ -94,77 +97,20 @@ impl ResponseObservationPolicy {
     }
 
     fn from_wire(value: &str) -> Result<Self, String> {
-        if value.is_empty() {
-            return Err("invalid wake/event state ``; omit w for default handling".to_string());
-        }
-
-        let mut commentary = false;
-        let mut final_wake = false;
-        let mut target_messages = false;
-        let mut queue_input = false;
-        let mut presentation_only = false;
-        let mut previous_position = None;
-        for flag in value.chars() {
-            let position = match flag {
-                'c' => {
-                    if commentary {
-                        return Err(invalid_policy(value));
-                    }
-                    commentary = true;
-                    0
-                }
-                'f' => {
-                    if final_wake {
-                        return Err(invalid_policy(value));
-                    }
-                    final_wake = true;
-                    1
-                }
-                'm' => {
-                    if target_messages {
-                        return Err(invalid_policy(value));
-                    }
-                    target_messages = true;
-                    2
-                }
-                'q' => {
-                    if queue_input {
-                        return Err(invalid_policy(value));
-                    }
-                    queue_input = true;
-                    3
-                }
-                'x' => {
-                    if presentation_only {
-                        return Err(invalid_policy(value));
-                    }
-                    presentation_only = true;
-                    4
-                }
-                _ => return Err(invalid_policy(value)),
-            };
-            if previous_position.is_some_and(|previous| position <= previous) {
-                return Err(invalid_policy(value));
-            }
-            previous_position = Some(position);
-        }
-
-        let final_response = match (final_wake, presentation_only) {
-            (true, false) => FinalResponseObservation::Wake,
-            (false, true) => FinalResponseObservation::PresentationOnly,
-            (false, false) | (true, true) => FinalResponseObservation::Passive,
+        let flags = WakeEventFlags::parse(value, WakeEventSurface::Agent)
+            .map_err(|error| format!("invalid wake/event state `{value}`; {error}"))?;
+        let final_response = match flags.final_delivery {
+            WakeEventFinalDelivery::Wake => FinalResponseObservation::Wake,
+            WakeEventFinalDelivery::PresentationOnly => FinalResponseObservation::PresentationOnly,
+            WakeEventFinalDelivery::Passive => FinalResponseObservation::Passive,
         };
         Ok(Self {
-            commentary,
+            commentary: flags.commentary,
             final_response,
-            target_messages,
-            queue_input,
+            target_messages: flags.target_messages,
+            queue_input: flags.queue_input,
         })
     }
-}
-
-fn invalid_policy(value: &str) -> String {
-    format!("invalid wake/event state `{value}`; use unique c, f, m, q, or x flags in cfmqx order")
 }
 
 impl<'de> Deserialize<'de> for ResponseObservationPolicy {

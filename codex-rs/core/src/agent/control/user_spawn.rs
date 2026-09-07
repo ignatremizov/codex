@@ -75,6 +75,10 @@ impl LocalAgentControl {
             Ok(UserAgentSpawnResult {
                 target_thread_id: spawned.agent.thread_id,
                 agent_ref: spawned.alias.as_ref().map(|alias| alias.agent_ref),
+                task_path: spawned
+                    .alias
+                    .as_ref()
+                    .and_then(|alias| alias.task_path.clone()),
                 nickname: spawned
                     .alias
                     .and_then(|alias| alias.nickname)

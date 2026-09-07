@@ -6720,6 +6720,8 @@ session_picker_view = "dense"
                         text: String::from("hello from assistant"),
                         phase: None,
                         memory_citation: None,
+                        attribution: None,
+                        input: None,
                         delivery: None,
                         questions: None,
                     },
