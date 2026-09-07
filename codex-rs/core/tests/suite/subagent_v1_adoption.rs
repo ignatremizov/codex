@@ -1,4 +1,6 @@
 use super::*;
+use pretty_assertions::assert_eq;
+use test_case::test_case;
 
 #[test_case(ThreadHistoryMode::Legacy, None; "legacy_unlabelled")]
 #[test_case(ThreadHistoryMode::Legacy, Some("imported/backend"); "legacy_explicit_task")]
@@ -39,13 +41,7 @@ async fn native_resume_reports_committed_foreign_root_assignment(
                 }
                 .into(),
             )]),
-            environments: Some(
-                test.codex
-                    .config_snapshot()
-                    .await
-                    .environments
-                    .to_selections(),
-            ),
+            environments: Some(test.codex.config_snapshot().await.environments),
             ..StartThreadOptions::new(test.config.clone())
         })
         .await?;

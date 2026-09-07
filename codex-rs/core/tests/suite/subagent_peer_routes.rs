@@ -1,4 +1,6 @@
 use super::*;
+use pretty_assertions::assert_eq;
+use test_case::test_case;
 
 #[path = "subagent_downward_permissions.rs"]
 mod downward_permissions;

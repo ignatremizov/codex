@@ -3910,6 +3910,7 @@ async fn observed_response_delivery_does_not_block_a_later_close(
                 parent_thread_id: test.session_configured.thread_id,
                 child_thread_id: target.thread_id,
                 nickname: None,
+                task_path: None,
             })
             .await?;
     }
@@ -4991,6 +4992,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             thread_id: spawned_id,
             agent_ref: 2,
             nickname: Some(nickname),
+            task_path: None,
             state: codex_state::AgentAliasState::Active,
         }
     );
@@ -6163,6 +6165,7 @@ async fn foreign_close_resumes_idle_lifecycle_after_revoking_final_wake(
                 parent_thread_id: test.session_configured.thread_id,
                 child_thread_id: target.thread_id,
                 nickname: None,
+                task_path: None,
             })
             .await?;
     }
@@ -7575,6 +7578,7 @@ async fn fork_requires_explicit_agent_reconfiguration(
             thread_id: forked.thread_id,
             agent_ref: 1,
             nickname: Some(codex_protocol::MAIN_AGENT_NICKNAME.to_string()),
+            task_path: Some("/root".to_string()),
             state: codex_state::AgentAliasState::Active,
         }]
     );
