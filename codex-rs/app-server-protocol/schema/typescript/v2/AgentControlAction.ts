@@ -15,7 +15,7 @@ export type AgentControlAction = { "type": "spawn",
 /**
  * Optional assignment label, resolved within the issuing agent's root namespace.
  */
-task?: string | null,
+task: string | null,
 /**
  * Omitted selects the default child configuration.
  */
@@ -60,7 +60,7 @@ responseHandling: AgentResponseHandling | null, } | { "type": "resume",
 /**
  * New assignment for cross-root adoption only; same-root resume cannot rename a task.
  */
-task?: string | null,
+task: string | null,
 /**
  * Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.
  */
@@ -80,4 +80,4 @@ responseHandling: AgentResponseHandling | null, } | { "type": "observe", target:
 /**
  * Omitted means the source thread issuing the user command.
  */
-recipient?: string | null, mode: AgentReplyRouteMode, } | { "type": "subtreeMessaging", mode: AgentReplyRouteMode, };
+recipient: string | null, mode: AgentReplyRouteMode, } | { "type": "subtreeMessaging", mode: AgentReplyRouteMode, };
