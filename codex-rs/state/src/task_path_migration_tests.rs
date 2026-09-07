@@ -3,9 +3,13 @@ use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn task_path_migration_upgrades_existing_aliases_without_reusing_lifecycle_paths() {
-    let mut connection = sqlx::SqliteConnection::connect("sqlite::memory:")
+    let home = tempfile::tempdir().expect("database home");
+    let sqlite = crate::SqliteConfig::new_for_testing(home.path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("database");
+    let mut connection = pool.acquire().await.expect("database connection").detach();
     migrator_through(/*version*/ 10_050)
         .run(&mut connection)
         .await
