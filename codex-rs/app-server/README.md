@@ -434,6 +434,8 @@ switching models. Setting `friendly` or `pragmatic` can replace a previous
 thread's existing instructions or change explicitly supplied base instructions.
 The old `features.personality` flag is ignored.
 
+`thread/start` accepts `baseInstructions` and `developerInstructions` as resolved, thread-scoped text. Supplied base instructions have custom provenance; developer instructions remain separate from the base and managed guidance. The TUI forwards its configured custom instruction content when creating a thread on a shared server, including content loaded from a local profile's `model_instructions_file`, rather than asking the server to reopen the client's file. Starting one configured thread does not change the daemon defaults or another thread. Catalog-derived base text is not forwarded as a custom override.
+
 # MCP server capabilities
 
 `mcpServerStatus/list` returns `serverCapabilities` for each initialized MCP server
