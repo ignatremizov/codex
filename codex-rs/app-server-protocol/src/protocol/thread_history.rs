@@ -795,6 +795,13 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_item_completed(&mut self, payload: &ItemCompletedEvent) {
+        // Mailbox consumption persists this typed completion without a second legacy
+        // message event. Retain its exact payload and attribution, not the model-only
+        // user-context envelope. Other message completions keep their legacy handling.
+        if codex_protocol::is_mailbox_delivery_completion(payload) {
+            self.upsert_item_in_turn_id(&payload.turn_id, ThreadItem::from(payload.item.clone()));
+            return;
+        }
         if let codex_protocol::items::TurnItem::ContextCompaction(item) = &payload.item {
             self.upsert_item_in_turn_id(&payload.turn_id, ThreadItem::from(payload.item.clone()));
             if let Some(change) = self
@@ -1187,6 +1194,7 @@ impl ThreadHistoryBuilder {
             status: CollabAgentToolCallStatus::InProgress,
             observe_commentary: None,
             wake_on_completion: None,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
@@ -1227,6 +1235,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
@@ -1249,6 +1258,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::InProgress,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
             prompt: Some(payload.prompt.clone()),
@@ -1278,6 +1288,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id.clone()],
             prompt: Some(payload.prompt.clone()),
@@ -1315,6 +1326,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::InProgress,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: payload
                 .receiver_thread_ids
@@ -1359,6 +1371,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: None,
@@ -1381,6 +1394,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
             prompt: None,
@@ -1412,6 +1426,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
             prompt: None,
@@ -1434,6 +1449,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
             prompt: None,
@@ -1468,6 +1484,7 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status,
+            mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
             prompt: None,
@@ -2153,6 +2170,9 @@ mod inter_agent_tests;
 #[cfg(test)]
 #[path = "thread_history_detached_audit_tests.rs"]
 mod detached_audit_tests;
+#[cfg(test)]
+#[path = "thread_history_mailbox_tests.rs"]
+mod mailbox_tests;
 #[cfg(test)]
 #[path = "thread_history_user_control_tests.rs"]
 mod user_control_tests;
@@ -5369,6 +5389,7 @@ mod tests {
                 id: "resume-1".into(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                mailbox_input: None,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 receiver_agents: Vec::new(),
@@ -5434,6 +5455,7 @@ mod tests {
                 id: "spawn-1".into(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                mailbox_input: None,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 receiver_agents: Vec::new(),
@@ -5511,6 +5533,7 @@ mod tests {
                 id: "send-1".into(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
+                mailbox_input: None,
                 sender_thread_id: sender.to_string(),
                 receiver_thread_ids: vec![receiver.to_string()],
                 receiver_agents: Vec::new(),
@@ -5839,6 +5862,7 @@ mod tests {
             .expect("terminal completion"),
         );
         let wait = codex_protocol::items::CollabAgentToolCallItem {
+            mailbox_input: None,
             target_messages: None,
             queue_input: None,
             observe_commentary: None,
@@ -5852,11 +5876,13 @@ mod tests {
             receiver_agents: vec![
                 codex_protocol::protocol::CollabAgentRef {
                     thread_id: owner,
+                    task_path: None,
                     agent_nickname: Some("Worker".into()),
                     agent_role: None,
                 },
                 codex_protocol::protocol::CollabAgentRef {
                     thread_id: other,
+                    task_path: None,
                     agent_nickname: Some("Other".into()),
                     agent_role: None,
                 },

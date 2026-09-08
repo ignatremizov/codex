@@ -52,5 +52,6 @@ fn messaging_result(name: &str, input: Value, success: bool) -> AnyToolResult {
             tool_input: input,
             tool_response: json!({}),
         }),
+        mailbox_operation: None,
     }
 }

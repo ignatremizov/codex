@@ -21,8 +21,13 @@ mod persistence;
 mod target;
 #[path = "task_paths.rs"]
 mod task_paths;
+#[path = "wait_status_authority.rs"]
+mod wait_status_authority;
+
 use target::parse_v1_agent_target;
 use target::resolve_without_alias_store;
+
+pub(crate) use wait_status_authority::V1WaitStatusAuthority;
 
 pub(super) enum ThreadSpawnPersistence {
     New {

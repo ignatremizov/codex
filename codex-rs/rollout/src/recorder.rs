@@ -74,6 +74,12 @@ use codex_protocol::protocol::ThreadSource;
 use codex_state::StateRuntime;
 use codex_utils_path as path_utils;
 
+#[derive(Clone, Copy)]
+enum RolloutReadPurpose {
+    Resume,
+    MailboxRecovery,
+}
+
 /// Writes canonical session rollout items to JSONL.
 ///
 /// Rollouts are recorded as JSONL and can be inspected with tools such as:
@@ -1130,7 +1136,26 @@ impl RolloutRecorder {
         path: &Path,
     ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
         trace!("Resuming rollout from {path:?}");
-        compression::read_rollout_lines(path, Self::load_rollout_items_from_reader).await
+        compression::read_rollout_lines(path, |reader| {
+            Self::load_rollout_items_from_reader(reader, RolloutReadPurpose::Resume)
+        })
+        .await
+    }
+
+    /// Reads canonical mailbox evidence using the normal rollout decoder.
+    ///
+    /// Unlike the ordinary parse-error count, the returned count excludes valid
+    /// foreign copied session metadata whose only unsupported field is a future
+    /// history mode. Such metadata is validation-only and never added to output.
+    /// Malformed or unclassifiable records still count as errors.
+    pub async fn load_rollout_items_for_mailbox_recovery(
+        path: &Path,
+    ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
+        trace!("Reading canonical mailbox evidence from {path:?}");
+        compression::read_rollout_lines(path, |reader| {
+            Self::load_rollout_items_from_reader(reader, RolloutReadPurpose::MailboxRecovery)
+        })
+        .await
     }
 
     /// Loads rollout items from one fixed seekable prefix on the shared blocking reader.
@@ -1142,12 +1167,15 @@ impl RolloutRecorder {
         trace!("Resuming rollout prefix from {path:?}");
         file.seek(SeekFrom::Start(0))?;
         compression::RolloutLineReader::from_seekable_prefix(file, byte_limit)
-            .read_lines(Self::load_rollout_items_from_reader)
+            .read_lines(|reader| {
+                Self::load_rollout_items_from_reader(reader, RolloutReadPurpose::Resume)
+            })
             .await
     }
 
     fn load_rollout_items_from_reader(
         reader: &mut dyn Iterator<Item = std::io::Result<String>>,
+        purpose: RolloutReadPurpose,
     ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
         let mut items: Vec<RolloutItem> = Vec::new();
         let mut thread_id: Option<ThreadId> = None;
@@ -1172,6 +1200,28 @@ impl RolloutRecorder {
                 // can be copied from fork history, so only validate unknown history modes
                 // before we have parsed the rollout's own SessionMeta.
                 reject_unknown_thread_history_mode(&value)?;
+            }
+
+            if matches!(purpose, RolloutReadPurpose::MailboxRecovery)
+                && let Some(owner) = thread_id
+                && value.get("type").and_then(Value::as_str) == Some("session_meta")
+                && let Some(mode) = value
+                    .get("payload")
+                    .and_then(|payload| payload.get("history_mode"))
+                && mode.is_string()
+                && serde_json::from_value::<ThreadHistoryMode>(mode.clone()).is_err()
+            {
+                // Validate only: never rewrite or inject this copied metadata.
+                // A future mode alone cannot hide a mailbox delivery artifact.
+                // All other fields must still decode, and ownership must differ.
+                let mut compatible = value.clone();
+                compatible["payload"]["history_mode"] = Value::String("legacy".to_string());
+                if let Ok(line) = crate::decode_rollout_line(compatible)
+                    && let RolloutItem::SessionMeta(meta) = line.item
+                    && meta.meta.id != owner
+                {
+                    continue;
+                }
             }
 
             let rollout_line = match crate::decode_canonical_rollout_line(value) {
@@ -2258,3 +2308,7 @@ fn cwd_matches(session_cwd: &Path, cwd: &Path) -> bool {
 #[cfg(test)]
 #[path = "recorder_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mailbox_recovery_tests.rs"]
+mod mailbox_recovery_tests;

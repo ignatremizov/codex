@@ -1781,6 +1781,7 @@ async fn restore_thread_input_state_applies_running_state_policy() {
         pending_thread_settings: None,
         initial_user_message: None,
         startup_submission: None,
+        mailbox_retry: None,
         composer: Some(ThreadComposerState {
             text: "composer draft".to_string(),
             ..Default::default()
