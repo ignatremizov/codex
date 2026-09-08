@@ -513,6 +513,7 @@ export type { ThreadListParams } from "./ThreadListParams";
 export type { ThreadListResponse } from "./ThreadListResponse";
 export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
 export type { ThreadLoadedListResponse } from "./ThreadLoadedListResponse";
+export type { ThreadMailboxMessageState } from "./ThreadMailboxMessageState";
 export type { ThreadMcpServerActivateOutcome } from "./ThreadMcpServerActivateOutcome";
 export type { ThreadMcpServerActivateParams } from "./ThreadMcpServerActivateParams";
 export type { ThreadMcpServerActivateResponse } from "./ThreadMcpServerActivateResponse";
