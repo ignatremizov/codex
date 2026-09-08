@@ -832,11 +832,18 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                 )),
                                 codex_app_server_protocol::AgentControlAction::Observe {
                                     target,
+                                    observer,
                                     response_handling,
+                                    ..
                                 } => Some(agent_control_success(
                                     serde_json::json!({
                                         "type": "observed",
                                         "targetThreadId": target,
+                                        "observerThreadId": match observer.as_deref() {
+                                            Some("nick:Peirce" | "nick:Charles Peirce" | "146") => "019ff050-d466-73b0-b133-72ecc7c67270",
+                                            Some(observer) => observer,
+                                            None => &params.source_thread_id,
+                                        },
                                         "previousResponseHandling": "wake",
                                         "responseHandling": response_handling,
                                         "binding": if params.authored_selector.as_deref()
@@ -1013,7 +1020,7 @@ fn configure_agent_prompt_model_server(app: &mut App, server: &MockServer) {
     app.config.model_provider.supports_websockets = false;
 }
 
-fn display_test_thread(app: &mut App, thread_id: ThreadId) {
+pub(super) fn display_test_thread(app: &mut App, thread_id: ThreadId) {
     app.active_thread_id = Some(thread_id);
     app.chat_widget
         .handle_thread_session(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
@@ -1326,6 +1333,7 @@ async fn explicit_observe_updates_only_the_authoritative_binding(
             kind: AgentSelectorKind::Id(target_thread_id),
             authored: authored.to_string(),
         },
+        /*observer*/ None,
         codex_app_server_protocol::AgentObservationMode::Passive,
     )
     .await;
@@ -1356,6 +1364,8 @@ async fn explicit_observe_updates_only_the_authoritative_binding(
             "action": {
                 "type": "observe",
                 "target": target_thread_id.to_string(),
+                "observer": null,
+                "authoredObserverSelector": null,
                 "responseHandling": "passive",
             },
         }))]

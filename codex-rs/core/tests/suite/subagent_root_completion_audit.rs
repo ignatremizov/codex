@@ -1,5 +1,8 @@
 use super::*;
+use codex_core::UserAgentFinalResponseHandling;
+use codex_core::UserAgentObservationBinding;
 use codex_core::UserAgentObservationMode;
+use codex_core::UserAgentPromptResult;
 use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -55,18 +58,20 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
             }],
         )
         .await;
-    test.submit_turn(SEED).await?;
+    diagnostic_stage("root audit seed turn", test.submit_turn(SEED)).await?;
     let root_status = test.codex.agent_status().await;
-    let sender_id = test
-        .codex
-        .spawn_agent(UserAgentSpawnOptions::default())
-        .await?
-        .target_thread_id;
-    let target_id = test
-        .codex
-        .spawn_agent(UserAgentSpawnOptions::default())
-        .await?
-        .target_thread_id;
+    let sender_id = diagnostic_stage(
+        "root audit sender spawn",
+        test.codex.spawn_agent(UserAgentSpawnOptions::default()),
+    )
+    .await?
+    .target_thread_id;
+    let target_id = diagnostic_stage(
+        "root audit target spawn",
+        test.codex.spawn_agent(UserAgentSpawnOptions::default()),
+    )
+    .await?
+    .target_thread_id;
     let sender = test.thread_manager.get_thread(sender_id).await?;
     let target = test.thread_manager.get_thread(target_id).await?;
     server
@@ -82,30 +87,61 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
             }],
         )
         .await;
-    test.codex
-        .prompt_live_agent(
+    let admission = diagnostic_stage(
+        "root audit initial target admission",
+        test.codex.prompt_live_agent(
             &target_id.to_string(),
             vec![UserInput::Text {
                 text: "initial target assignment".to_string(),
                 text_elements: Vec::new(),
             }],
             UserAgentResponseHandling::Presentation,
-        )
-        .await?;
-    wait_for_event_match(test.codex.as_ref(), |event| {
-        let EventMsg::ItemCompleted(event) = event else {
-            return None;
-        };
-        (event.item.is_sub_agent_completion_presentation()
-            && serde_json::to_string(&event.item)
-                .is_ok_and(|text| text.contains("initial assignment finished")))
-        .then_some(())
-    })
+        ),
+    )
+    .await?;
+    assert_eq!(
+        admission,
+        UserAgentPromptResult {
+            target_thread_id: target_id,
+            submission_id: admission.submission_id.clone(),
+            queued: false,
+            input_outcome: UserAgentInputOutcome::Admitted,
+            resumed_target: false,
+            post_admission_warning: None,
+        },
+        "the initial target turn must retain its completion observation"
+    );
+    let initial_status = diagnostic_stage(
+        "root audit initial target completion",
+        wait_for_terminal_status(target.as_ref()),
+    )
+    .await?;
+    assert_eq!(
+        initial_status,
+        AgentStatus::Completed(Some("initial assignment finished".to_owned()))
+    );
+    diagnostic_stage(
+        "root audit initial target presentation",
+        wait_for_event_match(test.codex.as_ref(), |event| {
+            if let EventMsg::Error(error) = event {
+                panic!("root audit initial target presentation failed: {error:?}");
+            }
+            let EventMsg::ItemCompleted(event) = event else {
+                return None;
+            };
+            (event.item.is_sub_agent_completion_presentation()
+                && serde_json::to_string(&event.item)
+                    .is_ok_and(|text| text.contains("initial assignment finished")))
+            .then_some(())
+        }),
+    )
     .await;
-    wait_for_terminal_status(target.as_ref()).await?;
-    test.codex
-        .set_agent_subtree_messaging(UserAgentReplyRouteMode::Enabled)
-        .await?;
+    diagnostic_stage(
+        "root audit messaging configuration",
+        test.codex
+            .set_agent_subtree_messaging(UserAgentReplyRouteMode::Enabled),
+    )
+    .await?;
     server
         .mount_response(
             |request| request.body_contains_text(PEER_PROMPT) && !request.body_contains_text(CALL),
@@ -153,16 +189,18 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
             }],
         )
         .await;
-    test.codex
-        .prompt_live_agent(
+    diagnostic_stage(
+        "root audit peer admission",
+        test.codex.prompt_live_agent(
             &sender_id.to_string(),
             vec![UserInput::Text {
                 text: PEER_PROMPT.to_string(),
                 text_elements: Vec::new(),
             }],
             UserAgentResponseHandling::Presentation,
-        )
-        .await?;
+        ),
+    )
+    .await?;
     let target_request =
         timeout(Duration::from_secs(10), target_response.wait_for_request()).await?;
     let target_turn_id = target_request.body_json()["client_metadata"]["turn_id"]
@@ -172,32 +210,62 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
     match observation {
         RootObservation::Unobserved => {}
         RootObservation::Presentation | RootObservation::Passive => {
-            test.codex
-                .observe_agent(
+            // The initial assignment's subscription was consumed. Explicitly subscribe
+            // Main to this active peer turn before replacing its response policy.
+            let resumed = diagnostic_stage(
+                "root audit active target resume",
+                test.codex.resume_agent(
                     &target_id.to_string(),
+                    /*task*/ None,
+                    UserAgentResponseHandling::Presentation,
+                ),
+            )
+            .await?;
+            assert_eq!(
+                resumed.observation_binding,
+                Some(UserAgentObservationBinding::ActiveTurn),
+            );
+            let replaced = diagnostic_stage(
+                "root audit observation policy",
+                test.codex.observe_agent(
+                    &target_id.to_string(),
+                    /*observer*/ None,
                     match observation {
                         RootObservation::Presentation => UserAgentObservationMode::Presentation,
                         RootObservation::Passive => UserAgentObservationMode::Passive,
                         RootObservation::Unobserved => unreachable!(),
                     },
-                )
-                .await?;
+                ),
+            )
+            .await?;
+            assert_eq!(
+                replaced,
+                (
+                    target_id,
+                    test.session_configured.thread_id,
+                    UserAgentFinalResponseHandling::Presentation,
+                    UserAgentObservationBinding::ActiveTurn,
+                ),
+            );
         }
     }
     release
         .send(())
         .map_err(|_| anyhow::anyhow!("target gate closed"))?;
-    let completion = wait_for_event_match(test.codex.as_ref(), |event| {
-        let EventMsg::ItemCompleted(event) = event else {
-            return None;
-        };
-        let TurnItem::AgentMessage(item) = &event.item else {
-            return None;
-        };
-        (item.has_sub_agent_completion_identity()
-            && serde_json::to_string(&item.content).is_ok_and(|text| text.contains(CONCLUSION)))
-        .then(|| item.clone())
-    })
+    let completion = diagnostic_stage(
+        "root audit peer completion presentation",
+        wait_for_event_match(test.codex.as_ref(), |event| {
+            let EventMsg::ItemCompleted(event) = event else {
+                return None;
+            };
+            let TurnItem::AgentMessage(item) = &event.item else {
+                return None;
+            };
+            (item.has_sub_agent_completion_identity()
+                && serde_json::to_string(&item.content).is_ok_and(|text| text.contains(CONCLUSION)))
+            .then(|| item.clone())
+        }),
+    )
     .await;
     let expected_visibility = match observation {
         RootObservation::Passive => SubAgentCompletionModelVisibility::Visible,
@@ -233,7 +301,7 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
             }],
         )
         .await;
-    test.submit_turn(FOLLOW_UP).await?;
+    diagnostic_stage("root audit follow-up turn", test.submit_turn(FOLLOW_UP)).await?;
     let request = timeout(Duration::from_secs(10), follow_up.wait_for_request()).await?;
     assert_eq!(
         request.body_contains_text(CONCLUSION),

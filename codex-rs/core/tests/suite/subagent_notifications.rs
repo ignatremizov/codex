@@ -7571,9 +7571,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     .await;
     let explicit_result = mount_sse_once_match(
         &server,
-        move |request: &wiremock::Request| {
-            body_contains(request, resume_call_id) && body_contains(request, "durable child final")
-        },
+        move |request: &wiremock::Request| body_contains(request, resume_call_id),
         sse(vec![
             ev_response_created("resp-after-explicit-cold-boundary-resume"),
             ev_assistant_message("msg-after-explicit-cold-boundary-resume", "reconfigured"),
@@ -7593,7 +7591,40 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     assert!(!request.body_contains_text("<subagent_notification>"));
     assert!(!request.body_contains_text("durable acknowledgement"));
     assert!(!request.body_contains_text("durable child final"));
-    let _ = wait_for_request_containing_text(&explicit_result, "durable child final").await?;
+    let result = wait_for_request_containing_text(&explicit_result, resume_call_id).await?;
+    let output: Value = serde_json::from_str(
+        &result
+            .function_call_output_text(resume_call_id)
+            .context("explicit cold resume result")?,
+    )?;
+    assert_eq!(output["status"], json!("idle"));
+    assert!(!result.body_contains_text("durable child final"));
+
+    // Resume reinstalls a next-turn observer, not historical final-answer delivery.
+    let next_final = "fresh result after cold reconfiguration";
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "fresh task after cold reconfiguration")
+        },
+        sse(vec![
+            ev_assistant_message("cold-reconfigured-final", next_final),
+            ev_completed("cold-reconfigured-child"),
+        ]),
+    )
+    .await;
+    let wake = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>") && body_contains(request, next_final)
+        },
+        sse(vec![ev_completed("cold-reconfigured-wake")]),
+    )
+    .await;
+    let child = initial.thread_manager.get_thread(spawned_id).await?;
+    submit_turn_on_thread(child.as_ref(), "fresh task after cold reconfiguration").await?;
+    let wake = wait_for_request_containing_text(&wake, next_final).await?;
+    assert!(!wake.body_contains_text("durable child final"));
 
     InMemoryThreadStore::remove_id(&store_id);
     Ok(())
@@ -7732,9 +7763,7 @@ async fn fork_requires_explicit_agent_reconfiguration(
     .await;
     let explicit_result = mount_sse_once_match(
         &server,
-        move |request: &wiremock::Request| {
-            body_contains(request, resume_call_id) && body_contains(request, "child done")
-        },
+        move |request: &wiremock::Request| body_contains(request, resume_call_id),
         sse(vec![
             ev_response_created("resp-after-explicit-fork-boundary-resume"),
             ev_assistant_message("msg-after-explicit-fork-boundary-resume", "reconfigured"),
@@ -7748,7 +7777,39 @@ async fn fork_requires_explicit_agent_reconfiguration(
     assert!(!request.body_contains_text("<subagent_commentary>"));
     assert!(!request.body_contains_text("<subagent_notification>"));
     assert!(!request.body_contains_text("child done"));
-    let _ = wait_for_request_containing_text(&explicit_result, "child done").await?;
+    let result = wait_for_request_containing_text(&explicit_result, resume_call_id).await?;
+    let output: Value = serde_json::from_str(
+        &result
+            .function_call_output_text(resume_call_id)
+            .context("explicit fork resume result")?,
+    )?;
+    assert_eq!(output["status"], json!("idle"));
+    assert!(!result.body_contains_text("child done"));
+
+    let next_final = "fresh result after fork reconfiguration";
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "fresh task after fork reconfiguration")
+        },
+        sse(vec![
+            ev_assistant_message("fork-reconfigured-final", next_final),
+            ev_completed("fork-reconfigured-child"),
+        ]),
+    )
+    .await;
+    let wake = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, "<subagent_notification>") && body_contains(request, next_final)
+        },
+        sse(vec![ev_completed("fork-reconfigured-wake")]),
+    )
+    .await;
+    let child = initial.thread_manager.get_thread(spawned_id).await?;
+    submit_turn_on_thread(child.as_ref(), "fresh task after fork reconfiguration").await?;
+    let wake = wait_for_request_containing_text(&wake, next_final).await?;
+    assert!(!wake.body_contains_text("child done"));
 
     Ok(())
 }

@@ -75,41 +75,15 @@ async fn request<T: DeserializeOwned>(
     serde_json::from_value(response).context("decode RPC response")
 }
 
-#[test_case(FailurePhase::BeforeAdmission, InMemoryThreadStoreFailure::SubAgentCompletionAppend; "before admission append fails")]
-#[test_case(FailurePhase::BeforeAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPrefix; "before admission partial prefix")]
-#[test_case(FailurePhase::BeforeAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush; "before admission flush acknowledgement fails")]
-#[test_case(FailurePhase::AfterAdmission, InMemoryThreadStoreFailure::SubAgentCompletionAppend; "after admission append fails")]
-#[test_case(FailurePhase::AfterAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPrefix; "after admission partial prefix")]
-#[test_case(FailurePhase::AfterAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush; "after admission flush acknowledgement fails")]
-#[tokio::test]
-async fn queued_prompt_publication_failure_requires_reload(
-    phase: FailurePhase,
-    failure: InMemoryThreadStoreFailure,
-) -> Result<()> {
-    const QUEUED_PROMPT: &str = "run the queued fault-injection task";
-    const CHILD_RESULT: &str = "the admitted queued task completed";
+struct FaultInjectionApp {
+    client: InProcessClientHandle,
+    root: ThreadStartResponse,
+    store: Arc<InMemoryThreadStore>,
+    _store_registration: StoreRegistration,
+    _codex_home: TempDir,
+}
 
-    let server = responses::start_mock_server().await;
-    let child_turn = responses::mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| responses::body_contains(request, QUEUED_PROMPT),
-        responses::sse(vec![
-            responses::ev_response_created("queued-child"),
-            responses::ev_assistant_message("queued-child-message", CHILD_RESULT),
-            responses::ev_completed("queued-child"),
-        ]),
-    )
-    .await;
-    let root_wake = responses::mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| responses::body_contains(request, CHILD_RESULT),
-        responses::sse(vec![
-            responses::ev_response_created("unexpected-root-wake"),
-            responses::ev_assistant_message("unexpected-root-message", "unexpected wake"),
-            responses::ev_completed("unexpected-root-wake"),
-        ]),
-    )
-    .await;
+async fn start_fault_app(server: &wiremock::MockServer) -> Result<FaultInjectionApp> {
     let store_id = uuid::Uuid::now_v7().to_string();
     let _store_registration = StoreRegistration(store_id.clone());
     let store = InMemoryThreadStore::for_id(store_id.clone());
@@ -140,13 +114,14 @@ async fn queued_prompt_publication_failure_requires_reload(
         }
         None => EnvironmentManager::default_for_tests(),
     };
-    let mut client = in_process::start(InProcessStartArgs {
+    let client = in_process::start(InProcessStartArgs {
         arg0_paths: Arg0DispatchPaths::default(),
         config: Arc::new(config),
         cli_overrides: Vec::new(),
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -184,6 +159,60 @@ async fn queued_prompt_publication_failure_requires_reload(
         },
     )
     .await?;
+    Ok(FaultInjectionApp {
+        client,
+        root,
+        store,
+        _store_registration,
+        _codex_home: codex_home,
+    })
+}
+
+#[path = "agent_control_observer_fault_tests.rs"]
+mod observer_faults;
+
+#[test_case(FailurePhase::BeforeAdmission, InMemoryThreadStoreFailure::SubAgentCompletionAppend; "before admission append fails")]
+#[test_case(FailurePhase::BeforeAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPrefix; "before admission partial prefix")]
+#[test_case(FailurePhase::BeforeAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush; "before admission flush acknowledgement fails")]
+#[test_case(FailurePhase::AfterAdmission, InMemoryThreadStoreFailure::SubAgentCompletionAppend; "after admission append fails")]
+#[test_case(FailurePhase::AfterAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPrefix; "after admission partial prefix")]
+#[test_case(FailurePhase::AfterAdmission, InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush; "after admission flush acknowledgement fails")]
+#[tokio::test]
+async fn queued_prompt_publication_failure_requires_reload(
+    phase: FailurePhase,
+    failure: InMemoryThreadStoreFailure,
+) -> Result<()> {
+    const QUEUED_PROMPT: &str = "run the queued fault-injection task";
+    const CHILD_RESULT: &str = "the admitted queued task completed";
+
+    let server = responses::start_mock_server().await;
+    let child_turn = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| responses::body_contains(request, QUEUED_PROMPT),
+        responses::sse(vec![
+            responses::ev_response_created("queued-child"),
+            responses::ev_assistant_message("queued-child-message", CHILD_RESULT),
+            responses::ev_completed("queued-child"),
+        ]),
+    )
+    .await;
+    let root_wake = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| responses::body_contains(request, CHILD_RESULT),
+        responses::sse(vec![
+            responses::ev_response_created("unexpected-root-wake"),
+            responses::ev_assistant_message("unexpected-root-message", "unexpected wake"),
+            responses::ev_completed("unexpected-root-wake"),
+        ]),
+    )
+    .await;
+    let FaultInjectionApp {
+        mut client,
+        root,
+        store,
+        _store_registration,
+        _codex_home,
+    } = start_fault_app(&server).await?;
     let reserved_handling = match phase {
         FailurePhase::BeforeAdmission => AgentResponseHandling::Wake,
         FailurePhase::AfterAdmission => AgentResponseHandling::new(

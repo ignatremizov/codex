@@ -42,7 +42,6 @@ use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::UserAgentControlAction as AuditAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserInput;
-use codex_app_server_protocol::WarningNotification;
 use codex_features::Feature;
 use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::openai_models::ModelVisibility;
@@ -50,19 +49,22 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::SubAgentSource;
-use codex_thread_store::InMemoryThreadStore;
-use codex_thread_store::InMemoryThreadStoreFailure;
 use core_test_support::responses;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use pretty_assertions::assert_eq;
 use std::time::Duration;
 use tempfile::TempDir;
-use test_case::test_case;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[path = "agent_control_observer.rs"]
+mod observer;
+
+#[path = "agent_control_queue_fault_tests.rs"]
+mod queue_faults;
 
 fn agent_control_outcome(response: AgentControlResponse) -> AgentControlOutcome {
     assert_eq!(response.audit_warning, None);
@@ -909,6 +911,32 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
             && nickname.as_str() == codex_protocol::MAIN_AGENT_NICKNAME
     ));
 
+    let changed_by_main: AgentControlResponse = app
+        .request(|request_id| ClientRequest::AgentControl {
+            request_id,
+            params: AgentControlParams {
+                source_thread_id: main.thread.id.clone(),
+                authored_selector: Some("MAIN".to_string()),
+                action: AgentControlAction::Observe {
+                    target: "MAIN".to_string(),
+                    observer: Some(child_thread_id.clone()),
+                    authored_observer_selector: None,
+                    response_handling: AgentObservationMode::Passive,
+                },
+            },
+        })
+        .await?;
+    assert_eq!(
+        agent_control_outcome(changed_by_main),
+        AgentControlOutcome::Observed {
+            target_thread_id: main.thread.id.clone(),
+            observer_thread_id: child_thread_id.clone(),
+            previous_response_handling: AgentFinalResponseHandling::Wake,
+            response_handling: AgentFinalResponseHandling::Passive,
+            binding: AgentObservationBinding::ActiveTurn,
+        }
+    );
+
     let observed: AgentControlResponse = app
         .request(|request_id| ClientRequest::AgentControl {
             request_id,
@@ -917,6 +945,8 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
                 authored_selector: Some("MAIN".to_string()),
                 action: AgentControlAction::Observe {
                     target: "MAIN".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Presentation,
                 },
             },
@@ -926,7 +956,8 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
         agent_control_outcome(observed),
         AgentControlOutcome::Observed {
             target_thread_id: main.thread.id.clone(),
-            previous_response_handling: AgentFinalResponseHandling::Wake,
+            observer_thread_id: child_thread_id.clone(),
+            previous_response_handling: AgentFinalResponseHandling::Passive,
             response_handling: AgentFinalResponseHandling::Presentation,
             binding: AgentObservationBinding::ActiveTurn,
         }
@@ -1065,6 +1096,8 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
                 authored_selector: Some(target_thread_id.clone()),
                 action: AgentControlAction::Observe {
                     target: target_thread_id.clone(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Passive,
                 },
             },
@@ -1074,6 +1107,7 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
         agent_control_outcome(observed),
         AgentControlOutcome::Observed {
             target_thread_id: target_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Wake,
             response_handling: AgentFinalResponseHandling::Passive,
             binding: AgentObservationBinding::ActiveTurn,
@@ -1399,337 +1433,6 @@ async fn queued_prompt_waits_for_idle_target_in_v1_and_v2() -> Result<()> {
             queued_prompt_waits_for_idle_target(multi_agent_v2, response_handling).await?;
         }
     }
-    Ok(())
-}
-
-#[test_case(InMemoryThreadStoreFailure::SubAgentCompletionAppend; "append fails")]
-#[test_case(InMemoryThreadStoreFailure::SubAgentCompletionPrefix; "partial prefix")]
-#[test_case(InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush; "flush acknowledgement fails")]
-#[tokio::test]
-async fn queued_prompt_observation_failure_before_admission_requires_reload(
-    failure: InMemoryThreadStoreFailure,
-) -> Result<()> {
-    const QUEUED_PROMPT: &str = "run the queued task with the reserved wake";
-    const CHILD_RESULT: &str = "queued task completed under the reserved wake";
-
-    let server = responses::start_mock_server().await;
-    let child_turn = responses::mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| responses::body_contains(request, QUEUED_PROMPT),
-        responses::sse(vec![
-            responses::ev_response_created("resp-queued-reserved-wake-child"),
-            responses::ev_assistant_message("msg-queued-reserved-wake-child", CHILD_RESULT),
-            responses::ev_completed("resp-queued-reserved-wake-child"),
-        ]),
-    )
-    .await;
-    let root_wake = responses::mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| responses::body_contains(request, CHILD_RESULT),
-        responses::sse(vec![
-            responses::ev_response_created("resp-queued-reserved-wake-root"),
-            responses::ev_assistant_message(
-                "msg-queued-reserved-wake-root",
-                "reserved wake received",
-            ),
-            responses::ev_completed("resp-queued-reserved-wake-root"),
-        ]),
-    )
-    .await;
-
-    let store_id = uuid::Uuid::now_v7().to_string();
-    let store = InMemoryThreadStore::for_id(store_id.clone());
-    let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .disable_feature(Feature::MultiAgentV2)
-        .with_root_config(&format!(
-            r#"experimental_thread_store = {{ type = "in_memory", id = "{store_id}" }}"#
-        ))
-        .write(codex_home.path())?;
-    write_models_cache(codex_home.path()).await?;
-    let mut app = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .build_initialized()
-        .await?;
-    let root = app.start_thread(ThreadStartParams::default()).await?;
-
-    let spawned: AgentControlResponse = app
-        .request(|request_id| ClientRequest::AgentControl {
-            request_id,
-            params: AgentControlParams {
-                source_thread_id: root.thread.id.clone(),
-                authored_selector: Some("new".to_string()),
-                action: AgentControlAction::Spawn {
-                    task: None,
-                    role: None,
-                    model: None,
-                    reasoning_effort: None,
-                    input: None,
-                    fork_mode: AgentForkMode::None,
-                    response_handling: Some(AgentResponseHandling::Wake),
-                },
-            },
-        })
-        .await?;
-    let AgentControlOutcome::Spawned {
-        target_thread_id, ..
-    } = agent_control_outcome(spawned)
-    else {
-        panic!("user control should spawn an idle V1 child");
-    };
-
-    // Observation admission is now an acknowledged canonical publication before target
-    // submission, not a best-effort TurnStarted append. Failure must stop the queued dispatch.
-    store
-        .fail_observation_barrier_after(/*successful_barriers*/ 0, failure)
-        .await;
-    let queued: AgentControlResponse = app
-        .request(|request_id| ClientRequest::AgentControl {
-            request_id,
-            params: AgentControlParams {
-                source_thread_id: root.thread.id.clone(),
-                authored_selector: Some(target_thread_id.clone()),
-                action: AgentControlAction::QueuedPrompt {
-                    target: target_thread_id.clone(),
-                    input: vec![UserInput::Text {
-                        text: QUEUED_PROMPT.to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                    response_handling: Some(AgentResponseHandling::Presentation),
-                },
-            },
-        })
-        .await?;
-    assert!(matches!(
-        queued.outcome,
-        AgentControlOutcome::Prompted {
-            target_thread_id: ref prompted_thread_id,
-            input_outcome: AgentInputOutcome::Queued,
-            post_admission_warning: None,
-            ..
-        } if prompted_thread_id == &target_thread_id
-    ));
-
-    assert_failed_queue_publication_requires_reload(
-        &mut app,
-        &root.thread.id,
-        "Queued submission stopped",
-    )
-    .await?;
-    assert!(
-        child_turn.requests().is_empty(),
-        "failed observation admission must not submit the queued input"
-    );
-    assert!(
-        root_wake.requests().is_empty(),
-        "unacknowledged observation must not wake the source"
-    );
-
-    InMemoryThreadStore::remove_id(&store_id);
-    Ok(())
-}
-
-#[test_case(InMemoryThreadStoreFailure::SubAgentCompletionAppend, "append"; "append fails")]
-#[test_case(InMemoryThreadStoreFailure::SubAgentCompletionPrefix, "prefix"; "partial prefix")]
-#[test_case(InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush, "flush"; "flush acknowledgement fails")]
-#[tokio::test]
-async fn queued_prompt_binding_failure_preserves_input_without_unacknowledged_handling(
-    failure: InMemoryThreadStoreFailure,
-    label: &str,
-) -> Result<()> {
-    let queued_prompt = format!("run queued task after {label} degradation");
-    let child_result = format!("queued task completed after {label} degradation");
-    let child_prompt_match = queued_prompt.clone();
-    let root_result_match = child_result.clone();
-    let server = responses::start_mock_server().await;
-    let child_turn = responses::mount_sse_once_match(
-        &server,
-        move |request: &wiremock::Request| responses::body_contains(request, &child_prompt_match),
-        responses::sse(vec![
-            responses::ev_response_created("resp-queued-degraded-reservation-child"),
-            responses::ev_assistant_message("msg-queued-degraded-reservation-child", &child_result),
-            responses::ev_completed("resp-queued-degraded-reservation-child"),
-        ]),
-    )
-    .await;
-    let root_wake = responses::mount_sse_once_match(
-        &server,
-        move |request: &wiremock::Request| responses::body_contains(request, &root_result_match),
-        responses::sse(vec![
-            responses::ev_response_created("resp-queued-degraded-reservation-root"),
-            responses::ev_assistant_message(
-                "msg-queued-degraded-reservation-root",
-                "retained wake received",
-            ),
-            responses::ev_completed("resp-queued-degraded-reservation-root"),
-        ]),
-    )
-    .await;
-
-    let store_id = uuid::Uuid::now_v7().to_string();
-    let store = InMemoryThreadStore::for_id(store_id.clone());
-    let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .disable_feature(Feature::MultiAgentV2)
-        .with_root_config(&format!(
-            r#"experimental_thread_store = {{ type = "in_memory", id = "{store_id}" }}"#
-        ))
-        .write(codex_home.path())?;
-    write_models_cache(codex_home.path()).await?;
-    let mut app = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .build_initialized()
-        .await?;
-    let root = app.start_thread(ThreadStartParams::default()).await?;
-
-    let spawned: AgentControlResponse = app
-        .request(|request_id| ClientRequest::AgentControl {
-            request_id,
-            params: AgentControlParams {
-                source_thread_id: root.thread.id.clone(),
-                authored_selector: Some("new".to_string()),
-                action: AgentControlAction::Spawn {
-                    task: None,
-                    role: None,
-                    model: None,
-                    reasoning_effort: None,
-                    input: None,
-                    fork_mode: AgentForkMode::None,
-                    response_handling: Some(AgentResponseHandling::new(
-                        /*commentary*/ false,
-                        AgentFinalResponseHandling::Wake,
-                        /*target_messages*/ true,
-                        /*queue_input*/ false,
-                    )),
-                },
-            },
-        })
-        .await?;
-    let AgentControlOutcome::Spawned {
-        target_thread_id, ..
-    } = agent_control_outcome(spawned)
-    else {
-        panic!("user control should spawn an idle V1 child");
-    };
-
-    // Preserve the pre-admission snapshot, then fail the post-admission task/policy batch.
-    // The target input is accepted, but the source must reload rather than fall back to an
-    // older response policy after an uncertain canonical publication.
-    store
-        .fail_observation_barrier_after(/*successful_barriers*/ 1, failure)
-        .await;
-    let queued: AgentControlResponse = app
-        .request(|request_id| ClientRequest::AgentControl {
-            request_id,
-            params: AgentControlParams {
-                source_thread_id: root.thread.id.clone(),
-                authored_selector: Some(target_thread_id.clone()),
-                action: AgentControlAction::QueuedPrompt {
-                    target: target_thread_id.clone(),
-                    input: vec![UserInput::Text {
-                        text: queued_prompt,
-                        text_elements: Vec::new(),
-                    }],
-                    response_handling: Some(AgentResponseHandling::Wake),
-                },
-            },
-        })
-        .await?;
-    assert!(matches!(
-        queued.outcome,
-        AgentControlOutcome::Prompted {
-            target_thread_id: ref prompted_thread_id,
-            input_outcome: AgentInputOutcome::Queued,
-            post_admission_warning: None,
-            ..
-        } if prompted_thread_id == &target_thread_id
-    ));
-
-    let started = timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            let started: TurnStartedNotification = app.read_notification("turn/started").await?;
-            if started.thread_id == target_thread_id && started.agent_queue.is_some() {
-                return Ok::<_, anyhow::Error>(started);
-            }
-        }
-    })
-    .await??;
-    assert_eq!(
-        started
-            .agent_queue
-            .expect("queued turn provenance")
-            .response_handling,
-        None,
-        "queue provenance must not advertise an unacknowledged response policy"
-    );
-    assert_failed_queue_publication_requires_reload(
-        &mut app,
-        &root.thread.id,
-        "target input was already admitted; response observation failed",
-    )
-    .await?;
-    timeout(DEFAULT_READ_TIMEOUT, async {
-        while child_turn.requests().is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(/*millis*/ 10)).await;
-        }
-    })
-    .await
-    .context("publication failure discarded an already admitted queued input")?;
-    wait_for_thread_turn_completed(&mut app, &target_thread_id).await?;
-    child_turn.single_request();
-    assert!(
-        root_wake.requests().is_empty(),
-        "a quarantined source must not wake under an older unacknowledged policy"
-    );
-
-    InMemoryThreadStore::remove_id(&store_id);
-    Ok(())
-}
-
-async fn assert_failed_queue_publication_requires_reload(
-    app: &mut TestAppServer,
-    source_thread_id: &str,
-    expected_warning: &str,
-) -> Result<()> {
-    timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            let warning: WarningNotification = app.read_notification("warning").await?;
-            if warning.thread_id.as_deref() == Some(source_thread_id)
-                && warning.message.contains(expected_warning)
-            {
-                return Ok::<_, anyhow::Error>(());
-            }
-        }
-    })
-    .await??;
-    // A queued request can acknowledge queue acceptance before publication fails. Its audit
-    // warning can consequently race the worker, so establish the failure through the worker's
-    // actual warning and the public admission boundary rather than asserting audit timing.
-    let request_id = app
-        .send_request(
-            "turn/start",
-            Some(serde_json::to_value(TurnStartParams {
-                thread_id: source_thread_id.to_string(),
-                input: vec![UserInput::Text {
-                    text: "quarantined history must reject new input".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                ..Default::default()
-            })?),
-        )
-        .await?;
-    let error = timeout(
-        DEFAULT_READ_TIMEOUT,
-        app.read_stream_until_error_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    assert!(
-        error
-            .error
-            .message
-            .contains("thread history must be reloaded before accepting more work"),
-        "unexpected admission error: {error:?}"
-    );
     Ok(())
 }
 
@@ -3564,6 +3267,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("2".to_string()),
                 action: AgentControlAction::Observe {
                     target: "2".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Presentation,
                 },
             },
@@ -3573,6 +3278,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
         agent_control_outcome(observed),
         AgentControlOutcome::Observed {
             target_thread_id: target_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Wake,
             response_handling: AgentFinalResponseHandling::Presentation,
             binding: AgentObservationBinding::ActiveTurn,
@@ -3586,6 +3292,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("2".to_string()),
                 action: AgentControlAction::Observe {
                     target: "2".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Passive,
                 },
             },
@@ -3595,6 +3303,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
         agent_control_outcome(observed_again),
         AgentControlOutcome::Observed {
             target_thread_id: target_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Presentation,
             response_handling: AgentFinalResponseHandling::Passive,
             binding: AgentObservationBinding::ActiveTurn,
@@ -3663,6 +3372,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("3".to_string()),
                 action: AgentControlAction::Observe {
                     target: "3".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Passive,
                 },
             },
@@ -3672,6 +3383,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
         agent_control_outcome(observed_first_prompt),
         AgentControlOutcome::Observed {
             target_thread_id: idle_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Wake,
             response_handling: AgentFinalResponseHandling::Passive,
             binding: AgentObservationBinding::ActiveTurn,
