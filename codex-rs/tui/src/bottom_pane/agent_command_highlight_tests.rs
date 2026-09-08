@@ -62,21 +62,6 @@ fn highlighted_tokens(input: &str) -> Vec<(&str, AgentCommandHighlightKind)> {
 }
 
 #[test]
-fn highlights_explicit_reply_route_endpoints() {
-    assert_eq!(
-        highlighted_tokens("/agent sends 2 to Sagan enable"),
-        vec![
-            ("/agent", AgentCommandHighlightKind::Command),
-            ("sends", AgentCommandHighlightKind::Action),
-            ("2", AgentCommandHighlightKind::KnownTarget),
-            ("to", AgentCommandHighlightKind::Action),
-            ("Sagan", AgentCommandHighlightKind::KnownTarget),
-            ("enable", AgentCommandHighlightKind::Option),
-        ]
-    );
-}
-
-#[test]
 fn highlights_action_first_and_target_first_agent_commands() {
     assert_eq!(
         highlighted_tokens("/agent close 2 w:x"),
@@ -102,24 +87,6 @@ fn highlights_action_first_and_target_first_agent_commands() {
             ("/agent", AgentCommandHighlightKind::Command),
             ("role:\"reviewer\"", AgentCommandHighlightKind::KnownTarget,),
             ("fork:none", AgentCommandHighlightKind::Option),
-        ]
-    );
-    assert_eq!(
-        highlighted_tokens("/agent sends 2 enable"),
-        vec![
-            ("/agent", AgentCommandHighlightKind::Command),
-            ("sends", AgentCommandHighlightKind::Action),
-            ("2", AgentCommandHighlightKind::KnownTarget),
-            ("enable", AgentCommandHighlightKind::Option),
-        ]
-    );
-    assert_eq!(
-        highlighted_tokens("/agent Sagan sends disable"),
-        vec![
-            ("/agent", AgentCommandHighlightKind::Command),
-            ("Sagan", AgentCommandHighlightKind::KnownTarget),
-            ("sends", AgentCommandHighlightKind::Action),
-            ("disable", AgentCommandHighlightKind::Option),
         ]
     );
 }
@@ -196,19 +163,11 @@ fn distinguishes_unresolved_targets_and_rejects_invalid_options() {
             ("2", AgentCommandHighlightKind::KnownTarget),
         ]
     );
-    assert_eq!(
-        highlighted_tokens("/agent sends 2 maybe"),
-        vec![
-            ("/agent", AgentCommandHighlightKind::Command),
-            ("sends", AgentCommandHighlightKind::Action),
-            ("2", AgentCommandHighlightKind::KnownTarget),
-        ]
-    );
 }
 
 #[test]
 fn response_flag_highlights_accept_any_order_and_repetition() {
-    let highlighted = ["qfx", "qfxx", "xqc", "xq", "ccmmqq", "ffxx"]
+    let highlighted = ["qfx", "qfxx", "xqc", "xq", "ccqq", "ffxx"]
         .into_iter()
         .map(|flags| {
             let command = format!("/agent 2 w:{flags} prompt");
@@ -225,7 +184,36 @@ fn response_flag_highlights_accept_any_order_and_repetition() {
     Command:/agent | KnownTarget:2 | Option:w:qfxx
     Command:/agent | KnownTarget:2 | Option:w:xqc
     Command:/agent | KnownTarget:2 | Option:w:xq
-    Command:/agent | KnownTarget:2 | Option:w:ccmmqq
+    Command:/agent | KnownTarget:2 | Option:w:ccqq
     Command:/agent | KnownTarget:2 | Option:w:ffxx
     "###);
+}
+
+#[test]
+fn observe_highlights_the_direction_clause_and_observer_selector() {
+    assert_eq!(
+        highlighted_tokens("/agent observe Main from nick:Sagan passive"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("observe", AgentCommandHighlightKind::Action),
+            ("Main", AgentCommandHighlightKind::UnknownTarget),
+            ("from", AgentCommandHighlightKind::Action),
+            ("nick:Sagan", AgentCommandHighlightKind::KnownTarget),
+            ("passive", AgentCommandHighlightKind::Option),
+        ]
+    );
+    assert_eq!(
+        highlighted_tokens("/agent observe 2 from nick:\"Unknown Observer\" wake"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("observe", AgentCommandHighlightKind::Action),
+            ("2", AgentCommandHighlightKind::KnownTarget),
+            ("from", AgentCommandHighlightKind::Action),
+            (
+                "nick:\"Unknown Observer\"",
+                AgentCommandHighlightKind::UnknownTarget
+            ),
+            ("wake", AgentCommandHighlightKind::Option),
+        ]
+    );
 }
