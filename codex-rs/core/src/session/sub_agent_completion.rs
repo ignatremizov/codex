@@ -272,15 +272,41 @@ impl Session {
     }
 
     /// Selects the real active turn once, or a stable UUIDv7 history-only turn.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "completion publication binds the active turn until its canonical receipt"
-    )]
     pub(crate) async fn publish_completion_item(
         &self,
         presentation: &crate::agent::control::CompletionPresentation,
         reservation: &AcceptedCompletionDelivery,
     ) -> CodexResult<()> {
+        self.publish_completion_item_with_root_claim(
+            presentation,
+            reservation,
+            /*root_audit*/ None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// False means an explicit observer superseded this root-only presentation.
+    pub(crate) async fn publish_root_completion_item(
+        &self,
+        presentation: &crate::agent::control::CompletionPresentation,
+        reservation: &AcceptedCompletionDelivery,
+        claim: &crate::agent::control::RootCompletionAuditClaim,
+    ) -> CodexResult<bool> {
+        self.publish_completion_item_with_root_claim(presentation, reservation, Some(claim))
+            .await
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "completion publication binds the active turn until its canonical receipt"
+    )]
+    async fn publish_completion_item_with_root_claim(
+        &self,
+        presentation: &crate::agent::control::CompletionPresentation,
+        reservation: &AcceptedCompletionDelivery,
+        root_audit: Option<&crate::agent::control::RootCompletionAuditClaim>,
+    ) -> CodexResult<bool> {
         let item = presentation.item.clone();
         loop {
             let changed = self.active_turn_transition.notified();
@@ -290,6 +316,15 @@ impl Session {
                 .submission_admission
                 .admit_completion(reservation)
                 .await?;
+            // Match observed delivery and rollback: admission precedes observation,
+            // and observation precedes history. Never wait for admission holding a claim.
+            let audit_guard = match root_audit {
+                Some(claim) => match claim.acquire().await {
+                    Some(guard) => Some(guard),
+                    None => return Ok(false),
+                },
+                None => None,
+            };
             let permit = self.acquire_history_publication_barrier().await?;
             let active = self.active_turn.lock().await;
             let (turn_id, history_only) = match active.as_ref() {
@@ -298,6 +333,7 @@ impl Session {
                     None => {
                         drop(active);
                         drop(permit);
+                        drop(audit_guard);
                         drop(order);
                         changed.await;
                         continue;
@@ -309,17 +345,25 @@ impl Session {
             let stored = if self.live_thread().is_some() {
                 self.services
                     .thread_store
-                    .load_sub_agent_completion_presentation(LoadSubAgentCompletionPresentationParams {
-                        thread_id: self.thread_id,
-                        include_archived: false,
-                        item_id: runtime_key.0.clone(),
-                        turn_id: turn_id.clone(),
-                    })
+                    .load_sub_agent_completion_presentation(
+                        LoadSubAgentCompletionPresentationParams {
+                            thread_id: self.thread_id,
+                            include_archived: false,
+                            item_id: runtime_key.0.clone(),
+                            turn_id: turn_id.clone(),
+                        },
+                    )
                     .await
                     .map_err(|error| CodexErr::Fatal(error.to_string()))?
             } else {
-                self.state.lock().await.completion_publication_receipts.presentations
-                    .get(&runtime_key).cloned().unwrap_or_default()
+                self.state
+                    .lock()
+                    .await
+                    .completion_publication_receipts
+                    .presentations
+                    .get(&runtime_key)
+                    .cloned()
+                    .unwrap_or_default()
             };
             if let Some(event) = &stored.item_completed
                 && (event.turn_id != turn_id
@@ -374,13 +418,14 @@ impl Session {
                     },
                 )));
             }
-            let runtime_receipt = self.live_thread().is_none().then(|| {
-                StoredSubAgentCompletionPresentation {
-                    item_completed: Some(completed.clone()),
-                    turn_started: stored.turn_started || history_only,
-                    turn_completed: stored.turn_completed || history_only,
-                }
-            });
+            let runtime_receipt =
+                self.live_thread()
+                    .is_none()
+                    .then(|| StoredSubAgentCompletionPresentation {
+                        item_completed: Some(completed.clone()),
+                        turn_started: stored.turn_started || history_only,
+                        turn_completed: stored.turn_completed || history_only,
+                    });
             let events = vec![
                 Event {
                     id: turn_id.clone(),
@@ -402,7 +447,10 @@ impl Session {
                 events,
                 move |state| {
                     if let Some(receipt) = runtime_receipt {
-                        state.completion_publication_receipts.presentations.insert(runtime_key, receipt);
+                        state
+                            .completion_publication_receipts
+                            .presentations
+                            .insert(runtime_key, receipt);
                     }
                 },
                 || {},
@@ -411,7 +459,11 @@ impl Session {
             let result = self.publication_result(receiver).await;
             drop(active);
             result.inspect_err(|error| self.quarantine_history(error.to_string()))?;
-            return Ok(());
+            if let Some(claim) = root_audit {
+                claim.commit();
+            }
+            drop(audit_guard);
+            return Ok(true);
         }
     }
 
