@@ -685,7 +685,7 @@ async fn mailbox_migration_preserves_existing_queue_payload_order_and_revisions(
     let first = queue.enqueue(receiver, r#"{"first":true}"#).await.unwrap();
     let second = queue.enqueue(receiver, r#"{"second":true}"#).await.unwrap();
     queue
-        .reorder(receiver, vec![second.id.clone(), first.id.clone()])
+        .reorder(receiver, &[second.id.clone(), first.id.clone()])
         .await
         .unwrap();
     let revisions = queue
