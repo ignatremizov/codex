@@ -21,6 +21,7 @@ use uuid::Uuid;
 mod live_revert_messaging;
 mod response_observation;
 mod root_completion_audit;
+mod send_settings;
 mod subtree_messaging;
 
 use live_revert_messaging::LiveRevertMessagingContinuity;
@@ -46,6 +47,13 @@ pub(crate) struct WaitAgentPresentations {
     response_observation_changed: Notify,
     pub(super) watcher_terminal_changed: Notify,
     messaging_refresh: AsyncMutex<()>,
+    #[cfg(test)]
+    pub(in crate::agent::control) mailbox_acceptance_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     #[cfg(test)]
     pub(in crate::agent::control) scoped_steer_submission_gate: Mutex<
         Option<(
@@ -1143,7 +1151,11 @@ fn remove_response_observation_for_presentation(
             state
                 .response_observation_by_observer_child
                 .get(&observer_child)
-                .and_then(|relationship| relationship.reply_route)
+                .and_then(|relationship| {
+                    relationship
+                        .reply_route
+                        .map(|mode| (mode, relationship.reply_route_from_settings))
+                })
         })
         .flatten();
     let removed_bound_wake = state
@@ -1168,12 +1180,13 @@ fn remove_response_observation_for_presentation(
     state
         .response_observation_by_observer_child
         .remove(&observer_child);
-    if let Some(mode) = retained_route {
+    if let Some((mode, reply_route_from_settings)) = retained_route {
         state.response_observation_by_observer_child.insert(
             observer_child,
             ResponseObserverRelationship {
                 persistence: ResponseObservationPersistence::Durable,
                 reply_route: Some(mode),
+                reply_route_from_settings,
                 ..Default::default()
             },
         );

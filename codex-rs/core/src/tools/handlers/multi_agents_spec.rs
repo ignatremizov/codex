@@ -183,13 +183,15 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
         (
             "interrupt".to_string(),
             JsonSchema::boolean(Some(
-                "True interrupts the current task and handles this message immediately; false or omitted steers active work unless w contains q."
+                "True interrupts the current task and handles this message immediately; false or omitted steers active work unless w contains q or z. Mailbox input (z) cannot interrupt."
                     .to_string(),
             )),
         ),
         (
             "w".to_string(),
-            response_observation_schema(RESPONSE_OBSERVATION_DESCRIPTION),
+            response_observation_schema(&format!(
+                "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering, starting a payload-bearing turn, or subscribing to replies. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. Normalize f/x first; z rejects c, m, q, and effective wake. z, zx, zfx, and zfxx are equivalent; repeated z is idempotent. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
+            )),
         ),
     ]);
 
@@ -331,7 +333,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "wait_agent".to_string(),
-            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. For same target turn, wait_agent and w containing f are alternatives, not a sequence; an f subscription remains active through commentary and other work until completion. A q reply arrives in your next turn; wait_agent can return for the preceding target turn before queue admission."
+            description: "Wait when a result is required before next action or a timeout is useful. Returns when any target reaches final status or timeout expires; completed status includes final message. Direct calls also return for pending mail from selected senders and request its structured delivery after the accepted tool result, on every return reason; this does not guarantee a delivered count. Mail selection grants no status authority: foreign UUID targets appear only in mail_only_targets, never as fabricated final statuses. Completion wins when both completion and mail are ready. Nested/code-mode calls retain controlled-target completion/timeout behavior and do not claim or drain mail. For same target turn, wait_agent and w containing f are alternatives, not a sequence; an f subscription remains active through commentary and other work until completion. A q reply arrives in your next turn; wait_agent can return for the preceding target turn before queue admission."
                 .to_string(),
             strict: false,
             defer_loading: None,
@@ -513,7 +515,7 @@ fn send_input_output_schema() -> Value {
         "properties": {
             "submission_id": {
                 "type": "string",
-                "description": "Identifier for the accepted input or queued turn."
+                "description": "Identifier for the accepted input, queued turn, or mailbox message. Mailbox acceptance is not a turn, receipt of model delivery, or consumption."
             }
         },
         "required": ["submission_id"],
@@ -593,15 +595,25 @@ fn wait_output_schema_v1() -> Value {
         "properties": {
             "status": {
                 "type": "object",
-                "description": "Final statuses keyed by agent id.",
+                "description": "Final statuses keyed by the original controlled target selector.",
                 "additionalProperties": agent_status_output_schema()
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned due to timeout before any agent reached a final status."
+                "description": "Whether the wait call returned due to timeout rather than completion, selected mail, or fixed-claim recovery."
+            },
+            "return_reason": {
+                "type": "string",
+                "enum": ["mail", "completion", "timeout", "recovery"],
+                "description": "Recovery resumes this invocation's existing fixed mailbox claim without waiting for new mail; an already recorded canonical result is reused."
+            },
+            "mail_only_targets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Canonical UUIDs selected for mail without status authority; omitted when empty. No status is observed for these targets."
             }
         },
-        "required": ["status", "timed_out"],
+        "required": ["status", "timed_out", "return_reason"],
         "additionalProperties": false
     })
 }
@@ -987,7 +999,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
                 Some(
-                    "Agents to wait on. Pass multiple to wait for whichever finishes first."
+                    "Agents to wait on. Pass multiple to wait for whichever finishes first. Direct calls also select the union of these senders' mail and accept canonical UUIDs without granting status authority. User mail is not selected."
                         .to_string(),
                 ),
             ),

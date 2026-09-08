@@ -68,6 +68,7 @@ pub use codex_thread::GuardianRootMessage;
 pub use codex_thread::GuardianRootSnapshot;
 pub use codex_thread::ThreadConfigSnapshot;
 pub use compacted_media_vacuum::vacuum_rollout_compacted_media;
+pub use session::MailboxInventoryAdmission;
 pub use session::turn_context::TurnContext;
 mod agent;
 mod agent_communication;

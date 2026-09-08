@@ -3189,6 +3189,11 @@ impl ChatComposer {
         should_queue: bool,
         now: Instant,
     ) -> (InputResult, bool) {
+        // Mail is explicit receiver-selected input, never an ordinary queued turn.
+        let mailbox_submission = !self.draft.textarea.text().starts_with(' ')
+            && parse_slash_name(self.draft.textarea.text())
+                .is_some_and(|(name, _, _)| name == SlashCommand::Mail.command());
+        let should_queue = should_queue && !mailbox_submission;
         if should_queue {
             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
                 self.handle_paste(pasted);
@@ -3358,6 +3363,13 @@ impl ChatComposer {
             return Some(InputResult::None);
         }
         self.stage_slash_command_history(&command);
+        if matches!(command, SlashCommandItem::Builtin(SlashCommand::Mail)) {
+            return Some(InputResult::CommandWithArgs(
+                SlashCommand::Mail,
+                String::new(),
+                Vec::new(),
+            ));
+        }
         self.draft.textarea.set_text_clearing_elements("");
         self.draft.is_bash_mode = false;
         Some(match command {

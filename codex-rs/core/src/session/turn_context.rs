@@ -985,10 +985,9 @@ impl Session {
             TurnMultiAgentRuntime::ResolveAndStore => {
                 self.resolve_multi_agent_version_for_model(&model_info, &per_turn_config)
             }
-            TurnMultiAgentRuntime::Preview => per_turn_config.multi_agent_version_for_model(
-                self.multi_agent_version()
-                    .or(model_info.multi_agent_version),
-            ),
+            TurnMultiAgentRuntime::Preview => {
+                self.preview_multi_agent_version_for_model(&model_info, &per_turn_config)
+            }
         };
         let plugins_input = per_turn_config.plugins_config_input();
         let (skills_snapshot, trusted_plugin_roots) = if matches!(

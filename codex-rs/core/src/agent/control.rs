@@ -86,6 +86,7 @@ type CompletionWatcherSetupSink = Arc<std::sync::Mutex<Option<CompletionWatcherS
 
 pub(crate) use self::aliases::AgentResumeOwnership;
 use self::aliases::ThreadSpawnPersistence;
+pub(crate) use self::aliases::V1WaitStatusAuthority;
 pub(crate) use self::aliases::agent_alias_lifecycle_status;
 pub(crate) use self::close_response::CloseAgentResponseDisposition;
 pub(crate) use self::close_response::ClosedAgent;
@@ -412,6 +413,8 @@ mod close_response;
 mod directory;
 mod execution;
 mod legacy;
+mod mailbox_input;
+mod mailbox_inventory;
 mod message_audit;
 mod presentation;
 mod residency;
@@ -823,6 +826,10 @@ impl AgentControl {
             }
         }
         let permission = self.acquire_messaging_permission_transaction().await;
+        self.restore_agent_send_pair_locked(thread.session.presentation_id(), observer)
+            .await?;
+        self.restore_agent_send_pair_locked(observer, thread.session.presentation_id())
+            .await?;
         let child_lifecycle_generation = state.agent_lifecycle_generation(agent_id);
         // Durable observation semantics belong to this caller. A V2 target still publishes the
         // common response stream and must not silently discard a V1 tool or user-control policy.
@@ -1139,6 +1146,8 @@ impl AgentControl {
         let permission = self.acquire_messaging_permission_transaction().await;
         let thread = state.get_thread_including_pending(agent_id).await?;
         let child = thread.session.presentation_id();
+        self.restore_agent_send_pair_locked(child, observer).await?;
+        self.restore_agent_send_pair_locked(observer, child).await?;
         let _response_observation_transaction = self
             .acquire_response_observation_transaction(observer)
             .await;

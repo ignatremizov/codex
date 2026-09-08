@@ -369,6 +369,7 @@ mod input_flow;
 mod input_restore;
 mod input_submission;
 mod interrupts;
+pub(crate) mod mailbox;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
 mod mcp_startup;

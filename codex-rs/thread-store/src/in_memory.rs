@@ -580,6 +580,7 @@ enum InMemoryAppendDurability {
 #[derive(Default)]
 pub struct InMemoryThreadStore {
     state: tokio::sync::Mutex<InMemoryThreadStoreState>,
+    mailbox: tokio::sync::Mutex<crate::in_memory_mailbox::InMemoryMailbox>,
     omit_metadata_update_result: AtomicBool,
 }
 
@@ -1330,6 +1331,168 @@ fn append_persisted_items_to_state(
 impl ThreadStore for InMemoryThreadStore {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn accept_mailbox_input(
+        &self,
+        params: crate::AcceptMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(async move { self.mailbox.lock().await.accept(params) })
+    }
+
+    fn lookup_mailbox_input<'a>(
+        &'a self,
+        receiver_thread_id: codex_protocol::ThreadId,
+        submission_key: &'a str,
+    ) -> ThreadStoreFuture<'a, Option<crate::StoredMailboxInput>> {
+        Box::pin(async move {
+            self.mailbox
+                .lock()
+                .await
+                .lookup(receiver_thread_id, submission_key)
+        })
+    }
+
+    fn lookup_mailbox_claim(
+        &self,
+        invocation: crate::MailboxInvocation,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxClaim>> {
+        Box::pin(async move { self.mailbox.lock().await.lookup_claim(&invocation) })
+    }
+
+    fn claim_mailbox_input(
+        &self,
+        params: crate::ClaimMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::MailboxClaim> {
+        Box::pin(async move { self.mailbox.lock().await.claim(params) })
+    }
+
+    fn recover_mailbox_delivery(
+        &self,
+        params: crate::ClaimMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::RecoveredMailboxClaim> {
+        Box::pin(async move {
+            let history = self
+                .state
+                .lock()
+                .await
+                .histories
+                .get(&params.invocation.receiver_thread_id)
+                .cloned();
+            self.mailbox
+                .lock()
+                .await
+                .recover(params, history.as_deref())
+        })
+    }
+
+    fn reject_mailbox_input(
+        &self,
+        params: crate::RejectMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(async move { self.mailbox.lock().await.reject(params) })
+    }
+
+    fn reconcile_mailbox_delivery(
+        &self,
+        params: crate::ReconcileMailboxDeliveryParams,
+    ) -> ThreadStoreFuture<'_, crate::MailboxClaim> {
+        Box::pin(async move {
+            let history = self
+                .state
+                .lock()
+                .await
+                .histories
+                .get(&params.claim.invocation.receiver_thread_id)
+                .cloned();
+            self.mailbox
+                .lock()
+                .await
+                .reconcile(params, history.as_deref())
+        })
+    }
+
+    fn read_mailbox_inventory(
+        &self,
+        receiver: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventory> {
+        Box::pin(async move { self.mailbox.lock().await.read_inventory(receiver) })
+    }
+
+    fn has_pending_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.mailbox
+                .lock()
+                .await
+                .has_pending_inventory(&notification)
+        })
+    }
+
+    fn prepare_mailbox_inventory(
+        &self,
+        receiver: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxInventoryNotification>> {
+        Box::pin(async move { self.mailbox.lock().await.prepare_inventory(receiver) })
+    }
+
+    fn recover_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventoryRecovery> {
+        Box::pin(async move {
+            let history = self
+                .state
+                .lock()
+                .await
+                .histories
+                .get(&notification.receiver_thread_id)
+                .cloned();
+            self.mailbox
+                .lock()
+                .await
+                .recover_inventory(&notification, history.as_deref())
+        })
+    }
+
+    fn reconcile_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventoryAcknowledgement> {
+        Box::pin(async move {
+            let history = self
+                .state
+                .lock()
+                .await
+                .histories
+                .get(&notification.receiver_thread_id)
+                .cloned();
+            self.mailbox
+                .lock()
+                .await
+                .reconcile_inventory(notification, history.as_deref())
+        })
+    }
+
+    fn cancel_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            let history = self
+                .state
+                .lock()
+                .await
+                .histories
+                .get(&notification.receiver_thread_id)
+                .cloned();
+            self.mailbox
+                .lock()
+                .await
+                .cancel_inventory(notification, history.as_deref())
+        })
     }
 
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()> {

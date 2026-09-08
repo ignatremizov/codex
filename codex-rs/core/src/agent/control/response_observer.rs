@@ -396,35 +396,44 @@ impl AgentControl {
                     .to_string(),
             ));
         }
-        let prepared = self.prepare_target_message_route_replacement(parent, child, mode);
+        self.restore_agent_send_pair_locked(child, parent).await?;
+        let mut prepared = self.prepare_target_message_route_replacement(parent, child, mode);
+        self.persist_agent_send_setting_locked(
+            codex_agent_graph_store::AgentSendScope::Directed {
+                sender_thread_id: target_thread_id,
+                receiver_thread_id: recipient_thread_id,
+            },
+            mode,
+        )
+        .await?;
+        // Authority commits before its observation audit. Never leave a committed disable
+        // ineffective merely because the following history append fails.
+        prepared.replacement_relationship.reply_route_from_settings = true;
+        if !self.commit_target_message_route_replacement(parent, child, &prepared) {
+            // Keep independently updated observation state, but always publish the SQL setting.
+            prepared.replacement_relationship =
+                self.install_persisted_send_mode(parent, child, mode);
+        }
         let observations = self.prepared_response_observation_replacement_snapshots(
             parent,
             child,
             &prepared.replacement_relationship,
         );
-        if observations.is_empty() {
-            return Err(CodexErr::Fatal(
-                "durable reply-route replacement produced no persistence snapshot".to_string(),
-            ));
-        }
-        let commit_guard =
-            ResponseObservationReplacementCommitGuard::new(Arc::clone(&parent_thread));
-        if !parent_thread
-            .session
-            .persist_agent_response_observation_replacement(observations.as_slice())
-            .await
+        if observations.is_empty()
+            || !parent_thread
+                .session
+                .persist_agent_response_observation_replacement(observations.as_slice())
+                .await
         {
-            return Err(CodexErr::Fatal(
-                "failed to persist replaced agent reply-route state".to_string(),
-            ));
+            parent_thread.session.send_event_raw(codex_protocol::protocol::Event {
+                id: format!("agent-send-setting-{target_thread_id}"),
+                msg: codex_protocol::protocol::EventMsg::Warning(
+                    codex_protocol::protocol::WarningEvent {
+                        message: "Messaging setting committed, but its observation audit could not be persisted. The setting remains effective.".into(),
+                    },
+                ),
+            }).await;
         }
-        if !self.commit_target_message_route_replacement(parent, child, &prepared) {
-            return Err(CodexErr::Fatal(
-                "agent reply route changed while its replacement was being persisted; refresh the thread before continuing"
-                    .to_string(),
-            ));
-        }
-        commit_guard.commit();
         // Context refresh takes its own observer transactions. Release admission locks before
         // updating notices, including disables and later re-enables of an existing route hint.
         drop(_transaction_permit);

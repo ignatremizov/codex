@@ -4989,7 +4989,9 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
                 (id_a.to_string(), AgentStatus::NotFound),
                 (id_b.to_string(), AgentStatus::NotFound),
             ]),
-            timed_out: false
+            timed_out: false,
+            return_reason: wait::WaitReturnReason::Completion,
+            mail_only_targets: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -5026,7 +5028,9 @@ async fn wait_agent_times_out_when_status_is_not_final() {
         result,
         wait::WaitAgentResult {
             status: HashMap::new(),
-            timed_out: true
+            timed_out: true,
+            return_reason: wait::WaitReturnReason::Timeout,
+            mail_only_targets: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -5122,7 +5126,9 @@ async fn wait_agent_returns_final_status_without_timeout() {
         result,
         wait::WaitAgentResult {
             status: HashMap::from([(agent_id.to_string(), AgentStatus::Shutdown)]),
-            timed_out: false
+            timed_out: false,
+            return_reason: wait::WaitReturnReason::Completion,
+            mail_only_targets: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -5212,6 +5218,8 @@ async fn wait_agent_preserves_terminal_status_across_immediate_next_turn() {
                 AgentStatus::Completed(Some("child done".to_string())),
             )]),
             timed_out: false,
+            return_reason: wait::WaitReturnReason::Completion,
+            mail_only_targets: Vec::new(),
         }
     );
     assert_eq!(success, None);

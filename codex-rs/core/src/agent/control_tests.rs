@@ -104,6 +104,9 @@ use toml::Value as TomlValue;
 #[path = "control/directory_tests.rs"]
 mod directory_tests;
 
+#[path = "control/mailbox_input_tests.rs"]
+mod mailbox_input_tests;
+
 #[path = "control/scoped_admission_tests.rs"]
 mod scoped_admission_tests;
 

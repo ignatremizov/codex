@@ -340,6 +340,7 @@ mod tests {
                 SlashCommand::Status,
                 SlashCommand::Pwd,
                 SlashCommand::Usage,
+                SlashCommand::Mail,
             ]
         );
     }

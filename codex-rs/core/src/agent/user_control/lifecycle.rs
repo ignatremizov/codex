@@ -34,7 +34,8 @@ struct PreparedClosedAgentResume {
 }
 
 impl CodexThread {
-    /// Set a live messaging default for this supervisor and its current/future descendants.
+    /// Persist a messaging default for this supervisor and its current/future descendants.
+    /// The setting survives restart independently of response subscriptions.
     pub async fn set_agent_subtree_messaging(
         &self,
         mode: UserAgentReplyRouteMode,

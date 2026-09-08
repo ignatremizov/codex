@@ -316,6 +316,9 @@ pub(crate) enum AppEvent {
     /// Close the `/agent` overlays and prepare an auditable command in the normal composer.
     PrepareAgentCommand(String),
 
+    /// Accept typed user mail without admitting a payload-bearing turn.
+    SubmitUserMailbox(crate::chatwidget::mailbox::MailboxSubmission),
+
     /// Submit a genuine user-authored prompt to an agent without changing focus.
     SubmitAgentPrompt {
         source_thread_id: ThreadId,

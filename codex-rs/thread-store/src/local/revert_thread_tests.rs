@@ -223,7 +223,7 @@ async fn rollout_paths_for_thread(
         .collect()
 }
 
-async fn create_paginated_thread(store: &LocalThreadStore, thread_id: ThreadId) {
+pub(super) async fn create_paginated_thread(store: &LocalThreadStore, thread_id: ThreadId) {
     store
         .create_thread(CreateThreadParams {
             session_id: thread_id.into(),
@@ -270,7 +270,7 @@ async fn turn_ids(store: &LocalThreadStore, thread_id: ThreadId) -> Vec<String> 
         .collect()
 }
 
-fn turn_started(turn_id: &str) -> RolloutItem {
+pub(super) fn turn_started(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_id.to_string(),
         trace_id: None,
@@ -281,7 +281,7 @@ fn turn_started(turn_id: &str) -> RolloutItem {
     }))
 }
 
-fn turn_completed(turn_id: &str) -> RolloutItem {
+pub(super) fn turn_completed(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: turn_id.to_string(),
         last_agent_message: None,
@@ -293,7 +293,7 @@ fn turn_completed(turn_id: &str) -> RolloutItem {
     }))
 }
 
-fn compress_rollout(path: &std::path::Path) {
+pub(super) fn compress_rollout(path: &std::path::Path) {
     let contents = std::fs::read(path).expect("read rollout");
     let compressed = zstd::stream::encode_all(contents.as_slice(), 3).expect("compress rollout");
     std::fs::write(path.with_extension("jsonl.zst"), compressed).expect("write compressed rollout");

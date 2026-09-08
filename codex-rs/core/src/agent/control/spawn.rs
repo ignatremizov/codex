@@ -1488,6 +1488,9 @@ impl AgentControl {
                 } else {
                     None
                 };
+            new_thread.thread.session.services.agent_control
+                .restore_agent_send_settings(new_thread.thread.session.presentation_id())
+                .await?;
             // Admission binding follows the observer contract, not the child's protocol. User
             // control and V1 tools can deliberately attach a durable observer to a V2 child.
             let _response_observation_transaction = if observer_multi_agent_version
@@ -2488,6 +2491,12 @@ impl AgentControl {
             }
             let mut response_observer_cleanup = None;
             let post_resume_result: CodexResult<Option<ResponseObservationSubmission>> = async {
+                resumed_thread
+                    .session
+                    .services
+                    .agent_control
+                    .restore_agent_send_settings(resumed_thread.session.presentation_id())
+                    .await?;
                 if let Some(DeferredResumeResponseObserver {
                     source,
                     response_observation,
@@ -3504,6 +3513,13 @@ impl AgentControl {
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_else(|| resumed_thread.thread_id.to_string());
+            resumed_thread
+                .thread
+                .session
+                .services
+                .agent_control
+                .restore_agent_send_settings(resumed_thread.thread.session.presentation_id())
+                .await?;
             let _response_observation_permit = if resumed_thread.thread.multi_agent_version()
                 != Some(MultiAgentVersion::V2)
                 && let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {

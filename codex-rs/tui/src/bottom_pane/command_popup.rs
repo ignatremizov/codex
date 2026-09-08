@@ -541,7 +541,7 @@ mod tests {
         popup.on_composer_text_change("/m".to_string());
 
         let cmds = builtin_command_names(&popup);
-        assert_eq!(cmds, vec!["model", "memories", "mention", "mcp"]);
+        assert_eq!(cmds, vec!["model", "memories", "mention", "mcp", "mail"]);
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

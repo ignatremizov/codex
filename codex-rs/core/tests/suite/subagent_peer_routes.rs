@@ -8,6 +8,9 @@ mod downward_permissions;
 #[path = "subagent_delivery_receipts.rs"]
 mod delivery_receipts;
 
+#[path = "subagent_persistent_send_settings.rs"]
+mod persistent_send_settings;
+
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
