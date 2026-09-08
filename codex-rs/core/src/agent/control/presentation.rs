@@ -23,6 +23,7 @@ mod input_permission;
 mod live_revert_messaging;
 mod response_observation;
 mod root_completion_audit;
+mod send_settings;
 mod subtree_messaging;
 use live_revert_messaging::LiveRevertMessagingContinuity;
 pub use live_revert_messaging::LiveRevertMessagingSnapshot;
@@ -83,6 +84,13 @@ pub(super) struct WaitAgentPresentations {
     messaging_refresh: tokio::sync::Mutex<()>,
     #[cfg(test)]
     pub(in crate::agent::control) scoped_permission_check_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(in crate::agent::control) mailbox_acceptance_gate: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
             tokio::sync::oneshot::Receiver<()>,

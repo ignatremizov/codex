@@ -107,6 +107,7 @@ mod base;
 mod dynamic;
 mod exec;
 mod hook_cell;
+pub(crate) mod mailbox;
 mod markdown_render_cache;
 mod mcp;
 mod messages;

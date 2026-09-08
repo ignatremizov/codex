@@ -544,7 +544,8 @@ mod tests {
                 "model".to_string(),
                 "memories".to_string(),
                 "mention".to_string(),
-                "mcp".to_string()
+                "mcp".to_string(),
+                "mail".to_string(),
             ]
         );
     }

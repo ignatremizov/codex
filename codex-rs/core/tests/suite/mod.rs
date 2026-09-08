@@ -109,6 +109,7 @@ mod hooks_executor;
 mod hooks_mcp;
 mod image_rollout;
 mod injected_models_cache;
+mod input_mailbox;
 #[cfg(not(target_os = "windows"))]
 mod interrupt_hooks;
 mod items;
@@ -190,6 +191,7 @@ mod safety_buffering;
 mod safety_check_downgrade;
 mod scenarios;
 mod search_tool;
+mod send_input_mailbox;
 mod send_user_message_async;
 mod settings_commits;
 mod settings_constraints;

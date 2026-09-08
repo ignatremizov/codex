@@ -1527,13 +1527,19 @@ impl App {
                 continue;
             };
 
+            let metadata = receiver_agents
+                .iter()
+                .find(|agent| agent.thread_id == *receiver_thread_id);
+            if let Some(task_path) = metadata.and_then(|agent| agent.task_path.clone()) {
+                self.agent_navigation
+                    .update_task_path(thread_id, Some(task_path.clone()));
+                self.chat_widget
+                    .set_collab_agent_task_path(thread_id, Some(task_path));
+            }
             if self.agent_navigation.get(&thread_id).is_some() {
                 continue;
             }
 
-            let metadata = receiver_agents
-                .iter()
-                .find(|agent| agent.thread_id == *receiver_thread_id);
             self.upsert_agent_picker_thread(
                 thread_id,
                 metadata.and_then(|agent| agent.agent_nickname.clone()),

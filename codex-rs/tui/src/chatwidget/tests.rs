@@ -263,6 +263,8 @@ mod config_errors;
 mod copy_export_picker_tests;
 #[path = "tests/countdown_tests.rs"]
 mod countdown_tests;
+#[path = "tests/duplicate_completion_tests.rs"]
+mod duplicate_completion;
 #[path = "tests/dynamic_activity_tests.rs"]
 mod dynamic_activity_tests;
 mod exec_flow;

@@ -5,10 +5,7 @@ use super::*;
 use crate::CodexThread;
 
 struct RouteMutation {
-    control: LocalAgentControl,
     observer: Arc<CodexThread>,
-    parent: SessionPresentationId,
-    child: SessionPresentationId,
     committed: bool,
 }
 
@@ -17,8 +14,6 @@ impl Drop for RouteMutation {
         if !self.committed {
             let reason = "reply-route outcome unknown; reload required, do not retry";
             self.observer.session.quarantine_history(reason.to_string());
-            self.control
-                .abandon_response_observer(self.parent, self.child, reason);
         }
     }
 }
@@ -64,8 +59,8 @@ impl LocalAgentControl {
             let _permission = control.acquire_messaging_permission_transaction().await;
             let transaction = control.acquire_response_observation_transaction(parent).await;
             let child = target.session.presentation_id();
-            let prepared = control.prepare_reply_route(parent, child, mode)?;
-            let previous = prepared.previous;
+            control.restore_agent_send_pair_locked(child, parent).await?;
+            let previous = control.prepare_reply_route(parent, child, mode)?.previous;
             let route = if mode.is_enabled() {
                 Some(control.agent_reply_route_item(
                     &target,
@@ -76,15 +71,23 @@ impl LocalAgentControl {
                 None
             };
             let mut mutation = RouteMutation {
-                control: control.clone(),
                 observer: Arc::clone(&observer),
-                parent,
-                child,
                 committed: false,
             };
+            control.persist_agent_send_setting_locked(
+                codex_agent_graph_store::AgentSendScope::Directed {
+                    sender_thread_id: target_thread_id,
+                    receiver_thread_id: recipient_thread_id,
+                },
+                mode,
+            ).await?;
+            // The SQL setting is authoritative independently of the following canonical audit.
+            // Keep it effective even if either endpoint loses its publication receipt.
+            control.install_persisted_send_mode(parent, child, mode);
+            let prepared = control.prepare_reply_route(parent, child, mode)?;
             if let Some(route) = route {
                 target.session.publish_persistent_reply_route(route).await.map_err(|error| {
-                    CodexErr::Fatal(format!("reply-route outcome unknown; do not retry: {error}"))
+                    CodexErr::Fatal(format!("messaging setting committed but target context publication failed: {error}; reload before continuing"))
                 })?;
             }
             let snapshots = prepared.snapshots.clone();
@@ -96,7 +99,7 @@ impl LocalAgentControl {
                 move || commit_control.commit_reply_route(prepared),
             ).await {
                 return Err(CodexErr::Fatal(format!(
-                    "reply-route outcome unknown; do not retry: {error}"
+                    "messaging setting committed but observation audit failed: {error}; reload before continuing"
                 )));
             }
             mutation.committed = true;

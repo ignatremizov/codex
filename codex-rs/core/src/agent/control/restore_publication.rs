@@ -13,6 +13,8 @@ impl LocalAgentControl {
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
         let thread_id = thread.session.thread_id();
+        self.restore_agent_send_settings(thread.session.presentation_id())
+            .await?;
         let disarm = thread.session.disarm_terminal_presentation();
         if let Some(parent) = parent {
             let source = thread.session_source.clone();

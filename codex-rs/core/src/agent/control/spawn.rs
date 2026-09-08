@@ -526,6 +526,14 @@ impl LocalAgentControl {
                 .await);
         }
 
+        if let Err(error) = self
+            .restore_agent_send_settings(new_thread.thread.session.presentation_id())
+            .await
+        {
+            return Err(self
+                .cleanup_unpublished_spawn(&new_thread.thread, error)
+                .await);
+        }
         if notification_source.is_some() {
             if let Err(error) = state
                 .publish_restored_thread(&new_thread.thread, parent.as_ref(), || {

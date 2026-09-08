@@ -3163,6 +3163,11 @@ impl ChatComposer {
         if self.dictation_element.is_some() {
             return (InputResult::None, false);
         }
+        // Mail is explicit receiver-selected input, never an ordinary queued turn.
+        let mailbox_submission = !self.draft.textarea.text().starts_with(' ')
+            && parse_slash_name(self.draft.textarea.text())
+                .is_some_and(|(name, _, _)| name == SlashCommand::Mail.command());
+        let should_queue = should_queue && !mailbox_submission;
         if should_queue {
             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
                 self.apply_paste(pasted);
@@ -3299,6 +3304,13 @@ impl ChatComposer {
             return Some(InputResult::None);
         }
         self.stage_slash_command_history(&command);
+        if matches!(command, SlashCommandItem::Builtin(SlashCommand::Mail)) {
+            return Some(InputResult::CommandWithArgs(
+                SlashCommand::Mail,
+                String::new(),
+                Vec::new(),
+            ));
+        }
         if !matches!(command, SlashCommandItem::Builtin(cmd) if cmd.requires_dispatch_validation())
         {
             self.draft.textarea.set_text_clearing_elements("");

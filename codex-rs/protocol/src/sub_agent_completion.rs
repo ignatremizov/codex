@@ -305,6 +305,8 @@ pub fn ordinary_agent_message_response_item_id(id: &str) -> String {
         || is_attributed_agent_message_response_item_id(id)
         || is_user_agent_task_context_response_item_id(id)
         || agent_delivery_receipt_from_response_item_id(id).is_some()
+        || crate::is_mailbox_delivery_response_item_id(id)
+        || crate::is_mailbox_inventory_response_item_id(id)
     {
         format!("agent_{id}")
     } else {

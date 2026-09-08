@@ -35,6 +35,39 @@ impl LocalAgentGraphStore {
 }
 
 impl AgentGraphStore for LocalAgentGraphStore {
+    fn supports_agent_send_settings(&self) -> bool {
+        true
+    }
+
+    fn read_agent_send_settings(
+        &self,
+        scopes: Vec<crate::AgentSendScope>,
+    ) -> AgentGraphStoreFuture<'_, Vec<crate::AgentSendSetting>> {
+        Box::pin(async move {
+            self.state_db
+                .read_agent_send_settings(scopes)
+                .await
+                .map_err(|error| AgentGraphStoreError::Internal {
+                    message: error.to_string(),
+                })
+        })
+    }
+
+    fn replace_agent_send_setting(
+        &self,
+        scope: crate::AgentSendScope,
+        mode: crate::AgentSendMode,
+    ) -> AgentGraphStoreFuture<'_, crate::AgentSendSetting> {
+        Box::pin(async move {
+            self.state_db
+                .replace_agent_send_setting(scope, mode)
+                .await
+                .map_err(|error| AgentGraphStoreError::Internal {
+                    message: error.to_string(),
+                })
+        })
+    }
+
     fn supports_agent_aliases(&self) -> bool {
         true
     }

@@ -543,7 +543,12 @@ impl ThreadManager {
                         .restore_before_publication(&resumed.thread)
                         .await?,
                 ),
-                None => None,
+                None => {
+                    control
+                        .restore_agent_send_settings(resumed.thread.session.presentation_id())
+                        .await?;
+                    None
+                }
             };
             if controlled_child {
                 control

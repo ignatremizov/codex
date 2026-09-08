@@ -979,6 +979,23 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    /// Accept immutable user mail without loading or starting the receiver.
+    pub async fn accept_user_mailbox_input(
+        &self,
+        receiver: ThreadId,
+        input: Vec<codex_protocol::user_input::UserInput>,
+        client_user_message_id: String,
+    ) -> CodexResult<codex_thread_store::StoredMailboxInput> {
+        self.agent_control()
+            .accept_mailbox_user_input(
+                Arc::clone(&self.state.thread_store),
+                receiver,
+                input,
+                client_user_message_id,
+            )
+            .await
+    }
+
     /// Updates metadata for loaded and cold threads through one entrypoint.
     ///
     /// Loaded threads route through `CodexThread`/`LiveThread`, so metadata changes stay ordered
@@ -2426,6 +2443,19 @@ impl ThreadManagerState {
             }
         };
 
+        if registration == ThreadRegistration::Immediate
+            && let Err(error) = session
+                .services
+                .agent_control
+                .restore_agent_send_settings(session.presentation_id())
+                .await
+        {
+            if let Err(shutdown_error) = io.shutdown_and_wait().await {
+                warn!(%shutdown_error, "settings restoration shutdown failed");
+                io.session_loop_termination.clone().await;
+            }
+            return Err(error);
+        }
         {
             let mut threads = self.threads.write().await;
             if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {

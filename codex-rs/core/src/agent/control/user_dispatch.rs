@@ -313,6 +313,10 @@ impl LocalAgentControl {
             }
         }
         let _permission = self.acquire_messaging_permission_transaction().await;
+        self.restore_agent_send_pair_locked(child, request.observer)
+            .await?;
+        self.restore_agent_send_pair_locked(request.observer, child)
+            .await?;
         if let AgentControlInput::AttributedAgentInput { attribution, .. } = &request.input {
             if attribution.sender.thread_id != request.observer.thread_id
                 || attribution.recipient.thread_id != agent_id

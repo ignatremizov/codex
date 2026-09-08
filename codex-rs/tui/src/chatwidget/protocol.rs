@@ -666,6 +666,7 @@ impl ChatWidget {
                 wake_on_completion,
                 target_messages,
                 queue_input,
+                mailbox_input,
                 sender_thread_id,
                 receiver_thread_ids,
                 receiver_agents,
@@ -682,6 +683,7 @@ impl ChatWidget {
                     wake_on_completion,
                     target_messages,
                     queue_input,
+                    mailbox_input,
                     sender_thread_id,
                     receiver_thread_ids,
                     receiver_agents,
@@ -740,6 +742,23 @@ impl ChatWidget {
         if replay_kind.is_none()
             && let ThreadItem::Reasoning { id, .. } = &notification.item
             && self.status_state.reasoning_item_id.as_ref() != Some(id)
+        {
+            return;
+        }
+        // A live completion can arrive again after item or turn completion has already
+        // finalized its stream. Match the same identity as the turn-completion fallback;
+        // equal text in another item and authoritative history replay are still distinct.
+        if replay_kind.is_none()
+            && let ThreadItem::AgentMessage {
+                id,
+                attribution: None,
+                ..
+            } = &notification.item
+            && self
+                .transcript
+                .last_completed_agent_message
+                .as_ref()
+                .is_some_and(|(turn_id, item_id)| turn_id == &notification.turn_id && item_id == id)
         {
             return;
         }

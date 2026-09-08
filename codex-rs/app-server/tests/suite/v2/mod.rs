@@ -136,6 +136,7 @@ mod thread_goal_empty_responses;
 mod thread_inject_items;
 mod thread_list;
 mod thread_loaded_list;
+mod thread_mailbox;
 mod thread_memory_mode_set;
 mod thread_metadata_update;
 mod thread_name_websocket;

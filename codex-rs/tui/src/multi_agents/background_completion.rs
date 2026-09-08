@@ -1,5 +1,4 @@
-//! Render trusted background completions with the shared collaboration preview owner.
-
+use codex_app_server_protocol::CollabAgentStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::SubAgentCompletionModelVisibility;
@@ -19,8 +18,6 @@ use super::parse_thread_id;
 use super::preview_source_lines;
 use super::title_spans_line;
 
-/// Decodes the reserved identity emitted by the trusted core-to-app-server projection.
-/// Raw core items must pass `has_sub_agent_completion_identity` before using this renderer.
 pub(crate) fn background_completion_history_cell_from_agent_message(
     id: &str,
     text: &str,
@@ -64,23 +61,38 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
     let completion_status = sub_agent_completion_status_from_response_item_id(id)?;
     let model_visibility = sub_agent_completion_model_visibility_from_response_item_id(id)?;
     let (agent_reference, payload) = sub_agent_completion_transcript_parts(text)?;
-    let message = match completion_status {
-        SubAgentCompletionStatus::Completed | SubAgentCompletionStatus::Errored => Some(payload),
-        SubAgentCompletionStatus::Shutdown | SubAgentCompletionStatus::NotFound => None,
+    let (status, message) = match completion_status {
+        SubAgentCompletionStatus::Completed => (
+            CollabAgentStatus::Completed,
+            (!payload.is_empty()).then(|| payload.to_string()),
+        ),
+        SubAgentCompletionStatus::Errored => {
+            (CollabAgentStatus::Errored, Some(payload.to_string()))
+        }
+        SubAgentCompletionStatus::Shutdown => (CollabAgentStatus::Shutdown, None),
+        SubAgentCompletionStatus::NotFound => (CollabAgentStatus::NotFound, None),
     };
     let agent_reference = agent_reference.trim();
     let thread_id = parse_thread_id(agent_reference);
     let details = message
+        .as_deref()
         .map(preview_source_lines)
         .filter(|lines| !lines.is_empty())
         .map(|lines| vec![CollabDetail::preview(lines, agent_response_preview_lines)])
         .unwrap_or_default();
     let suffix = vec![
         Span::from(" ").dim(),
-        completion_status_verb(completion_status),
+        completion_status_verb(&status),
         Span::from(" (").bold(),
         completion_visibility_span(model_visibility),
-        Span::from(if details.is_empty() { ")" } else { "):" }).bold(),
+        Span::from(
+            if status == CollabAgentStatus::Completed || details.is_empty() {
+                ")"
+            } else {
+                "):"
+            },
+        )
+        .bold(),
     ];
     Some(if let Some(thread_id) = thread_id {
         CollabAgentHistoryCell::new_agent_labeled(
@@ -92,9 +104,11 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
     } else {
         let mut title = if agent_reference == AgentPath::ROOT {
             vec![
-                Span::from("Main").cyan().bold(),
+                Span::from("Main")
+                    .fg(crate::agent_color::nickname_color("Main"))
+                    .bold(),
                 Span::from(" ").dim(),
-                Span::from("[default]"),
+                Span::from("[default]").dim(),
             ]
         } else if agent_reference.is_empty() {
             vec![Span::from("agent").cyan()]
@@ -119,11 +133,16 @@ fn completion_visibility_span(
     }
 }
 
-fn completion_status_verb(status: SubAgentCompletionStatus) -> Span<'static> {
+fn completion_status_verb(status: &CollabAgentStatus) -> Span<'static> {
     match status {
-        SubAgentCompletionStatus::Completed => "completed".green(),
-        SubAgentCompletionStatus::Errored => "errored".red(),
-        SubAgentCompletionStatus::Shutdown => "shut down".into(),
-        SubAgentCompletionStatus::NotFound => "not found".red(),
+        CollabAgentStatus::PendingInit => "pending initialization".cyan(),
+        CollabAgentStatus::Running => "running".cyan().bold(),
+        // Allow `.yellow()`
+        #[allow(clippy::disallowed_methods)]
+        CollabAgentStatus::Interrupted => "interrupted".yellow(),
+        CollabAgentStatus::Completed => "completed:".green(),
+        CollabAgentStatus::Errored => "errored".red(),
+        CollabAgentStatus::Shutdown => "shut down".into(),
+        CollabAgentStatus::NotFound => "not found".red(),
     }
 }

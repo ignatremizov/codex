@@ -575,12 +575,14 @@ impl Session {
                     history.record_retained_context(event);
                 }
                 RolloutItem::ResponseItem(response_item) => {
-                    if matches!(
+                    if (matches!(
                         index
                             .checked_sub(1)
                             .and_then(|index| rollout_items.get(index)),
                         Some(RolloutItem::InterAgentCommunicationMetadata { .. })
-                    ) && response_item.id().is_some_and(|id| {
+                    ) || response_item.id().is_some_and(|id| {
+                        codex_protocol::is_mailbox_delivery_response_item_id(id.as_str())
+                    })) && response_item.id().is_some_and(|id| {
                         trusted_completions.get(id) == Some(response_item)
                             && !completion_context_ids.insert(id.clone())
                     }) {

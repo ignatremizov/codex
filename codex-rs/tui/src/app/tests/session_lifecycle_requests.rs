@@ -3926,11 +3926,13 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: thread_id,
                 receiver_thread_ids: vec![child_thread_id],
                 receiver_agents: vec![CollabAgentRef {
                     thread_id: child_thread_id,
+                    task_path: None,
                     agent_nickname: Some("Robie".to_string()),
                     agent_role: Some("explorer".to_string()),
                 }],
@@ -4046,7 +4048,7 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
             .eq(markdown.lines().filter(|line| line.starts_with("history")))
     );
     assert!(
-        markdown.contains("Robie [explorer] completed (● visible):"),
+        markdown.contains("Robie [explorer] completed: (● visible)"),
         "{markdown}"
     );
     assert!(
@@ -4094,7 +4096,7 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
     assert!(app.transcript_cells.iter().any(|cell| {
         cell.display_lines(/*width*/ 80).iter().any(|line| {
             line.to_string()
-                .contains("Robie [explorer] completed (● visible):")
+                .contains("Robie [explorer] completed: (● visible)")
         })
     }));
     let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {

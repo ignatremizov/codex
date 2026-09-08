@@ -23,6 +23,7 @@ use crate::tools::context::ToolCallState;
 use crate::tools::context::ToolPayload;
 use crate::tools::lifecycle::notify_tool_aborted;
 use crate::tools::registry::AnyToolResult;
+use crate::tools::registry::DirectToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
@@ -77,7 +78,7 @@ impl ToolCallRuntime {
         self,
         call: ToolCall,
         cancellation_token: CancellationToken,
-    ) -> impl std::future::Future<Output = Result<ResponseItemEnvelope, CodexErr>> {
+    ) -> impl std::future::Future<Output = Result<DirectToolResult, CodexErr>> {
         let error_call = call.clone();
         let runtime = self.step_context.tool_router.tool_runtime(&call.tool_name);
         let source = call.direct_source(runtime.as_deref());
@@ -103,20 +104,25 @@ impl ToolCallRuntime {
                     {
                         call.set_tool_result_metadata(ToolResultMetadata::new(metadata));
                     }
-                    result.into_response()
+                    let mut response = result.into_direct_result();
+                    if let Some(text) = call_state.delivered_assistant_message.get() {
+                        response
+                            .response
+                            .metadata
+                            .get_or_insert_default()
+                            .delivered_assistant_message = Some(text.clone());
+                    }
+                    response
                 }
                 Err(FunctionCallError::Fatal(message)) => return Err(CodexErr::Fatal(message)),
-                Err(other) => {
-                    ResponseItemEnvelope::new(Self::failure_response(error_call, other).into())
-                }
+                Err(other) => DirectToolResult {
+                    response: ResponseItemEnvelope::new(
+                        Self::failure_response(error_call, other).into(),
+                    ),
+                    mailbox_operation: None,
+                },
             };
-            if let Some(text) = call_state.delivered_assistant_message.get() {
-                response
-                    .metadata
-                    .get_or_insert_default()
-                    .delivered_assistant_message = Some(text.clone());
-            }
-            recorder.attach_direct_call_to_output(&mut response.item, recorded_call);
+            recorder.attach_direct_call_to_output(&mut response.response.item, recorded_call);
             Ok(response)
         }
     }
@@ -342,6 +348,7 @@ impl ToolCallRuntime {
                 message: Self::abort_message(call, secs),
             }),
             post_tool_use_payload: None,
+            mailbox_operation: None,
         }
     }
 
@@ -881,7 +888,7 @@ mod tests {
         };
         assert_eq!(
             ResponseItemEnvelope::new(expected_response.into()),
-            response
+            response.response
         );
 
         let actual = records
@@ -955,7 +962,7 @@ mod tests {
             .await
             .expect("timed out waiting for tool response")
             .expect("tool response task should join")?;
-        let ResponseItem::FunctionCallOutput { output, .. } = response.item else {
+        let ResponseItem::FunctionCallOutput { output, .. } = response.response.item else {
             anyhow::bail!("cancelled tool should return function output");
         };
         let FunctionCallOutputBody::Text(text) = output.body else {

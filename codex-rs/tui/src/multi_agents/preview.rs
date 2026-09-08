@@ -111,6 +111,9 @@ impl CollabAgentHistoryCell {
                 if metadata.spawn_request.is_some() {
                     stored.spawn_request = metadata.spawn_request;
                 }
+                if matches!(metadata.task_path, AgentTaskPath::Known(_)) {
+                    stored.task_path = metadata.task_path;
+                }
             }
         }
         let title = agent_title.render();

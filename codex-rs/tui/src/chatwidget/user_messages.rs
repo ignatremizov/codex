@@ -134,6 +134,7 @@ impl ThreadComposerState {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ThreadInputState {
     pub(crate) questions: Option<crate::bottom_pane::QuestionState>,
+    pub(super) mailbox_retry: Option<super::mailbox::MailboxSubmission>,
     pub(super) composer: Option<ThreadComposerState>,
     pub(super) safety_buffering_prompt: Option<UserMessage>,
     pub(super) safety_buffering_source: UserMessageSource,

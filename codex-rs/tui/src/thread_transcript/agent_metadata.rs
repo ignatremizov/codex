@@ -2,6 +2,7 @@
 
 use super::TranscriptCells;
 use crate::multi_agents::AgentMetadata;
+use crate::multi_agents::AgentTaskPath;
 use crate::multi_agents::CollabAgentHistoryCell;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
@@ -31,6 +32,48 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
                 }
                 if agent.agent_role.is_some() {
                     entry.agent_role.clone_from(&agent.agent_role);
+                }
+                if agent.task_path.is_some() {
+                    entry.task_path = AgentTaskPath::Known(agent.task_path.clone());
+                }
+            }
+            if let Some(spawn_request) = crate::multi_agents::spawn_request_summary(item) {
+                for receiver in receiver_agents {
+                    let Ok(thread_id) = ThreadId::from_string(&receiver.thread_id) else {
+                        continue;
+                    };
+                    metadata.entry(thread_id).or_default().spawn_request =
+                        Some(spawn_request.clone());
+                }
+            }
+        }
+        if let ThreadItem::UserAgentControl {
+            target_thread_id: Some(target_thread_id),
+            nickname,
+            role,
+            task_path,
+            task_path_mapping,
+            ..
+        } = item
+            && let Ok(thread_id) = ThreadId::from_string(target_thread_id)
+        {
+            let entry = metadata.entry(thread_id).or_default();
+            if nickname.is_some() {
+                entry.agent_nickname.clone_from(nickname);
+            }
+            if role.is_some() {
+                entry.agent_role.clone_from(role);
+            }
+            if let Some(task_path) = task_path {
+                entry.task_path = AgentTaskPath::Known(Some(task_path.clone()));
+            }
+            if let Some(spawn_request) = crate::multi_agents::spawn_request_summary(item) {
+                entry.spawn_request = Some(spawn_request);
+            }
+            for mapping in task_path_mapping {
+                if let Ok(thread_id) = ThreadId::from_string(&mapping.thread_id) {
+                    metadata.entry(thread_id).or_default().task_path =
+                        AgentTaskPath::Known(mapping.task_path.clone());
                 }
             }
         }
