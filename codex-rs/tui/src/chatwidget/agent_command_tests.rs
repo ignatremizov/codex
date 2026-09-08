@@ -377,6 +377,7 @@ fn parses_lifecycle_actions() {
         parse_agent_command("observe 2 presentation"),
         Ok(AgentCommand::Observe {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
+            observer: None,
             mode: AgentObservationMode::Presentation,
         })
     );
@@ -396,6 +397,51 @@ fn parses_lifecycle_actions() {
             mode: AgentReplyRouteMode::Disabled,
         })
     );
+}
+
+#[test]
+fn observe_accepts_an_explicit_observer_without_changing_target_or_mode() {
+    for (mode, expected_mode) in [
+        ("passive", AgentObservationMode::Passive),
+        ("wake", AgentObservationMode::Wake),
+        ("presentation", AgentObservationMode::Presentation),
+    ] {
+        assert_eq!(
+            parse_agent_command(&format!("observe Main from nick:\"Charles Peirce\" {mode}")),
+            Ok(AgentCommand::Observe {
+                selector: selector(AgentSelectorKind::Nickname("Main".to_string()), "Main"),
+                observer: Some(selector(
+                    AgentSelectorKind::Nickname("Charles Peirce".to_string()),
+                    "nick:\"Charles Peirce\"",
+                )),
+                mode: expected_mode,
+            })
+        );
+        assert_eq!(
+            parse_agent_command(&format!("observe 1 from ref:146 {mode}")),
+            Ok(AgentCommand::Observe {
+                selector: selector(AgentSelectorKind::Ref(1), "1"),
+                observer: Some(selector(AgentSelectorKind::Ref(146), "ref:146")),
+                mode: expected_mode,
+            })
+        );
+    }
+}
+
+#[test]
+fn observe_rejects_incomplete_repeated_or_trailing_observer_clauses() {
+    for input in [
+        "observe Main",
+        "observe Main from",
+        "observe Main from Peirce",
+        "observe Main from Peirce from Robie passive",
+        "observe Main passive from Peirce",
+        "observe Main from Peirce w:f",
+        "observe Main from Peirce passive extra",
+        "observe Main from nick:\"\" passive",
+    ] {
+        assert!(parse_agent_command(input).is_err(), "{input}");
+    }
 }
 
 #[test]

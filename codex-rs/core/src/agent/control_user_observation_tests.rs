@@ -61,8 +61,12 @@ async fn close_response_cannot_hold_a_receipt_inside_the_subtree_being_closed() 
     assert_eq!(report.timed_out, Vec::<ThreadId>::new());
 }
 
+#[test_case::test_case(UserAgentResponseHandling::Passive; "passive")]
+#[test_case::test_case(UserAgentResponseHandling::Presentation; "presentation_only")]
 #[tokio::test]
-async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
+async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent(
+    response_handling: UserAgentResponseHandling,
+) {
     let harness = AgentControlHarness::new().await;
     let (_, root) = harness.start_thread().await;
     let parent = root
@@ -95,7 +99,7 @@ async fn user_resume_from_a_sibling_observer_preserves_the_durable_parent() {
         .resume_agent(
             &child.target_thread_id.to_string(),
             /*task*/ None,
-            UserAgentResponseHandling::Passive,
+            response_handling,
         )
         .await
         .expect("observe resumed descendant from root");
@@ -294,6 +298,7 @@ async fn promptless_user_spawn_reserves_one_policy_and_can_downgrade_it() {
     let replaced = root
         .observe_agent(
             &spawned.target_thread_id.to_string(),
+            /*observer*/ None,
             UserAgentObservationMode::Presentation,
         )
         .await
@@ -302,6 +307,7 @@ async fn promptless_user_spawn_reserves_one_policy_and_can_downgrade_it() {
         replaced,
         (
             spawned.target_thread_id,
+            root.session.thread_id(),
             UserAgentFinalResponseHandling::Wake,
             UserAgentObservationBinding::NextTurn,
         )

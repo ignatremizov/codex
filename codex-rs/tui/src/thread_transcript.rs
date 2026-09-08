@@ -2,6 +2,7 @@
 //! Tool grouping spans hidden reasoning but stops at visible content and turn boundaries.
 //! Only one computer or exploration group can be pending at a time.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::app_server_session::AppServerSession;
@@ -17,6 +18,7 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::split_reasoning_summary_parts;
 use crate::inline_visualization::InlineVisualizationContext;
 use crate::legacy_core::config::Config;
+use crate::multi_agents::AgentMetadata;
 use crate::multi_agents::AgentPreviewLineLimits;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
@@ -192,6 +194,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
                 show_compact_summary,
                 output_preview_line_limits,
                 agent_preview_line_limits,
+                &metadata,
             ) {
                 match group {
                     PendingActivity::Computer(group) => group.group.push_detail(cell),
@@ -259,6 +262,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
                     show_compact_summary,
                     output_preview_line_limits,
                     agent_preview_line_limits,
+                    &metadata,
                 );
                 if !projected.is_empty() {
                     PendingActivity::flush(&mut pending, &mut cells);
@@ -281,6 +285,7 @@ fn item_to_cells(
     show_compact_summary: bool,
     output_preview_line_limits: OutputPreviewLineLimits,
     agent_preview_line_limits: AgentPreviewLineLimits,
+    metadata: &HashMap<ThreadId, AgentMetadata>,
 ) -> TranscriptCells {
     let mut cells: TranscriptCells = Vec::new();
     match item {
@@ -443,6 +448,7 @@ fn item_to_cells(
             cwd,
             show_compact_summary,
             agent_preview_line_limits,
+            &metadata,
         )),
     }
     cells

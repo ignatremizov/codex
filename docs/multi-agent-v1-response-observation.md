@@ -137,6 +137,9 @@ All three tools should route through the same observation-policy parser and regi
 - `spawn_agent.w` applies to the spawned agent's initial turn. A new target is already idle, so `q` naturally admits the initial input immediately.
 - `send_input.w` applies to the target turn that accepts the input. Without `q`, an active target is steered. With `q`, the complete input waits for its own FIFO turn.
 - `resume_agent.w` observes the target's active turn, or its next turn if the resumed target is currently idle or already completed and the policy requests commentary or model delivery. A bare `x` returns the synchronous status without retaining a next-turn observer. Because resume carries no input, `q` only confirms next-turn binding and does not create queued work.
+- Explicit user `/agent resume` is different: its one-shot next-turn reservation
+  includes presentation-only `w:x`, without exposing task or final text to the
+  source model. The model-facing status-only rule does not remove that reservation.
 
 The synchronous tool result remains available regardless of `w`. For example, `resume_agent` may return the saved result of a previously completed turn; `x` controls future event delivery and does not erase that direct tool response.
 

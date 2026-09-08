@@ -106,6 +106,11 @@ pub struct UserAgentControlItem {
     pub action: UserAgentControlAction,
     pub authored_selector: Option<String>,
     pub target_thread_id: Option<ThreadId>,
+    /// Resolved subscription owner, independent of the thread issuing the control action.
+    #[serde(default)]
+    pub observer_thread_id: Option<ThreadId>,
+    #[serde(default)]
+    pub authored_observer_selector: Option<String>,
     #[serde(default)]
     pub reply_recipient_thread_id: Option<ThreadId>,
     pub previous_owner_session_id: Option<crate::SessionId>,
@@ -146,6 +151,8 @@ impl UserAgentControlItem {
             action,
             authored_selector: None,
             target_thread_id: None,
+            observer_thread_id: None,
+            authored_observer_selector: None,
             reply_recipient_thread_id: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
@@ -977,6 +984,10 @@ impl TurnItem {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "user_agent_control_tests.rs"]
+mod user_agent_control_tests;
 
 #[cfg(test)]
 mod tests {
