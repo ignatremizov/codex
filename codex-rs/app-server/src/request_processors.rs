@@ -750,6 +750,7 @@ mod request_errors;
 mod thread_delete;
 mod thread_goal_processor;
 mod thread_lifecycle;
+mod thread_mailbox;
 mod thread_resume_redaction;
 mod thread_summary;
 

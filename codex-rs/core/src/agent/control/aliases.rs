@@ -20,6 +20,10 @@ use super::AgentStatus;
 
 #[path = "task_paths.rs"]
 mod task_paths;
+#[path = "wait_status_authority.rs"]
+mod wait_status_authority;
+
+pub(crate) use wait_status_authority::V1WaitStatusAuthority;
 
 pub(crate) fn agent_alias_lifecycle_status(
     state: AgentAliasState,
@@ -339,8 +343,7 @@ impl AgentControl {
         }
         if current.is_none()
             && self.get_agent_metadata(thread_id).is_some()
-            && let Ok(thread) = state.get_thread_including_pending(thread_id).await
-            && thread.config_snapshot().await.ephemeral
+            && self.has_ephemeral_runtime(thread_id).await
         {
             return Ok(());
         }
@@ -495,8 +498,7 @@ impl AgentControl {
         let Some(alias) = alias else {
             if let V1AgentTarget::Id(thread_id) = &parsed
                 && process_local_controlled
-                && let Ok(thread) = state.get_thread_including_pending(*thread_id).await
-                && thread.config_snapshot().await.ephemeral
+                && self.has_ephemeral_runtime(*thread_id).await
             {
                 return Ok(*thread_id);
             }

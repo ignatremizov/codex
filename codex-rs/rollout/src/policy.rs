@@ -97,6 +97,8 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
             // event equivalent. Collab tool calls need their canonical item because the raw
             // function call/output pair does not retain enough presentation metadata for replay.
             matches!(history_mode, ThreadHistoryMode::Paginated)
+                // The model envelope does not preserve original mailbox input or attribution.
+                || codex_protocol::is_mailbox_delivery_completion(event)
                 || matches!(
                     &event.item,
                     TurnItem::FunctionCallOutput(_)
@@ -222,3 +224,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
 #[cfg(test)]
 #[path = "policy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mailbox_policy_tests.rs"]
+mod mailbox_tests;

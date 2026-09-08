@@ -1,4 +1,4 @@
-//! Live subtree defaults. Explicit directed routes remain authoritative; history is not authority.
+//! Runtime subtree defaults backed by explicit settings. History is not messaging authority.
 
 use super::*;
 use crate::context::AgentReplyRoute;
@@ -23,7 +23,7 @@ use sender_messaging_context::has_messaging_authority;
 impl AgentControl {
     /// Orders effective permission changes with exact input admission. Acquire after
     /// capacity/mailbox waits and before any response-observation transaction.
-    pub(in crate::agent::control) async fn acquire_messaging_permission_transaction(
+    pub(crate) async fn acquire_messaging_permission_transaction(
         &self,
     ) -> tokio::sync::MutexGuard<'_, ()> {
         self.wait_agent_presentations.messaging_refresh.lock().await
@@ -52,6 +52,14 @@ impl AgentControl {
             ));
         }
         let _permission = self.acquire_messaging_permission_transaction().await;
+        self.restore_agent_send_pair_locked(root, root).await?;
+        self.persist_agent_send_setting_locked(
+            codex_agent_graph_store::AgentSendScope::Subtree {
+                supervisor_thread_id: root.thread_id,
+            },
+            mode,
+        )
+        .await?;
         let previous = self
             .wait_agent_presentations
             .state()
@@ -61,8 +69,16 @@ impl AgentControl {
                 (manager.agent_lifecycle_generation(root.thread_id), mode),
             );
         drop(guard);
-        self.refresh_messaging_context_locked(root.thread_id)
-            .await?;
+        if let Err(error) = self.refresh_messaging_context_locked(root.thread_id).await {
+            thread.session.send_event_raw(codex_protocol::protocol::Event {
+                id: format!("agent-subtree-setting-{}", root.thread_id),
+                msg: codex_protocol::protocol::EventMsg::Warning(
+                    codex_protocol::protocol::WarningEvent {
+                        message: format!("Messaging setting committed, but its context refresh failed: {error}. The setting remains effective."),
+                    },
+                ),
+            }).await;
+        }
         Ok(previous.map(|(_, mode)| mode))
     }
 
@@ -99,6 +115,10 @@ impl AgentControl {
     }
 
     async fn refresh_messaging_context_locked(&self, current: ThreadId) -> CodexResult<()> {
+        if let Ok(thread) = self.upgrade()?.get_thread_including_pending(current).await {
+            self.restore_agent_send_settings_locked(thread.session.presentation_id())
+                .await?;
+        }
         {
             let state = self.wait_agent_presentations.state();
             if state.inherited_message_routes.is_empty()

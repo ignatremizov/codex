@@ -191,6 +191,7 @@ impl LiveRevertMessagingSnapshot {
                                 sender
                             },
                             mode,
+                            relationship.reply_route_from_settings,
                         )
                     })
                 })
@@ -202,12 +203,13 @@ impl LiveRevertMessagingSnapshot {
                 });
             // Rebuild effective inheritance from the authoritative defaults and directed modes.
             state.inherited_message_routes.clear();
-            for (recipient, sender, mode) in directed {
+            for (recipient, sender, mode, reply_route_from_settings) in directed {
                 state.response_observation_by_observer_child.insert(
                     (recipient, sender),
                     ResponseObserverRelationship {
                         persistence: ResponseObservationPersistence::Durable,
                         reply_route: Some(mode),
+                        reply_route_from_settings,
                         ..Default::default()
                     },
                 );

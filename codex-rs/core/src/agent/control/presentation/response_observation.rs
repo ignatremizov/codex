@@ -102,6 +102,8 @@ pub(in crate::agent::control) struct ResponseObserverRelationship {
     pub(super) persistence: ResponseObservationPersistence,
     pub(super) baseline_final_response: FinalResponseObservation,
     pub(super) reply_route: Option<TargetMessageRouteMode>,
+    /// The route came from authoritative settings, not an observation snapshot.
+    pub(in crate::agent::control) reply_route_from_settings: bool,
     pub(in crate::agent::control) reply_route_context_installed: bool,
     pub(super) pending_next_turn: Option<ResponseTurnObservation>,
     pub(super) pending_admissions: HashMap<Uuid, ResponseTurnObservation>,
@@ -114,6 +116,7 @@ impl Default for ResponseObserverRelationship {
             persistence: ResponseObservationPersistence::RuntimeOnly,
             baseline_final_response: FinalResponseObservation::None,
             reply_route: None,
+            reply_route_from_settings: false,
             reply_route_context_installed: false,
             pending_next_turn: None,
             pending_admissions: HashMap::new(),
@@ -1086,7 +1089,9 @@ impl AgentControl {
             .entry((parent, child))
             .or_default();
         relationship.baseline_final_response = observation.baseline_final_delivery.into();
-        if let Some(reply_route_enabled) = observation.reply_route_enabled {
+        if !relationship.reply_route_from_settings
+            && let Some(reply_route_enabled) = observation.reply_route_enabled
+        {
             relationship.reply_route = Some(if reply_route_enabled {
                 TargetMessageRouteMode::Enabled
             } else {

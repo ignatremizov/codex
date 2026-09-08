@@ -92,6 +92,200 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Return this store as [`Any`] for implementation-owned escape hatches.
     fn as_any(&self) -> &dyn Any;
 
+    /// Accepts immutable typed mail with a receiver-scoped idempotency key.
+    ///
+    /// Callers own send authority. Acceptance does not steer, queue a turn, or
+    /// grant permission, and is separate from canonical history delivery.
+    fn accept_mailbox_input(
+        &self,
+        _params: crate::AcceptMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "accept_mailbox_input",
+            })
+        })
+    }
+
+    /// Looks up immutable accepted input by receiver and submission key.
+    ///
+    /// Returns frozen attribution and the current state, without claiming or
+    /// granting authority. Callers must verify sender, sender turn, and original
+    /// typed input before reusing an existing submission for an idempotent retry.
+    /// Acceptance retains its strict immutable-content comparison.
+    fn lookup_mailbox_input<'a>(
+        &'a self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+        _submission_key: &'a str,
+    ) -> ThreadStoreFuture<'a, Option<crate::StoredMailboxInput>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "lookup_mailbox_input",
+            })
+        })
+    }
+
+    /// Reads an existing invocation without reserving messages or establishing a claim.
+    ///
+    /// Returns its original selection, membership, delivery IDs, and current states,
+    /// including empty and entirely terminal claims. Callers must validate the original
+    /// selection on retries. This read grants no admission or delivery authority.
+    fn lookup_mailbox_claim(
+        &self,
+        _invocation: crate::MailboxInvocation,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxClaim>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "lookup_mailbox_claim",
+            })
+        })
+    }
+
+    /// Reserves a fixed batch for a fully qualified receiver tool invocation.
+    ///
+    /// Retries recover the same members, stable delivery IDs, and current states.
+    /// Empty claims remain empty. This does not acknowledge delivery or grant
+    /// authority to inject payloads; callers own admission policy.
+    fn claim_mailbox_input(
+        &self,
+        _params: crate::ClaimMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::MailboxClaim> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "claim_mailbox_input",
+            })
+        })
+    }
+
+    /// Recovers exact artifacts using fixed-claim semantics, without acknowledging.
+    ///
+    /// May establish a new claim, including an empty one. Prefer claiming first
+    /// and recovering with the same parameters, never a new invocation. Partial
+    /// artifacts authorize neither repair nor resend; terminal states prevail.
+    fn recover_mailbox_delivery(
+        &self,
+        _params: crate::ClaimMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::RecoveredMailboxClaim> {
+        Box::pin(async {
+            Err(crate::ThreadStoreError::Unsupported {
+                operation: "recover_mailbox_delivery",
+            })
+        })
+    }
+
+    /// Rejects under Core's permission/delivery arbitration after recovery.
+    /// Cannot overwrite consumption or a different terminal rejection reason.
+    fn reject_mailbox_input(
+        &self,
+        _params: crate::RejectMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(async {
+            Err(crate::ThreadStoreError::Unsupported {
+                operation: "reject_mailbox_input",
+            })
+        })
+    }
+
+    /// Acknowledges only members proven delivered in canonical receiver history.
+    ///
+    /// Returns the fixed batch with refreshed states. Unverified members remain
+    /// claimed; consumed/rejected members must not be reinjected. Implementations
+    /// verify prepared model context and original typed presentation, not merely
+    /// a caller-supplied ID. Core owns append/retry and rejection serialization.
+    fn reconcile_mailbox_delivery(
+        &self,
+        _params: crate::ReconcileMailboxDeliveryParams,
+    ) -> ThreadStoreFuture<'_, crate::MailboxClaim> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "reconcile_mailbox_delivery",
+            })
+        })
+    }
+
+    /// Reads counts and notification progress without consuming or granting authority.
+    fn read_mailbox_inventory(
+        &self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventory> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "read_mailbox_inventory",
+            })
+        })
+    }
+
+    /// Tests whether any original-frontier mail is still pending for this receiver.
+    ///
+    /// Queries actual Pending rows at or before the snapshot frontier, not
+    /// aggregate sender counts/maxima. A false result does not authorize
+    /// cancellation: callers still need canonical absence under durable arbitration.
+    fn has_pending_mailbox_inventory(
+        &self,
+        _notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "has_pending_mailbox_inventory",
+            })
+        })
+    }
+
+    /// Recovers the single active preparation or fixes a new pending-mail snapshot.
+    /// Its notification UUID is the immutable inventory turn ID, not a new task ID.
+    fn prepare_mailbox_inventory(
+        &self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxInventoryNotification>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "prepare_mailbox_inventory",
+            })
+        })
+    }
+
+    /// Recovers exact context against the original snapshot, without authorizing a wake.
+    /// Caller holds durable delivery arbitration and preserves the snapshot for retries.
+    fn recover_mailbox_inventory(
+        &self,
+        _notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventoryRecovery> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "recover_mailbox_inventory",
+            })
+        })
+    }
+
+    /// Acknowledges only canonical inventory proof; never consumes payloads.
+    /// Retired originals require exact proof and watermark coverage. They never
+    /// acknowledge a newer active preparation. No post-ack read is required.
+    fn reconcile_mailbox_inventory(
+        &self,
+        _notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventoryAcknowledgement> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "reconcile_mailbox_inventory",
+            })
+        })
+    }
+
+    /// Cancels only the matching preparation after proving canonical absence.
+    /// Caller must flush pending canonical writes and hold durable delivery
+    /// arbitration through this entire call.
+    /// Missing/unreadable history is not absence, and cancellation grants no wake.
+    fn cancel_mailbox_inventory(
+        &self,
+        _notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "cancel_mailbox_inventory",
+            })
+        })
+    }
+
     /// Returns the history mode to use when history does not carry a persisted mode.
     ///
     /// The default is legacy so existing stores stay compatible. Stores whose durable contract is

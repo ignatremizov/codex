@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use codex_extension_api::ExtensionRegistryBuilder;
 
+mod inventory;
 mod service;
 
 pub use service::QueueServiceError;
@@ -18,4 +19,14 @@ where
     let watcher = Arc::downgrade(&service);
     registry.thread_lifecycle_contributor(service);
     tokio::spawn(QueuedItemService::watch_external_messages(watcher));
+}
+
+/// Registers inventory after goals using the same user-queue dispatch lease.
+pub fn install_inventory_fallback<C>(
+    registry: &mut ExtensionRegistryBuilder<C>,
+    service: Arc<QueuedItemService>,
+) where
+    C: Send + Sync + 'static,
+{
+    registry.thread_lifecycle_contributor(Arc::new(inventory::MailboxInventoryFallback(service)));
 }

@@ -34,6 +34,7 @@ use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
+use crate::tools::handlers::multi_agents::CheckMailHandler;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
 use crate::tools::handlers::multi_agents::ListAgentsHandler;
 use crate::tools::handlers::multi_agents::ResumeAgentHandler;
@@ -1435,6 +1436,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 );
             }
             registry.add_with_exposure(SendInputHandler, exposure);
+            registry.add_with_exposure(CheckMailHandler, ToolExposure::DirectModelOnly);
             if turn_context.config.list_agents_enabled {
                 registry.add_with_exposure(ListAgentsHandler, exposure);
             }

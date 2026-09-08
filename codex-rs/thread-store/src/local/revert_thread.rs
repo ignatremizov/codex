@@ -109,6 +109,8 @@ pub(super) async fn revert(
             });
 
     let rollout_id = ThreadId::new();
+    super::mailbox_recovery::reconcile_before_revert(store, thread_id, source_path.as_path())
+        .await?;
     let recorder = create_replacement_recorder(
         store,
         source_meta,
@@ -194,3 +196,11 @@ fn thread_store_io_error(err: std::io::Error) -> ThreadStoreError {
 #[cfg(test)]
 #[path = "revert_thread_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "revert_mailbox_tests.rs"]
+mod mailbox_tests;
+
+#[cfg(test)]
+#[path = "revert_inventory_tests.rs"]
+mod inventory_tests;

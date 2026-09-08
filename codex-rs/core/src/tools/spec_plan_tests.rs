@@ -74,6 +74,9 @@ const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 #[path = "list_agents_gate_tests.rs"]
 mod list_agents_gate_tests;
 
+#[path = "check_mail_gate_tests.rs"]
+mod check_mail_gate_tests;
+
 #[derive(Default)]
 struct ToolPlanInputs {
     tool_runtimes: Vec<RegisteredTool>,
@@ -2681,6 +2684,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     assert_eq!(
         v1.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
         &[
+            "check_mail".to_string(),
             "close_agent".to_string(),
             "resume_agent".to_string(),
             "send_input".to_string(),
@@ -2942,7 +2946,7 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
 }
 
 #[tokio::test]
-async fn v1_max_depth_agents_retain_send_input_without_lifecycle_tools() {
+async fn v1_max_depth_agents_retain_messaging_without_lifecycle_tools() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ true);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
@@ -2963,12 +2967,14 @@ async fn v1_max_depth_agents_retain_send_input_without_lifecycle_tools() {
 
     assert_eq!(
         plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &["send_input".to_string()]
+        &["check_mail".to_string(), "send_input".to_string()]
     );
     plan.assert_visible_contains(&[MULTI_AGENT_V1_NAMESPACE]);
     plan.assert_visible_lacks(&["spawn_agent", "resume_agent", "wait_agent", "close_agent"]);
     let send_input = ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "send_input").to_string();
-    plan.assert_registered_contains(&[&send_input]);
+    let check_mail = ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "check_mail").to_string();
+    plan.assert_registered_contains(&[&send_input, &check_mail]);
+    assert_eq!(plan.exposure(&check_mail), ToolExposure::DirectModelOnly);
     for lifecycle_tool in ["spawn_agent", "resume_agent", "wait_agent", "close_agent"] {
         let lifecycle_tool =
             ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, lifecycle_tool).to_string();

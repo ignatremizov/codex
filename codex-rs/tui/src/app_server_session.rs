@@ -1387,6 +1387,26 @@ impl AppServerSession {
             .await
     }
 
+    pub(crate) async fn thread_mailbox_add(
+        &mut self,
+        thread_id: ThreadId,
+        input: Vec<UserInput>,
+        client_user_message_id: String,
+    ) -> std::result::Result<codex_app_server_protocol::ThreadMailboxAddResponse, TypedRequestError>
+    {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ThreadMailboxAdd {
+                request_id,
+                params: codex_app_server_protocol::ThreadMailboxAddParams {
+                    thread_id: thread_id.to_string(),
+                    input,
+                    client_user_message_id,
+                },
+            })
+            .await
+    }
+
     pub(crate) async fn thread_set_name(
         &mut self,
         thread_id: ThreadId,

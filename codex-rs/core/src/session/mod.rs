@@ -245,6 +245,10 @@ pub(crate) use handlers::inter_agent_communication;
 mod inject;
 mod input_queue;
 mod inter_agent_communication;
+pub(crate) mod mailbox;
+mod mailbox_activity;
+mod mailbox_inventory;
+pub use mailbox_inventory::MailboxInventoryAdmission;
 mod mcp;
 mod mcp_prewarm;
 mod mcp_refresh;
@@ -5713,6 +5717,17 @@ impl Session {
         let selected = config.multi_agent_version_for_model(model_info.multi_agent_version);
 
         self.set_multi_agent_version_if_unset(selected)
+    }
+
+    pub(super) fn preview_multi_agent_version_for_model(
+        &self,
+        model_info: &ModelInfo,
+        config: &Config,
+    ) -> MultiAgentVersion {
+        config.multi_agent_version_for_model(
+            self.multi_agent_version()
+                .or(model_info.multi_agent_version),
+        )
     }
 
     #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]

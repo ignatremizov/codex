@@ -213,6 +213,7 @@ mod agent_picker;
 mod agent_preview;
 mod agent_prompt;
 mod agent_prompt_queue;
+mod user_mailbox;
 pub(crate) use agent_lifecycle_control::SpawnAgentCommandArgs;
 pub(crate) use agent_prompt::SubmitAgentPromptArgs;
 mod agent_response_observation;

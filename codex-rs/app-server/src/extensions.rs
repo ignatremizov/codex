@@ -73,8 +73,8 @@ where
         queue_service,
     } = dependencies;
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&event_sink));
-    if let Some(queue_service) = queue_service {
-        codex_queue_extension::install(&mut builder, queue_service);
+    if let Some(queue_service) = queue_service.as_ref() {
+        codex_queue_extension::install(&mut builder, Arc::clone(queue_service));
     }
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     if let Some(state_db) = state_db {
@@ -90,6 +90,9 @@ where
                 max_goal_token_budget: config.max_goal_token_budget,
             },
         );
+    }
+    if let Some(queue_service) = queue_service {
+        codex_queue_extension::install_inventory_fallback(&mut builder, queue_service);
     }
     codex_git_attribution::install(
         &mut builder,

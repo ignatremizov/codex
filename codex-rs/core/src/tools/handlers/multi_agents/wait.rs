@@ -1,22 +1,31 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::status::is_final;
-use crate::session::session::Session;
+use crate::session::mailbox::MailboxConsumption;
+use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_history::RolloutItem;
 use codex_protocol::error::CodexErrorDetails;
+use codex_thread_store::MailboxSelection;
+use codex_thread_store::MailboxSender;
 use codex_tools::ToolSpec;
-use futures::FutureExt;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
+use futures::future::BoxFuture;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
 use tokio::time::timeout_at;
+
+#[path = "wait_mailbox.rs"]
+mod mailbox;
+
+#[derive(Clone, Copy)]
+enum WaitMode {
+    CompletionOnly,
+    DirectMailbox,
+}
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -49,7 +58,11 @@ impl ToolExecutor<ToolInvocation> for Handler {
     where
         ToolInvocation: 'a,
     {
-        Box::pin(self.handle_call(invocation))
+        Box::pin(async move {
+            self.handle_call(invocation, WaitMode::CompletionOnly)
+                .await
+                .map(|(output, _)| output)
+        })
     }
 }
 
@@ -57,7 +70,8 @@ impl Handler {
     async fn handle_call(
         &self,
         invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        mode: WaitMode,
+    ) -> Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -84,7 +98,14 @@ impl Handler {
         let mut receiver_thread_ids = Vec::with_capacity(args.targets.len());
         let mut target_by_thread_id = HashMap::with_capacity(args.targets.len());
         let mut initial_final_statuses = Vec::new();
+        let mut mail_only_targets = Vec::new();
         for target in args.targets {
+            if matches!(mode, WaitMode::DirectMailbox)
+                && let Some(sender) = mailbox::mail_only_target(&session, &target).await?
+            {
+                mail_only_targets.push(sender);
+                continue;
+            }
             match resolve_controlled_v1_agent_target(&session, &target).await {
                 Ok(receiver_thread_id) => {
                     if receiver_thread_id == session.thread_id {
@@ -114,6 +135,35 @@ impl Handler {
                 }
                 Err(err) => return Err(err),
             }
+        }
+        if matches!(mode, WaitMode::DirectMailbox) {
+            receiver_thread_ids.sort_by_key(ToString::to_string);
+            receiver_thread_ids.dedup();
+        }
+        mail_only_targets.sort_by_key(ToString::to_string);
+        mail_only_targets.dedup();
+        let mailbox_operation = matches!(mode, WaitMode::DirectMailbox).then(|| {
+            let mut senders = receiver_thread_ids
+                .iter()
+                .chain(mail_only_targets.iter())
+                .chain(initial_final_statuses.iter().map(|(id, _)| id))
+                .copied()
+                .collect::<Vec<_>>();
+            senders.sort_by_key(ToString::to_string);
+            senders.dedup();
+            MailboxConsumption {
+                tool_call_id: call_id.clone(),
+                selection: MailboxSelection::Senders(
+                    senders.into_iter().map(MailboxSender::Agent).collect(),
+                ),
+            }
+        });
+        if let Some(operation) = &mailbox_operation
+            && let Some(result) =
+                mailbox::recover_wait_result(&session, &turn.sub_id, operation, &mail_only_targets)
+                    .await?
+        {
+            return Ok((boxed_tool_output(result), mailbox_operation));
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
@@ -238,38 +288,17 @@ impl Handler {
             )
             .await;
 
-        let statuses = if !initial_final_statuses.is_empty() {
-            initial_final_statuses
-        } else {
-            let mut futures = FuturesUnordered::new();
-            for (id, rx) in status_rxs.into_iter() {
-                let session = session.clone();
-                futures.push(wait_for_final_status(session, id, rx));
-            }
-            let mut results = Vec::new();
-            loop {
-                match timeout_at(deadline, futures.next()).await {
-                    Ok(Some(Some(result))) => {
-                        results.push(result);
-                        break;
-                    }
-                    Ok(Some(None)) => continue,
-                    Ok(None) | Err(_) => break,
-                }
-            }
-            if !results.is_empty() {
-                loop {
-                    match futures.next().now_or_never() {
-                        Some(Some(Some(result))) => results.push(result),
-                        Some(Some(None)) => continue,
-                        Some(None) | None => break,
-                    }
-                }
-            }
-            results
-        };
-
-        let timed_out = statuses.is_empty();
+        let (statuses, return_reason) = mailbox::wait_for_outcome(
+            &session,
+            status_rxs,
+            initial_final_statuses,
+            deadline,
+            mailbox_operation
+                .as_ref()
+                .map(|operation| &operation.selection),
+        )
+        .await?;
+        let timed_out = return_reason == WaitReturnReason::Timeout;
         let terminal_statuses_by_id = statuses
             .iter()
             .map(|(thread_id, status)| {
@@ -325,6 +354,8 @@ impl Handler {
                 })
                 .collect(),
             timed_out,
+            return_reason,
+            mail_only_targets,
         };
 
         session
@@ -353,7 +384,7 @@ impl Handler {
             )
             .await;
 
-        Ok(boxed_tool_output(result))
+        Ok((boxed_tool_output(result), mailbox_operation))
     }
 }
 
@@ -400,6 +431,20 @@ fn wait_receiver_agents(
 }
 
 impl CoreToolRuntime for Handler {
+    fn handle_with_mailbox_operation(
+        &self,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'_, Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError>>
+    {
+        let mode = match &invocation.source {
+            ToolCallSource::Direct => WaitMode::DirectMailbox,
+            ToolCallSource::DirectPlaintextMessage | ToolCallSource::CodeMode { .. } => {
+                WaitMode::CompletionOnly
+            }
+        };
+        Box::pin(self.handle_call(invocation, mode))
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }
@@ -416,6 +461,18 @@ struct WaitArgs {
 pub(crate) struct WaitAgentResult {
     pub(crate) status: HashMap<String, AgentStatus>,
     pub(crate) timed_out: bool,
+    pub(crate) return_reason: WaitReturnReason,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) mail_only_targets: Vec<ThreadId>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WaitReturnReason {
+    Mail,
+    Completion,
+    Timeout,
+    Recovery,
 }
 
 impl ToolOutput for WaitAgentResult {
@@ -433,25 +490,5 @@ impl ToolOutput for WaitAgentResult {
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
         tool_output_code_mode_result(self, "wait_agent")
-    }
-}
-
-async fn wait_for_final_status(
-    session: Arc<Session>,
-    thread_id: ThreadId,
-    mut status_rx: crate::session::TerminalStatusSubscription,
-) -> Option<(ThreadId, crate::session::TerminalStatusEvent)> {
-    match status_rx.recv().await {
-        Some(status) => Some((thread_id, status)),
-        None => {
-            let latest = session.services.agent_control.get_status(thread_id).await;
-            is_final(&latest).then_some((
-                thread_id,
-                crate::session::TerminalStatusEvent {
-                    turn_id: None,
-                    status: latest,
-                },
-            ))
-        }
     }
 }

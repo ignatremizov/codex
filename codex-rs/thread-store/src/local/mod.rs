@@ -6,6 +6,9 @@ mod fork_copy;
 mod helpers;
 mod list_threads;
 mod live_writer;
+mod mailbox;
+mod mailbox_inventory;
+mod mailbox_recovery;
 mod model_context;
 mod move_thread_to_section;
 mod paginated_fork;
@@ -447,6 +450,98 @@ impl LocalThreadStore {
 impl ThreadStore for LocalThreadStore {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn accept_mailbox_input(
+        &self,
+        params: crate::AcceptMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(mailbox::accept(self, params))
+    }
+
+    fn lookup_mailbox_input<'a>(
+        &'a self,
+        receiver_thread_id: codex_protocol::ThreadId,
+        submission_key: &'a str,
+    ) -> ThreadStoreFuture<'a, Option<crate::StoredMailboxInput>> {
+        Box::pin(mailbox::lookup(self, receiver_thread_id, submission_key))
+    }
+
+    fn lookup_mailbox_claim(
+        &self,
+        invocation: crate::MailboxInvocation,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxClaim>> {
+        Box::pin(mailbox::lookup_claim(self, invocation))
+    }
+
+    fn claim_mailbox_input(
+        &self,
+        params: crate::ClaimMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::MailboxClaim> {
+        Box::pin(mailbox::claim(self, params))
+    }
+
+    fn recover_mailbox_delivery(
+        &self,
+        params: crate::ClaimMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::RecoveredMailboxClaim> {
+        Box::pin(mailbox::recover(self, params))
+    }
+
+    fn reject_mailbox_input(
+        &self,
+        params: crate::RejectMailboxInputParams,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(mailbox::reject(self, params))
+    }
+
+    fn reconcile_mailbox_delivery(
+        &self,
+        params: crate::ReconcileMailboxDeliveryParams,
+    ) -> ThreadStoreFuture<'_, crate::MailboxClaim> {
+        Box::pin(mailbox::reconcile(self, params))
+    }
+
+    fn read_mailbox_inventory(
+        &self,
+        receiver: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventory> {
+        Box::pin(mailbox_inventory::read(self, receiver))
+    }
+
+    fn has_pending_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(mailbox_inventory::has_pending(self, notification))
+    }
+
+    fn prepare_mailbox_inventory(
+        &self,
+        receiver: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxInventoryNotification>> {
+        Box::pin(mailbox_inventory::prepare(self, receiver))
+    }
+
+    fn recover_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventoryRecovery> {
+        Box::pin(mailbox_inventory::recover(self, notification))
+    }
+
+    fn reconcile_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, crate::MailboxInventoryAcknowledgement> {
+        Box::pin(mailbox_inventory::reconcile(self, notification))
+    }
+
+    fn cancel_mailbox_inventory(
+        &self,
+        notification: crate::MailboxInventoryNotification,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(mailbox_inventory::cancel(self, notification))
     }
 
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()> {

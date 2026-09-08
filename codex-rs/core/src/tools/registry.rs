@@ -11,6 +11,7 @@ use crate::hook_runtime::run_post_tool_use_hooks;
 use crate::hook_runtime::run_pre_tool_use_hooks;
 use crate::memory_usage::emit_metric_for_tool_read;
 use crate::memory_usage::shell_script_for_invocation;
+use crate::session::mailbox::MailboxConsumption;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
@@ -53,6 +54,15 @@ pub use codex_tools::ToolExposure;
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
 /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+    /// Carries ordered context effects to the direct result recorder, never nested execution.
+    fn handle_with_mailbox_operation(
+        &self,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'_, Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError>>
+    {
+        Box::pin(async move { self.handle(invocation).await.map(|output| (output, None)) })
+    }
+
     /// Whether this built-in control tool needs a structured tool-call event.
     fn is_builtin_control_tool(&self) -> bool {
         false
@@ -194,9 +204,24 @@ pub(crate) struct AnyToolResult {
     pub(crate) payload: ToolPayload,
     pub(crate) result: Box<dyn ToolOutput>,
     pub(crate) post_tool_use_payload: Option<PostToolUsePayload>,
+    pub(crate) mailbox_operation: Option<MailboxConsumption>,
+}
+
+/// An accepted direct result and the context effect ordered immediately after it.
+pub(crate) struct DirectToolResult {
+    pub(crate) response: ResponseItemEnvelope,
+    pub(crate) mailbox_operation: Option<MailboxConsumption>,
 }
 
 impl AnyToolResult {
+    pub(crate) fn into_direct_result(mut self) -> DirectToolResult {
+        let mailbox_operation = self.mailbox_operation.take();
+        DirectToolResult {
+            response: self.into_response(),
+            mailbox_operation,
+        }
+    }
+
     pub(crate) fn into_response(self) -> ResponseItemEnvelope {
         let Self {
             call_id,
@@ -812,7 +837,9 @@ async fn handle_any_tool(
 ) -> Result<AnyToolResult, FunctionCallError> {
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
-    let output = tool.handle(invocation.clone()).await?;
+    let (output, mailbox_operation) = tool
+        .handle_with_mailbox_operation(invocation.clone())
+        .await?;
     if output.contains_external_context()
         && invocation.turn.config.memories.disable_on_external_context
     {
@@ -830,6 +857,7 @@ async fn handle_any_tool(
         payload,
         result: output,
         post_tool_use_payload,
+        mailbox_operation,
     })
 }
 

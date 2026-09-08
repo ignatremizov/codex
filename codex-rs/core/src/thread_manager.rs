@@ -1038,6 +1038,24 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    /// Durably deposit user-authored input without loading or starting a receiver turn.
+    /// Reusing a receiver/client message ID requires the same original typed input.
+    pub async fn accept_user_mailbox_input(
+        &self,
+        receiver: ThreadId,
+        input: Vec<codex_protocol::user_input::UserInput>,
+        client_user_message_id: String,
+    ) -> CodexResult<codex_thread_store::StoredMailboxInput> {
+        self.agent_control()
+            .accept_mailbox_user_input(
+                self.state.thread_store.as_ref(),
+                receiver,
+                input,
+                client_user_message_id,
+            )
+            .await
+    }
+
     pub(crate) async fn get_thread_including_pending(
         &self,
         thread_id: ThreadId,
@@ -3012,6 +3030,21 @@ impl ThreadManagerState {
             }
         };
 
+        // Thread construction precedes the spawn/resume observer transactions. Restore only
+        // messaging settings here, before registration locks or initial input admission.
+        if let Err(error) = session
+            .services
+            .agent_control
+            .restore_agent_send_settings(session.presentation_id())
+            .await
+        {
+            if let Err(shutdown_error) = io.shutdown_and_wait().await {
+                warn!(
+                    "failed to shut down thread after settings restore failure: {shutdown_error}"
+                );
+            }
+            return Err(error);
+        }
         let insertion = if runtime_publication == ThreadRuntimePublication::Deferred {
             let mut pending_threads = self.pending_threads.write().await;
             pending_threads.retain(|_, pending| pending.strong_count() != 0);

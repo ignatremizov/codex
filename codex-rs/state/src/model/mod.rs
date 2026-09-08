@@ -1,3 +1,4 @@
+mod agent_send_settings;
 mod backfill_state;
 mod graph;
 mod log;
@@ -9,6 +10,9 @@ mod thread_artifact;
 mod thread_goal;
 mod thread_metadata;
 
+pub use agent_send_settings::AgentSendMode;
+pub use agent_send_settings::AgentSendScope;
+pub use agent_send_settings::AgentSendSetting;
 pub use backfill_state::BackfillState;
 pub use backfill_state::BackfillStatus;
 pub use graph::AgentAliasAllocation;

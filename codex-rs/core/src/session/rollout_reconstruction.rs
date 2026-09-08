@@ -5,6 +5,7 @@ use crate::context_manager::is_user_turn_boundary;
 use codex_history::ResponseItemEnvelope;
 use codex_history::rollout::exact_rollback_removed_items;
 use codex_protocol::ResponseItemId;
+use codex_protocol::is_mailbox_delivery_response_item_id;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::is_user_agent_task_context_response_item_id;
@@ -211,18 +212,19 @@ fn sub_agent_completion_context_response_item_ids(
         .collect()
 }
 
-fn collect_user_agent_task_context_response_item_ids(
-    items: &[ResponseItemEnvelope],
-) -> HashSet<ResponseItemId> {
+fn collect_explicit_input_context_ids(items: &[ResponseItemEnvelope]) -> HashSet<ResponseItemId> {
     items
         .iter()
         .filter_map(|item| item.id())
-        .filter(|id| is_user_agent_task_context_response_item_id(id.as_str()))
+        .filter(|id| {
+            is_user_agent_task_context_response_item_id(id.as_str())
+                || is_mailbox_delivery_response_item_id(id.as_str())
+        })
         .cloned()
         .collect()
 }
 
-fn deduplicate_sub_agent_completion_context_items(
+fn deduplicate_reserved_delivery_context_items(
     items: &mut Vec<ResponseItemEnvelope>,
     prefix_len: usize,
 ) -> usize {
@@ -232,7 +234,10 @@ fn deduplicate_sub_agent_completion_context_items(
     items.retain(|item| {
         let retain = item
             .id()
-            .filter(|id| is_sub_agent_completion_context_response_item_id(id.as_str()))
+            .filter(|id| {
+                is_sub_agent_completion_context_response_item_id(id.as_str())
+                    || is_mailbox_delivery_response_item_id(id.as_str())
+            })
             .is_none_or(|id| seen.insert(id.clone()));
         if retain && index < prefix_len {
             retained_prefix_len = retained_prefix_len.saturating_add(1);
@@ -574,7 +579,7 @@ impl Session {
                 base_replacement_history.len()
             };
             repair_checkpoint_source = Some(base_compacted_item.clone());
-            repaired_prefix_len = deduplicate_sub_agent_completion_context_items(
+            repaired_prefix_len = deduplicate_reserved_delivery_context_items(
                 &mut base_replacement_history,
                 prefix_len,
             );
@@ -588,8 +593,8 @@ impl Session {
         }
         let mut completion_context_response_item_ids =
             sub_agent_completion_context_response_item_ids(history.annotated_items());
-        let mut user_agent_task_context_response_item_ids =
-            collect_user_agent_task_context_response_item_ids(history.annotated_items());
+        let mut explicit_input_context_ids =
+            collect_explicit_input_context_ids(history.annotated_items());
         // Materialize exact history semantics from the replay-derived suffix. The eventual lazy
         // design should keep this same replay shape, but drive it from a resumable reverse source
         // instead of an eagerly loaded `&[RolloutItem]`.
@@ -604,10 +609,11 @@ impl Session {
                         let duplicate_completion =
                             is_sub_agent_completion_context_response_item_id(id.as_str())
                                 && !completion_context_response_item_ids.insert(id.clone());
-                        let duplicate_task =
-                            is_user_agent_task_context_response_item_id(id.as_str())
-                                && !user_agent_task_context_response_item_ids.insert(id.clone());
-                        duplicate_completion || duplicate_task
+                        let duplicate_explicit_input =
+                            (is_user_agent_task_context_response_item_id(id.as_str())
+                                || is_mailbox_delivery_response_item_id(id.as_str()))
+                                && !explicit_input_context_ids.insert(id.clone());
+                        duplicate_completion || duplicate_explicit_input
                     }) {
                         continue;
                     }
@@ -631,9 +637,9 @@ impl Session {
                 }
                 RolloutItem::AgentResponseObservation(observation) => {
                     if let Some(task_item) = observation.promoted_task_context_item()
-                        && task_item.id().is_none_or(|id| {
-                            user_agent_task_context_response_item_ids.insert(id.clone())
-                        })
+                        && task_item
+                            .id()
+                            .is_none_or(|id| explicit_input_context_ids.insert(id.clone()))
                     {
                         history.record_items(
                             std::iter::once(&task_item),
@@ -658,7 +664,7 @@ impl Session {
                             .unwrap_or(replacement_history.len())
                             .min(replacement_history.len());
                         let mut replacement_history = replacement_history.clone();
-                        repaired_prefix_len = deduplicate_sub_agent_completion_context_items(
+                        repaired_prefix_len = deduplicate_reserved_delivery_context_items(
                             &mut replacement_history,
                             prefix_len,
                         );
@@ -668,10 +674,8 @@ impl Session {
                             sub_agent_completion_context_response_item_ids(
                                 history.annotated_items(),
                             );
-                        user_agent_task_context_response_item_ids =
-                            collect_user_agent_task_context_response_item_ids(
-                                history.annotated_items(),
-                            );
+                        explicit_input_context_ids =
+                            collect_explicit_input_context_ids(history.annotated_items());
                     } else {
                         saw_legacy_compaction_without_replacement_history = true;
                         // Legacy rollouts without `replacement_history` should rebuild the
@@ -695,10 +699,8 @@ impl Session {
                             sub_agent_completion_context_response_item_ids(
                                 history.annotated_items(),
                             );
-                        user_agent_task_context_response_item_ids =
-                            collect_user_agent_task_context_response_item_ids(
-                                history.annotated_items(),
-                            );
+                        explicit_input_context_ids =
+                            collect_explicit_input_context_ids(history.annotated_items());
                     }
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
@@ -710,10 +712,8 @@ impl Session {
                             sub_agent_completion_context_response_item_ids(
                                 history.annotated_items(),
                             );
-                        user_agent_task_context_response_item_ids =
-                            collect_user_agent_task_context_response_item_ids(
-                                history.annotated_items(),
-                            );
+                        explicit_input_context_ids =
+                            collect_explicit_input_context_ids(history.annotated_items());
                     }
                 }
                 RolloutItem::EventMsg(_)

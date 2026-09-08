@@ -431,6 +431,7 @@ impl ChatWidget {
             pending_pastes: draft.pending_pastes,
         };
         Some(ThreadInputState {
+            mailbox_retry: self.input_queue.mailbox_retry.clone(),
             composer: composer.has_content().then_some(composer),
             safety_buffering_prompt: self.safety_buffering_prompt.clone(),
             pending_steers: self
@@ -483,6 +484,7 @@ impl ChatWidget {
                 state.pending_start_task_running && state.user_turn_pending_start
             });
         if let Some(input_state) = input_state {
+            self.input_queue.mailbox_retry = input_state.mailbox_retry;
             self.input_queue.recovered_queue = input_state.recovered_queue;
             let restored_active_turn_id = if preserve_in_flight_turn {
                 input_state.active_turn_id.clone()

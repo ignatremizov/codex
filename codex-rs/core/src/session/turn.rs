@@ -2429,15 +2429,28 @@ async fn drain_in_flight(
 ) -> CodexResult<()> {
     while let Some(res) = in_flight.next().await {
         match res {
-            Ok(envelope) => {
+            Ok(result) => {
+                let envelope = result.response;
                 mark_thread_memory_mode_polluted_if_external_context(
                     sess.as_ref(),
                     turn_context.as_ref(),
                     &envelope.item,
                 )
                 .await;
-                sess.record_annotated_conversation_items(&turn_context, vec![envelope])
-                    .await;
+                if let Some(operation) = result.mailbox_operation {
+                    sess.commit_mailbox_consumption(
+                        Arc::clone(&turn_context),
+                        envelope,
+                        operation,
+                    )
+                    .await
+                    .map_err(|error| CodexErr::Fatal(format!(
+                        "mailbox delivery commit is uncertain; stopping before sampling: {error}"
+                    )))?;
+                } else {
+                    sess.record_annotated_conversation_items(&turn_context, vec![envelope])
+                        .await;
+                }
             }
             Err(err) => {
                 error_or_panic(format!("in-flight tool future failed during drain: {err}"));

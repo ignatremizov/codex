@@ -3,7 +3,6 @@ use codex_rollout::RolloutItem;
 
 use super::LocalThreadStore;
 use super::live_writer;
-use super::read_thread;
 use super::thread_rollout_resolver;
 use crate::LoadSubAgentCompletionContextItemParams;
 use crate::LoadSubAgentCompletionPresentationParams;
@@ -11,11 +10,22 @@ use crate::StoredSubAgentCompletionPresentation;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
+pub(super) enum CanonicalHistoryReadPolicy {
+    TolerateMalformedLines,
+    RequireCompleteHistory,
+}
+
 pub(super) async fn load_context_item(
     store: &LocalThreadStore,
     params: LoadSubAgentCompletionContextItemParams,
 ) -> ThreadStoreResult<Option<ResponseItem>> {
-    let items = load_canonical_items(store, params.thread_id, params.include_archived).await?;
+    let items = load_canonical_items(
+        store,
+        params.thread_id,
+        params.include_archived,
+        CanonicalHistoryReadPolicy::TolerateMalformedLines,
+    )
+    .await?;
     Ok(crate::completion_artifacts::context_item(
         &items,
         &params.response_item_id,
@@ -26,7 +36,13 @@ pub(super) async fn load_presentation(
     store: &LocalThreadStore,
     params: LoadSubAgentCompletionPresentationParams,
 ) -> ThreadStoreResult<StoredSubAgentCompletionPresentation> {
-    let items = load_canonical_items(store, params.thread_id, params.include_archived).await?;
+    let items = load_canonical_items(
+        store,
+        params.thread_id,
+        params.include_archived,
+        CanonicalHistoryReadPolicy::TolerateMalformedLines,
+    )
+    .await?;
     Ok(crate::completion_artifacts::presentation(
         &items,
         &params.item_id,
@@ -34,10 +50,11 @@ pub(super) async fn load_presentation(
     ))
 }
 
-async fn load_canonical_items(
+pub(super) async fn load_canonical_items(
     store: &LocalThreadStore,
     thread_id: codex_protocol::ThreadId,
     include_archived: bool,
+    policy: CanonicalHistoryReadPolicy,
 ) -> ThreadStoreResult<Vec<RolloutItem>> {
     let resolved = if include_archived {
         thread_rollout_resolver::resolve_current_including_archived(store, thread_id).await?
@@ -50,5 +67,30 @@ async fn load_canonical_items(
         }
         return Err(ThreadStoreError::ThreadNotFound { thread_id });
     };
-    read_thread::load_history_items(resolved.path.as_path()).await
+    let loaded = match policy {
+        CanonicalHistoryReadPolicy::TolerateMalformedLines => {
+            codex_rollout::RolloutRecorder::load_rollout_items(resolved.path.as_path()).await
+        }
+        CanonicalHistoryReadPolicy::RequireCompleteHistory => {
+            codex_rollout::RolloutRecorder::load_rollout_items_for_mailbox_recovery(
+                resolved.path.as_path(),
+            )
+            .await
+        }
+    };
+    let (items, _, parse_errors) = loaded.map_err(|err| ThreadStoreError::Internal {
+        message: format!(
+            "failed to load thread history {}: {err}",
+            resolved.path.display()
+        ),
+    })?;
+    if matches!(policy, CanonicalHistoryReadPolicy::RequireCompleteHistory) && parse_errors != 0 {
+        return Err(ThreadStoreError::Conflict {
+            message: format!(
+                "mailbox recovery required for receiver {thread_id}: malformed canonical history; \
+                 original rollout retained, claim is not permission to resend"
+            ),
+        });
+    }
+    Ok(items)
 }

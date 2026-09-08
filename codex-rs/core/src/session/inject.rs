@@ -1,4 +1,7 @@
 use super::input_queue::TurnInput;
+use super::mailbox_inventory::AutomaticIdleAdmission;
+use super::mailbox_inventory::InventoryRecording;
+use super::mailbox_inventory::MailboxInventoryAdmission;
 use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::codex_thread::TryStartTurnIfIdleError;
@@ -12,6 +15,7 @@ use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::MultiAgentVersion;
 use std::sync::Arc;
 
 impl Session {
@@ -86,17 +90,48 @@ impl Session {
         self.try_start_turn_if_idle_with_lease(input, ()).await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "idle-turn reservation must remain atomic with shell wake publication"
-    )]
     pub(crate) async fn try_start_turn_if_idle_with_lease(
         self: &Arc<Self>,
         input: Vec<TurnInput>,
         reservation_lease: impl Send,
     ) -> Result<(), TryStartTurnIfIdleError> {
+        self.try_start_automatic_idle_with_lease(
+            AutomaticIdleAdmission::Input(input),
+            reservation_lease,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "idle-turn reservation must remain atomic with shell wake publication"
+    )]
+    pub(super) async fn try_start_automatic_idle_with_lease(
+        self: &Arc<Self>,
+        admission: AutomaticIdleAdmission,
+        reservation_lease: impl Send,
+    ) -> Result<MailboxInventoryAdmission, TryStartTurnIfIdleError> {
+        let (input, inventory, turn_id) = match admission {
+            AutomaticIdleAdmission::Input(input) => (input, None, uuid::Uuid::new_v4().to_string()),
+            AutomaticIdleAdmission::Inventory(notification) => {
+                let context = notification.context().map_err(|error| {
+                    tracing::warn!(%error, "invalid inventory admission");
+                    TryStartTurnIfIdleError::new(
+                        TryStartTurnIfIdleRejectionReason::PersistenceFailed,
+                        Vec::new(),
+                    )
+                })?;
+                let turn_id = notification.id.clone();
+                (
+                    vec![TurnInput::ResponseItem(context)],
+                    Some(notification),
+                    turn_id,
+                )
+            }
+        };
         if input.is_empty() {
-            return Ok(());
+            return Ok(MailboxInventoryAdmission::Deferred);
         }
         let has_prompt_input = input.iter().any(|item| {
             matches!(
@@ -196,8 +231,15 @@ impl Session {
         }
 
         let turn_context = self
-            .new_turn_with_default_settings(uuid::Uuid::new_v4().to_string(), Default::default())
+            .new_turn_with_default_settings(turn_id, Default::default())
             .await;
+        if inventory.is_some() && turn_context.multi_agent_version != MultiAgentVersion::V1 {
+            self.clear_reserved_idle_turn(&turn_state).await;
+            return Err(TryStartTurnIfIdleError::new(
+                TryStartTurnIfIdleRejectionReason::Busy,
+                input,
+            ));
+        }
         if !has_prompt_input && turn_context.mode() == ModeKind::Plan {
             self.clear_reserved_idle_turn(&turn_state).await;
             self.maybe_start_turn_for_pending_work().await;
@@ -233,7 +275,72 @@ impl Session {
         let (input_persisted_sender, input_persisted_receiver) =
             has_prompt_input.then(tokio::sync::oneshot::channel).unzip();
         let original_input = input.clone();
-        let task_input = if has_prompt_input {
+        let task_input = if let Some(notification) = inventory {
+            match self
+                .record_idle_mailbox_inventory(&turn_context, notification)
+                .await
+            {
+                Ok(InventoryRecording::Recorded) => {
+                    // Canonical I/O may overlap shutdown or interruption. Its
+                    // proof remains valid, but cannot resurrect a lost turn.
+                    let still_reserved =
+                        self.active_turn
+                            .lock()
+                            .await
+                            .as_ref()
+                            .is_some_and(|active_turn| {
+                                active_turn.task.is_none()
+                                    && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                            });
+                    if !still_reserved {
+                        return Err(TryStartTurnIfIdleError::new(
+                            TryStartTurnIfIdleRejectionReason::Busy,
+                            original_input,
+                        ));
+                    }
+                    Vec::new()
+                }
+                Ok(InventoryRecording::NotNeeded) => {
+                    self.clear_reserved_idle_turn(&turn_state).await;
+                    return Ok(MailboxInventoryAdmission::Deferred);
+                }
+                Ok(InventoryRecording::Obsolete) => {
+                    self.clear_reserved_idle_turn(&turn_state).await;
+                    // Read eligibility after removing the placeholder. An
+                    // earlier acceptance is visible here; a later one can
+                    // publish its own idle hint without being suppressed.
+                    let inventory = self
+                        .services
+                        .thread_store
+                        .read_mailbox_inventory(self.thread_id)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(%error, "failed to recheck inventory after cancellation");
+                            TryStartTurnIfIdleError::new(
+                                TryStartTurnIfIdleRejectionReason::PersistenceFailed,
+                                original_input,
+                            )
+                        })?;
+                    return Ok(
+                        if inventory.pending_senders.iter().any(|sender| {
+                            sender.max_acceptance_sequence > inventory.notified_through
+                        }) {
+                            MailboxInventoryAdmission::Retry
+                        } else {
+                            MailboxInventoryAdmission::Deferred
+                        },
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "failed to record mailbox inventory");
+                    self.clear_reserved_idle_turn(&turn_state).await;
+                    return Err(TryStartTurnIfIdleError::new(
+                        TryStartTurnIfIdleRejectionReason::PersistenceFailed,
+                        original_input,
+                    ));
+                }
+            }
+        } else if has_prompt_input {
             self.clear_connector_selection().await;
             for item in &input {
                 if let TurnInput::UserInput { content, .. } = item {
@@ -261,9 +368,10 @@ impl Session {
                 .unwrap_or(Err(
                     TryStartTurnIfIdleRejectionReason::TaskEndedBeforePersistence,
                 ))
-                .map_err(|reason| TryStartTurnIfIdleError::new(reason, original_input));
+                .map_err(|reason| TryStartTurnIfIdleError::new(reason, original_input))
+                .map(|()| MailboxInventoryAdmission::Started);
         }
-        Ok(())
+        Ok(MailboxInventoryAdmission::Started)
     }
 
     pub(super) async fn clear_reserved_idle_turn(

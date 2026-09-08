@@ -59,6 +59,9 @@ const TINY_PNG_BYTES: &[u8] = &[
 ];
 const TINY_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";
 
+#[path = "mailbox_inventory_tests.rs"]
+mod mailbox_inventory_tests;
+
 #[derive(Default)]
 struct RecordingEventSink {
     events: Mutex<Vec<Event>>,
