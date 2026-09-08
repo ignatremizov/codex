@@ -140,6 +140,14 @@ base instructions for new and resumed agents using that role. The role's
 model override changes the model without discarding the selected role's base
 instructions.
 
+## Custom instructions on a shared app-server
+
+New interactive threads created through `codex --remote unix:// -p <profile>` use the TUI's resolved custom base instructions and developer instructions. An explicit `-c 'model_instructions_file="/path/to/base.md"'` follows the same instruction-loading path. The TUI sends resolved content through the existing `thread/start` instruction fields, not a client-local filename for the server to reopen.
+
+Custom base instructions retain custom provenance; catalog-derived base text is not forwarded as a custom replacement. Developer instructions remain separate, with terminal visualization guidance appended only when that feature is enabled. These overrides configure the new thread, not the shared daemon or other threads.
+
+This is not unrestricted forwarding of an entire local profile. Authentication, provider definitions, and server/environment-owned configuration remain subject to the existing remote configuration boundary. Attaching to a loaded thread continues to preserve its settings; this change does not add profile-based instruction replacement on resume.
+
 ## Notify
 
 `notify` is deprecated and will be removed in a future release. Existing configurations still work for compatibility, but new automation should use lifecycle hooks instead.
