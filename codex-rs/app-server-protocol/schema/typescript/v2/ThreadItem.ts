@@ -130,6 +130,11 @@ targetMessages?: boolean,
  */
 queueInput?: boolean,
 /**
+ * Whether this V1 send explicitly requested mailbox delivery (`send_input` with `w:z`).
+ * This is presentation metadata, not evidence of receiver execution or visibility.
+ */
+mailboxInput: boolean | null,
+/**
  * Thread ID of the agent issuing the collab request.
  */
 senderThreadId: string,

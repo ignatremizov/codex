@@ -1,8 +1,8 @@
 //! Remove parent-owned runtime notifications from child model context, not audit history.
 
-use crate::context::LegacyAgentReplyRoute;
 use crate::context::AttributedAgentMessage;
 use crate::context::ContextualUserFragment;
+use crate::context::LegacyAgentReplyRoute;
 use crate::context::SubagentNotification;
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;

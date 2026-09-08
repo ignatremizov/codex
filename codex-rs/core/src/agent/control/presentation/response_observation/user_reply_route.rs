@@ -87,9 +87,7 @@ impl LocalAgentControl {
             .response_observation_by_observer_child
             .entry((prepared.parent, prepared.child))
             .or_default();
-        if relationship.revoked
-            || relationship.reply_route != prepared.previous
-        {
+        if relationship.revoked || relationship.reply_route != prepared.previous {
             return Err(CodexErr::Fatal(
                 "reply route changed during canonical publication".into(),
             ));

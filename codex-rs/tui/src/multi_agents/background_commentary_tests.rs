@@ -5,6 +5,45 @@ use codex_protocol::protocol::new_attributed_agent_message_response_item_id;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn commentary_is_distinct_from_explicit_agent_input() {
+    let sender = ThreadId::new();
+    let id = new_attributed_agent_message_response_item_id().to_string();
+    let render = |text: &str| {
+        background_commentary_history_cell_from_agent_message(
+            &id,
+            text,
+            Some(&MessagePhase::Commentary),
+            /*agent_response_preview_lines*/ 0,
+            |_| AgentMetadata {
+                agent_nickname: Some("Pascal".to_string()),
+                agent_role: Some("coder".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("agent presentation")
+        .display_lines(/*width*/ 120)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+    };
+    insta::assert_snapshot!(
+        render(&format!("Agent commentary from `{sender}`:\n\nWorking on it.")),
+        @r"
+    • Pascal [coder] commentary:
+      └ Working on it.
+    "
+    );
+    insta::assert_snapshot!(
+        render(&format!("Agent message from `{sender}`:\n\nPlease check the API.")),
+        @r"
+    • Pascal [coder] sends:
+      └ Please check the API.
+    "
+    );
+}
+
+#[test]
 fn peer_message_audit_renders_both_endpoints_and_visibility() {
     let sender = ThreadId::new();
     let recipient = ThreadId::new();

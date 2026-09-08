@@ -67,7 +67,7 @@ async fn accepted_human_queue_survives_reverse_disable_without_restoring_send_pe
         .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
     let request = wait_for_streaming_request(&mut queued_response).await?;
     assert!(request.body_contains_text(QUEUED_PROMPT));
-    assert!(request.body_contains_text("User disabled send_input"));
+    assert!(!request.body_contains_text("User disabled send_input"));
     let child = test
         .thread_manager
         .get_thread(ThreadId::from_string(&child_id)?)
@@ -94,7 +94,7 @@ async fn accepted_human_queue_survives_reverse_disable_without_restoring_send_pe
 #[test_case(ThreadHistoryMode::Legacy; "legacy")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn permission_context_is_nonwaking_stable_and_reconciled_for_follow_up(
+async fn permission_updates_are_nonwaking_and_hidden_from_follow_up(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -191,11 +191,11 @@ async fn permission_context_is_nonwaking_stable_and_reconciled_for_follow_up(
             .collect::<Vec<_>>()
     };
     let initial_notices = permission_items(&first_request);
-    assert_eq!(initial_notices.len(), 1, "repeated enable is deduplicated");
+    assert_eq!(initial_notices, Vec::<Value>::new());
     assert_eq!(
         permission_items(&second_request),
         initial_notices,
-        "unchanged request retains notice ID and metadata"
+        "follow-up requests also omit permission announcements"
     );
     wait_for_terminal_status(child.as_ref()).await?;
     let idle_status = child.agent_status().await;
@@ -245,21 +245,13 @@ async fn permission_context_is_nonwaking_stable_and_reconciled_for_follow_up(
         .into_iter()
         .filter(|text| text.starts_with("User ") && text.contains("send_input"))
         .collect::<Vec<_>>();
-    assert_eq!(notices, vec!["User disabled send_input to Main (1)."]);
+    assert_eq!(notices, Vec::<String>::new());
     let hints = request
         .message_input_texts("user")
         .into_iter()
         .filter(|text| text.starts_with("<agent_reply_route>"))
-        .map(|text| {
-            let body = text
-                .strip_prefix("<agent_reply_route>")
-                .and_then(|body| body.strip_suffix("</agent_reply_route>"))
-                .expect("route envelope");
-            serde_json::from_str::<Value>(body).expect("route JSON")
-        })
         .collect::<Vec<_>>();
-    assert_eq!(hints.len(), 1, "route hint remains a singleton");
-    assert_eq!(hints[0]["send_input"], json!("not_authorized"));
+    assert_eq!(hints, Vec::<String>::new());
     wait_for_terminal_status(child.as_ref()).await?;
     Ok(())
 }

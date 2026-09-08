@@ -1,6 +1,6 @@
 use super::*;
-use crate::context::AgentReplyRoute;
 use crate::context::AgentContextIdentity;
+use crate::context::AgentReplyRoute;
 use crate::context::ContextualUserFragment;
 use crate::context::InternalContextSource;
 use crate::context::InternalModelContextFragment;

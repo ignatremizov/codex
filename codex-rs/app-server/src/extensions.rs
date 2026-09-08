@@ -68,8 +68,8 @@ pub(crate) fn thread_extensions(
     if let Some(admission) = turn_start_admission {
         builder.turn_start_admission(admission);
     }
-    if let Some(queue_service) = queue_service {
-        codex_queue_extension::install(&mut builder, queue_service);
+    if let Some(queue_service) = queue_service.as_ref() {
+        codex_queue_extension::install(&mut builder, Arc::clone(queue_service));
     }
     codex_history_notes_extension::install(&mut builder, auth_manager.clone());
     codex_core::install_agent_message_board(&mut builder, thread_manager.clone());
@@ -86,6 +86,9 @@ pub(crate) fn thread_extensions(
                 max_goal_token_budget: config.max_goal_token_budget,
             },
         );
+    }
+    if let Some(queue_service) = queue_service {
+        codex_queue_extension::install_inventory_fallback(&mut builder, queue_service);
     }
     codex_git_attribution::install(
         &mut builder,

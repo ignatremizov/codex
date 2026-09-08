@@ -1,16 +1,17 @@
 ---
 source: tui/src/app/owned_transcript_tests.rs
+assertion_line: 1051
 expression: open_text
 ---
 Transcript row 30: content behind the menu
 Transcript row 31: content behind the menu
 Transcript row 32: content behind the menu
-Transcript row 33: content behind the menu
-Transcript row 34: content behind the menu
 › /model     choose what model and reasoning effort to use
   /memories  configure memory use and generation
   /mention   mention a file
   /mcp       list MCP tools; /mcp use <server> requests explicit context
+  /mail      leave input in this agent's mailbox for check_mail; does not steer
+             or queue
 
 › /m
 

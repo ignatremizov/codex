@@ -765,6 +765,13 @@ class CollabAgentRef(BaseModel):
         str | None,
         Field(alias="agentRole", description="Optional role assigned to the receiving agent."),
     ] = None
+    task_path: Annotated[
+        str | None,
+        Field(
+            alias="taskPath",
+            description="Trusted task assignment path, when available from the agent alias.",
+        ),
+    ] = None
     thread_id: Annotated[
         str, Field(alias="threadId", description="Thread ID of the receiving agent.")
     ]
@@ -5727,6 +5734,13 @@ class ThreadLoadedListResponse(BaseModel):
             description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
         ),
     ] = None
+
+
+class ThreadMailboxMessageState(Enum):
+    pending = "pending"
+    claimed = "claimed"
+    consumed = "consumed"
+    rejected = "rejected"
 
 
 class ThreadMcpServerActivateOutcome(Enum):
@@ -12095,6 +12109,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
         ),
     ]
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
+    mailbox_input: Annotated[
+        bool | None,
+        Field(
+            alias="mailboxInput",
+            description="Whether this V1 send explicitly requested mailbox delivery (`send_input` with `w:z`). This is presentation metadata, not evidence of receiver execution or visibility.",
+        ),
+    ] = None
     model: Annotated[
         str | None, Field(description="Model requested for the spawned agent, when applicable.")
     ] = None

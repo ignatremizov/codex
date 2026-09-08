@@ -1,15 +1,17 @@
 ---
 source: tui/src/bottom_pane/chat_composer/status_surface_tests.rs
-assertion_line: 344
+assertion_line: 337
 expression: "format!(\"{buf:?}\")"
 ---
 Buffer {
-    area: Rect { x: 0, y: 0, width: 80, height: 8 },
+    area: Rect { x: 0, y: 0, width: 80, height: 10 },
     content: [
         "  /model     choose what model and reasoning effort to use                      ",
         "› /memories  configure memory use and generation                                ",
         "  /mention   mention a file                                                     ",
         "  /mcp       list MCP tools; /mcp use <server> requests explicit context        ",
+        "  /mail      leave input in this agent's mailbox for check_mail; does not steer ",
+        "             or queue                                                           ",
         "                                                                                ",
         "› /m                                                                            ",
         "                                                                                ",
@@ -33,7 +35,13 @@ Buffer {
         x: 4, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 13, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
         x: 72, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
-        x: 0, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
-        x: 1, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 3, y: 4, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 4, y: 4, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 13, y: 4, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 79, y: 4, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 13, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 21, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 1, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
     ]
 }
