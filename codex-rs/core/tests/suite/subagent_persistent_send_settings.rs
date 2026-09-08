@@ -1,4 +1,5 @@
 use super::*;
+use test_case::test_case;
 
 #[test_case(ThreadHistoryMode::Legacy, false; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated, false; "paginated")]

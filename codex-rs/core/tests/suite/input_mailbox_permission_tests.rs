@@ -4,6 +4,7 @@ use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::MessagePhase;
+use pretty_assertions::assert_eq;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mail() -> Result<()> {

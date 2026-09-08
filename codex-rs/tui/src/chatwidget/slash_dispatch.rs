@@ -1554,6 +1554,8 @@ impl ChatWidget {
             return QueueDrain::Stop;
         }
         match cmd {
+            // Mailbox acceptance does not start a payload-bearing turn or block queued work.
+            SlashCommand::Mail => QueueDrain::Continue,
             SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::Pwd

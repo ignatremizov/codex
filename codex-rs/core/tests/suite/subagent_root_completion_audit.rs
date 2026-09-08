@@ -257,8 +257,8 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        rows,
-        vec![&TurnItem::AgentMessage(completion)],
+        serde_json::to_value(rows)?,
+        serde_json::to_value(vec![&TurnItem::AgentMessage(completion)])?,
         "canonical replay has one row"
     );
     server.shutdown().await;

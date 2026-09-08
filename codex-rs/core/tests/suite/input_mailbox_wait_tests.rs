@@ -1,6 +1,7 @@
 use super::*;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::start_mock_server;
+use pretty_assertions::assert_eq;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_wait_selects_foreign_mail_without_observing_status_or_consuming_user_mail()

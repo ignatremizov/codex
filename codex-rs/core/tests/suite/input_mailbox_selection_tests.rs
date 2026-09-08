@@ -3,6 +3,8 @@ use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::start_mock_server;
+use pretty_assertions::assert_eq;
+use test_case::test_case;
 
 #[derive(Clone, Copy)]
 enum SenderSelector {

@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn check_mail_remains_direct_with_search_and_never_enters_code_mode() {

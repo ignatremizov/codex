@@ -9,6 +9,7 @@ use crate::config::test_config;
 use crate::init_state_db;
 use crate::thread_manager::StartThreadOptions;
 use codex_login::CodexAuth;
+use codex_protocol::error::CodexErrorDetails;
 use core_test_support::PathExt;
 use pretty_assertions::assert_eq;
 
@@ -111,10 +112,15 @@ async fn mailbox_permission_reads_closed_sender_settings_without_mutating_runtim
     .await
     .expect("warning deadline");
     assert_eq!(
-        warning,
-        codex_protocol::protocol::EventMsg::Warning(codex_protocol::protocol::WarningEvent {
-            message: format!("Mailbox message loaded-message to {sender} was rejected: revoked"),
-        })
+        serde_json::to_value(warning).expect("serialize warning"),
+        serde_json::to_value(codex_protocol::protocol::EventMsg::Warning(
+            codex_protocol::protocol::WarningEvent {
+                message: format!(
+                    "Mailbox message loaded-message to {sender} was rejected: revoked"
+                ),
+            }
+        ))
+        .expect("serialize expected warning")
     );
     assert!(manager.get_thread(sender).await.is_err());
     assert_eq!(root.thread.agent_status().await, original_status);
@@ -170,12 +176,17 @@ async fn unsupported_settings_do_not_become_volatile_user_grants() {
         )
         .await
         .expect_err("unsupported");
-    assert!(matches!(error, CodexErr::UnsupportedOperation(_)));
     assert!(matches!(
-        control
-            .mailbox_send_permission_locked(ThreadId::new(), root.thread_id)
-            .await,
-        Err(CodexErr::UnsupportedOperation(_))
+        error.details(),
+        CodexErrorDetails::UnsupportedOperation(_)
+    ));
+    let error = control
+        .mailbox_send_permission_locked(ThreadId::new(), root.thread_id)
+        .await
+        .expect_err("unsupported");
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::UnsupportedOperation(_)
     ));
     assert!(
         control
