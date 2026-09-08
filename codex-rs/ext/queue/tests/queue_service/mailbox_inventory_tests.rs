@@ -5,6 +5,7 @@ use codex_thread_store::AcceptMailboxInputParams;
 use codex_thread_store::MailboxPayload;
 use codex_thread_store::MailboxSender;
 use codex_thread_store::MailboxSenderInventory;
+use pretty_assertions::assert_eq;
 
 #[derive(Default)]
 struct InstalledInventory {
