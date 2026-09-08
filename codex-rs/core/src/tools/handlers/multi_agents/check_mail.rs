@@ -5,6 +5,7 @@ use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::session::mailbox::MailboxConsumption;
 use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE_DESCRIPTION;
+use crate::tools::registry::MailboxToolResult;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_thread_store::MailboxSelection;
 use codex_thread_store::MailboxSender;
@@ -84,8 +85,7 @@ impl CoreToolRuntime for Handler {
     fn handle_with_mailbox_operation(
         &self,
         invocation: ToolInvocation,
-    ) -> BoxFuture<'_, Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError>>
-    {
+    ) -> BoxFuture<'_, MailboxToolResult> {
         Box::pin(async move {
             if invocation.source != ToolCallSource::Direct {
                 return Err(FunctionCallError::RespondToModel(

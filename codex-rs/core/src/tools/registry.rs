@@ -49,6 +49,10 @@ pub(crate) type ToolTelemetryTags = Vec<(&'static str, String)>;
 pub use codex_tools::ToolExecutor;
 pub use codex_tools::ToolExposure;
 
+/// Tool execution result carrying an optional mailbox effect for the ordered recorder.
+pub(crate) type MailboxToolResult =
+    Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError>;
+
 /// Typed runtime contract for locally executed tools.
 ///
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
@@ -58,8 +62,7 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     fn handle_with_mailbox_operation(
         &self,
         invocation: ToolInvocation,
-    ) -> BoxFuture<'_, Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError>>
-    {
+    ) -> BoxFuture<'_, MailboxToolResult> {
         Box::pin(async move { self.handle(invocation).await.map(|output| (output, None)) })
     }
 

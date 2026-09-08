@@ -5,6 +5,7 @@ use crate::session::mailbox::MailboxConsumption;
 use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
+use crate::tools::registry::MailboxToolResult;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_history::RolloutItem;
 use codex_protocol::error::CodexErrorDetails;
@@ -67,11 +68,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
 }
 
 impl Handler {
-    async fn handle_call(
-        &self,
-        invocation: ToolInvocation,
-        mode: WaitMode,
-    ) -> Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError> {
+    async fn handle_call(&self, invocation: ToolInvocation, mode: WaitMode) -> MailboxToolResult {
         let ToolInvocation {
             session,
             turn,
@@ -434,8 +431,7 @@ impl CoreToolRuntime for Handler {
     fn handle_with_mailbox_operation(
         &self,
         invocation: ToolInvocation,
-    ) -> BoxFuture<'_, Result<(Box<dyn ToolOutput>, Option<MailboxConsumption>), FunctionCallError>>
-    {
+    ) -> BoxFuture<'_, MailboxToolResult> {
         let mode = match &invocation.source {
             ToolCallSource::Direct => WaitMode::DirectMailbox,
             ToolCallSource::DirectPlaintextMessage | ToolCallSource::CodeMode { .. } => {

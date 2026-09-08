@@ -278,7 +278,7 @@ fn batch_recovery_keeps_claim_order_and_terminal_state_authoritative() {
     let (first, _, first_history) = delivery();
     let (mut terminal, _, terminal_history) = delivery();
     terminal.messages[0].message.state = MailboxMessageState::Rejected;
-    let claims = vec![terminal.clone(), first.clone()];
+    let claims = vec![terminal, first];
     let history = [first_history, terminal_history].concat();
     let recovered = recover_claims(&claims, &history).unwrap();
     assert_eq!(
