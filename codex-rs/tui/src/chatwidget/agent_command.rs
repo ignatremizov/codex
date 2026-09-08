@@ -3,7 +3,6 @@
 use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::AgentForkMode;
 use codex_app_server_protocol::AgentObservationMode;
-use codex_app_server_protocol::AgentReplyRouteMode;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_protocol::MAIN_AGENT_NICKNAME;
 use codex_protocol::ThreadId;
@@ -13,7 +12,7 @@ use codex_protocol::WakeEventSurface;
 use codex_protocol::openai_models::ReasoningEffort;
 
 pub(super) const AGENT_COMMAND_USAGE: &str =
-    "Usage: /agent [new|<target>|<role>|queue|interrupt|close|resume|observe|sends] ...";
+    "Usage: /agent [new|<target>|<role>|queue|interrupt|close|resume|observe] ...";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum AgentCommand<'a> {
@@ -57,12 +56,8 @@ pub(super) enum AgentCommand<'a> {
     },
     Observe {
         selector: AgentSelector,
+        observer: Option<AgentSelector>,
         mode: AgentObservationMode,
-    },
-    ReplyRoute {
-        selector: AgentSelector,
-        recipient: Option<AgentSelector>,
-        mode: AgentReplyRouteMode,
     },
 }
 
@@ -186,18 +181,25 @@ pub(super) fn parse_agent_command_with_attached_input(
         }
         "observe" => {
             let selector = parser.required_selector("observe")?;
-            let mode = parser
-                .next_token()?
-                .ok_or_else(|| {
-                    "Usage: /agent observe <target> <passive|wake|presentation>".to_string()
-                })
-                .and_then(|token| parse_observe_mode(&token.value))?;
+            let token = parser.next_token()?.ok_or_else(|| {
+                "Usage: /agent observe <target> [from <observer>] <passive|wake|presentation>"
+                    .to_string()
+            })?;
+            let (observer, mode) = if token.raw == "from" {
+                let observer = parser.required_selector("observe <target> from")?;
+                let mode = parser.next_token()?.ok_or_else(|| {
+                    "Expected passive, wake, or presentation after observer.".to_string()
+                })?;
+                (Some(observer), parse_observe_mode(&mode.value)?)
+            } else {
+                (None, parse_observe_mode(&token.value)?)
+            };
             parser.require_end("observe")?;
-            Ok(AgentCommand::Observe { selector, mode })
-        }
-        "sends" => {
-            let selector = parser.required_selector("sends")?;
-            parser.reply_route_command(selector)
+            Ok(AgentCommand::Observe {
+                selector,
+                observer,
+                mode,
+            })
         }
         _ => {
             let selector = parse_selector(&first.value, first.raw.clone())?;
@@ -206,12 +208,6 @@ pub(super) fn parse_agent_command_with_attached_input(
                 && action.raw == "close"
             {
                 return parser.close_command(selector);
-            }
-            parser.cursor = target_first_action_start;
-            if let Some(action) = parser.next_token()?
-                && action.raw == "sends"
-            {
-                return parser.reply_route_command(selector);
             }
             parser.cursor = target_first_action_start;
             if let Some(action) = parser.next_token()?
@@ -275,30 +271,6 @@ impl<'a> AgentCommandParser<'a> {
         Ok(AgentCommand::Close {
             selector,
             response: options.response,
-        })
-    }
-
-    fn reply_route_command(&mut self, selector: AgentSelector) -> Result<AgentCommand<'a>, String> {
-        let token = self.next_token()?.ok_or_else(|| {
-            "Usage: /agent sends <sender> [to <recipient>] <enable|disable>".to_string()
-        })?;
-        let (recipient, mode) = if token.value == "to" {
-            if selector.authored() == "all" {
-                return Err("`sends all` sets the subtree default; omit `to`.".into());
-            }
-            let recipient = self.required_selector("sends <sender> to")?;
-            let mode = self
-                .next_token()?
-                .ok_or_else(|| "Expected enable or disable after reply recipient.".to_string())?;
-            (Some(recipient), parse_reply_route_mode(&mode.value)?)
-        } else {
-            (None, parse_reply_route_mode(&token.value)?)
-        };
-        self.require_end("sends")?;
-        Ok(AgentCommand::ReplyRoute {
-            selector,
-            recipient,
-            mode,
         })
     }
 
@@ -584,7 +556,7 @@ fn parse_response_mode(value: &str) -> Result<AgentResponseHandling, String> {
     Ok(AgentResponseHandling::new(
         flags.commentary,
         final_response,
-        flags.target_messages,
+        /*target_messages*/ false,
         flags.queue_input,
     ))
 }
@@ -596,16 +568,6 @@ fn parse_observe_mode(value: &str) -> Result<AgentObservationMode, String> {
         "presentation" => Ok(AgentObservationMode::Presentation),
         _ => Err(format!(
             "Invalid observation mode `{value}`; use passive, wake, or presentation."
-        )),
-    }
-}
-
-fn parse_reply_route_mode(value: &str) -> Result<AgentReplyRouteMode, String> {
-    match value {
-        "enable" => Ok(AgentReplyRouteMode::Enabled),
-        "disable" => Ok(AgentReplyRouteMode::Disabled),
-        _ => Err(format!(
-            "Invalid reply-route mode `{value}`; use enable or disable."
         )),
     }
 }

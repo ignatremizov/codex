@@ -8,12 +8,10 @@ use conversion::agent_control_error;
 use conversion::agent_final_response_handling;
 use conversion::agent_input_outcome;
 use conversion::agent_observation_binding;
-use conversion::agent_reply_route_mode;
 use conversion::agent_response_handling;
 use conversion::observation_mode_final_response_handling;
 use conversion::user_agent_control_item;
 use conversion::user_agent_final_response_handling;
-use conversion::user_agent_reply_route_mode;
 use conversion::user_agent_response_handling;
 
 pub(super) mod conversion;
@@ -29,6 +27,15 @@ impl ThreadRequestProcessor {
             authored_selector,
             action,
         } = params;
+        if matches!(
+            &action,
+            AgentControlAction::SubtreeMessaging { .. } | AgentControlAction::ReplyRoute { .. }
+        ) {
+            return Err(invalid_request(
+                "agent messaging permission controls are obsolete; agents in the same owned tree \
+                 can always send messages to one another",
+            ));
+        }
         let source_thread_id = ThreadId::from_string(&source_thread_id)
             .map_err(|err| invalid_request(format!("invalid source thread id: {err}")))?;
         let source_thread = self
@@ -40,6 +47,12 @@ impl ThreadRequestProcessor {
         if let Some(target) = agent_control_action_target(&action) {
             audit_item.target_thread_id =
                 source_thread.resolve_user_agent_target(target).await.ok();
+        }
+        if let AgentControlAction::Observe { observer, .. } = &action {
+            audit_item.observer_thread_id = match observer {
+                Some(observer) => source_thread.resolve_user_agent_target(observer).await.ok(),
+                None => Some(source_thread_id),
+            };
         }
         let operation = async {
             match action {
@@ -309,57 +322,19 @@ impl ThreadRequestProcessor {
                 }
                 AgentControlAction::Observe {
                     target,
+                    observer,
+                    authored_observer_selector: _,
                     response_handling,
                 } => {
                     let response_handling = user_agent_final_response_handling(response_handling);
-                    let (target_thread_id, previous_response_handling, binding) = source_thread
-                        .observe_agent(&target, response_handling)
+                    let (target_thread_id, observer_thread_id, previous, binding) = source_thread
+                        .observe_agent(&target, observer.as_deref(), response_handling)
                         .await
-                        .map_err(agent_control_error)?;
-                    self.try_attach_thread_listener(
-                        target_thread_id,
-                        vec![request_id.connection_id],
-                    )
-                    .await;
-                    audit_item.target_thread_id = Some(target_thread_id);
-                    Ok(AgentControlOutcome::Observed {
-                        target_thread_id: target_thread_id.to_string(),
-                        previous_response_handling: agent_final_response_handling(
-                            previous_response_handling,
-                        ),
-                        response_handling: observation_mode_final_response_handling(
-                            response_handling,
-                        ),
-                        binding: agent_observation_binding(binding),
-                    })
-                }
-                AgentControlAction::SubtreeMessaging { mode } => {
-                    let previous = source_thread
-                        .set_agent_subtree_messaging(user_agent_reply_route_mode(mode))
-                        .await
-                        .map_err(agent_control_error)?;
-                    audit_item.target_thread_id = Some(source_thread_id);
-                    audit_item.authored_selector = Some("all".into());
-                    Ok(AgentControlOutcome::SubtreeMessagingChanged {
-                        root_thread_id: source_thread_id.to_string(),
-                        previous_mode: previous.map(agent_reply_route_mode),
-                        mode,
-                    })
-                }
-                AgentControlAction::ReplyRoute {
-                    target,
-                    recipient,
-                    mode,
-                } => {
-                    let core_mode = user_agent_reply_route_mode(mode);
-                    let (target_thread_id, recipient_thread_id, previous_mode) = source_thread
-                        .set_agent_reply_route(&target, recipient.as_deref(), core_mode)
-                        .await
-                        .map_err(|err| {
-                            if matches!(err.details(), CodexErrorDetails::Fatal(_)) {
+                        .map_err(|error| {
+                            if matches!(error.details(), CodexErrorDetails::Fatal(_)) {
                                 audit_item.status = CoreUserAgentControlStatus::Unknown;
                             }
-                            agent_control_error(err)
+                            agent_control_error(error)
                         })?;
                     self.try_attach_thread_listener(
                         target_thread_id,
@@ -367,14 +342,21 @@ impl ThreadRequestProcessor {
                     )
                     .await;
                     audit_item.target_thread_id = Some(target_thread_id);
-                    audit_item.reply_recipient_thread_id = Some(recipient_thread_id);
-                    Ok(AgentControlOutcome::ReplyRouteChanged {
+                    audit_item.observer_thread_id = Some(observer_thread_id);
+                    Ok(AgentControlOutcome::Observed {
                         target_thread_id: target_thread_id.to_string(),
-                        recipient_thread_id: recipient_thread_id.to_string(),
-                        previous_mode: previous_mode.map(agent_reply_route_mode),
-                        mode,
+                        observer_thread_id: observer_thread_id.to_string(),
+                        previous_response_handling: agent_final_response_handling(previous),
+                        response_handling: observation_mode_final_response_handling(
+                            response_handling,
+                        ),
+                        binding: agent_observation_binding(binding),
                     })
                 }
+                AgentControlAction::SubtreeMessaging { .. }
+                | AgentControlAction::ReplyRoute { .. } => unreachable!(
+                    "obsolete messaging permission actions are rejected before thread lookup"
+                ),
             }
         }
         .await;

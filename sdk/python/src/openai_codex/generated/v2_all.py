@@ -7159,6 +7159,16 @@ class ObserveAgentControlAction(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    authored_observer_selector: Annotated[
+        str | None,
+        Field(
+            description="Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint."
+        ),
+    ] = None
+    observer: Annotated[
+        str | None,
+        Field(description="Existing subscription owner. Omitted means the issuing source thread."),
+    ] = None
     response_handling: AgentObservationMode
     target: str
     type: Annotated[Literal["observe"], Field(title="ObserveAgentControlActionType")]
@@ -7316,6 +7326,7 @@ class ObservedAgentControlOutcome(BaseModel):
         populate_by_name=True,
     )
     binding: AgentObservationBinding
+    observer_thread_id: str
     previous_response_handling: AgentFinalResponseHandling
     response_handling: AgentFinalResponseHandling
     target_thread_id: str
@@ -10838,6 +10849,9 @@ class UserAgentControlThreadItem(BaseModel):
         populate_by_name=True,
     )
     action: UserAgentControlAction
+    authored_observer_selector: Annotated[str | None, Field(alias="authoredObserverSelector")] = (
+        None
+    )
     authored_selector: Annotated[str | None, Field(alias="authoredSelector")] = None
     error: str | None = None
     final_response: Annotated[AgentResponseFinalDelivery | None, Field(alias="finalResponse")] = (
@@ -10850,6 +10864,7 @@ class UserAgentControlThreadItem(BaseModel):
     new_owner_session_id: Annotated[str | None, Field(alias="newOwnerSessionId")] = None
     nickname: str | None = None
     observe_commentary: Annotated[bool | None, Field(alias="observeCommentary")] = None
+    observer_thread_id: Annotated[str | None, Field(alias="observerThreadId")] = None
     previous_owner_session_id: Annotated[str | None, Field(alias="previousOwnerSessionId")] = None
     prompt_preview: Annotated[str | None, Field(alias="promptPreview")] = None
     queue_input: Annotated[bool | None, Field(alias="queueInput")] = None
