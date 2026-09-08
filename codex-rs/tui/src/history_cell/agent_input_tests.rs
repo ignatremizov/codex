@@ -1,6 +1,8 @@
 use super::*;
 use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
 
 fn attribution() -> AgentInputAttribution {
     AgentInputAttribution {
@@ -126,6 +128,76 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
     Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) → Curie [coder] /root/frontend (4) (presentation only) sends:
       └ Complete peer payload.
     ");
+    let styles = cell
+        .title
+        .spans
+        .iter()
+        .map(|span| {
+            format!(
+                "{:?}: {:?}, bold={}, dim={}, italic={}",
+                span.content,
+                span.style.fg,
+                span.style.add_modifier.contains(Modifier::BOLD),
+                span.style.add_modifier.contains(Modifier::DIM),
+                span.style.add_modifier.contains(Modifier::ITALIC),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(styles, @r#"
+    "Pascal": Some(Magenta), bold=true, dim=false, italic=false
+    " [coder] /root/backend/auth (3) (gpt-6-astra low)": None, bold=false, dim=true, italic=false
+    " → ": None, bold=false, dim=false, italic=false
+    "Curie": Some(Cyan), bold=true, dim=false, italic=false
+    " [coder] /root/frontend (4)": None, bold=false, dim=true, italic=false
+    " (presentation only)": None, bold=false, dim=false, italic=true
+    " sends:": None, bold=true, dim=false, italic=false
+    "#);
+    for line in cell.raw_lines() {
+        assert_eq!(line.style, Style::default());
+        for span in line.spans {
+            assert_eq!(span.style, Style::default());
+        }
+    }
+}
+
+#[test]
+fn nickname_color_survives_metadata_changes_and_sender_recipient_reversal() {
+    let original = attribution();
+    let first = AgentInputHistoryCell::new(
+        original.clone(),
+        Vec::new(),
+        "payload".to_string(),
+        Some(ThreadId::new()),
+    );
+    let mut reversed = original;
+    std::mem::swap(&mut reversed.sender, &mut reversed.recipient);
+    reversed.recipient.thread_id = ThreadId::new().to_string();
+    reversed.recipient.role = Some("reviewer".to_string());
+    reversed.recipient.model = None;
+    reversed.recipient.reasoning_effort = None;
+    reversed.recipient.task_path = Some("/root/review".to_string());
+    reversed.recipient.agent_ref = Some("9".to_string());
+    let second = AgentInputHistoryCell::new(
+        reversed,
+        Vec::new(),
+        "payload".to_string(),
+        Some(ThreadId::new()),
+    );
+    assert_eq!(first.title.spans[0], second.title.spans[3]);
+    assert_eq!(first.title.spans[3], second.title.spans[0]);
+    // Color survives the actual wrapping path, not just title construction.
+    for cell in [first, second] {
+        let rendered = cell.display_lines(/*width*/ 32);
+        for nickname in [&cell.title.spans[0], &cell.title.spans[3]] {
+            assert!(
+                rendered
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .any(|span| span == nickname)
+            );
+        }
+    }
 }
 
 #[test]
@@ -147,7 +219,11 @@ fn sender_metadata_cannot_create_a_second_header_line() {
             .collect::<Vec<_>>(),
         vec!["unchanged", "", "payload", ""],
     );
-    assert!(cell.title.starts_with("Pascal\\nMain (1): [coder]"));
+    assert!(
+        cell.title
+            .to_string()
+            .starts_with("Pascal\\nMain (1): [coder]")
+    );
 }
 
 #[test]
