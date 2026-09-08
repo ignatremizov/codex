@@ -228,3 +228,32 @@ fn response_flag_highlights_accept_any_order_and_repetition() {
     Command:/agent | KnownTarget:2 | Option:w:ffxx
     "###);
 }
+
+#[test]
+fn observe_highlights_the_direction_clause_and_observer_selector() {
+    assert_eq!(
+        highlighted_tokens("/agent observe Main from nick:Sagan passive"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("observe", AgentCommandHighlightKind::Action),
+            ("Main", AgentCommandHighlightKind::UnknownTarget),
+            ("from", AgentCommandHighlightKind::Action),
+            ("nick:Sagan", AgentCommandHighlightKind::KnownTarget),
+            ("passive", AgentCommandHighlightKind::Option),
+        ]
+    );
+    assert_eq!(
+        highlighted_tokens("/agent observe 2 from nick:\"Unknown Observer\" wake"),
+        vec![
+            ("/agent", AgentCommandHighlightKind::Command),
+            ("observe", AgentCommandHighlightKind::Action),
+            ("2", AgentCommandHighlightKind::KnownTarget),
+            ("from", AgentCommandHighlightKind::Action),
+            (
+                "nick:\"Unknown Observer\"",
+                AgentCommandHighlightKind::UnknownTarget
+            ),
+            ("wake", AgentCommandHighlightKind::Option),
+        ]
+    );
+}

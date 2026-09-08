@@ -38,6 +38,12 @@ impl ThreadRequestProcessor {
             audit_item.target_thread_id =
                 source_thread.resolve_user_agent_target(target).await.ok();
         }
+        if let AgentControlAction::Observe { observer, .. } = &action {
+            audit_item.observer_thread_id = match observer {
+                Some(observer) => source_thread.resolve_user_agent_target(observer).await.ok(),
+                None => Some(source_thread_id),
+            };
+        }
         let operation = async {
             match action {
                 AgentControlAction::Spawn {
@@ -320,11 +326,13 @@ impl ThreadRequestProcessor {
                 }
                 AgentControlAction::Observe {
                     target,
+                    observer,
+                    authored_observer_selector: _,
                     response_handling,
                 } => {
                     let response_handling = user_agent_final_response_handling(response_handling);
-                    let (target_thread_id, previous_response_handling, binding) = source_thread
-                        .observe_agent(&target, response_handling)
+                    let (target_thread_id, observer_thread_id, previous, binding) = source_thread
+                        .observe_agent(&target, observer.as_deref(), response_handling)
                         .await
                         .map_err(agent_control_error)?;
                     self.try_attach_thread_listener(
@@ -333,11 +341,11 @@ impl ThreadRequestProcessor {
                     )
                     .await;
                     audit_item.target_thread_id = Some(target_thread_id);
+                    audit_item.observer_thread_id = Some(observer_thread_id);
                     Ok(AgentControlOutcome::Observed {
                         target_thread_id: target_thread_id.to_string(),
-                        previous_response_handling: agent_final_response_handling(
-                            previous_response_handling,
-                        ),
+                        observer_thread_id: observer_thread_id.to_string(),
+                        previous_response_handling: agent_final_response_handling(previous),
                         response_handling: observation_mode_final_response_handling(
                             response_handling,
                         ),

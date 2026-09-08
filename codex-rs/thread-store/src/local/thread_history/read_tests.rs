@@ -877,6 +877,8 @@ async fn search_finds_user_agent_control_audit_terms() {
         authored_selector: Some("Hume".to_string()),
         target_thread_id: Some(ThreadId::new().to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         agent_ref: Some("2".to_string()),

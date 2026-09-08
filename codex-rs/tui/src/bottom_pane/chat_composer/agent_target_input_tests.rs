@@ -213,6 +213,45 @@ fn completing_observe_target_advances_popup_to_observation_modes() {
 }
 
 #[test]
+fn completing_from_advances_to_observer_then_mode_without_submitting() {
+    let mut composer = composer_with_targets("/agent observe 2 fr", "/agent observe 2 fr".len());
+    assert_eq!(
+        composer
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .0,
+        InputResult::None
+    );
+    assert_eq!(composer.draft.textarea.text(), "/agent observe 2 from ");
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected observer selector popup");
+    };
+    assert_eq!(popup.selected_target().expect("observer").selector, "2");
+    composer.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(
+        composer
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .0,
+        InputResult::None
+    );
+    assert_eq!(composer.draft.textarea.text(), "/agent observe 2 from 3 ");
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected observation mode popup");
+    };
+    assert_eq!(popup.selected_target().expect("mode").selector, "passive");
+    assert_eq!(
+        composer
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .0,
+        InputResult::None
+    );
+    assert_eq!(
+        composer.draft.textarea.text(),
+        "/agent observe 2 from 3 passive "
+    );
+    assert!(matches!(composer.popups.active, ActivePopup::None));
+}
+
+#[test]
 fn tab_completes_existing_target_after_agent_action() {
     let mut composer = composer_with_targets("/agent close 019faa", "/agent close 019faa".len());
     assert!(matches!(

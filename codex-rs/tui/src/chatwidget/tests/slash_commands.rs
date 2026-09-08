@@ -669,6 +669,7 @@ async fn slash_agent_observe_requests_authoritative_final_response_replacement()
         AppEvent::ObserveAgent {
             source_thread_id: actual_source,
             selector,
+            observer: None,
             response_handling:
                 codex_app_server_protocol::AgentObservationMode::Presentation,
         } if actual_source == source_thread_id
@@ -679,6 +680,37 @@ async fn slash_agent_observe_requests_authoritative_final_response_replacement()
                     ),
                     "nick:Robie",
                 )
+    );
+}
+
+#[tokio::test]
+async fn slash_agent_observe_keeps_issuer_and_forwards_explicit_observer_without_a_turn() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let issuer = ThreadId::new();
+    chat.thread_id = Some(issuer);
+    while rx.try_recv().is_ok() {}
+    while op_rx.try_recv().is_ok() {}
+    chat.dispatch_command_with_args(
+        SlashCommand::Agent,
+        "observe Main from nick:Peirce passive".to_string(),
+        Vec::new(),
+    );
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_matches!(
+        events.as_slice(),
+        [AppEvent::ObserveAgent {
+            source_thread_id,
+            selector,
+            observer: Some(observer),
+            response_handling: codex_app_server_protocol::AgentObservationMode::Passive,
+        }] if *source_thread_id == issuer
+            && selector.authored() == "Main"
+            && observer.authored() == "nick:Peirce"
+    );
+    assert_eq!(chat.thread_id, Some(issuer));
+    assert!(
+        op_rx.try_recv().is_err(),
+        "observe must not submit a model operation"
     );
 }
 

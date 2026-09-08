@@ -131,8 +131,16 @@ pub(super) fn user_agent_control_item(
         }
         AgentControlAction::Observe {
             target,
+            observer,
+            authored_observer_selector,
             response_handling,
         } => {
+            item.authored_observer_selector = observer.as_ref().map(|observer| {
+                authored_observer_selector
+                    .as_ref()
+                    .unwrap_or(observer)
+                    .clone()
+            });
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
             item.observe_commentary = Some(false);
             item.final_response = Some(match response_handling {

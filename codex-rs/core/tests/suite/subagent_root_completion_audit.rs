@@ -170,6 +170,7 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
             test.codex
                 .observe_agent(
                     &target_id.to_string(),
+                    /*observer*/ None,
                     match observation {
                         RootObservation::Presentation => UserAgentObservationMode::Presentation,
                         RootObservation::Passive => UserAgentObservationMode::Passive,

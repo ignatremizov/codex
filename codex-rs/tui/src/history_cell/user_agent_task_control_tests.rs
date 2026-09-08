@@ -9,6 +9,8 @@ fn adoption_snapshot_shows_resolved_path_and_unlabeled_mapping() {
         authored_selector: Some("id:imported".to_string()),
         target_thread_id: Some("imported".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: Some("old-owner".to_string()),
         new_owner_session_id: Some("new-owner".to_string()),
         agent_ref: Some("3".to_string()),

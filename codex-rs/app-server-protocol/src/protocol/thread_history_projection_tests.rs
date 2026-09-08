@@ -269,6 +269,8 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
         action: UserAgentControlAction::Prompt,
         authored_selector: Some("2".to_string()),
         target_thread_id: Some(target_thread_id),
+        observer_thread_id: None,
+        authored_observer_selector: None,
         reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,

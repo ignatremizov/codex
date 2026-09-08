@@ -191,7 +191,8 @@ impl AgentControl {
     pub(crate) async fn replace_durable_final_response_observation(
         &self,
         target_thread_id: ThreadId,
-        parent: SessionPresentationId,
+        source: SessionPresentationId,
+        observer_thread_id: ThreadId,
         replacement: FinalResponseObservation,
     ) -> CodexResult<ReplacedFinalResponseObservation> {
         let state = self.upgrade()?;
@@ -199,6 +200,12 @@ impl AgentControl {
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         self.require_current_agent_ownership(target_thread_id)
             .await?;
+        self.require_current_agent_ownership(observer_thread_id)
+            .await?;
+        let observer_thread = state
+            .get_thread_including_pending(observer_thread_id)
+            .await?;
+        let parent = observer_thread.session.presentation_id();
         let _submission_permit = self
             .acquire_mailbox_submission_permit(target_thread_id)
             .await?;
@@ -208,6 +215,15 @@ impl AgentControl {
         let child_lifecycle_generation = state.agent_lifecycle_generation(target_thread_id);
         validate_response_observation_endpoints(&state, parent, child, child_lifecycle_generation)
             .await?;
+        if state
+            .get_thread_including_pending(source.thread_id)
+            .await?
+            .session
+            .presentation_id()
+            != source
+        {
+            return Err(CodexErr::ThreadNotFound(source.thread_id));
+        }
         let (response_snapshot, response_rx) = child_thread.session.subscribe_agent_responses();
         drop(response_rx);
         let prepared = match self.prepare_final_response_observation_replacement(

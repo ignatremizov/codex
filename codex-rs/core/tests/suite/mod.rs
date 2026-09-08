@@ -166,6 +166,7 @@ mod step_settings_snapshots;
 mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_notifications;
+mod subagent_observer_control;
 mod subagent_service_tier;
 mod token_budget;
 mod token_usage_rollout;
