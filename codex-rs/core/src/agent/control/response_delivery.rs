@@ -699,13 +699,11 @@ impl AgentControl {
         // do not turn this oversight default into a persisted observation or grant.
         if final_response_observation == FinalResponseObservation::None
             && self.bound_session_id().map(ThreadId::from) == Some(parent_thread_id)
-            && self
-                .response_observation_relationship_snapshot(
-                    terminal.presentation.parent(),
-                    terminal.presentation.child(),
-                )
-                .and_then(|relationship| relationship.turns.get(&terminal.turn_id).cloned())
-                .is_some_and(|turn| turn.final_response == FinalResponseObservation::None)
+            && self.response_observation_turn_final_response(
+                terminal.presentation.parent(),
+                terminal.presentation.child(),
+                &terminal.turn_id,
+            ) == Some(FinalResponseObservation::None)
             && let Ok(state) = self.upgrade()
             && let Ok(child) = state
                 .get_thread_including_pending(terminal.presentation.child().thread_id)

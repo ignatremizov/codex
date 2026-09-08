@@ -125,7 +125,7 @@ async fn inventory_proof_and_retired_retry_preserve_newer_active_notification() 
             context
                 .item
                 .set_create_time_if_missing(serde_json::Number::from(12345));
-            let text = serde_json::to_string(&context).unwrap();
+            let text = serde_json::to_string(&context.item).unwrap();
             assert!(!text.contains("private-payload"));
             assert!(!text.contains("image_url"));
             store
@@ -492,7 +492,7 @@ async fn inventory_groups_canonical_authors_without_payload_or_volatile_labels()
             ]
         );
         let context = notification.context().unwrap();
-        let serialized = serde_json::to_string(&context).unwrap();
+        let serialized = serde_json::to_string(&context.item).unwrap();
         assert!(serialized.contains(&sender.to_string()));
         assert!(!serialized.contains("snapshot-name"));
         assert!(!serialized.contains("secret agent payload"));

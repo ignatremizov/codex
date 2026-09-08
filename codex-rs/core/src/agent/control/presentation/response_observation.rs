@@ -276,12 +276,8 @@ impl AgentControl {
         target: SessionPresentationId,
         turn_id: &str,
     ) -> bool {
-        self.wait_agent_presentations
-            .state()
-            .response_observation_by_observer_child
-            .get(&(observer, target))
-            .and_then(|relationship| relationship.turns.get(turn_id))
-            .is_some_and(|observation| observation.final_response == FinalResponseObservation::Wake)
+        self.response_observation_turn_final_response(observer, target, turn_id)
+            == Some(FinalResponseObservation::Wake)
     }
 
     pub(crate) fn target_message_admission(

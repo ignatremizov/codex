@@ -1,6 +1,22 @@
 use super::*;
 
 impl AgentControl {
+    /// Returns only the explicitly bound turn policy, without baseline or pending fallback.
+    /// A missing relationship or turn remains distinct from an explicit `None` policy.
+    pub(in crate::agent::control) fn response_observation_turn_final_response(
+        &self,
+        observer: SessionPresentationId,
+        target: SessionPresentationId,
+        turn_id: &str,
+    ) -> Option<FinalResponseObservation> {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(observer, target))
+            .and_then(|relationship| relationship.turns.get(turn_id))
+            .map(|observation| observation.final_response)
+    }
+
     pub(crate) fn response_observation_snapshots(
         &self,
         parent: SessionPresentationId,
