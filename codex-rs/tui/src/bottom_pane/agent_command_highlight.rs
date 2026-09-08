@@ -96,9 +96,9 @@ pub(super) fn agent_command_highlights(
         }
     }
 
-    if action == Some("sends")
-        && let Some(range) = token_ranges.get(index)
-        && &first_line[range.clone()] == "to"
+    if let Some(range) = token_ranges.get(index)
+        && ((action == Some("sends") && &first_line[range.clone()] == "to")
+            || (action == Some("observe") && &first_line[range.clone()] == "from"))
     {
         highlights.push(AgentCommandHighlight {
             range: range.clone(),

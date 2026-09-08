@@ -287,7 +287,7 @@ pub(crate) fn thread_items_with_sources_to_transcript_cells(
             }
             item @ ThreadItem::UserAgentControl { .. } => {
                 if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
-                    let cell = cell.with_reply_recipient_label(|id| {
+                    let cell = cell.with_direction_recipient_label(|id| {
                         let id = ThreadId::from_string(id).ok()?;
                         known_collab_agent_metadata.get(&id)?.agent_nickname.clone()
                     });

@@ -1240,10 +1240,16 @@ impl ChatWidget {
                     });
                     return;
                 }
-                if let AgentCommand::Observe { selector, mode } = &parsed {
+                if let AgentCommand::Observe {
+                    selector,
+                    observer,
+                    mode,
+                } = &parsed
+                {
                     self.app_event_tx.send(AppEvent::ObserveAgent {
                         source_thread_id,
                         selector: selector.clone(),
+                        observer: observer.clone(),
                         response_handling: *mode,
                     });
                     return;

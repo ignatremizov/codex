@@ -57,6 +57,7 @@ pub(super) enum AgentCommand<'a> {
     },
     Observe {
         selector: AgentSelector,
+        observer: Option<AgentSelector>,
         mode: AgentObservationMode,
     },
     ReplyRoute {
@@ -186,14 +187,25 @@ pub(super) fn parse_agent_command_with_attached_input(
         }
         "observe" => {
             let selector = parser.required_selector("observe")?;
-            let mode = parser
-                .next_token()?
-                .ok_or_else(|| {
-                    "Usage: /agent observe <target> <passive|wake|presentation>".to_string()
-                })
-                .and_then(|token| parse_observe_mode(&token.value))?;
+            let token = parser.next_token()?.ok_or_else(|| {
+                "Usage: /agent observe <target> [from <observer>] <passive|wake|presentation>"
+                    .to_string()
+            })?;
+            let (observer, mode) = if token.raw == "from" {
+                let observer = parser.required_selector("observe <target> from")?;
+                let mode = parser.next_token()?.ok_or_else(|| {
+                    "Expected passive, wake, or presentation after observer.".to_string()
+                })?;
+                (Some(observer), parse_observe_mode(&mode.value)?)
+            } else {
+                (None, parse_observe_mode(&token.value)?)
+            };
             parser.require_end("observe")?;
-            Ok(AgentCommand::Observe { selector, mode })
+            Ok(AgentCommand::Observe {
+                selector,
+                observer,
+                mode,
+            })
         }
         "sends" => {
             let selector = parser.required_selector("sends")?;

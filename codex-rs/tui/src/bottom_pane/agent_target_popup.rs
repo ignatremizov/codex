@@ -54,6 +54,7 @@ pub(crate) struct AgentPromptTarget {
 pub(crate) enum AgentTargetCompletionScope {
     Any,
     ExistingTarget,
+    ObservationObserverOrMode,
     ObservationMode,
     ReplyRouteRecipientOrMode,
     ReplyRouteMode,
@@ -163,7 +164,8 @@ impl AgentTargetPopup {
                     || target.selector == "all")
                     && if matches!(
                         self.scope,
-                        AgentTargetCompletionScope::ObservationMode
+                        AgentTargetCompletionScope::ObservationObserverOrMode
+                            | AgentTargetCompletionScope::ObservationMode
                             | AgentTargetCompletionScope::ReplyRouteRecipientOrMode
                             | AgentTargetCompletionScope::ReplyRouteMode
                     ) {
@@ -223,7 +225,8 @@ impl WidgetRef for AgentTargetPopup {
                     "no matching agents, actions, or configured roles"
                 }
                 AgentTargetCompletionScope::ExistingTarget => "no matching agents",
-                AgentTargetCompletionScope::ObservationMode => {
+                AgentTargetCompletionScope::ObservationObserverOrMode
+                | AgentTargetCompletionScope::ObservationMode => {
                     "no matching response observation modes"
                 }
                 AgentTargetCompletionScope::ReplyRouteRecipientOrMode
@@ -295,7 +298,7 @@ pub(crate) fn agent_target_completion(
     };
 
     let mut scope = match action {
-        "observe" => AgentTargetCompletionScope::ObservationMode,
+        "observe" => AgentTargetCompletionScope::ObservationObserverOrMode,
         "sends" => AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
         _ => return None,
     };
@@ -307,8 +310,9 @@ pub(crate) fn agent_target_completion(
         return None;
     }
     let mut mode_start = target_end + (target_tail.len() - target_tail.trim_start().len());
-    if action == "sends"
-        && &first_line[mode_start..token_end(first_line, mode_start)] == "to"
+    if ((action == "sends" && &first_line[mode_start..token_end(first_line, mode_start)] == "to")
+        || (action == "observe"
+            && &first_line[mode_start..token_end(first_line, mode_start)] == "from"))
         && cursor > token_end(first_line, mode_start)
     {
         let to_end = token_end(first_line, mode_start);
@@ -325,7 +329,11 @@ pub(crate) fn agent_target_completion(
         }
         mode_start = recipient_end + first_line[recipient_end..].len()
             - first_line[recipient_end..].trim_start().len();
-        scope = AgentTargetCompletionScope::ReplyRouteMode;
+        scope = if action == "observe" {
+            AgentTargetCompletionScope::ObservationMode
+        } else {
+            AgentTargetCompletionScope::ReplyRouteMode
+        };
     }
     if cursor < mode_start {
         return None;

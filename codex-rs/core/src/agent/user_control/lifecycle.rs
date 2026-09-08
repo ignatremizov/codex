@@ -74,12 +74,15 @@ impl CodexThread {
             .await
     }
 
-    /// Replace final-response handling for the target's active, pending, or undelivered turn.
+    /// Replace an existing observer-to-target final-response subscription.
+    /// Omitted observer means the issuing thread; both selectors stay within its control graph.
     pub async fn observe_agent(
         &self,
         target: &str,
+        observer: Option<&str>,
         response_handling: UserAgentObservationMode,
     ) -> CodexResult<(
+        ThreadId,
         ThreadId,
         UserAgentFinalResponseHandling,
         UserAgentObservationBinding,
@@ -89,7 +92,15 @@ impl CodexThread {
         let target_thread_id = agent_control
             .resolve_controlled_agent_target(self.session.thread_id(), target)
             .await?;
-        if target_thread_id == source_thread_id {
+        let observer_thread_id = match observer {
+            Some(observer) => {
+                agent_control
+                    .resolve_controlled_agent_target(source_thread_id, observer)
+                    .await?
+            }
+            None => source_thread_id,
+        };
+        if target_thread_id == observer_thread_id {
             return Err(CodexErr::InvalidRequest(
                 "an agent cannot observe itself".to_string(),
             ));
@@ -111,11 +122,13 @@ impl CodexThread {
             .replace_durable_final_response_observation(
                 target_thread_id,
                 self.session.presentation_id(),
+                observer_thread_id,
                 replacement,
             )
             .await?;
         Ok((
             replaced.target_thread_id,
+            observer_thread_id,
             replaced.previous.into(),
             replaced.binding.into(),
         ))

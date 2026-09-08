@@ -19,7 +19,7 @@ pub(crate) struct UserAgentControlHistoryCell {
     title: Line<'static>,
     details: Vec<Line<'static>>,
     audit_details: Vec<Line<'static>>,
-    reply_recipient: Option<String>,
+    direction_recipient: Option<String>,
 }
 
 pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentControlHistoryCell> {
@@ -28,6 +28,8 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
         authored_selector,
         target_thread_id,
         reply_recipient_thread_id,
+        observer_thread_id,
+        authored_observer_selector,
         previous_owner_session_id,
         new_owner_session_id,
         agent_ref,
@@ -167,17 +169,32 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
     if action == UserAgentControlAction::SubtreeMessaging {
         details.push("Applies to this supervisor and current/future descendants; explicit pair settings take precedence.".dim().into());
     }
-    let reply_recipient = if action == UserAgentControlAction::ReplyRoute
+    if let Some(selector) = &authored_observer_selector {
+        audit_details.push(format!("Observer selector: {selector}").dim().into());
+    }
+    let direction_recipient = if action == UserAgentControlAction::Observe {
+        observer_thread_id.or(authored_observer_selector)
+    } else if action == UserAgentControlAction::ReplyRoute
         && status == UserAgentControlStatus::Succeeded
     {
         reply_recipient_thread_id
     } else {
         None
     };
-    if let Some(recipient) = &reply_recipient {
+    if let Some(recipient) = &direction_recipient {
         // Keep canonical identity in detail inspection; normal presentation resolves its label.
-        audit_details.push(format!("Recipient: {recipient}").dim().into());
-        title[1] = if target_messages == Some(true) {
+        let recipient_kind = if action == UserAgentControlAction::Observe {
+            "Observer"
+        } else {
+            "Recipient"
+        };
+        audit_details.push(format!("{recipient_kind}: {recipient}").dim().into());
+        title[1] = if action == UserAgentControlAction::Observe {
+            match status {
+                UserAgentControlStatus::Succeeded => "User changed observation:".bold(),
+                UserAgentControlStatus::Failed => "User observation change failed:".bold(),
+            }
+        } else if target_messages == Some(true) {
             "User enabled messages:".bold()
         } else {
             "User disabled messages:".bold()
@@ -204,16 +221,16 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
         title: title.into(),
         details,
         audit_details,
-        reply_recipient,
+        direction_recipient,
     })
 }
 
 impl UserAgentControlHistoryCell {
-    pub(crate) fn with_reply_recipient_label(
+    pub(crate) fn with_direction_recipient_label(
         mut self,
         label: impl FnOnce(&str) -> Option<String>,
     ) -> Self {
-        if let Some(recipient) = &self.reply_recipient
+        if let Some(recipient) = &self.direction_recipient
             && let Some(label) = label(recipient)
             && let Some(span) = self.title.spans.last_mut()
         {

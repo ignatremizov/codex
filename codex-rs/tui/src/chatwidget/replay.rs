@@ -388,7 +388,7 @@ impl ChatWidget {
             item @ ThreadItem::UserAgentControl { .. } => {
                 self.remember_user_agent_control_metadata(&item);
                 if let Some(cell) = crate::history_cell::new_user_agent_control(item) {
-                    let cell = cell.with_reply_recipient_label(|id| {
+                    let cell = cell.with_direction_recipient_label(|id| {
                         let id = ThreadId::from_string(id).ok()?;
                         self.collab_agent_metadata(id).agent_nickname
                     });

@@ -23,6 +23,8 @@ mod key_chords;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
 mod model_catalog;
+#[path = "tests/observe_agent_tests.rs"]
+mod observe_agent_tests;
 #[path = "tests/patch_approval_tests.rs"]
 mod patch_approval_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]

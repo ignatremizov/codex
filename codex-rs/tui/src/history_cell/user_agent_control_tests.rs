@@ -15,6 +15,8 @@ fn renders_live_subtree_default_with_future_members() {
         authored_selector: Some("all".into()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67268".into()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -56,6 +58,8 @@ fn renders_successful_user_agent_prompt() {
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -98,6 +102,8 @@ fn renders_child_to_main_prompt_with_main_identity() {
         authored_selector: Some("main".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67268".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -140,6 +146,8 @@ fn renders_successful_prompt_with_post_admission_warning() {
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -183,6 +191,8 @@ fn renders_successful_prompt_that_resumed_the_target() {
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -225,6 +235,8 @@ fn renders_successful_queued_prompt_that_resumed_the_target() {
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -267,6 +279,8 @@ fn renders_successful_close_with_queued_response_replay() {
         authored_selector: Some("2".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -309,6 +323,8 @@ fn renders_user_reply_route_changes() {
             authored_selector: Some("2".to_string()),
             target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
             reply_recipient_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67270".to_string()),
+            observer_thread_id: None,
+            authored_observer_selector: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
             task_path: None,
@@ -330,7 +346,7 @@ fn renders_user_reply_route_changes() {
             error: None,
         })
         .expect("control item should render")
-        .with_reply_recipient_label(|_| Some("Franklin".to_string()));
+        .with_direction_recipient_label(|_| Some("Franklin".to_string()));
         assert!(cell.raw_lines().iter().any(|line| {
             line.to_string()
                 .contains("Recipient: 019ff050-d466-73b0-b133-72ecc7c67270")
@@ -364,6 +380,8 @@ fn renders_failed_user_agent_spawn() {
         authored_selector: None,
         target_thread_id: None,
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
         task_path: None,
@@ -407,6 +425,8 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
         authored_selector: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
         reply_recipient_thread_id: None,
+        observer_thread_id: None,
+        authored_observer_selector: None,
         previous_owner_session_id: None,
         new_owner_session_id: Some("019ff050-d466-73b0-b133-72ecc7c67270".to_string()),
         task_path: None,
@@ -452,4 +472,139 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
     Selector: 019ff050-d466-73b0-b133-72ecc7c67269
     Ownership: unowned → 019ff050-d466-73b0-b133-72ecc7c67270
     ");
+}
+
+fn observation_control_item() -> ThreadItem {
+    ThreadItem::UserAgentControl {
+        id: "observe-main-from-peirce".to_string(),
+        action: UserAgentControlAction::Observe,
+        authored_selector: Some("Main".to_string()),
+        target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
+        observer_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67270".to_string()),
+        authored_observer_selector: Some("Peirce".to_string()),
+        reply_recipient_thread_id: None,
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        agent_ref: None,
+        nickname: None,
+        role: None,
+        task: None,
+        task_path: None,
+        task_path_mapping: Vec::new(),
+        model: None,
+        reasoning_effort: None,
+        prompt_preview: None,
+        resumed_target: false,
+        fork_mode: None,
+        observe_commentary: None,
+        final_response: Some(AgentFinalResponseHandling::Passive),
+        target_messages: None,
+        queue_input: None,
+        status: UserAgentControlStatus::Succeeded,
+        error: None,
+    }
+}
+
+#[test]
+fn observation_audit_snapshot_shows_target_to_resolved_observer() {
+    let cell = new_user_agent_control(observation_control_item())
+        .expect("observation cell")
+        .with_direction_recipient_label(|_| Some("Peirce".to_string()));
+    let rendered = cell
+        .display_lines(/*width*/ 160)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @"• User changed observation: Main (passive) → Peirce");
+}
+
+#[test]
+fn failed_observer_resolution_snapshot_retains_authored_direction() {
+    let mut item = observation_control_item();
+    if let ThreadItem::UserAgentControl {
+        observer_thread_id,
+        authored_observer_selector,
+        status,
+        error,
+        ..
+    } = &mut item
+    {
+        *observer_thread_id = None;
+        *authored_observer_selector = Some("nick:Missing".to_string());
+        *status = UserAgentControlStatus::Failed;
+        *error = Some("unknown observer".to_string());
+    }
+    let cell = new_user_agent_control(item).expect("failed observation cell");
+    let rendered = cell
+        .display_lines(/*width*/ 160)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    • User observation change failed: Main (passive) → nick:Missing
+      └ Failed: unknown observer
+    ");
+}
+
+#[test]
+fn legacy_observation_audit_snapshot_does_not_invent_an_observer() {
+    let mut value = serde_json::to_value(observation_control_item()).expect("serialize audit");
+    let object = value.as_object_mut().expect("audit object");
+    object.remove("observerThreadId");
+    object.remove("authoredObserverSelector");
+    let item = serde_json::from_value(value).expect("legacy audit decodes");
+    let cell = new_user_agent_control(item).expect("legacy observation cell");
+    let rendered = cell
+        .display_lines(/*width*/ 160)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @"• User changed observation for Main (passive)");
+}
+
+#[test]
+fn observation_audit_preserves_prefixed_and_quoted_observer_tokens() {
+    let rendered = ["ref:146", "nick:\"Charles Peirce\""]
+        .into_iter()
+        .map(|authored| {
+            let mut item = observation_control_item();
+            if let ThreadItem::UserAgentControl {
+                observer_thread_id,
+                authored_observer_selector,
+                status,
+                error,
+                ..
+            } = &mut item
+            {
+                *observer_thread_id = None;
+                *authored_observer_selector = Some(authored.to_string());
+                *status = UserAgentControlStatus::Failed;
+                *error = Some("unknown observer".to_string());
+            }
+            let encoded = serde_json::to_value(item).expect("serialize audit");
+            let decoded = serde_json::from_value(encoded).expect("decode audit");
+            let cell = new_user_agent_control(decoded).expect("observer audit");
+            assert!(
+                cell.raw_lines()
+                    .iter()
+                    .any(|line| { line.to_string() == format!("Observer selector: {authored}") })
+            );
+            cell.display_lines(/*width*/ 160)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    insta::assert_snapshot!(rendered, @r#"
+    • User observation change failed: Main (passive) → ref:146
+      └ Failed: unknown observer
+
+    • User observation change failed: Main (passive) → nick:"Charles Peirce"
+      └ Failed: unknown observer
+    "#);
 }

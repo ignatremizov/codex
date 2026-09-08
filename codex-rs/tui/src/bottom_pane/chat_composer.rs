@@ -4138,7 +4138,8 @@ impl ChatComposer {
             || agent_target.as_ref().is_some_and(|completion| {
                 matches!(
                     completion.scope,
-                    AgentTargetCompletionScope::ObservationMode
+                    AgentTargetCompletionScope::ObservationObserverOrMode
+                        | AgentTargetCompletionScope::ObservationMode
                         | AgentTargetCompletionScope::ReplyRouteRecipientOrMode
                         | AgentTargetCompletionScope::ReplyRouteMode
                         | AgentTargetCompletionScope::Model
@@ -4162,13 +4163,19 @@ impl ChatComposer {
             }
             self.popups.dismissed_agent_target = None;
             let targets = match completion.scope {
-                AgentTargetCompletionScope::ObservationMode => AGENT_OBSERVATION_MODE_CHOICES
+                AgentTargetCompletionScope::ObservationObserverOrMode
+                | AgentTargetCompletionScope::ObservationMode => AGENT_OBSERVATION_MODE_CHOICES
+                    .into_iter()
+                    .chain(
+                        (completion.scope == AgentTargetCompletionScope::ObservationObserverOrMode)
+                            .then_some(("from", "Choose the observing agent")),
+                    )
                     .map(|(selector, label)| AgentPromptTarget {
                         thread_id: None,
                         selector: selector.to_string(),
                         label: label.to_string(),
                     })
-                    .to_vec(),
+                    .collect(),
                 AgentTargetCompletionScope::ReplyRouteRecipientOrMode
                 | AgentTargetCompletionScope::ReplyRouteMode => AGENT_REPLY_ROUTE_MODE_CHOICES
                     .into_iter()
