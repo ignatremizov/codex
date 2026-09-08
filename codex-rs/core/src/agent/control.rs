@@ -110,6 +110,7 @@ pub(crate) use presentation::CompletionParentState;
 pub(crate) use presentation::CompletionPresentation;
 pub(crate) use presentation::CompletionWatcherRegistration;
 pub use presentation::LiveRevertMessagingSnapshot;
+pub(crate) use presentation::PreparedRootCompletionAudit;
 use presentation::ResponseObservationBinding;
 use presentation::ResponseObservationBindingPublication;
 pub(crate) use presentation::ResponseObservationDeliveryCommit;

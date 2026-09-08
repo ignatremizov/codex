@@ -22,10 +22,12 @@ use uuid::Uuid;
 mod input_permission;
 mod live_revert_messaging;
 mod response_observation;
+mod root_completion_audit;
 mod subtree_messaging;
 use live_revert_messaging::LiveRevertMessagingContinuity;
 pub use live_revert_messaging::LiveRevertMessagingSnapshot;
 pub(in crate::agent) use response_observation::ReplacedFinalResponseObservationBinding;
+pub(crate) use root_completion_audit::PreparedRootCompletionAudit;
 
 pub(crate) use response_observation::CommentaryDeliveryRoute;
 pub(crate) use response_observation::ResponseObservationBinding;
@@ -107,6 +109,7 @@ pub(super) struct WaitAgentPresentations {
 
 #[derive(Default)]
 struct PresentationState {
+    root_audit_turns: HashSet<(SessionPresentationId, SessionPresentationId, String)>,
     live_revert_messaging: HashMap<SessionPresentationId, LiveRevertMessagingContinuity>,
     pending_messaging_context: HashMap<
         (SessionPresentationId, String),
@@ -493,6 +496,9 @@ impl LocalAgentControl {
         state
             .response_terminals
             .retain(|(observer, _, _), _| *observer != parent);
+        state
+            .root_audit_turns
+            .retain(|(observer, _, _)| *observer != parent);
         state
             .response_observation_by_observer_child
             .retain(|(observer, _), _| *observer != parent);

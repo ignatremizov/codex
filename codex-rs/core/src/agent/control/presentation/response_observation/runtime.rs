@@ -81,6 +81,38 @@ impl LocalAgentControl {
     ) -> Option<AgentTerminalPresentation> {
         let mut state = self.wait_agent_presentations.state();
         let key = (parent, child, turn_id.to_owned());
+        if state.root_audit_turns.contains(&key) {
+            let final_response = state
+                .response_observation_by_observer_child
+                .get(&(parent, child))
+                .and_then(|relationship| relationship.turns.get(turn_id))
+                .map(|observation| observation.final_response);
+            let Some(final_response) = final_response else {
+                return None;
+            };
+            // A racing actual observer may adopt the audit's immutable terminal/wait token,
+            // but only after obtaining its own accepted canonical-delivery capability.
+            if final_response != FinalResponseObservation::None {
+                let observer = state.response_observers.get(&(parent, child))?.upgrade()?;
+                if observer.session.presentation_id() != parent {
+                    return None;
+                }
+                let accepted = observer
+                    .session
+                    .submission_admission
+                    .try_accept_completion_delivery()?;
+                let inner = state.response_terminals.get(&key)?;
+                *inner
+                    .parent_thread
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(observer);
+                *inner
+                    .accepted
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(accepted);
+                state.root_audit_turns.remove(&key);
+            }
+        }
         if let Some(inner) = state.response_terminals.get(&key) {
             let status = inner.status.clone();
             let presentation = AgentTerminalPresentation {
