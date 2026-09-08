@@ -6,7 +6,6 @@ use codex_protocol::openai_models::ModelPreset;
 
 use super::agent_spawn_option_completion;
 use super::agent_target_popup::AGENT_OBSERVATION_MODE_CHOICES;
-use super::agent_target_popup::AGENT_REPLY_ROUTE_MODE_CHOICES;
 use super::agent_target_popup::AgentPromptTarget;
 use super::agent_target_popup::is_agent_target_action;
 use super::agent_target_popup::token_end;
@@ -66,16 +65,7 @@ pub(super) fn agent_command_highlights(
             let Some(target_range) = token_ranges.get(index) else {
                 return highlights;
             };
-            highlights.push(
-                if first == "sends" && &first_line[target_range.clone()] == "all" {
-                    AgentCommandHighlight {
-                        range: target_range.clone(),
-                        kind: AgentCommandHighlightKind::Option,
-                    }
-                } else {
-                    target_highlight(first_line, target_range.clone(), targets)
-                },
-            );
+            highlights.push(target_highlight(first_line, target_range.clone(), targets));
             index += 1;
         }
     } else {
@@ -83,7 +73,7 @@ pub(super) fn agent_command_highlights(
         highlights.push(target_highlight(first_line, first_range.clone(), targets));
         if let Some(target_first_action) = token_ranges.get(index).and_then(|range| {
             let action = &first_line[range.clone()];
-            matches!(action, "close" | "resume" | "sends").then_some(action)
+            matches!(action, "close" | "resume").then_some(action)
         }) {
             let range = token_ranges[index].clone();
             highlights.push(AgentCommandHighlight {
@@ -96,9 +86,9 @@ pub(super) fn agent_command_highlights(
         }
     }
 
-    if action == Some("sends")
-        && let Some(range) = token_ranges.get(index)
-        && &first_line[range.clone()] == "to"
+    if let Some(range) = token_ranges.get(index)
+        && action == Some("observe")
+        && &first_line[range.clone()] == "from"
     {
         highlights.push(AgentCommandHighlight {
             range: range.clone(),
@@ -112,8 +102,7 @@ pub(super) fn agent_command_highlights(
     }
     while let Some(range) = token_ranges.get(index) {
         let token = &first_line[range.clone()];
-        let recognized = (!matches!(action, Some("observe" | "sends"))
-            && is_response_option(token))
+        let recognized = (action != Some("observe") && is_response_option(token))
             || (action == Some("resume")
                 && token
                     .strip_prefix("task:")
@@ -127,10 +116,6 @@ pub(super) fn agent_command_highlights(
                     || is_effort_option(token, selected_model)))
             || (action == Some("observe")
                 && AGENT_OBSERVATION_MODE_CHOICES
-                    .iter()
-                    .any(|(mode, _description)| token == *mode))
-            || (action == Some("sends")
-                && AGENT_REPLY_ROUTE_MODE_CHOICES
                     .iter()
                     .any(|(mode, _description)| token == *mode));
         if !recognized {

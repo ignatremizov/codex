@@ -205,6 +205,7 @@ impl App {
         app_server: &mut AppServerSession,
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        observer: Option<AgentSelector>,
         response_handling: codex_app_server_protocol::AgentObservationMode,
     ) {
         let target = match self
@@ -217,108 +218,18 @@ impl App {
                 return;
             }
         };
-        let result = app_server
-            .observe_agent(
-                source_thread_id,
-                target,
-                selector.authored().to_string(),
-                response_handling,
-            )
-            .await;
-        let codex_app_server_protocol::AgentControlResponse {
-            outcome,
-            audit_warning,
-        } = match result {
-            Ok(response) => response,
-            Err(error) => {
-                self.chat_widget
-                    .add_error_message(format!("Failed to change agent observation: {error:#}"));
-                return;
-            }
-        };
-        match outcome {
-            codex_app_server_protocol::AgentControlOutcome::Observed {
-                target_thread_id,
-                previous_response_handling: _,
-                response_handling,
-                binding,
-            } => {
-                if let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id) {
-                    self.refresh_primary_agent_aliases(app_server).await;
-                    self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
-                        .await;
-                    match binding {
-                        codex_app_server_protocol::AgentObservationBinding::ActiveTurn => {
-                            self.agent_navigation
-                                .replace_user_final_response_observation(
-                                    source_thread_id,
-                                    target_thread_id,
-                                    AgentResponseObservationBinding::Bound,
-                                    response_handling,
-                                );
-                        }
-                        codex_app_server_protocol::AgentObservationBinding::NextTurn => {
-                            self.agent_navigation
-                                .replace_user_final_response_observation(
-                                    source_thread_id,
-                                    target_thread_id,
-                                    AgentResponseObservationBinding::NextTurn,
-                                    response_handling,
-                                );
-                        }
-                        codex_app_server_protocol::AgentObservationBinding::UndeliveredCompletion => {
-                            self.agent_navigation.clear_response_observation_binding(
-                                source_thread_id,
-                                target_thread_id,
-                                AgentResponseObservationBinding::Bound,
-                            );
-                        }
-                    }
-                }
-                if let Some(audit_warning) = audit_warning {
-                    self.chat_widget.add_error_message(format!(
-                        "Observation for agent {target_thread_id} changed, but its source audit \
-                         failed; do not retry the change: {audit_warning}"
-                    ));
-                }
-            }
-            _ => {
-                self.chat_widget.add_error_message(
-                    "Agent observe returned an unexpected response.".to_string(),
-                );
-            }
-        }
-    }
-
-    pub(super) async fn set_agent_reply_route_from_selector(
-        &mut self,
-        app_server: &mut AppServerSession,
-        source_thread_id: ThreadId,
-        selector: AgentSelector,
-        recipient: Option<AgentSelector>,
-        mode: codex_app_server_protocol::AgentReplyRouteMode,
-    ) {
-        let target = match if selector.authored() == "all" && recipient.is_none() {
-            self.ensure_agent_control_admission(source_thread_id, /*target*/ None)
-                .await
-                .map(|()| "all".to_string())
-                .map_err(|error| error.to_string())
-        } else {
-            self.validated_agent_control_target(app_server, source_thread_id, &selector)
-                .await
-        } {
-            Ok(target) => target,
-            Err(message) => {
-                self.chat_widget.add_error_message(message);
-                return;
-            }
-        };
-        let recipient = match recipient {
-            Some(recipient) => match self
-                .validated_agent_control_target(app_server, source_thread_id, &recipient)
+        let authored_observer_selector = observer
+            .as_ref()
+            .map(|selector| selector.authored().to_string());
+        let observer_label = authored_observer_selector
+            .clone()
+            .unwrap_or_else(|| source_thread_id.to_string());
+        let observer = match observer {
+            Some(observer) => match self
+                .validated_agent_control_target(app_server, source_thread_id, &observer)
                 .await
             {
-                Ok(recipient) => Some(recipient),
+                Ok(observer) => Some(observer),
                 Err(message) => {
                     self.chat_widget.add_error_message(message);
                     return;
@@ -327,12 +238,13 @@ impl App {
             None => None,
         };
         let result = app_server
-            .set_agent_reply_route(
+            .observe_agent(
                 source_thread_id,
                 target,
                 selector.authored().to_string(),
-                recipient,
-                mode,
+                observer,
+                authored_observer_selector,
+                response_handling,
             )
             .await;
         let codex_app_server_protocol::AgentControlResponse {
@@ -341,55 +253,66 @@ impl App {
         } = match result {
             Ok(response) => response,
             Err(error) => {
-                self.chat_widget
-                    .add_error_message(format!("Failed to change agent reply route: {error:#}"));
+                self.chat_widget.add_error_message(format!(
+                    "Failed to change observation ({} → {observer_label}): {error:#}",
+                    selector.authored()
+                ));
                 return;
             }
         };
         match outcome {
-            codex_app_server_protocol::AgentControlOutcome::SubtreeMessagingChanged {
-                root_thread_id,
-                mode,
-                ..
-            } => {
-                if let Ok(root) = ThreadId::from_string(&root_thread_id) {
-                    self.agent_navigation.set_subtree_messaging(
-                        root,
-                        mode == codex_app_server_protocol::AgentReplyRouteMode::Enabled,
-                    );
-                }
-                if let Some(warning) = audit_warning {
-                    self.chat_widget.add_error_message(warning);
-                }
-            }
-            codex_app_server_protocol::AgentControlOutcome::ReplyRouteChanged {
+            codex_app_server_protocol::AgentControlOutcome::Observed {
                 target_thread_id,
-                recipient_thread_id,
-                previous_mode: _,
-                mode,
+                observer_thread_id,
+                previous_response_handling: _,
+                response_handling,
+                binding,
             } => {
-                if let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id)
-                    && let Ok(recipient_thread_id) = ThreadId::from_string(&recipient_thread_id)
-                {
+                if let (Ok(target_thread_id), Ok(observer_thread_id)) = (
+                    ThreadId::from_string(&target_thread_id),
+                    ThreadId::from_string(&observer_thread_id),
+                ) {
                     self.refresh_primary_agent_aliases(app_server).await;
                     self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
                         .await;
-                    self.agent_navigation.replace_user_reply_route(
-                        recipient_thread_id,
-                        target_thread_id,
-                        mode == codex_app_server_protocol::AgentReplyRouteMode::Enabled,
-                    );
+                    match binding {
+                        codex_app_server_protocol::AgentObservationBinding::ActiveTurn => {
+                            self.agent_navigation
+                                .replace_user_final_response_observation(
+                                    observer_thread_id,
+                                    target_thread_id,
+                                    AgentResponseObservationBinding::Bound,
+                                    response_handling,
+                                );
+                        }
+                        codex_app_server_protocol::AgentObservationBinding::NextTurn => {
+                            self.agent_navigation
+                                .replace_user_final_response_observation(
+                                    observer_thread_id,
+                                    target_thread_id,
+                                    AgentResponseObservationBinding::NextTurn,
+                                    response_handling,
+                                );
+                        }
+                        codex_app_server_protocol::AgentObservationBinding::UndeliveredCompletion => {
+                            self.agent_navigation.clear_response_observation_binding(
+                                observer_thread_id,
+                                target_thread_id,
+                                AgentResponseObservationBinding::Bound,
+                            );
+                        }
+                    }
                 }
                 if let Some(audit_warning) = audit_warning {
                     self.chat_widget.add_error_message(format!(
-                        "Reply route for agent {target_thread_id} changed, but its source audit \
+                        "Observation {target_thread_id} → {observer_thread_id} changed, but its source audit \
                          failed; do not retry the change: {audit_warning}"
                     ));
                 }
             }
             _ => {
                 self.chat_widget.add_error_message(
-                    "Agent reply-route change returned an unexpected response.".to_string(),
+                    "Agent observe returned an unexpected response.".to_string(),
                 );
             }
         }
