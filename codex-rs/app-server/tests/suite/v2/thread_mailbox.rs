@@ -267,8 +267,13 @@ async fn invalid_user_mailbox_requests_are_not_accepted(
     });
     params
         .as_object_mut()
-        .unwrap()
-        .extend(overrides.as_object().unwrap().clone());
+        .expect("mailbox request is an object")
+        .extend(
+            overrides
+                .as_object()
+                .expect("mailbox test overrides are an object")
+                .clone(),
+        );
     let request_id = app.send_request("thread/mailbox/add", Some(params)).await?;
     timeout(
         READ_TIMEOUT,
