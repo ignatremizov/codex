@@ -1,4 +1,5 @@
 //! Keyboard interaction for `/agent` action, role, and target autocomplete.
+//! Selecting `observe ... from` advances to observer selection, then observation mode.
 
 use super::*;
 
@@ -73,9 +74,12 @@ impl ChatComposer {
             && is_agent_target_action(&target.selector);
         let advances_to_mode = completion.scope == AgentTargetCompletionScope::ExistingTarget
             && matches!(completion.action, Some("observe" | "sends"));
+        let advances_to_observer = completion.scope
+            == AgentTargetCompletionScope::ObservationObserverOrMode
+            && target.selector == "from";
         self.insert_agent_target(completion.range, &target.selector);
         self.popups.active = ActivePopup::None;
-        if advances_to_action_target || advances_to_mode {
+        if advances_to_action_target || advances_to_mode || advances_to_observer {
             self.sync_popups();
         } else {
             self.popups.dismissed_agent_target = Some((completion.scope, target.selector));

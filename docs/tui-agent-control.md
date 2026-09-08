@@ -27,7 +27,7 @@ The user should be able to:
 - preserve genuine user-message semantics in the target thread;
 - keep every lifecycle action and response visible in durable transcript history.
 
-The displayed source thread authors and observes the operation. It becomes the lifecycle parent when spawning a new child or explicitly adopting a stored target outside its current root. Same-root existing targets retain their graph parent. This lets the same command work from Main, from a child coordinating a sibling, or from any other live agent thread.
+The displayed source thread authors the operation and is the default observer. An explicit `observe ... from <observer>` selects a different observing thread without changing the issuer. The displayed source becomes the lifecycle parent when spawning a new child or explicitly adopting a stored target outside its current root. Same-root existing targets retain their graph parent. This lets the same command work from Main, from a child coordinating a sibling, or from any other live agent thread.
 
 When other agents in the current root are running, a compact row above the composer shows `3 agents running · /agent to view`. It stays visible while Main is idle awaiting subscribed responses, coexists with the background-terminal summary, and disappears at zero. The count excludes the displayed thread, Main, closed/unloaded agents, and other roots. It is derived from the existing live agent cache and lifecycle notifications, not a rollout scan or polling loop. It neither marks Main busy nor changes response subscriptions; queued turns are not counted until running.
 
@@ -97,9 +97,12 @@ The TUI must not approximate this by independently chaining `thread/resume` and 
 /agent queue <target> [w:<w-mode>] <prompt>
 /agent interrupt <target>
 /agent interrupt <target> [w:<w-mode>] <follow-up prompt>
-/agent close <target> [w:<w-mode>] /agent <target> close [w:<w-mode>] /agent resume <target> [task:<path>] [w:<w-mode>] [<prompt>]
-/agent observe <target> <passive|wake|presentation>
-/agent sends <sender> [to <recipient>] <enable|disable> /agent <sender> sends [to <recipient>] <enable|disable>
+/agent close <target> [w:<w-mode>]
+/agent <target> close [w:<w-mode>]
+/agent resume <target> [task:<path>] [w:<w-mode>] [<prompt>]
+/agent observe <target> [from <observer>] <passive|wake|presentation>
+/agent sends <sender> [to <recipient>] <enable|disable>
+/agent <sender> sends [to <recipient>] <enable|disable>
 ```
 
 Selectors accept compact unprefixed forms and explicit namespaces:
@@ -184,7 +187,7 @@ Autocomplete should show:
 - closed descendants known to the current agent tree;
 - stable numeric ref, nickname, role, status, and canonical UUID;
 - reserved action verbs in the first argument, then only existing agents in an action's target argument;
-- `passive`, `wake`, and `presentation` after an `observe` target;
+- `passive`, `wake`, `presentation`, and `from` after an `observe` target; existing agent selectors after `from`, followed by the three observation modes;
 - a visually distinct “new default agent” row;
 - configured roles as visually distinct “new agent” rows.
 - picker-visible model slugs after `model:` and, once an explicit model is present, that model's advertised reasoning levels after `effort:` on a default or configured-role spawn.
@@ -208,7 +211,7 @@ Selector resolution does not itself authorize an operation:
 | resume closed descendant | Resume within the current root. | Not applicable. |
 | explicit resume/adopt | Idempotent when already controlled. | Validate and transfer exclusive ownership. |
 
-Self-resume, self-close, and self-observe remain invalid. Main may receive same-root input and observation, but a child cannot close Main. User-authored commands have direct user authority within the selected root. Knowledge of an unrelated UUID authorizes cross-root mutation only through explicit `/agent resume`; every other mutation remains limited to the selected root.
+Self-resume and self-close remain invalid. Self-observe means that the selected observer is the target, not merely that the issuing thread is the target. Main may receive same-root input and observation, but a child cannot close Main. User-authored commands have direct user authority within the selected root. Knowledge of an unrelated UUID authorizes cross-root mutation only through explicit `/agent resume`; every other mutation remains limited to the selected root.
 
 ## Resume ownership, liveness, and depth
 
@@ -394,7 +397,7 @@ The current user command reuses `c`/`f`/`x` response handling; omitted handling 
 | `q` (deferred) | Queue supplied input as a distinct server-owned FIFO turn instead of steering active work. |
 | `x` | Keep the final response presentation-only; do not add it to source-model context. |
 
-The displayed source thread is always the observer. Switching visual focus after dispatch does not move the observation to another thread.
+For per-dispatch `w` handling, the displayed source thread is the observer. Explicit `observe` defaults to the same thread but can select another observer with `from`. Switching visual focus after dispatch does not move the observation to another thread.
 
 The control pane labels current modes `passive`, `wake`, and `presentation` while command entry uses compact `w` syntax. Presentation also records requested first commentary and TUI-queued admission. Future reverse-message and server-queued flags require their own visible state when implemented.
 
@@ -412,9 +415,14 @@ Per-dispatch `w` preserves this invariant and explains when a stronger existing 
 /agent observe <target> passive
 /agent observe <target> wake
 /agent observe <target> presentation
+/agent observe Main from Peirce passive
 ```
 
 Replacement semantics are separate from per-dispatch `w`. The explicit command is the user action that authorizes weakening model-authored orchestration; the transcript must record the previous and replacement modes. If a final result has already won durable delivery admission, replacement cannot retract that committed item.
+
+The optional `from <observer>` clause selects whose observation of the target is changed. For example, Main can issue `/agent observe Main from Peirce passive` to change Peirce's observation of Main without switching the displayed thread. Without `from`, the issuing thread remains the observer. Both selectors accept the existing UUID, ref, nickname, and task-path forms, including quoted names. The server resolves and authorizes both identities; autocomplete does not establish authority.
+
+The command does not start a turn, send input, or change send permissions or their defaults. Its audit stays in the issuing thread and displays delivery direction as **target → observer**. Successful records retain the resolved observer; failures retain the authored observer selector when resolution did not succeed. Older records without observer fields do not invent a direction.
 
 `observe` applies only to the target's active or pending turn, or to an undelivered completion reservation for that turn. It is not a permanent agent subscription. If the target is idle with no reserved completion, the command reports that there is no observation to replace; use `w` on the next dispatch or resume instead. It replaces final-response handling only and does not add, remove, or replay first-commentary observation.
 
@@ -622,10 +630,9 @@ Version-specific task names, mailboxes, and watcher implementation remain intern
 - `interrupt` stops the active turn but leaves the agent live. An optional follow-up starts the next turn after interruption commits, with `w` bound to that follow-up turn.
 - `close` ends the agent runtime, revokes pending observation, and conditionally replays a completed response according to `w`.
 - `resume` reopens or adopts without sending a prompt; optional response handling binds to the next admitted turn under the existing next-turn policy.
-- `observe` explicitly replaces source-relative response handling when replacement remains possible.
+- `observe` explicitly replaces the selected observer's response handling when replacement remains possible.
 - `sends` enables or disables one directed V1 messaging route, or a live subtree default with `all`. Enabling installs the source identity exactly once; later target turns reuse the same context item.
 - `w:m` grants only the resulting target turn a reverse-message route to the displayed source; `w:q` carries every other selected flag with the future queued turn and queues its model-visible final response for the source's next turn.
-
 Target-first `close`, `resume`, and `sends` are reserved actions and receive action highlighting. Use `/agent <target> -- resume ...` to send literal prompt text beginning with a reserved action. Other verb forms are parsed only immediately after `/agent`; `/agent <target> stop ...` remains ordinary prompt text.
 
 ## Required coverage and remaining qualification

@@ -1953,6 +1953,8 @@ impl AppServerSession {
         source_thread_id: ThreadId,
         target: String,
         authored_selector: String,
+        observer: Option<String>,
+        authored_observer_selector: Option<String>,
         response_handling: codex_app_server_protocol::AgentObservationMode,
     ) -> Result<AgentControlResponse> {
         let request_id = self.next_request_id();
@@ -1964,6 +1966,8 @@ impl AppServerSession {
                     authored_selector: Some(authored_selector),
                     action: AgentControlAction::Observe {
                         target,
+                        observer,
+                        authored_observer_selector,
                         response_handling,
                     },
                 },

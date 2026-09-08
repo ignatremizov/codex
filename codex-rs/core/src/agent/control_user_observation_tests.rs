@@ -256,6 +256,7 @@ async fn promptless_user_spawn_reserves_one_policy_and_can_downgrade_it() {
     let replaced = root
         .observe_agent(
             &spawned.target_thread_id.to_string(),
+            /*observer*/ None,
             UserAgentObservationMode::Presentation,
         )
         .await
@@ -264,6 +265,7 @@ async fn promptless_user_spawn_reserves_one_policy_and_can_downgrade_it() {
         replaced,
         (
             spawned.target_thread_id,
+            root.session.thread_id(),
             UserAgentFinalResponseHandling::Wake,
             UserAgentObservationBinding::NextTurn,
         )

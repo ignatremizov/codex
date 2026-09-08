@@ -316,6 +316,23 @@ Agent-originated input is projected as `agentMessage` with optional `attribution
 
 `spawn` accepts an optional `task` label, and successful spawn/resume outcomes expose the committed `taskPath`. Resume adoption may also return `taskPathMapping`; these labels are nullable assignment metadata and never replace canonical UUID/ref identity or lifecycle edges.
 
+Final-response observation is directional too. The user command `/agent observe <target> [from <observer>] <passive|wake|presentation>` maps to `agent/control` with an optional `observer` selector:
+
+```json
+{
+  "sourceThreadId": "<main-thread-uuid>",
+  "action": {
+    "type": "observe",
+    "target": "Main",
+    "observer": "2",
+    "authoredObserverSelector": "ref:2",
+    "responseHandling": "presentation"
+  }
+}
+```
+
+This changes agent 2's existing observation of Main, not Main's observation of agent 2. Omitting `observer` preserves the issuing thread as observer. Both endpoints resolve within the issuer's controlled graph and must have current live runtimes. Observation replaces only an existing active, pending, or undelivered final-response subscription; it does not create a subscription, grant messaging permission, resume an agent, or start a model turn. `sourceThreadId` remains the authorization and audit issuer even when another observer is selected. The `observed` outcome returns the resolved `observerThreadId` and `targetThreadId`. The issuer's durable `userAgentControl` item records nullable `observerThreadId` and `authoredObserverSelector`, including the authored observer on rejected requests. Clients may provide `action.authoredObserverSelector` to preserve the original `ref:` token or quoted nickname separately from normalized `action.observer`. This raw token is audit-only: routing and authorization use `observer`, never the authored token. When an explicit observer is present but the authored field is omitted, the audit falls back to `observer`. When `observer` is omitted, the authored field is ignored and the audit's authored observer remains null. Historical items without these fields deserialize as null. Clients must not substitute the issuer for an unresolved explicit observer when displaying an error or updating directional state.
+
 The `replyRoute` action enables or disables a V1 target's attributed replies to the source across later turns of that live runtime. Enabling adds route guidance to the target's model context once; disabling rejects new replies even when a model-authored send uses `m`. Already accepted human prompts keep their queued input and captured response policy. Unsupported V2 targets reject `replyRoute` before mutation. Saved context alone does not restore live reply authority after a cold resume or fork. An indeterminate route update is audited as `unknown` and must be reconciled rather than retried.
 
 Reply routes may name a recipient explicitly; omitting it addresses the source thread. A `subtreeMessaging` action can set a live default for a source and its descendants. Explicit reply-route settings override that default, and neither permission is restored by replaying history or by a cold resume.

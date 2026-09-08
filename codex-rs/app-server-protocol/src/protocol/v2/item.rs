@@ -502,6 +502,10 @@ pub enum ThreadItem {
         action: UserAgentControlAction,
         authored_selector: Option<String>,
         target_thread_id: Option<String>,
+        #[serde(default)]
+        observer_thread_id: Option<String>,
+        #[serde(default)]
+        authored_observer_selector: Option<String>,
         reply_recipient_thread_id: Option<String>,
         previous_owner_session_id: Option<String>,
         new_owner_session_id: Option<String>,
@@ -1165,6 +1169,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 action: control.action.into(),
                 authored_selector: control.authored_selector,
                 target_thread_id: control.target_thread_id.map(|id| id.to_string()),
+                observer_thread_id: control.observer_thread_id.map(|id| id.to_string()),
+                authored_observer_selector: control.authored_observer_selector,
                 reply_recipient_thread_id: control
                     .reply_recipient_thread_id
                     .map(|id| id.to_string()),

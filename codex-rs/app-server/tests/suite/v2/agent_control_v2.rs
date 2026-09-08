@@ -56,6 +56,9 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[path = "agent_control_observer.rs"]
+mod observer;
+
 fn agent_control_outcome(response: AgentControlResponse) -> AgentControlOutcome {
     assert_eq!(response.audit_warning, None);
     response.outcome
@@ -859,6 +862,32 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
             && nickname.as_str() == codex_protocol::MAIN_AGENT_NICKNAME
     ));
 
+    let changed_by_main: AgentControlResponse = app
+        .request(|request_id| ClientRequest::AgentControl {
+            request_id,
+            params: AgentControlParams {
+                source_thread_id: main.thread.id.clone(),
+                authored_selector: Some("MAIN".to_string()),
+                action: AgentControlAction::Observe {
+                    target: "MAIN".to_string(),
+                    observer: Some(child_thread_id.clone()),
+                    authored_observer_selector: None,
+                    response_handling: AgentObservationMode::Passive,
+                },
+            },
+        })
+        .await?;
+    assert_eq!(
+        agent_control_outcome(changed_by_main),
+        AgentControlOutcome::Observed {
+            target_thread_id: main.thread.id.clone(),
+            observer_thread_id: child_thread_id.clone(),
+            previous_response_handling: AgentFinalResponseHandling::Wake,
+            response_handling: AgentFinalResponseHandling::Passive,
+            binding: AgentObservationBinding::ActiveTurn,
+        }
+    );
+
     let observed: AgentControlResponse = app
         .request(|request_id| ClientRequest::AgentControl {
             request_id,
@@ -867,6 +896,8 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
                 authored_selector: Some("MAIN".to_string()),
                 action: AgentControlAction::Observe {
                     target: "MAIN".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Presentation,
                 },
             },
@@ -876,7 +907,8 @@ async fn child_can_prompt_and_observe_main_but_cannot_close_it(multi_agent_v2: b
         agent_control_outcome(observed),
         AgentControlOutcome::Observed {
             target_thread_id: main.thread.id.clone(),
-            previous_response_handling: AgentFinalResponseHandling::Wake,
+            observer_thread_id: child_thread_id.clone(),
+            previous_response_handling: AgentFinalResponseHandling::Passive,
             response_handling: AgentFinalResponseHandling::Presentation,
             binding: AgentObservationBinding::ActiveTurn,
         }
@@ -1015,6 +1047,8 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
                 authored_selector: Some(target_thread_id.clone()),
                 action: AgentControlAction::Observe {
                     target: target_thread_id.clone(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Passive,
                 },
             },
@@ -1024,6 +1058,7 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
         agent_control_outcome(observed),
         AgentControlOutcome::Observed {
             target_thread_id: target_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Wake,
             response_handling: AgentFinalResponseHandling::Passive,
             binding: AgentObservationBinding::ActiveTurn,
@@ -3511,6 +3546,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("2".to_string()),
                 action: AgentControlAction::Observe {
                     target: "2".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Presentation,
                 },
             },
@@ -3520,6 +3557,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
         agent_control_outcome(observed),
         AgentControlOutcome::Observed {
             target_thread_id: target_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Wake,
             response_handling: AgentFinalResponseHandling::Presentation,
             binding: AgentObservationBinding::ActiveTurn,
@@ -3533,6 +3571,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("2".to_string()),
                 action: AgentControlAction::Observe {
                     target: "2".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Passive,
                 },
             },
@@ -3542,6 +3582,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
         agent_control_outcome(observed_again),
         AgentControlOutcome::Observed {
             target_thread_id: target_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Presentation,
             response_handling: AgentFinalResponseHandling::Passive,
             binding: AgentObservationBinding::ActiveTurn,
@@ -3610,6 +3651,8 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                 authored_selector: Some("3".to_string()),
                 action: AgentControlAction::Observe {
                     target: "3".to_string(),
+                    observer: None,
+                    authored_observer_selector: None,
                     response_handling: AgentObservationMode::Passive,
                 },
             },
@@ -3619,6 +3662,7 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
         agent_control_outcome(observed_first_prompt),
         AgentControlOutcome::Observed {
             target_thread_id: idle_thread_id.clone(),
+            observer_thread_id: root.thread.id.clone(),
             previous_response_handling: AgentFinalResponseHandling::Wake,
             response_handling: AgentFinalResponseHandling::Passive,
             binding: AgentObservationBinding::ActiveTurn,
