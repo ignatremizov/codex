@@ -152,8 +152,16 @@ pub(super) fn user_agent_control_item(
         }
         AgentControlAction::Observe {
             target,
+            observer,
+            authored_observer_selector,
             response_handling,
         } => {
+            item.authored_observer_selector = observer.as_ref().map(|observer| {
+                authored_observer_selector
+                    .as_ref()
+                    .unwrap_or(observer)
+                    .clone()
+            });
             item.authored_selector = Some(authored_selector.unwrap_or(target).to_string());
             item.observe_commentary = Some(false);
             item.final_response = Some(match response_handling {
@@ -193,7 +201,7 @@ pub(super) fn apply_agent_control_response_handling(
     };
     item.observe_commentary = Some(response_handling.commentary);
     item.final_response = Some(final_response);
-    item.target_messages = Some(response_handling.target_messages);
+    item.target_messages = Some(false);
     item.queue_input = Some(response_handling.queue_input || queued);
 }
 
@@ -243,27 +251,8 @@ pub(super) fn user_agent_response_handling(
     UserAgentResponseHandling::from_parts(
         response_handling.commentary,
         final_response,
-        response_handling.target_messages,
         response_handling.queue_input,
     )
-}
-
-pub(super) fn user_agent_reply_route_mode(
-    mode: AgentReplyRouteMode,
-) -> codex_core::UserAgentReplyRouteMode {
-    match mode {
-        AgentReplyRouteMode::Enabled => codex_core::UserAgentReplyRouteMode::Enabled,
-        AgentReplyRouteMode::Disabled => codex_core::UserAgentReplyRouteMode::Disabled,
-    }
-}
-
-pub(super) fn agent_reply_route_mode(
-    mode: codex_core::UserAgentReplyRouteMode,
-) -> AgentReplyRouteMode {
-    match mode {
-        codex_core::UserAgentReplyRouteMode::Enabled => AgentReplyRouteMode::Enabled,
-        codex_core::UserAgentReplyRouteMode::Disabled => AgentReplyRouteMode::Disabled,
-    }
 }
 
 pub(in crate::request_processors::thread_processor) fn agent_response_handling(
@@ -278,7 +267,7 @@ pub(in crate::request_processors::thread_processor) fn agent_response_handling(
     AgentResponseHandling::new(
         response_handling.commentary(),
         final_response,
-        response_handling.target_messages(),
+        /*target_messages*/ false,
         response_handling.queue_input(),
     )
 }

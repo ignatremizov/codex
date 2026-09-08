@@ -22,13 +22,12 @@ const AGENT_TARGET_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
     ColumnWidthMode::AutoAllRows,
     /*name_column_width*/ None,
 );
-pub(crate) const AGENT_TARGET_ACTION_CHOICES: [(&str, &str); 6] = [
+pub(crate) const AGENT_TARGET_ACTION_CHOICES: [(&str, &str); 5] = [
     ("queue", "Queue a follow-up for an agent"),
     ("interrupt", "Interrupt an agent"),
     ("close", "Close an agent"),
     ("resume", "Resume or adopt an agent"),
     ("observe", "Change response observation"),
-    ("sends", "Control directed or subtree messaging"),
 ];
 pub(crate) const AGENT_OBSERVATION_MODE_CHOICES: [(&str, &str); 3] = [
     ("passive", "Deliver the final response without waking"),
@@ -38,11 +37,6 @@ pub(crate) const AGENT_OBSERVATION_MODE_CHOICES: [(&str, &str); 3] = [
         "Keep the final response out of model context",
     ),
 ];
-pub(crate) const AGENT_REPLY_ROUTE_MODE_CHOICES: [(&str, &str); 2] = [
-    ("enable", "Allow messaging until disabled"),
-    ("disable", "Block messaging until enabled"),
-];
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentPromptTarget {
     pub(crate) thread_id: Option<ThreadId>,
@@ -54,9 +48,8 @@ pub(crate) struct AgentPromptTarget {
 pub(crate) enum AgentTargetCompletionScope {
     Any,
     ExistingTarget,
+    ObservationObserverOrMode,
     ObservationMode,
-    ReplyRouteRecipientOrMode,
-    ReplyRouteMode,
     Model,
     ReasoningEffort,
 }
@@ -163,9 +156,8 @@ impl AgentTargetPopup {
                     || target.selector == "all")
                     && if matches!(
                         self.scope,
-                        AgentTargetCompletionScope::ObservationMode
-                            | AgentTargetCompletionScope::ReplyRouteRecipientOrMode
-                            | AgentTargetCompletionScope::ReplyRouteMode
+                        AgentTargetCompletionScope::ObservationObserverOrMode
+                            | AgentTargetCompletionScope::ObservationMode
                     ) {
                         query.is_empty()
                             || target.selector.to_ascii_lowercase().starts_with(&query)
@@ -224,11 +216,10 @@ impl WidgetRef for AgentTargetPopup {
                     "no matching agents, actions, or configured roles"
                 }
                 AgentTargetCompletionScope::ExistingTarget => "no matching agents",
-                AgentTargetCompletionScope::ObservationMode => {
+                AgentTargetCompletionScope::ObservationObserverOrMode
+                | AgentTargetCompletionScope::ObservationMode => {
                     "no matching response observation modes"
                 }
-                AgentTargetCompletionScope::ReplyRouteRecipientOrMode
-                | AgentTargetCompletionScope::ReplyRouteMode => "no matching reply-route modes",
                 AgentTargetCompletionScope::Model => "no matching models",
                 AgentTargetCompletionScope::ReasoningEffort => "no matching reasoning efforts",
             },
@@ -289,27 +280,21 @@ pub(crate) fn agent_target_completion(
             });
         }
         (action, second_end)
-    } else if &first_line[second_start..second_end] == "sends" && cursor > second_end {
-        ("sends", second_end)
     } else {
         return None;
     };
 
     let mut scope = match action {
-        "observe" => AgentTargetCompletionScope::ObservationMode,
-        "sends" => AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
+        "observe" => AgentTargetCompletionScope::ObservationObserverOrMode,
         _ => return None,
     };
-    if action == "sends" && (first == "all" || &first_line[second_start..second_end] == "all") {
-        scope = AgentTargetCompletionScope::ReplyRouteMode;
-    }
     let target_tail = &first_line[target_end..];
     if !target_tail.starts_with(char::is_whitespace) {
         return None;
     }
     let mut mode_start = target_end + (target_tail.len() - target_tail.trim_start().len());
-    if action == "sends"
-        && &first_line[mode_start..token_end(first_line, mode_start)] == "to"
+    if action == "observe"
+        && &first_line[mode_start..token_end(first_line, mode_start)] == "from"
         && cursor > token_end(first_line, mode_start)
     {
         let to_end = token_end(first_line, mode_start);
@@ -326,7 +311,7 @@ pub(crate) fn agent_target_completion(
         }
         mode_start = recipient_end + first_line[recipient_end..].len()
             - first_line[recipient_end..].trim_start().len();
-        scope = AgentTargetCompletionScope::ReplyRouteMode;
+        scope = AgentTargetCompletionScope::ObservationMode;
     }
     if cursor < mode_start {
         return None;
