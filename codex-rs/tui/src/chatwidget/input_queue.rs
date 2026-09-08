@@ -23,6 +23,9 @@ pub(super) struct PendingInputPreview {
 pub(super) struct InputQueueState {
     /// The visible draft confirmed during startup, awaiting the protected-input handoff.
     pub(super) startup_submission: Option<crate::bottom_pane::ComposerDraftSnapshot>,
+    /// A failed mailbox acceptance can be retried without accepting the payload twice.
+    /// This is not queued work and is never drained by the turn scheduler.
+    pub(super) mailbox_retry: Option<super::mailbox::MailboxSubmission>,
     /// User inputs queued while a turn is in progress.
     pub(super) queued_user_messages: VecDeque<QueuedUserMessage>,
     /// History records for queued user messages. Slash commands such as `/goal`
@@ -59,6 +62,7 @@ impl InputQueueState {
 
     pub(super) fn clear(&mut self) {
         self.startup_submission = None;
+        self.mailbox_retry = None;
         self.recovered_queue = false;
         self.queued_user_messages.clear();
         self.queued_user_message_history_records.clear();

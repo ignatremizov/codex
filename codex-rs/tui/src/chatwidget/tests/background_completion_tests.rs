@@ -103,7 +103,7 @@ async fn canonical_completion_live_resume_and_cold_pages_share_preview_and_raw_s
         rendered.push(lines_to_single_string(&cold[0].display_lines(/*width*/ 80)));
     }
     assert_snapshot!(rendered.join("\n"), @r"
-    • /root/reviewer completed (● visible):
+    • /root/reviewer completed: (● visible)
       └ first
         … +2 rows hidden
 
@@ -158,11 +158,11 @@ async fn background_completion_shows_model_visibility_without_changing_parent_an
     assert_snapshot!(
         cells.iter().map(|lines| lines_to_single_string(lines)).collect::<Vec<_>>().join("\n"),
         @r"
-    • Main [default] completed (● visible):
+    • Main [default] completed: (● visible):
       └ Finished.
 
 
-    • Main [default] completed (○ not visible):
+    • Main [default] completed: (○ not visible):
       └ Finished.
     "
     );
@@ -190,7 +190,7 @@ async fn root_background_completion_uses_main_label() {
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
     assert_snapshot!(lines_to_single_string(&cells[0]), @r"
-    • Main [default] completed (● visible):
+    • Main [default] completed: (● visible):
       └ Parent task finished.
     ");
 }
@@ -288,6 +288,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: Vec::new(),
@@ -307,7 +308,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
-    assert!(rendered.contains("/root/reviewer completed (● visible)"));
+    assert!(rendered.contains("/root/reviewer completed: (● visible)"));
     assert!(rendered.contains("Finished waiting"));
     let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(normalized.matches(response).count(), 2);
@@ -338,7 +339,7 @@ async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Herschel [default] completed (● visible):
+    • Herschel [default] completed: (● visible):
       └ Cinnamon
     "
     );
@@ -365,10 +366,12 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                task_path: None,
                 agent_nickname: Some("Herschel".to_string()),
                 agent_role: Some("default".to_string()),
             }],
@@ -395,10 +398,12 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                task_path: None,
                 agent_nickname: None,
                 agent_role: None,
             }],
@@ -438,7 +443,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
       └ Give me one random ingredient.
 
 
-    • Herschel [default] (gpt-5.6-sol high) completed (● visible):
+    • Herschel [default] (gpt-5.6-sol high) completed: (● visible):
       └ Cinnamon
     "
     );

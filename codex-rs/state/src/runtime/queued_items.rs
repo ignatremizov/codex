@@ -5,6 +5,20 @@ use sqlx::Connection;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+mod inventory;
+mod mailbox;
+
+pub use inventory::MailboxInventory;
+pub use inventory::MailboxInventoryNotification;
+pub use inventory::MailboxSenderInventory;
+
+pub use mailbox::MailboxClaim;
+pub use mailbox::MailboxClaimedMessage;
+pub use mailbox::MailboxInvocation;
+pub use mailbox::MailboxMessage;
+pub use mailbox::MailboxMessageState;
+pub use mailbox::MailboxSelection;
+
 /// SQLite-backed persistence for durable, thread-scoped user messages.
 #[derive(Clone)]
 pub struct SqliteQueueStore {

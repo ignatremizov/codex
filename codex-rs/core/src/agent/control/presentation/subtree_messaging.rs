@@ -23,7 +23,7 @@ use sender_messaging_context::has_messaging_authority;
 impl LocalAgentControl {
     /// Orders effective permission changes with exact input admission. Acquire after
     /// capacity/mailbox waits and before any response-observation transaction.
-    pub(in crate::agent::control) async fn acquire_messaging_permission_transaction(
+    pub(crate) async fn acquire_messaging_permission_transaction(
         &self,
     ) -> tokio::sync::MutexGuard<'_, ()> {
         self.wait_agent_presentations.messaging_refresh.lock().await
@@ -53,6 +53,7 @@ impl LocalAgentControl {
             let _admission = thread.session.submission_admission.try_accept_completion_delivery()
                 .ok_or_else(|| CodexErr::InvalidRequest("policy source is closing".into()))?;
             let _permission = control.acquire_messaging_permission_transaction().await;
+            control.restore_agent_send_pair_locked(root, root).await?;
             let previous = control.wait_agent_presentations.state().subtree_messaging.get(&root).copied();
             let generation = manager.agent_lifecycle_generation(root.thread_id);
             let identity = control.model_visible_agent_identity_for_version(MultiAgentVersion::V1, root.thread_id).await?;
@@ -62,15 +63,16 @@ impl LocalAgentControl {
                 key: format!("subtree.{}", root.thread_id),
                 text: format!("User {action} send_input within {label}'s subtree, including sibling communication and future agents."),
             };
-            let commit_control = control.clone();
-            thread.session.publish_messaging_context(ContextualUserFragment::into(notice), move || {
-                let mut state = commit_control.wait_agent_presentations.state();
-                if state.subtree_messaging.get(&root).copied() != previous {
-                    return Err(CodexErr::Fatal("subtree permission changed during canonical publication".into()));
-                }
-                state.subtree_messaging.insert(root, (generation, mode));
-                Ok(())
-            }).await?;
+            control.persist_agent_send_setting_locked(
+                codex_agent_graph_store::AgentSendScope::Subtree { supervisor_thread_id: root.thread_id },
+                mode,
+            ).await?;
+            // SQL ACK is the authority boundary; history is a separate audit boundary.
+            control.wait_agent_presentations.state().subtree_messaging.insert(root, (generation, mode));
+            thread.session.publish_messaging_context(ContextualUserFragment::into(notice), || Ok(()))
+                .await.map_err(|error| CodexErr::Fatal(format!(
+                    "messaging setting committed but canonical notice failed: {error}; reload before continuing"
+                )))?;
             control.refresh_messaging_context_locked(root.thread_id).await.map_err(|error| {
                 CodexErr::Fatal(format!("subtree permission committed but context refresh failed: {error}; do not retry"))
             })?;
@@ -114,6 +116,12 @@ impl LocalAgentControl {
         &self,
         current: ThreadId,
     ) -> CodexResult<()> {
+        if let Ok(manager) = self.upgrade()
+            && let Ok(thread) = manager.get_thread(current).await
+        {
+            self.restore_agent_send_settings_locked(thread.session.presentation_id())
+                .await?;
+        }
         {
             let state = self.wait_agent_presentations.state();
             if state.inherited_message_routes.is_empty()

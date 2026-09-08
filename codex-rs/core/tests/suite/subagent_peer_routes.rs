@@ -8,6 +8,9 @@ mod downward_permissions;
 #[path = "subagent_delivery_receipts.rs"]
 mod delivery_receipts;
 
+#[path = "subagent_persistent_send_settings.rs"]
+mod persistent_send_settings;
+
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -405,22 +408,18 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
     }
     let root_history = test
         .thread_store
-        .load_rollback_history(LoadThreadHistoryParams {
+        .load_history(LoadThreadHistoryParams {
             thread_id: test.session_configured.thread_id,
             include_archived: false,
         })
         .await?;
     let recipient_history = test
         .thread_store
-        .load_rollback_history(LoadThreadHistoryParams {
-            thread_id: recipient_id,
-            include_archived: false,
-        })
+        .load_mailbox_canonical_history(recipient_id)
         .await?;
     let root_json = serde_json::to_string(&root_history.items)?;
     assert!(!root_json.contains("peer-only contract revision"));
     let persisted_audits = recipient_history
-        .items
         .iter()
         .filter_map(|item| {
             let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = item else {

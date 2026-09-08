@@ -522,6 +522,7 @@ impl ChatWidget {
                 .questions
                 .as_deref_mut()
                 .map(crate::bottom_pane::AsyncQuestions::capture),
+            mailbox_retry: self.input_queue.mailbox_retry.clone(),
             composer: composer.has_content().then_some(composer),
             safety_buffering_prompt: self.safety_buffering_prompt.clone(),
             safety_buffering_source: self.safety_buffering_source,
@@ -561,6 +562,7 @@ impl ChatWidget {
             });
         if let Some(input_state) = input_state {
             self.bottom_pane.restore_questions(input_state.questions);
+            self.input_queue.mailbox_retry = input_state.mailbox_retry;
             self.input_queue.recovered_queue = input_state.recovered_queue;
             let restored_active_turn_id = if preserve_in_flight_turn {
                 input_state.active_turn_id.clone()

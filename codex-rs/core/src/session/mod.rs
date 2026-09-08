@@ -109,7 +109,6 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::EnteredReviewModeItem;
-use codex_protocol::items::ModelInvocationContext;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ActivePermissionProfile;
@@ -242,8 +241,12 @@ mod extension_interruption;
 pub(crate) mod extension_metrics;
 mod guardian_checkpoint;
 mod handlers;
-pub(crate) use handlers::inter_agent_communication;
 mod inject;
+pub(crate) mod mailbox;
+mod mailbox_activity;
+mod mailbox_inventory;
+mod mailbox_publication;
+pub use mailbox_inventory::MailboxInventoryAdmission;
 mod reasoning_effort;
 mod world_state_publication;
 pub(crate) use reasoning_effort::RequestEffortUsage;
@@ -294,7 +297,6 @@ mod thread_settings;
 pub(crate) use agent_status_observation::AgentStatusObservationSuppressionGuard;
 pub(crate) use agent_status_observation::AgentStatusObservations;
 pub(crate) use agent_status_observation::AgentStatusRetirement;
-pub(crate) use agent_status_observation::AgentStatusSubscription;
 pub(crate) mod time_reminder;
 mod token_budget;
 mod transcript_publication;
@@ -377,7 +379,6 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use crate::windows_sandbox::WindowsSandboxLevelExt;
 use crate::windows_sandbox::local_binding_policy_for_sandbox;
 use crate::windows_sandbox::managed_proxy_routing_for_windows_sandbox;
-use codex_core_plugins::PluginCommandAttribution;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
@@ -1087,6 +1088,7 @@ impl SessionIo {
     ///
     /// Once queued, dropping the waiter does not retract the call. If the
     /// session loop exits before replying, the caller gets `InternalAgentDied`.
+    #[cfg(test)]
     pub(crate) async fn submit_turn_input_with_admission(
         &self,
         session: &Session,
@@ -2583,19 +2585,6 @@ impl Session {
     pub(crate) async fn send_event_raw(&self, event: Event) {
         self.send_event_raw_with_persistence(event, /*persist*/ true)
             .await;
-    }
-
-    /// Delivers an event without creating a local rollout for a thread that has not materialized.
-    pub(crate) async fn send_event_raw_without_materializing_rollout(&self, event: Event) {
-        let persist = match self.current_rollout_path().await {
-            Ok(Some(path)) => codex_rollout::existing_rollout_path(&path).await.is_some(),
-            Ok(None) => true,
-            Err(err) => {
-                warn!("failed to check whether thread persistence is materialized: {err}");
-                true
-            }
-        };
-        self.send_event_raw_with_persistence(event, persist).await;
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {

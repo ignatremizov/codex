@@ -257,6 +257,7 @@ impl LiveRevertMessagingSnapshot {
         }
         // Lifecycle ownership protects the unpublished replacement. Rekey before waiting for
         // refresh so an older runtime capture observes the changed marker and retries.
+        control.restore_agent_send_settings(replacement).await?;
         control
             .refresh_subtree_messaging(replacement.thread_id)
             .await?;

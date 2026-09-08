@@ -66,6 +66,19 @@ enum TurnStartKind {
     Recovery,
 }
 
+enum IdleContext {
+    Ordinary,
+    Mailbox(codex_thread_store::MailboxInventoryNotification),
+}
+
+/// Identity and eligibility of an idle start, separate from its admission lease.
+struct IdleStart {
+    submission_id: String,
+    kind: TurnStartKind,
+    expected_previous_turn_id: Option<String>,
+    context: IdleContext,
+}
+
 impl TurnStartKind {
     fn permits_mode(self, mode: ModeKind) -> bool {
         match self {
@@ -412,9 +425,12 @@ async fn start_if_idle(
     start_if_idle_with_lease(
         session,
         request,
-        submission_id,
-        kind,
-        expected_previous_turn_id,
+        IdleStart {
+            submission_id,
+            kind,
+            expected_previous_turn_id,
+            context: IdleContext::Ordinary,
+        },
         (),
         |_| {},
     )
@@ -443,13 +459,46 @@ impl Session {
         start_if_idle_with_lease(
             self,
             request,
-            self.next_internal_sub_id(),
-            kind,
-            /*expected_previous_turn_id*/ None,
+            IdleStart {
+                submission_id: self.next_internal_sub_id(),
+                kind,
+                expected_previous_turn_id: None,
+                context: IdleContext::Ordinary,
+            },
             lease,
             on_admitted,
         )
         .await
+    }
+
+    pub(super) async fn start_mailbox_inventory_with_lease(
+        self: &Arc<Self>,
+        notification: codex_thread_store::MailboxInventoryNotification,
+        lease: impl Send,
+    ) -> CodexResult<super::mailbox_inventory::MailboxInventoryAdmission> {
+        use super::mailbox_inventory::MailboxInventoryAdmission;
+        let result = start_if_idle_with_lease(
+            self,
+            TurnInputRequest::user_input(Vec::new()),
+            IdleStart {
+                submission_id: notification.id.clone(),
+                kind: TurnStartKind::Automatic,
+                expected_previous_turn_id: None,
+                context: IdleContext::Mailbox(notification),
+            },
+            lease,
+            |_| {},
+        )
+        .await?;
+        Ok(match result {
+            TurnInputSubmission::Started { .. } => MailboxInventoryAdmission::Started,
+            TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::Superseded,
+            } => MailboxInventoryAdmission::Retry,
+            TurnInputSubmission::NotSubmitted { .. } | TurnInputSubmission::Steered { .. } => {
+                MailboxInventoryAdmission::Deferred
+            }
+        })
     }
 }
 
@@ -460,12 +509,16 @@ impl Session {
 async fn start_if_idle_with_lease(
     session: &Arc<Session>,
     request: TurnInputRequest,
-    submission_id: String,
-    kind: TurnStartKind,
-    expected_previous_turn_id: Option<String>,
+    start: IdleStart,
     lease: impl Send,
     on_admitted: impl FnOnce(&str) + Send,
 ) -> CodexResult<TurnInputSubmission> {
+    let IdleStart {
+        submission_id,
+        kind,
+        expected_previous_turn_id,
+        context: idle_context,
+    } = start;
     let TurnInputRequest {
         input,
         thread_settings,
@@ -610,6 +663,16 @@ async fn start_if_idle_with_lease(
         .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;
 
+    // Inventory shares this reservation and all ordinary/goal priority checks. Its canonical
+    // publication stays in the mailbox owner, before any automatic sampling can start.
+    if let IdleContext::Mailbox(notification) = idle_context
+        && let Some(reason) = session
+            .record_reserved_mailbox_inventory(&turn_context, &turn_state, notification)
+            .await?
+    {
+        return Ok(TurnInputSubmission::NotSubmitted { reason });
+    }
+
     let mut task_input = merge_additional_context_input(session, additional_context).await;
     match kind {
         TurnStartKind::User => {
@@ -742,7 +805,10 @@ impl Session {
         Ok(())
     }
 
-    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
+    pub(super) async fn clear_reserved_idle_turn(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) {
         let mut active_turn_guard = self.active_turn.lock().await;
         if let Some(active_turn) = active_turn_guard.as_ref()
             && active_turn.task.is_none()

@@ -1,3 +1,6 @@
+// Match the library's proof budget for InstalledQueue's retained service graph.
+#![recursion_limit = "256"]
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -75,6 +78,9 @@ impl TurnStartAdmission for TestAdmission {
         }
     }
 }
+
+#[path = "queue_service/mailbox_inventory_tests.rs"]
+mod mailbox_inventory_tests;
 
 #[derive(Default)]
 struct RecordingEventSink {

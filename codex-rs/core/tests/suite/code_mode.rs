@@ -858,9 +858,12 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
             "exec".to_string(),
             "wait".to_string(),
             "request_user_input".to_string(),
+            "multi_agent_v1".to_string(),
             "web_search".to_string()
         ]
     );
+    // Mail consumption must stay on the direct ordered recorder even in code-mode-only mode.
+    assert!(namespace_child_tool(&first_body, "multi_agent_v1", "check_mail").is_some());
 
     Ok(())
 }
@@ -2856,6 +2859,10 @@ text(JSON.stringify({
             "missing {expected} from Code Mode tools: {first_tool_names:?}"
         );
     }
+    if !code_mode_only {
+        assert!(first_tool_names.iter().any(|name| name == "multi_agent_v1"));
+        assert!(namespace_child_tool(&first_body, "multi_agent_v1", "check_mail").is_some());
+    }
 
     let exec_description = first_body
         .get("tools")
@@ -2884,6 +2891,7 @@ text(JSON.stringify({
         exec_description.contains("Shared MCP Types:"),
         code_mode_only
     );
+    assert!(!exec_description.contains("### `multi_agent_v1__check_mail`"));
     assert!(!exec_description.contains("calendar_timezone_option_99"));
     assert!(!exec_description.contains("You have access to tools from the following sources:"));
 

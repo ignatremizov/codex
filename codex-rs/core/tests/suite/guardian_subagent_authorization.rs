@@ -471,6 +471,38 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization(
             Some(POST_HOOK_BLOCK_REASON),
         );
     }
+    if messaging_case {
+        test.codex.flush_rollout().await?;
+        let saved = test
+            .thread_store
+            .load_latest_model_context(LoadThreadHistoryParams {
+                thread_id: root_thread_id,
+                include_archived: false,
+            })
+            .await?;
+        let delivered_questions = saved
+            .items
+            .into_iter()
+            .filter_map(|item| {
+                let RolloutItem::ResponseItem(envelope) = item else {
+                    return None;
+                };
+                matches!(&envelope.item,
+                    ResponseItem::FunctionCallOutput { call_id, .. }
+                        if call_id.as_deref() == Some(MESSAGE_CALL_ID))
+                .then(|| {
+                    envelope
+                        .metadata
+                        .and_then(|metadata| metadata.delivered_assistant_message)
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delivered_questions,
+            vec![question_delivered.then(|| root_assistant_reply.clone())],
+            "confirmed rewritten text survives result rejection or later cancellation; unconfirmed sends have no delivery evidence",
+        );
+    }
     let worker_thread_id = created_threads.recv().await?;
     let worker_thread = test.thread_manager.get_thread(worker_thread_id).await?;
     wait_for_event(worker_thread.as_ref(), |event| {

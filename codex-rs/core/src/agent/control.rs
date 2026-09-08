@@ -75,6 +75,9 @@ mod close_response;
 mod completion;
 mod completion_watcher;
 mod input;
+mod mailbox_input;
+mod mailbox_inventory;
+pub(crate) use aliases::V1WaitStatusAuthority;
 mod message_audit;
 #[cfg(test)]
 pub(crate) mod messaging_test_hooks;

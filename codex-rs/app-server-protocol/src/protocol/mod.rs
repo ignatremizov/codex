@@ -4,9 +4,18 @@
 pub mod common;
 pub mod event_mapping;
 pub mod item_builders;
+#[cfg(test)]
+#[path = "mailbox_presentation_tests.rs"]
+mod mailbox_presentation_tests;
 mod mappers;
 mod serde_helpers;
+#[cfg(test)]
+#[path = "task_path_presentation_tests.rs"]
+mod task_path_presentation_tests;
 pub mod thread_history;
+#[cfg(test)]
+#[path = "thread_history_detached_audit_tests.rs"]
+mod thread_history_detached_audit_tests;
 pub mod thread_history_projection;
 mod turn_items_view;
 pub mod v1;
