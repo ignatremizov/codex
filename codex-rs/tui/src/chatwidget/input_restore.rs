@@ -584,6 +584,7 @@ impl ChatWidget {
             pending_thread_settings: None,
             initial_user_message: self.initial_user_message.clone(),
             startup_submission: self.input_queue.startup_submission.clone(),
+            mailbox_retry: self.input_queue.mailbox_retry.clone(),
             composer: composer.has_content().then_some(composer),
             safety_buffering_prompt: self.safety_buffering_prompt.clone(),
             safety_buffering_source: self.safety_buffering_source,
@@ -634,6 +635,7 @@ impl ChatWidget {
                     ("esc".into(), "cancel".into()),
                 ]));
             }
+            self.input_queue.mailbox_retry = input_state.mailbox_retry;
             self.input_queue.recovered_queue = input_state.recovered_queue;
             let restored_active_turn_id = if preserve_in_flight_turn {
                 input_state.active_turn_id.clone()

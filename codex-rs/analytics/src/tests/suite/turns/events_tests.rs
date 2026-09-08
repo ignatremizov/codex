@@ -516,6 +516,7 @@ async fn turn_event_counts_completed_tool_items() {
         },
         ThreadItem::CollabAgentToolCall {
             id: "collab-1".to_string(),
+            mailbox_input: None,
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,

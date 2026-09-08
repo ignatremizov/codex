@@ -112,6 +112,7 @@ pub(crate) struct Session {
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
     pub(crate) active_turn_transition: Notify,
+    pub(super) mailbox_activity: watch::Sender<()>,
     pub(crate) input_queue: InputQueue,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
@@ -2071,6 +2072,7 @@ impl Session {
                 active_turn: Mutex::new(None),
                 async_hook_results,
                 active_turn_transition: Notify::new(),
+                mailbox_activity: watch::channel(()).0,
                 input_queue: InputQueue::with_controller(
                     thread_id,
                     Arc::clone(&services.agent_control),
