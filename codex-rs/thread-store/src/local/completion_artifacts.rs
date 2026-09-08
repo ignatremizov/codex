@@ -12,6 +12,51 @@ use crate::StoredSubAgentCompletionPresentation;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
+/// Mailbox delivery is historical receiver-owned evidence, not selected model context.
+///
+/// Do not expand fork lineage or apply rollback masks here: neither can undo a delivery.
+/// Missing or malformed canonical records cannot prove absence and must not authorize resend.
+/// Callers must materialize a new receiver's canonical history before its first recovery.
+pub(super) async fn load_mailbox_canonical_items(
+    store: &LocalThreadStore,
+    thread_id: codex_protocol::ThreadId,
+    include_archived: bool,
+) -> ThreadStoreResult<Vec<RolloutItem>> {
+    let resolved = if include_archived {
+        thread_rollout_resolver::resolve_current_including_archived(store, thread_id).await?
+    } else {
+        thread_rollout_resolver::resolve_current(store, thread_id).await?
+    };
+    let Some(resolved) = resolved else {
+        return Err(ThreadStoreError::Conflict {
+            message: format!(
+                "mailbox recovery required for receiver {thread_id}: canonical history is \
+                 unavailable; original rollout retained, claim is not permission to resend"
+            ),
+        });
+    };
+    let (items, owner, parse_errors) =
+        codex_rollout::RolloutRecorder::load_rollout_items_for_mailbox_recovery(
+            resolved.path.as_path(),
+        )
+        .await
+        .map_err(|error| ThreadStoreError::Conflict {
+            message: format!(
+                "mailbox recovery required for receiver {thread_id}: canonical read failed: \
+                 {error}; original rollout retained, claim is not permission to resend"
+            ),
+        })?;
+    if owner != Some(thread_id) || parse_errors != 0 {
+        return Err(ThreadStoreError::Conflict {
+            message: format!(
+                "mailbox recovery required for receiver {thread_id}: malformed or foreign \
+                 canonical history; original rollout retained, claim is not permission to resend"
+            ),
+        });
+    }
+    Ok(items)
+}
+
 pub(super) async fn load_context_item(
     store: &LocalThreadStore,
     params: LoadSubAgentCompletionContextItemParams,

@@ -350,6 +350,7 @@ mod tests {
                 SlashCommand::Warnings,
                 SlashCommand::Pwd,
                 SlashCommand::Usage,
+                SlashCommand::Mail,
             ]
         );
     }

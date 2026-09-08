@@ -39,6 +39,7 @@ fn canonical_spawn_metadata_keeps_partial_settings_across_later_label_updates() 
             (
                 model_thread,
                 AgentMetadata {
+                    task_path: AgentTaskPath::Unknown,
                     agent_nickname: Some("Current name".into()),
                     agent_role: Some("worker".into()),
                     spawn_request: Some(SpawnRequestSummary {
@@ -50,6 +51,7 @@ fn canonical_spawn_metadata_keeps_partial_settings_across_later_label_updates() 
             (
                 effort_thread,
                 AgentMetadata {
+                    task_path: AgentTaskPath::Unknown,
                     agent_nickname: Some("Effort worker".into()),
                     agent_role: None,
                     spawn_request: Some(SpawnRequestSummary {
@@ -82,6 +84,7 @@ fn late_agent_metadata_updates_labels_without_losing_preview_or_raw_source() {
     let metadata = HashMap::from([(
         thread_id,
         AgentMetadata {
+            task_path: AgentTaskPath::Unknown,
             agent_nickname: Some("Robie".into()),
             agent_role: Some("explorer".into()),
             spawn_request: None,
@@ -99,7 +102,7 @@ fn late_agent_metadata_updates_labels_without_losing_preview_or_raw_source() {
     assert_snapshot!(
         cells[0].display_lines(/*width*/ 80).iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"),
         @r"
-    • Robie [explorer] sends:
+    • Robie [explorer] commentary:
       └ first
         … +2 rows hidden
     "

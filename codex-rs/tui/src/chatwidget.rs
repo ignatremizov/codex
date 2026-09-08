@@ -294,6 +294,7 @@ mod input_restore;
 mod input_submission;
 mod inter_agent_transcript;
 mod interrupts;
+pub(crate) mod mailbox;
 mod questions;
 mod startup_submission;
 use self::interrupts::InterruptManager;

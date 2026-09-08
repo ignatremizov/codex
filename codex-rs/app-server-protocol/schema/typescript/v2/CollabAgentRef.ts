@@ -8,6 +8,10 @@ export type CollabAgentRef = {
  */
 threadId: string,
 /**
+ * Trusted task assignment path, when available from the agent alias.
+ */
+taskPath: string | null,
+/**
  * Optional nickname assigned to the receiving agent.
  */
 agentNickname: string | null,

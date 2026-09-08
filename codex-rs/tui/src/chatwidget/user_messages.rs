@@ -148,6 +148,7 @@ pub(crate) struct ThreadInputState {
         Option<codex_app_server_protocol::ThreadSettingsUpdatedNotification>,
     pub(super) initial_user_message: Option<UserMessage>,
     pub(super) startup_submission: Option<crate::bottom_pane::ComposerDraftSnapshot>,
+    pub(super) mailbox_retry: Option<super::mailbox::MailboxSubmission>,
     pub(super) composer: Option<ThreadComposerState>,
     pub(super) safety_buffering_prompt: Option<UserMessage>,
     pub(super) safety_buffering_source: UserMessageSource,

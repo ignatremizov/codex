@@ -14,6 +14,7 @@ use codex_features::Feature;
 use codex_history::CompactedItem;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
+use codex_history::RetainedContextEvent;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_prompts::render_review_exit_success;
@@ -22,6 +23,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
@@ -907,9 +909,11 @@ async fn run_guardian_subagent_review(
         sse(question_events),
     )
     .await;
-    if messaging_case && !cancel_call {
-        mount_completion(&server, root_thread_id, MESSAGE_CALL_ID).await;
-    }
+    let messaging_completion = if messaging_case && !cancel_call {
+        Some(mount_completion(&server, root_thread_id, MESSAGE_CALL_ID).await)
+    } else {
+        None
+    };
     // Keep the worker's completion notice from interrupting the root's one-shot
     // question response before the messaging call reaches its cancellation point.
     let (worker_completion, worker_gate) = oneshot::channel();
@@ -993,6 +997,162 @@ async fn run_guardian_subagent_review(
         }));
     } else {
         test.submit_text_turn(INITIAL_PROMPT).await?;
+    }
+    if block_post_hook {
+        let completion = messaging_completion.expect("messaging completion");
+        if code_mode {
+            let observed = completion.requests();
+            if observed.len() != 1 {
+                eprintln!(
+                    "blocked Code Mode completion requests: {:?}",
+                    observed
+                        .iter()
+                        .map(|request| json!({
+                            "turn_id": request.body_json()["client_metadata"]["turn_id"],
+                            "outputs": request.inputs_of_type("custom_tool_call_output"),
+                        }))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            let output: FunctionCallOutputBody = serde_json::from_value(
+                completion
+                    .single_request()
+                    .custom_tool_call_output(MESSAGE_CALL_ID)["output"]
+                    .clone(),
+            )?;
+            assert!(
+                output
+                    .to_text()
+                    .is_some_and(|text| text.contains(POST_HOOK_BLOCK_REASON)),
+                "the Code Mode result must retain the nested hook rejection: {output:?}",
+            );
+        } else {
+            assert_eq!(
+                completion
+                    .function_call_output_text(MESSAGE_CALL_ID)
+                    .as_deref(),
+                Some(POST_HOOK_BLOCK_REASON),
+            );
+        }
+    }
+    if messaging_case {
+        let expected_nested_count = if code_mode && question_delivered {
+            if code_mode_batch { 2 } else { 1 }
+        } else {
+            0
+        };
+        // Nested sends publish independent retained receipts, not another direct-tool output.
+        // Wait for their actual publication boundary; a completed cell alone is not that receipt.
+        let saved = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+            loop {
+                let publication = test.codex.acquire_history_publication_barrier().await?;
+                test.codex.flush_rollout().await?;
+                let saved = test
+                    .thread_store
+                    .load_canonical_artifact_segments(LoadThreadHistoryParams {
+                        thread_id: root_thread_id,
+                        include_archived: false,
+                    })
+                    .await?;
+                let nested_count = saved
+                    .segments
+                    .iter()
+                    .flatten()
+                    .filter(|item| {
+                        matches!(
+                            item,
+                            RolloutItem::RetainedContext(
+                                RetainedContextEvent::DeliveredAssistantMessage { .. }
+                            )
+                        )
+                    })
+                    .count();
+                if nested_count >= expected_nested_count {
+                    break Ok::<_, anyhow::Error>(saved);
+                }
+                drop(publication);
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+        })
+        .await??;
+        let items = saved.segments.iter().flatten().collect::<Vec<_>>();
+        if code_mode {
+            let message_turn = items
+                .iter()
+                .find_map(|item| match item {
+                    RolloutItem::ResponseItem(envelope)
+                        if matches!(&envelope.item,
+                            ResponseItem::CustomToolCall { call_id, .. }
+                                if call_id == MESSAGE_CALL_ID) =>
+                    {
+                        envelope.item.turn_id()
+                    }
+                    _ => None,
+                })
+                .expect("canonical Code Mode question turn");
+            let delivered = items
+                .iter()
+                .filter_map(|item| match item {
+                    RolloutItem::RetainedContext(
+                        RetainedContextEvent::DeliveredAssistantMessage { message, .. },
+                    ) => Some(message),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let mut call_ids = std::collections::HashSet::new();
+            for message in &delivered {
+                let id = message
+                    .message_id
+                    .as_deref()
+                    .expect("confirmed nested call ID");
+                assert!(
+                    !id.is_empty() && call_ids.insert(id),
+                    "distinct nested delivery IDs"
+                );
+                assert_eq!(message.turn_id, message_turn);
+                assert_eq!(message.origin, codex_history::UserInputOrigin::User);
+                assert!(message.complete);
+                assert_eq!(message.phase, None);
+            }
+            let mut expected = Vec::new();
+            if question_delivered {
+                expected.push(root_assistant_reply.as_str());
+                if code_mode_batch {
+                    expected.push(SECOND_CODE_QUESTION);
+                }
+            }
+            assert_eq!(
+                delivered
+                    .iter()
+                    .map(|message| message.text.as_str())
+                    .collect::<Vec<_>>(),
+                expected,
+                "only confirmed rewritten nested sends survive; unexecuted, untrusted, failed, and cancelled-before-confirmation sends have no receipt",
+            );
+        } else {
+            let delivered_questions = items
+                .iter()
+                .filter_map(|item| {
+                    let RolloutItem::ResponseItem(envelope) = item else {
+                        return None;
+                    };
+                    matches!(&envelope.item,
+                    ResponseItem::FunctionCallOutput { call_id, .. }
+                        if call_id.as_deref() == Some(MESSAGE_CALL_ID))
+                    .then(|| {
+                        envelope
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.delivered_assistant_message.clone())
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                delivered_questions,
+                vec![question_delivered.then(|| root_assistant_reply.clone())],
+                "confirmed rewritten text survives result rejection or later cancellation; unconfirmed sends have no delivery evidence",
+            );
+        }
     }
     worker_completion
         .send(())

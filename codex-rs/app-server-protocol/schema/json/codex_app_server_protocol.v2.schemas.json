@@ -5724,6 +5724,14 @@
             "null"
           ]
         },
+        "taskPath": {
+          "default": null,
+          "description": "Trusted task assignment path, when available from the agent alias.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadId": {
           "description": "Thread ID of the receiving agent.",
           "type": "string"
@@ -21883,6 +21891,14 @@
               "description": "Unique identifier for this collab tool call.",
               "type": "string"
             },
+            "mailboxInput": {
+              "default": null,
+              "description": "Whether this V1 send explicitly requested mailbox delivery (`send_input` with `w:z`). This is presentation metadata, not evidence of receiver execution or visibility.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "model": {
               "description": "Model requested for the spawned agent, when applicable.",
               "type": [
@@ -22885,6 +22901,15 @@
       ],
       "title": "ThreadLoadedListResponse",
       "type": "object"
+    },
+    "ThreadMailboxMessageState": {
+      "enum": [
+        "pending",
+        "claimed",
+        "consumed",
+        "rejected"
+      ],
+      "type": "string"
     },
     "ThreadMcpServerActivateOutcome": {
       "enum": [
