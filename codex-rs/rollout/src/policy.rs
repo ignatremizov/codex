@@ -237,26 +237,31 @@ fn persisted_item_completed_event<'a>(
         ThreadHistoryMode::Legacy => {
             // Legacy rollouts keep only items with no lossless raw ResponseItem or legacy
             // equivalent.
-            (matches!(
-                event.item,
-                TurnItem::FunctionCallOutput(_)
-                    | TurnItem::Plan(_)
-                    | TurnItem::Extension(ExtensionItem::Sleep(_))
-                    | TurnItem::CollabAgentToolCall(_)
-                    | TurnItem::UserAgentControl(_)
-            ) || matches!(
-                &event.item,
-                TurnItem::SubAgentActivity(item)
-                    if item.kind == SubAgentActivityKind::Completed
-            ) || matches!(
-                &event.item,
-                TurnItem::CommandExecution(item)
-                    if item.source == codex_protocol::protocol::ExecCommandSource::UserShell
-            ) || matches!(
-                &event.item,
-                TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
-                    || item.is_attributed_agent_input_presentation()
-            ))
+            // The model envelope cannot reconstruct the original mailbox input and attribution.
+            (codex_protocol::is_mailbox_delivery_completion(event)
+                || matches!(
+                    event.item,
+                    TurnItem::FunctionCallOutput(_)
+                        | TurnItem::Plan(_)
+                        | TurnItem::Extension(ExtensionItem::Sleep(_))
+                        | TurnItem::CollabAgentToolCall(_)
+                        | TurnItem::UserAgentControl(_)
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::SubAgentActivity(item)
+                        if item.kind == SubAgentActivityKind::Completed
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::CommandExecution(item)
+                        if item.source == codex_protocol::protocol::ExecCommandSource::UserShell
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::AgentMessage(item) if item.has_sub_agent_completion_identity()
+                        || item.is_attributed_agent_input_presentation()
+                ))
             .then_some(Cow::Borrowed(ev))
         }
         ThreadHistoryMode::Paginated => match &event.item {
@@ -298,3 +303,7 @@ fn persisted_item_completed_event<'a>(
 #[cfg(test)]
 #[path = "policy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mailbox_policy_tests.rs"]
+mod mailbox_tests;

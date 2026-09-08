@@ -106,6 +106,7 @@ pub(crate) use worktree_startup::ManagedTuiWorktree;
 
 mod activation_key_guard;
 mod additional_dirs;
+mod agent_color;
 mod analytics;
 mod app;
 mod app_backtrack;

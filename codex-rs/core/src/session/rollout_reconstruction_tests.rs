@@ -823,6 +823,61 @@ async fn completion_deduplication_preserves_distinct_harness_metadata() {
     assert_eq!(reconstructed.history, checkpoint);
 }
 
+#[derive(Clone, Copy)]
+enum MailboxReplayBase {
+    Rollout,
+    Checkpoint,
+}
+
+#[test_case(MailboxReplayBase::Rollout; "canonical duplicate append")]
+#[test_case(MailboxReplayBase::Checkpoint; "checkpoint and suffix duplicate")]
+#[tokio::test]
+async fn reconstruction_deduplicates_only_reserved_mailbox_deliveries(base: MailboxReplayBase) {
+    let (session, turn_context) = make_session_and_context().await;
+    let mut first = user_message("mailbox payload");
+    first.set_id(codex_protocol::mailbox_delivery_response_item_id(
+        &Uuid::now_v7().to_string(),
+    ));
+    let mut distinct = first.clone();
+    distinct.set_id(codex_protocol::mailbox_delivery_response_item_id(
+        &Uuid::now_v7().to_string(),
+    ));
+    let mut ordinary = user_message("ordinary repeated input");
+    ordinary.set_id(Some(codex_protocol::ResponseItemId::new("msg")));
+    let entries = annotated(vec![
+        first.clone(),
+        first.clone(),
+        distinct.clone(),
+        ordinary.clone(),
+        ordinary.clone(),
+    ]);
+    let rollout = match base {
+        MailboxReplayBase::Rollout => entries.into_iter().map(RolloutItem::ResponseItem).collect(),
+        MailboxReplayBase::Checkpoint => vec![
+            RolloutItem::Compacted(CompactedItem {
+                message: "mailbox checkpoint".to_string(),
+                replacement_history: Some(entries),
+                window_number: Some(1),
+                ..Default::default()
+            }),
+            RolloutItem::ResponseItem(first.clone().into()),
+        ],
+    };
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout)
+        .await;
+    let expected = annotated(vec![first, distinct, ordinary.clone(), ordinary]);
+    match base {
+        MailboxReplayBase::Rollout => {
+            assert_replayed_unclassified_items(&reconstructed.history, expected);
+        }
+        MailboxReplayBase::Checkpoint => assert_eq!(reconstructed.history, expected),
+    }
+    if matches!(base, MailboxReplayBase::Checkpoint) {
+        assert_eq!(reconstructed.compacted_prefix_len, Some(4));
+    }
+}
+
 fn completed_user_turn_rollout(
     turn_context_item: TurnContextItem,
     items: Vec<RolloutItem>,
@@ -1121,7 +1176,6 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
                 turn_attribution: None,
-                root_turn_id: None,
                 turn_id: rolled_back_turn_id.to_string(),
                 trace_id: None,
                 started_at: None,
@@ -1197,7 +1251,6 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
                 turn_attribution: None,
-                root_turn_id: None,
                 turn_id: rolled_back_turn_id.to_string(),
                 trace_id: None,
                 started_at: None,
@@ -1293,7 +1346,6 @@ async fn reconstruction_does_not_roll_back_an_out_of_band_representation_repair(
         RolloutItem::EventMsg(EventMsg::TurnStarted(
             codex_protocol::protocol::TurnStartedEvent {
                 turn_attribution: None,
-                root_turn_id: None,
                 turn_id: rolled_back_turn_id.to_string(),
                 trace_id: None,
                 started_at: None,
