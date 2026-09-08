@@ -1182,9 +1182,7 @@ impl ChatWidget {
                 if has_attached_input
                     && matches!(
                         parsed,
-                        AgentCommand::Close { .. }
-                            | AgentCommand::Observe { .. }
-                            | AgentCommand::ReplyRoute { .. }
+                        AgentCommand::Close { .. } | AgentCommand::Observe { .. }
                     )
                 {
                     self.add_error_message(
@@ -1331,25 +1329,17 @@ impl ChatWidget {
                     });
                     return;
                 }
-                if let AgentCommand::Observe { selector, mode } = &parsed {
-                    self.app_event_tx.send(AppEvent::ObserveAgent {
-                        source_thread_id,
-                        selector: selector.clone(),
-                        response_handling: *mode,
-                    });
-                    return;
-                }
-                if let AgentCommand::ReplyRoute {
+                if let AgentCommand::Observe {
                     selector,
-                    recipient,
+                    observer,
                     mode,
                 } = &parsed
                 {
-                    self.app_event_tx.send(AppEvent::SetAgentReplyRoute {
+                    self.app_event_tx.send(AppEvent::ObserveAgent {
                         source_thread_id,
                         selector: selector.clone(),
-                        recipient: recipient.clone(),
-                        mode: *mode,
+                        observer: observer.clone(),
+                        response_handling: *mode,
                     });
                     return;
                 }

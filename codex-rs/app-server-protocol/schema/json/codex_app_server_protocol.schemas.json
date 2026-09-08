@@ -7511,6 +7511,20 @@
           {
             "description": "Authoritatively replace final-response handling for one target turn.",
             "properties": {
+              "authored_observer_selector": {
+                "description": "Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observer": {
+                "description": "Existing subscription owner. Omitted means the issuing source thread.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "response_handling": {
                 "$ref": "#/definitions/v2/AgentObservationMode"
               },
@@ -7853,6 +7867,9 @@
               "binding": {
                 "$ref": "#/definitions/v2/AgentObservationBinding"
               },
+              "observer_thread_id": {
+                "type": "string"
+              },
               "previous_response_handling": {
                 "$ref": "#/definitions/v2/AgentFinalResponseHandling"
               },
@@ -7872,6 +7889,7 @@
             },
             "required": [
               "binding",
+              "observer_thread_id",
               "previous_response_handling",
               "response_handling",
               "target_thread_id",
@@ -24309,6 +24327,13 @@
               "action": {
                 "$ref": "#/definitions/v2/UserAgentControlAction"
               },
+              "authoredObserverSelector": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "authoredSelector": {
                 "type": [
                   "string",
@@ -24376,6 +24401,13 @@
               "observeCommentary": {
                 "type": [
                   "boolean",
+                  "null"
+                ]
+              },
+              "observerThreadId": {
+                "default": null,
+                "type": [
+                  "string",
                   "null"
                 ]
               },

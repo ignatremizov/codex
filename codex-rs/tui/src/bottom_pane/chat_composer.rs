@@ -324,7 +324,6 @@ use super::agent_command_highlight::AgentCommandHighlightKind;
 use super::agent_command_highlight::agent_command_highlights;
 use super::agent_spawn_option_completion;
 use super::agent_target_popup::AGENT_OBSERVATION_MODE_CHOICES;
-use super::agent_target_popup::AGENT_REPLY_ROUTE_MODE_CHOICES;
 use super::agent_target_popup::AgentPromptTarget;
 use super::agent_target_popup::AgentTargetCompletion;
 use super::agent_target_popup::AgentTargetCompletionScope;
@@ -4021,9 +4020,8 @@ impl ChatComposer {
             || agent_target.as_ref().is_some_and(|completion| {
                 matches!(
                     completion.scope,
-                    AgentTargetCompletionScope::ObservationMode
-                        | AgentTargetCompletionScope::ReplyRouteRecipientOrMode
-                        | AgentTargetCompletionScope::ReplyRouteMode
+                    AgentTargetCompletionScope::ObservationObserverOrMode
+                        | AgentTargetCompletionScope::ObservationMode
                         | AgentTargetCompletionScope::Model
                         | AgentTargetCompletionScope::ReasoningEffort
                 )
@@ -4045,19 +4043,12 @@ impl ChatComposer {
             }
             self.popups.dismissed_agent_target = None;
             let targets = match completion.scope {
-                AgentTargetCompletionScope::ObservationMode => AGENT_OBSERVATION_MODE_CHOICES
-                    .map(|(selector, label)| AgentPromptTarget {
-                        thread_id: None,
-                        selector: selector.to_string(),
-                        label: label.to_string(),
-                    })
-                    .to_vec(),
-                AgentTargetCompletionScope::ReplyRouteRecipientOrMode
-                | AgentTargetCompletionScope::ReplyRouteMode => AGENT_REPLY_ROUTE_MODE_CHOICES
+                AgentTargetCompletionScope::ObservationObserverOrMode
+                | AgentTargetCompletionScope::ObservationMode => AGENT_OBSERVATION_MODE_CHOICES
                     .into_iter()
                     .chain(
-                        (completion.scope == AgentTargetCompletionScope::ReplyRouteRecipientOrMode)
-                            .then_some(("to", "Choose a different recipient")),
+                        (completion.scope == AgentTargetCompletionScope::ObservationObserverOrMode)
+                            .then_some(("from", "Choose the observing agent")),
                     )
                     .map(|(selector, label)| AgentPromptTarget {
                         thread_id: None,
@@ -4075,20 +4066,7 @@ impl ChatComposer {
                     )
                 }
                 AgentTargetCompletionScope::Any | AgentTargetCompletionScope::ExistingTarget => {
-                    let mut targets = self.agent_prompt_targets.clone();
-                    if completion.action == Some("sends")
-                        && first_line[..completion.range.start].trim() == "/agent sends"
-                    {
-                        targets.insert(
-                            0,
-                            AgentPromptTarget {
-                                thread_id: None,
-                                selector: "all".into(),
-                                label: "Supervisor and current/future descendants".into(),
-                            },
-                        );
-                    }
-                    targets
+                    self.agent_prompt_targets.clone()
                 }
             };
             if completion.scope == AgentTargetCompletionScope::ReasoningEffort && targets.is_empty()

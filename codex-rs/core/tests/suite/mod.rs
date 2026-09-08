@@ -232,6 +232,7 @@ mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_dynamic_tools;
 mod subagent_notifications;
+mod subagent_observer_control;
 #[path = "subagent_rollback_mode_tests.rs"]
 mod subagent_rollback_mode;
 mod subagent_service_tier;

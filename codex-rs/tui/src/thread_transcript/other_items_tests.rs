@@ -87,6 +87,7 @@ fn cold_compaction_decode_error_is_visible_with_content_hidden() {
             &cwd,
             show_compact_summary,
             AgentPreviewLineLimits::default(),
+            &HashMap::new(),
         );
         assert_eq!(projected.len(), 2);
         assert_eq!(
@@ -175,6 +176,7 @@ fn completed_patch_restores_rich_diff_and_styles() {
         &cwd,
         /*show_compact_summary*/ true,
         AgentPreviewLineLimits::default(),
+        &HashMap::new(),
     );
 
     assert_eq!(actual.len(), 1);
@@ -207,6 +209,7 @@ fn unfinished_and_rejected_patches_keep_their_outcome() {
             &cwd,
             /*show_compact_summary*/ true,
             AgentPreviewLineLimits::default(),
+            &HashMap::new(),
         )
     })
     .flat_map(|cell| cell.display_lines(/*width*/ 80))
@@ -235,6 +238,7 @@ fn empty_in_progress_patch_keeps_status_without_phantom_target() {
         &cwd,
         /*show_compact_summary*/ true,
         AgentPreviewLineLimits::default(),
+        &HashMap::new(),
     );
 
     assert_eq!(cells.len(), 1);
@@ -314,6 +318,7 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
                 &cwd,
                 /*show_compact_summary*/ true,
                 AgentPreviewLineLimits::default(),
+                &HashMap::new(),
             )
         })
         .flat_map(|cell| cell.display_lines(/*width*/ 80))
