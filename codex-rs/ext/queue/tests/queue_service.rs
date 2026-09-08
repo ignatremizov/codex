@@ -1,3 +1,6 @@
+// Match the library's proof budget for InstalledQueue's retained service graph.
+#![recursion_limit = "256"]
+
 use codex_protocol::models::AudioReference;
 use std::collections::HashMap;
 use std::path::Path;
@@ -77,6 +80,9 @@ impl TurnStartAdmission for TestAdmission {
         }
     }
 }
+
+#[path = "queue_service/mailbox_inventory_tests.rs"]
+mod mailbox_inventory_tests;
 
 #[derive(Default)]
 struct RecordingEventSink {

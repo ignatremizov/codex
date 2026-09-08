@@ -83,6 +83,7 @@ pub use codex_thread::ThreadConfigSnapshot;
 pub use compacted_media_vacuum::vacuum_rollout_compacted_media;
 pub use guardian::ScoreAuthorization as GuardianScoreAuthorization;
 pub use guardian::guardian_policy_model;
+pub use session::MailboxInventoryAdmission;
 pub use session::turn_context::TurnContext;
 pub use thread_startup_metadata::ThreadStartupMetadata;
 mod agent;

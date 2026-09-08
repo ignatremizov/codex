@@ -28,6 +28,42 @@ pub type AgentGraphStoreFuture<'a, T> =
 /// Implementations that only provide graph traversal may retain the default unsupported alias
 /// methods.
 pub trait AgentGraphStore: Send + Sync {
+    /// Whether this backend persists authoritative explicit send settings.
+    /// Unsupported backends must not substitute volatile permission storage.
+    fn supports_agent_send_settings(&self) -> bool {
+        false
+    }
+
+    /// Reads explicit settings in first-requested scope order, omitting missing scopes and
+    /// duplicate requests. Absence does not mean disabled; ancestry and enforcement belong
+    /// to the caller. Implementations read one consistent snapshot.
+    fn read_agent_send_settings(
+        &self,
+        _scopes: Vec<crate::AgentSendScope>,
+    ) -> AgentGraphStoreFuture<'_, Vec<crate::AgentSendSetting>> {
+        Box::pin(async {
+            Err(AgentGraphStoreError::InvalidRequest {
+                message: "persistent agent send settings are unavailable for this graph store"
+                    .into(),
+            })
+        })
+    }
+
+    /// Atomically replaces one explicit setting without changing graph ownership or subscriptions.
+    /// Last committed write wins; the returned per-scope revision increases on every write.
+    fn replace_agent_send_setting(
+        &self,
+        _scope: crate::AgentSendScope,
+        _mode: crate::AgentSendMode,
+    ) -> AgentGraphStoreFuture<'_, crate::AgentSendSetting> {
+        Box::pin(async {
+            Err(AgentGraphStoreError::InvalidRequest {
+                message: "persistent agent send settings are unavailable for this graph store"
+                    .into(),
+            })
+        })
+    }
+
     /// Whether this store implements the durable alias operations below.
     fn supports_agent_aliases(&self) -> bool {
         false

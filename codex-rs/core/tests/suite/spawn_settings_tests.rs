@@ -164,6 +164,7 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
             Some(ROLE_MODEL.to_string()),
             Some(ROLE_REASONING_EFFORT),
             vec![CollabAgentRef {
+                task_path: None,
                 thread_id: child_id,
                 agent_nickname: Some("Captured".to_string()),
                 agent_role: Some("custom".to_string()),

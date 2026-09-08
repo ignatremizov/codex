@@ -23,6 +23,7 @@ impl ThreadHistoryBuilder {
                 wake_on_completion: previous_wake,
                 target_messages: previous_target_messages,
                 queue_input: previous_queue_input,
+                mailbox_input: previous_mailbox_input,
                 ..
             }),
             ThreadItemPayload::CollabAgentToolCall {
@@ -32,6 +33,7 @@ impl ThreadHistoryBuilder {
                 wake_on_completion,
                 target_messages,
                 queue_input,
+                mailbox_input,
                 ..
             },
         ) = (existing, &mut item)
@@ -49,6 +51,9 @@ impl ThreadHistoryBuilder {
             }
             if queue_input.is_none() {
                 *queue_input = *previous_queue_input;
+            }
+            if mailbox_input.is_none() {
+                *mailbox_input = *previous_mailbox_input;
             }
         }
         // This path is used only by legacy reducers. A later canonical lifecycle item
