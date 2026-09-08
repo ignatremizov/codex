@@ -18,14 +18,8 @@ async fn mail_keeps_typed_draft_rebases_elements_and_retries_identically_after_f
         }],
         remote_image_urls: vec!["data:image/png;base64,cGlj".into()],
         text_elements: vec![
-            TextElement {
-                byte_range: ByteRange { start: 13, end: 18 },
-                placeholder: Some("@docs".into()),
-            },
-            TextElement {
-                byte_range: ByteRange { start: 19, end: 29 },
-                placeholder: Some("[Image #2]".into()),
-            },
+            TextElement::new(ByteRange { start: 13, end: 18 }, Some("@docs".into())),
+            TextElement::new(ByteRange { start: 19, end: 29 }, Some("[Image #2]".into())),
         ],
         mention_bindings: vec![MentionBinding {
             sigil: '@',
@@ -45,7 +39,7 @@ async fn mail_keeps_typed_draft_rebases_elements_and_retries_identically_after_f
             _ => None,
         })
         .expect("typed mail event");
-    let mut expected = draft.clone();
+    let mut expected = draft;
     expected.text = "review @docs [Image #2]".into();
     expected.text_elements[0].byte_range = ByteRange { start: 7, end: 12 };
     expected.text_elements[1].byte_range = ByteRange { start: 13, end: 23 };

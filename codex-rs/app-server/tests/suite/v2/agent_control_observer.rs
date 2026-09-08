@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn explicit_observer_preserves_direction_and_issuer_audit() -> Result<()> {
