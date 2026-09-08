@@ -217,6 +217,7 @@ mod step_settings_snapshots;
 mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_notifications;
+mod subagent_observer_control;
 mod subagent_service_tier;
 #[path = "test_codex_submission_tests.rs"]
 mod test_codex_submission;

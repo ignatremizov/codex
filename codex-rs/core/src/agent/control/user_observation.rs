@@ -108,7 +108,8 @@ impl LocalAgentControl {
     pub(crate) async fn replace_durable_final_response_observation(
         &self,
         target_id: ThreadId,
-        parent: SessionPresentationId,
+        source: SessionPresentationId,
+        observer_thread_id: ThreadId,
         replacement: FinalResponseObservation,
     ) -> CodexResult<ReplacedFinalResponseObservation> {
         let control = self.clone();
@@ -116,11 +117,44 @@ impl LocalAgentControl {
             let state = control.runtime.upgrade()?;
             let _lifecycle = state.acquire_live_agent_lifecycle(target_id).await?;
             control.require_current_agent_ownership(target_id).await?;
-            let target = state.get_thread(target_id).await?;
-            let observer = state.get_thread(parent.thread_id).await?;
-            if observer.session.presentation_id() != parent {
-                return Err(CodexErr::ThreadNotFound(parent.thread_id));
+            control
+                .require_current_agent_ownership(observer_thread_id)
+                .await?;
+            control
+                .require_current_agent_ownership(source.thread_id)
+                .await?;
+            if target_id == observer_thread_id {
+                return Err(CodexErr::InvalidRequest(
+                    "an agent cannot observe itself".into(),
+                ));
             }
+            let target = state.get_thread(target_id).await?;
+            let actor = state.get_thread(source.thread_id).await?;
+            let observer = state.get_thread(observer_thread_id).await?;
+            if actor.session.presentation_id() != source
+                || !control.runtime.shares_tree_with(&actor.session.services.local_agent_runtime)
+            {
+                return Err(CodexErr::ThreadNotFound(source.thread_id));
+            }
+            if !control.runtime.shares_tree_with(&observer.session.services.local_agent_runtime) {
+                return Err(CodexErr::InvalidRequest(
+                    "observer belongs to another control".into(),
+                ));
+            }
+            if !control.runtime.shares_tree_with(&target.session.services.local_agent_runtime) {
+                return Err(CodexErr::InvalidRequest(
+                    "target belongs to another control".into(),
+                ));
+            }
+            actor.session.submission_admission.check_ready()?;
+            // Retain the issuing actor independently of the selected observer through ACK.
+            // A close/transfer cannot turn this into a control action by a replacement runtime.
+            let actor_admission = actor
+                .session
+                .submission_admission
+                .try_accept_completion_delivery()
+                .ok_or_else(|| CodexErr::InvalidRequest("issuing thread is closing".into()))?;
+            let parent = observer.session.presentation_id();
             let _admission = observer
                 .session
                 .submission_admission
@@ -186,8 +220,14 @@ impl LocalAgentControl {
                 .await;
             if let Err(error) = result {
                 control.abandon_response_observer(parent, child, &error.to_string());
-                return Err(error);
+                // Publication may have installed a prefix before losing its receipt.
+                // The selected observer is quarantined; the independent actor must
+                // not record this as a known rejection or retry the policy change.
+                return Err(CodexErr::Fatal(format!(
+                    "observation replacement publication outcome unknown: {error}; reload before retry"
+                )));
             }
+            drop(actor_admission);
             control.recheck_thread_idle_lifecycle(parent).await;
             Ok(ReplacedFinalResponseObservation {
                 target_thread_id: target_id,

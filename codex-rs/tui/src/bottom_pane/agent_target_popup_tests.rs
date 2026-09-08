@@ -150,7 +150,7 @@ fn action_target_completion_only_covers_existing_target_argument() {
         Some(AgentTargetCompletion {
             range: "/agent observe 2 ".len().."/agent observe 2 presentation".len(),
             query: "presentation".to_string(),
-            scope: AgentTargetCompletionScope::ObservationMode,
+            scope: AgentTargetCompletionScope::ObservationObserverOrMode,
             action: Some("observe"),
         })
     );
@@ -295,6 +295,67 @@ fn observation_mode_popup_snapshot() {
       passive       Deliver the final response without waking
       wake          Deliver the final response and wake
       presentation  Keep the final response out of model context
+    ");
+}
+
+#[test]
+fn observe_completion_tracks_from_observer_and_final_mode_tokens() {
+    for (input, token, scope) in [
+        (
+            "/agent observe Main fr",
+            "fr",
+            AgentTargetCompletionScope::ObservationObserverOrMode,
+        ),
+        (
+            "/agent observe Main from ",
+            "",
+            AgentTargetCompletionScope::ExistingTarget,
+        ),
+        (
+            "/agent observe Main from nick:\"Charles Peirce\"",
+            "nick:\"Charles Peirce\"",
+            AgentTargetCompletionScope::ExistingTarget,
+        ),
+        (
+            "/agent observe Main from nick:\"Charles Peirce\" pa",
+            "pa",
+            AgentTargetCompletionScope::ObservationMode,
+        ),
+    ] {
+        assert_eq!(
+            completion(input, input.len()),
+            Some(AgentTargetCompletion {
+                range: input.len() - token.len()..input.len(),
+                query: token.to_string(),
+                scope,
+                action: Some("observe"),
+            }),
+            "{input}"
+        );
+    }
+    let input = "/agent observe Main from Peirce passive ";
+    assert_eq!(completion(input, input.len()), None);
+}
+
+#[test]
+fn observation_observer_or_mode_popup_snapshot() {
+    let targets = AGENT_OBSERVATION_MODE_CHOICES
+        .into_iter()
+        .chain([("from", "Choose the observing agent")])
+        .map(|(selector, label)| AgentPromptTarget {
+            thread_id: None,
+            selector: selector.to_string(),
+            label: label.to_string(),
+        })
+        .collect();
+    let input = "/agent observe Main ";
+    let completion = completion(input, input.len()).expect("observation choices");
+    let popup = AgentTargetPopup::new(targets, &completion.query, completion.scope);
+    insta::assert_snapshot!(render_popup(&popup), @r"
+      passive       Deliver the final response without waking
+      wake          Deliver the final response and wake
+      presentation  Keep the final response out of model context
+      from          Choose the observing agent
     ");
 }
 

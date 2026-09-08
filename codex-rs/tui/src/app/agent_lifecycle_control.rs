@@ -205,6 +205,7 @@ impl App {
         app_server: &mut AppServerSession,
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        observer: Option<AgentSelector>,
         response_handling: codex_app_server_protocol::AgentObservationMode,
     ) {
         let target = match self
@@ -217,11 +218,30 @@ impl App {
                 return;
             }
         };
+        let authored_observer_selector = observer
+            .as_ref()
+            .map(|selector| selector.authored().to_string());
+        let observer_label = authored_observer_selector
+            .clone()
+            .unwrap_or_else(|| source_thread_id.to_string());
+        let observer = match observer
+            .as_ref()
+            .map(AgentSelector::control_target)
+            .transpose()
+        {
+            Ok(observer) => observer,
+            Err(message) => {
+                self.chat_widget.add_error_message(message);
+                return;
+            }
+        };
         let result = app_server
             .observe_agent(
                 source_thread_id,
                 target,
                 selector.authored().to_string(),
+                observer,
+                authored_observer_selector,
                 response_handling,
             )
             .await;
@@ -231,19 +251,25 @@ impl App {
         } = match result {
             Ok(response) => response,
             Err(error) => {
-                self.chat_widget
-                    .add_error_message(format!("Failed to change agent observation: {error:#}"));
+                self.chat_widget.add_error_message(format!(
+                    "Failed to change observation ({} → {observer_label}): {error:#}",
+                    selector.authored()
+                ));
                 return;
             }
         };
         match outcome {
             codex_app_server_protocol::AgentControlOutcome::Observed {
                 target_thread_id,
+                observer_thread_id,
                 previous_response_handling: _,
                 response_handling,
                 binding,
             } => {
-                if let Ok(target_thread_id) = ThreadId::from_string(&target_thread_id) {
+                if let (Ok(target_thread_id), Ok(observer_thread_id)) = (
+                    ThreadId::from_string(&target_thread_id),
+                    ThreadId::from_string(&observer_thread_id),
+                ) {
                     self.refresh_primary_agent_aliases(app_server).await;
                     self.refresh_agent_picker_thread_liveness(app_server, target_thread_id)
                         .await;
@@ -251,7 +277,7 @@ impl App {
                         codex_app_server_protocol::AgentObservationBinding::ActiveTurn => {
                             self.agent_navigation
                                 .replace_user_final_response_observation(
-                                    source_thread_id,
+                                    observer_thread_id,
                                     target_thread_id,
                                     AgentResponseObservationBinding::Bound,
                                     response_handling,
@@ -260,7 +286,7 @@ impl App {
                         codex_app_server_protocol::AgentObservationBinding::NextTurn => {
                             self.agent_navigation
                                 .replace_user_final_response_observation(
-                                    source_thread_id,
+                                    observer_thread_id,
                                     target_thread_id,
                                     AgentResponseObservationBinding::NextTurn,
                                     response_handling,
@@ -268,7 +294,7 @@ impl App {
                         }
                         codex_app_server_protocol::AgentObservationBinding::UndeliveredCompletion => {
                             self.agent_navigation.clear_response_observation_binding(
-                                source_thread_id,
+                                observer_thread_id,
                                 target_thread_id,
                                 AgentResponseObservationBinding::Bound,
                             );
@@ -277,7 +303,7 @@ impl App {
                 }
                 if let Some(audit_warning) = audit_warning {
                     self.chat_widget.add_error_message(format!(
-                        "Observation for agent {target_thread_id} changed, but its source audit \
+                        "Observation {target_thread_id} → {observer_thread_id} changed, but its source audit \
                          failed; do not retry the change: {audit_warning}"
                     ));
                 }

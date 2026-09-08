@@ -461,6 +461,7 @@ pub(crate) enum AppEvent {
     ObserveAgent {
         source_thread_id: ThreadId,
         selector: AgentSelector,
+        observer: Option<AgentSelector>,
         response_handling: codex_app_server_protocol::AgentObservationMode,
     },
 

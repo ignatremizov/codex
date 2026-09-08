@@ -66,6 +66,8 @@ async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> List
             authored_selector: Some("reviewer".to_string()),
             target_thread_id: Some(child_thread_id.to_string()),
             reply_recipient_thread_id: None,
+            observer_thread_id: None,
+            authored_observer_selector: None,
             previous_owner_session_id: None,
             new_owner_session_id: None,
             task_path: None,
