@@ -3355,6 +3355,9 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::SubmitUserMailbox(submission) => {
+                self.submit_user_mailbox(app_server, submission).await;
+            }
             AppEvent::QueueAgentPrompt {
                 source_thread_id,
                 selector,

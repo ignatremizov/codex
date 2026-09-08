@@ -26,6 +26,7 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         let parent = ThreadId::new();
         let child = ThreadId::new();
         let mut item = CollabAgentToolCallItem {
+            mailbox_input: Some(true),
             target_messages: Some(true),
             queue_input: Some(false),
             id: "collaboration".to_string(),
@@ -39,6 +40,7 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
             receiver_agents: if matches!(tool, CollabAgentTool::SpawnAgent) {
                 vec![CollabAgentRef {
                     thread_id: child,
+                    task_path: None,
                     agent_nickname: Some("child agent".to_string()),
                     agent_role: Some("worker".to_string()),
                 }]
@@ -104,6 +106,7 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         item.wake_on_completion = None;
         item.target_messages = None;
         item.queue_input = None;
+        item.mailbox_input = None;
         completed.item = TurnItem::CollabAgentToolCall(item.clone());
         builder.handle_event(&EventMsg::ItemCompleted(completed));
         assert_eq!(

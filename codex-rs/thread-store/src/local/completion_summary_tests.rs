@@ -30,6 +30,7 @@ async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
         forged.sub_agent_completion = None;
         let wait = CollabAgentToolCallItem {
             id: "owned-wait".to_string(),
+            mailbox_input: None,
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
             target_messages: None,

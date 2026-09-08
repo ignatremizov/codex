@@ -4447,6 +4447,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     let server = responses::start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
+        "task": "backend/auth",
         "model": REQUESTED_MODEL,
         "reasoning_effort": REQUESTED_REASONING_EFFORT,
         "w": "c",
@@ -4561,6 +4562,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            mailbox_input: None,
             sender_thread_id: thread.id.clone(),
             receiver_thread_ids: Vec::new(),
             receiver_agents: Vec::new(),
@@ -4591,6 +4593,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         wake_on_completion,
         target_messages,
         queue_input,
+        mailbox_input,
         sender_thread_id,
         receiver_thread_ids,
         receiver_agents,
@@ -4613,10 +4616,15 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(wake_on_completion, Some(false));
     assert_eq!(target_messages, Some(false));
     assert_eq!(queue_input, Some(false));
+    assert_eq!(mailbox_input, None);
     assert_eq!(sender_thread_id, thread.id);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(receiver_agents.len(), 1);
     assert_eq!(receiver_agents[0].thread_id, receiver_thread_id);
+    assert_eq!(
+        receiver_agents[0].task_path.as_deref(),
+        Some("/root/backend/auth"),
+    );
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
@@ -5122,6 +5130,7 @@ config_file = "./custom-role.toml"
         wake_on_completion,
         target_messages,
         queue_input,
+        mailbox_input,
         sender_thread_id,
         receiver_thread_ids,
         receiver_agents,
@@ -5144,6 +5153,7 @@ config_file = "./custom-role.toml"
     assert_eq!(wake_on_completion, Some(false));
     assert_eq!(target_messages, Some(false));
     assert_eq!(queue_input, Some(false));
+    assert_eq!(mailbox_input, None);
     assert_eq!(sender_thread_id, thread.id);
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.clone()]);
     assert_eq!(receiver_agents.len(), 1);

@@ -23,9 +23,13 @@ async fn v1_directory_requires_explicit_enablement_even_for_labeled_leaves() {
         .await;
 
         let expected = if enabled {
-            vec!["list_agents".to_string(), "send_input".to_string()]
+            vec![
+                "check_mail".to_string(),
+                "list_agents".to_string(),
+                "send_input".to_string(),
+            ]
         } else {
-            vec!["send_input".to_string()]
+            vec!["check_mail".to_string(), "send_input".to_string()]
         };
         assert_eq!(
             plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
@@ -54,7 +58,11 @@ async fn v1_directory_opt_in_respects_deferred_search_and_disabled_agents() {
     .await;
     deferred.assert_registered_contains(&[&name]);
     assert_eq!(deferred.exposure(&name), ToolExposure::Deferred);
-    deferred.assert_visible_lacks(&["list_agents", MULTI_AGENT_V1_NAMESPACE]);
+    deferred.assert_visible_lacks(&["list_agents"]);
+    assert_eq!(
+        deferred.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &["check_mail".to_string()],
+    );
 
     let disabled = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ false);

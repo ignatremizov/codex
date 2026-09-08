@@ -1806,6 +1806,62 @@ async fn unknown_agent_input_is_retained_for_manual_reconciliation() -> Result<(
 }
 
 #[tokio::test]
+async fn mailbox_submission_rechecks_authority_before_the_request_and_restores_its_draft()
+-> Result<()> {
+    let (fixture_app, _fixture_events, _fixture_ops) = make_test_app_with_channels().await;
+    let (mut app_server, requests, proxy) = start_recording_app_server(
+        &fixture_app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    for external_writer in [false, true] {
+        let (mut app, _events, mut ops) = make_test_app_with_channels().await;
+        let thread_id = ThreadId::new();
+        display_test_thread(&mut app, thread_id);
+        // Session attachment refreshes skills before the blocked action is submitted.
+        assert!(matches!(
+            ops.try_recv(),
+            Ok(Op::ListSkills { cwds, force_reload: true })
+                if cwds == vec![app.config.cwd.to_path_buf()]
+        ));
+        assert!(ops.try_recv().is_err());
+        let submission = crate::chatwidget::mailbox::MailboxSubmission {
+            thread_id,
+            user_message: "preserved mail".into(),
+            input: vec![codex_app_server_protocol::UserInput::Text {
+                text: "preserved mail".into(),
+                text_elements: Vec::new(),
+            }],
+            client_user_message_id: "frozen-mail-submission".into(),
+        };
+        app.chat_widget
+            .restore_user_message_to_composer("newer draft".into());
+        if external_writer {
+            app.ensure_thread_channel(thread_id).mark_external_writer();
+            assert!(!app.chat_widget.direct_input_is_blocked());
+        } else {
+            app.chat_widget.show_provider_error(
+                codex_app_server_protocol::ModelProviderError::ModelProviderNotConfigured {
+                    model_provider: "old-provider".into(),
+                },
+                /*rejected_message_id*/ None,
+            );
+        }
+        requests.lock().expect("request recorder lock").clear();
+        app.submit_user_mailbox(&mut app_server, submission).await;
+        assert!(requests.lock().expect("request recorder lock").is_empty());
+        let restored = app.chat_widget.composer_text_with_pending();
+        assert!(restored.contains("/mail preserved mail"), "{restored}");
+        assert!(restored.contains("newer draft"), "{restored}");
+        assert!(ops.try_recv().is_err());
+    }
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn agent_control_admission_preserves_current_and_saved_provider_quarantine() -> Result<()> {
     let (fixture_app, _fixture_events, _fixture_ops) = make_test_app_with_channels().await;
     let (mut app_server, requests, proxy) = start_recording_app_server(
@@ -4821,11 +4877,13 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: thread_id,
                 receiver_thread_ids: vec![child_thread_id],
                 receiver_agents: vec![CollabAgentRef {
                     thread_id: child_thread_id,
+                    task_path: None,
                     agent_nickname: Some("Robie".to_string()),
                     agent_role: Some("explorer".to_string()),
                 }],
@@ -4941,7 +4999,7 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
             .eq(markdown.lines().filter(|line| line.starts_with("history")))
     );
     assert!(
-        markdown.contains("Robie [explorer] completed (● visible):"),
+        markdown.contains("Robie [explorer] completed: (● visible)"),
         "{markdown}"
     );
     assert!(
@@ -4989,7 +5047,7 @@ async fn transcript_alt_beginning_loads_every_older_history_page() -> Result<()>
     assert!(app.transcript_cells.iter().any(|cell| {
         cell.display_lines(/*width*/ 80).iter().any(|line| {
             line.to_string()
-                .contains("Robie [explorer] completed (● visible):")
+                .contains("Robie [explorer] completed: (● visible)")
         })
     }));
     let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
