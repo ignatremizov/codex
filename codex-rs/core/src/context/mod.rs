@@ -41,6 +41,7 @@ mod legacy_apply_patch_exec_command_warning;
 mod legacy_model_mismatch_warning;
 mod legacy_unified_exec_process_limit_warning;
 mod mcp_server_use_instructions;
+mod mailbox_inventory;
 mod memory;
 mod model_switch_instructions;
 mod multi_agent_mode_instructions;
@@ -74,6 +75,7 @@ pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESS
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;
 pub(crate) use apps_instructions::AppsInstructions;
 pub(crate) use attributed_agent_message::AttributedAgentMessage;
+pub(crate) use mailbox_inventory::MailboxInventoryContext;
 pub(crate) use available_plugins_instructions::AvailablePluginsInstructions;
 pub(crate) use base_instructions::BaseInstructionsFragment;
 pub(crate) use codex_context_fragments::AdditionalContextDeveloperFragment;

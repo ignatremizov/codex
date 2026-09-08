@@ -746,6 +746,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -770,9 +771,15 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
-                receiver_agents: Vec::new(),
+                receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
+                    thread_id: spawned_thread_id.to_string(),
+                    agent_nickname: None,
+                    agent_role: None,
+                    task_path: Some("/root/mailbox-test".to_string()),
+                }],
                 prompt: Some("Explore the repo".to_string()),
                 model: None,
                 reasoning_effort: None,
@@ -797,7 +804,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
     assert!(
         rendered.contains(
-            "Spawned Robie [explorer] (gpt-5 high) \
+            "Spawned Robie [explorer] (gpt-5 high) /root/mailbox-test \
              (no commentary · no wake on completion)"
         ),
         "expected spawn line to include agent metadata, requested model, and response observation, got {rendered:?}"
@@ -1065,6 +1072,85 @@ async fn live_app_server_subagent_commentary_renders_as_agent_notification() {
 }
 
 #[tokio::test]
+async fn live_app_server_primary_events_use_main_agent_metadata() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let primary_thread_id =
+        ThreadId::from_string("019faa07-aa3d-78d3-9eca-66cd8626adad").expect("valid thread id");
+    chat.set_primary_collab_agent_metadata(primary_thread_id);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "send-main".to_string(),
+                tool: AppServerCollabAgentTool::SendInput,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                observe_commentary: Some(false),
+                wake_on_completion: Some(false),
+                target_messages: Some(false),
+                queue_input: Some(false),
+                mailbox_input: None,
+                sender_thread_id: ThreadId::new().to_string(),
+                receiver_thread_ids: vec![primary_thread_id.to_string()],
+                receiver_agents: Vec::new(),
+                prompt: Some("Please confirm.".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    primary_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::Running,
+                        message: None,
+                    },
+                )]),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::AgentMessage {
+                id: format!("msg_a_{primary_thread_id}"),
+                text: format!("Agent message from `{primary_thread_id}`:\n\nAcknowledged."),
+                inter_agent_source: Some(codex_app_server_protocol::InterAgentMessageSource {
+                    author: primary_thread_id.to_string(),
+                    recipient: "thread-1".to_string(),
+                }),
+                phase: Some(MessagePhase::Commentary),
+                memory_citation: None,
+                attribution: None,
+                input: None,
+                delivery: None,
+                questions: None,
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 2);
+    insta::assert_snapshot!(
+        lines_to_single_string(&cells[0]).replace("  \n", "\n"),
+        @r"
+    • Sent input to Main [default] (no commentary · no wake on completion)
+      └ Please confirm.
+    "
+    );
+    insta::assert_snapshot!(
+        lines_to_single_string(&cells[1]).replace("  \n", "\n"),
+        @r"
+    • Main [default] sends:
+      └ Acknowledged.
+    "
+    );
+}
+
+#[tokio::test]
 async fn unattributed_live_commentary_does_not_become_an_agent_notification() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let agent_id = ThreadId::new();
@@ -1093,13 +1179,13 @@ async fn unattributed_live_commentary_does_not_become_an_agent_notification() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
-    assert!(!rendered.contains("Russell [default] sends:"));
+    assert!(!rendered.contains("Russell [default]"));
     assert!(chat.transcript.last_completed_agent_message.is_some());
     let answer = chat.transcript.last_completed_agent_message.clone();
     chat.replay_thread_item(item, "turn-1".into(), ReplayKind::ResumeInitialMessages);
     let replayed = drain_insert_history(&mut rx);
     insta::assert_snapshot!(lines_to_single_string(&replayed[0]), @r"
-    • Russell [default] sends:
+    • Russell [default] commentary:
       └ Not an attributed message.
     ");
     assert_eq!(chat.transcript.last_completed_agent_message, answer);
@@ -1140,7 +1226,11 @@ async fn live_compaction_decode_error_is_visible_once_even_with_content_hidden()
             /*replay_kind*/ None,
         );
         let cells = drain_insert_history(&mut rx);
-        assert_eq!(cells.len(), 1);
+        assert_eq!(cells.len(), 2);
+        assert_eq!(
+            lines_to_single_string(&cells[1]).trim(),
+            "• Available skills after compaction: test-tui"
+        );
         rendered.push(lines_to_single_string(&cells[0]).trim_end().to_string());
     }
     insta::assert_snapshot!(rendered.join("\n---\n"), @"
@@ -1175,7 +1265,12 @@ async fn context_compacted_summary_respects_tui_toggle() {
     );
 
     let cells = drain_insert_history(&mut rx);
-    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    assert_eq!(cells.len(), 2);
+    assert_eq!(
+        lines_to_single_string(&cells[1]).trim(),
+        "• Available skills after compaction: test-tui"
+    );
+    let rendered = lines_to_single_string(&cells[0]);
     insta::assert_snapshot!(rendered, @"• Context compacted");
 }
 
@@ -1200,8 +1295,12 @@ async fn live_app_server_context_compaction_item_completed_prefers_prompt_over_s
     );
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1);
-    let rendered = lines_to_single_string(cells.last().expect("compaction cell"));
+    assert_eq!(cells.len(), 2);
+    assert_eq!(
+        lines_to_single_string(&cells[1]).trim(),
+        "• Available skills after compaction: test-tui"
+    );
+    let rendered = lines_to_single_string(&cells[0]);
     insta::assert_snapshot!(rendered, @"
     • Context compacted
       Prompt line 1
@@ -1243,14 +1342,16 @@ async fn live_app_server_context_compacted_fanout_renders_once() {
     );
 
     let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1);
     let rendered_cells = cells
         .iter()
         .map(|cell| lines_to_single_string(cell))
         .collect::<Vec<_>>();
     assert_eq!(
         rendered_cells,
-        vec!["• Context compacted\n  Prompt line 1\n  Prompt line 2\n"]
+        vec![
+            "• Context compacted\n  Prompt line 1\n  Prompt line 2\n",
+            "\n• Available skills after compaction: test-tui\n",
+        ]
     );
 }
 
@@ -1728,6 +1829,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1756,6 +1858,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1816,6 +1919,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -1841,6 +1945,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 receiver_agents: Vec::new(),

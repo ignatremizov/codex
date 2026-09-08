@@ -31,6 +31,12 @@ impl ChatWidget {
             .spawn_request = Some(spawn_request);
     }
 
+    /// An alias or successful lifecycle mapping can explicitly clear a task path.
+    pub(crate) fn set_collab_agent_task_path(&mut self, thread_id: ThreadId, task_path: Option<String>) {
+        self.collab_agent_metadata.entry(thread_id).or_default().task_path =
+            crate::multi_agents::AgentTaskPath::Known(task_path);
+    }
+
     /// Enrich replay/audit hints without clearing newer navigation metadata for missing fields.
     pub(crate) fn merge_collab_agent_metadata(&mut self, thread_id: ThreadId, metadata: AgentMetadata) {
         let existing = self.collab_agent_metadata.entry(thread_id).or_default();
@@ -43,6 +49,12 @@ impl ChatWidget {
         if metadata.spawn_request.is_some() {
             existing.spawn_request = metadata.spawn_request;
         }
+        if matches!(
+            &metadata.task_path,
+            crate::multi_agents::AgentTaskPath::Known(_)
+        ) {
+            existing.task_path = metadata.task_path;
+        }
     }
 
     pub(super) fn remember_user_agent_control_metadata(&mut self, item: &ThreadItem) {
@@ -50,6 +62,8 @@ impl ChatWidget {
             target_thread_id: Some(target_thread_id),
             nickname,
             role,
+            task_path,
+            task_path_mapping,
             status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
             ..
         } = item
@@ -62,11 +76,19 @@ impl ChatWidget {
         self.merge_collab_agent_metadata(
             thread_id,
             AgentMetadata {
+                task_path: task_path.as_ref().map(|path| {
+                    crate::multi_agents::AgentTaskPath::Known(Some(path.clone()))
+                }).unwrap_or_default(),
                 agent_nickname: nickname.clone(),
                 agent_role: role.clone(),
                 spawn_request: crate::multi_agents::spawn_request_summary(item),
             },
         );
+        for mapping in task_path_mapping {
+            if let Some(thread_id) = crate::multi_agents::parse_thread_id(&mapping.thread_id) {
+                self.set_collab_agent_task_path(thread_id, mapping.task_path.clone());
+            }
+        }
     }
 
     /// Registers the primary thread under the same stable label used by the agent picker.

@@ -23,12 +23,14 @@ async fn partial_replayed_spawn_metadata_enriches_labels_without_erasing_navigat
         spawn_request: Some(request.clone()), ..Default::default()
     });
     assert_eq!(chat.collab_agent_metadata(thread_id), AgentMetadata {
+        task_path: crate::multi_agents::AgentTaskPath::Unknown,
         agent_nickname: Some("Current name".into()), agent_role: Some("reviewer".into()),
         spawn_request: Some(request.clone()),
     });
     chat.set_collab_agent_metadata(thread_id, Some("Renamed".into()), Some("reviewer".into()));
     chat.merge_collab_agent_metadata(thread_id, AgentMetadata::default());
     assert_eq!(chat.collab_agent_metadata(thread_id), AgentMetadata {
+        task_path: crate::multi_agents::AgentTaskPath::Unknown,
         agent_nickname: Some("Renamed".into()), agent_role: Some("reviewer".into()),
         spawn_request: Some(request),
     });
@@ -44,6 +46,51 @@ fn publish(chat: &mut ChatWidget, item: AppServerThreadItem) {
         }),
         /*replay_kind*/ None,
     );
+}
+
+#[tokio::test]
+async fn confirmed_task_path_clear_survives_legacy_updates_in_live_and_cold_labels() {
+    let target = ThreadId::new();
+    let source = ThreadId::new();
+    let established: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+        "type": "collabAgentToolCall", "id": "named-task", "tool": "spawnAgent",
+        "status": "completed", "senderThreadId": source.to_string(),
+        "receiverThreadIds": [target.to_string()],
+        "receiverAgents": [{"threadId": target.to_string(), "agentNickname": "Worker",
+            "taskPath": "/root/confirmed"}], "agentsStates": {}
+    })).expect("recorded task identity");
+    let legacy: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+        "type": "collabAgentToolCall", "id": "legacy-wait", "tool": "wait",
+        "status": "completed", "senderThreadId": source.to_string(),
+        "receiverThreadIds": [target.to_string()],
+        "receiverAgents": [{"threadId": target.to_string()}], "agentsStates": {}
+    })).expect("legacy item without path authority");
+    for status in ["failed", "unknown", "succeeded"] {
+        let mapping: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+            "type": "userAgentControl", "id": "path-clear", "action": "resume",
+            "targetThreadId": target.to_string(), "status": status, "resumedTarget": false,
+            "taskPathMapping": [{"threadId": target.to_string(), "taskPath": null}]
+        })).expect("path mapping audit");
+        let items = [established.clone(), mapping, legacy.clone()];
+        let cold = crate::thread_transcript::collab_agent_metadata_from_items(items.iter());
+        let expected_path = crate::multi_agents::AgentTaskPath::Known(
+            (status != "succeeded").then(|| "/root/confirmed".to_string()),
+        );
+        assert_eq!(cold[&target].task_path, expected_path);
+        for replay in [false, true] {
+            let (mut chat, _events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
+            for item in items.clone() {
+                if replay {
+                    chat.replay_thread_item(item, "audit-turn".to_string(), ReplayKind::ResumeInitialMessages);
+                } else {
+                    publish(&mut chat, item);
+                }
+            }
+            assert_eq!(chat.collab_agent_metadata(target), cold[&target]);
+            chat.merge_collab_agent_metadata(target, AgentMetadata::default());
+            assert_eq!(chat.collab_agent_metadata(target), cold[&target]);
+        }
+    }
 }
 
 #[tokio::test]
@@ -168,7 +215,7 @@ async fn canonical_completion_live_resume_and_cold_pages_share_preview_and_raw_s
         rendered.push(lines_to_single_string(&cold[0].display_lines(/*width*/ 80)));
     }
     assert_snapshot!(rendered.join("\n"), @r"
-    • /root/reviewer completed (● visible):
+    • /root/reviewer completed: (● visible)
       └ first
         … +2 rows hidden
 
@@ -223,11 +270,11 @@ async fn background_completion_shows_model_visibility_without_changing_parent_an
     assert_snapshot!(
         cells.iter().map(|lines| lines_to_single_string(lines)).collect::<Vec<_>>().join("\n"),
         @r"
-    • Main [default] completed (● visible):
+    • Main [default] completed: (● visible):
       └ Finished.
 
 
-    • Main [default] completed (○ not visible):
+    • Main [default] completed: (○ not visible):
       └ Finished.
     "
     );
@@ -255,7 +302,7 @@ async fn root_background_completion_uses_main_label() {
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
     assert_snapshot!(lines_to_single_string(&cells[0]), @r"
-    • Main [default] completed (● visible):
+    • Main [default] completed: (● visible):
       └ Parent task finished.
     ");
 }
@@ -353,6 +400,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: Vec::new(),
@@ -372,7 +420,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
-    assert!(rendered.contains("/root/reviewer completed (● visible)"));
+    assert!(rendered.contains("/root/reviewer completed: (● visible)"));
     assert!(rendered.contains("Finished waiting"));
     let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(normalized.matches(response).count(), 2);
@@ -403,7 +451,7 @@ async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Herschel [default] completed (● visible):
+    • Herschel [default] completed: (● visible):
       └ Cinnamon
     "
     );
@@ -430,10 +478,12 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                task_path: None,
                 agent_nickname: Some("Herschel".to_string()),
                 agent_role: Some("default".to_string()),
             }],
@@ -460,10 +510,12 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                task_path: None,
                 agent_nickname: None,
                 agent_role: None,
             }],
@@ -503,7 +555,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
       └ Give me one random ingredient.
 
 
-    • Herschel [default] (gpt-5.6-sol high) completed (● visible):
+    • Herschel [default] (gpt-5.6-sol high) completed: (● visible):
       └ Cinnamon
     "
     );

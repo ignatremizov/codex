@@ -519,6 +519,7 @@ impl LocalAgentControl {
                 new_thread.thread.multi_agent_version().unwrap_or(MultiAgentVersion::V1),
             )?;
         }
+        self.restore_agent_send_settings(new_thread.thread.session.presentation_id()).await?;
         if notification_source.is_some() {
             state.publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
                 if !reservation.commit_if_absent(agent_metadata.clone()) {

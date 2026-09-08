@@ -23,10 +23,11 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through directional user-selected observation controls, shared-server custom instruction forwarding, model-hidden root conclusion oversight, and root-scoped running-agent activity, including attributed V1 input, task-path discovery, live subtree messaging, acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
+This checkpoint inventories the integrated owners through durable receiver-selected input delivery, directional user-selected observation controls, shared-server custom instruction forwarding, model-hidden root conclusion oversight, and root-scoped running-agent activity, including attributed V1 input, task-path discovery, live subtree messaging, acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
+| Durable receiver-selected input mailbox | Capability | Accept typed user or attributed V1 agent mail without steering or claiming consumption; select fixed batches through direct `check_mail` or targeted waits; recover result/context/presentation receipts from the receiver's own canonical history; persist user-controlled send settings independently of transient subscriptions; and admit bounded, coalesced inventory wakes behind ordinary queued work. | `codex-rs/core/src/agent/control/mailbox_input.rs`<br>`codex-rs/core/src/session/mailbox.rs`<br>`codex-rs/core/src/session/mailbox_publication.rs`<br>`codex-rs/core/src/context/mailbox_inventory.rs`<br>`codex-rs/thread-store/src/mailbox_artifacts.rs`<br>`codex-rs/state/src/runtime/queued_items/mailbox.rs`<br>`codex-rs/tui/src/chatwidget/mailbox.rs` | Native/host control boundary, durable permission transactions, canonical publisher and input ordering, idle admission, raw receiver-owned history, rich TUI draft recovery, and current v2 protocol | `feat(mailbox): add durable receiver-selected input delivery` |
 | Canonical model slugs and stable accents | Compatibility | Show canonical active-model slugs in session headers and footers while retaining catalog labels in pickers and historical analytics; preserve stable thread-name and title accents without reverting newer layouts, warning controls, or key notation. | `codex-rs/tui/src/bottom_pane/status_line_style.rs`<br>`codex-rs/tui/src/chatwidget/session_flow.rs`<br>`codex-rs/tui/styles.md` | Current model selection, status/footer rendering, session startup, TUI snapshots | `revert(tui): restore canonical model slugs and stable accents` |
 | Private Guardian screenshot evidence | Compatibility | Preserve missing private-review screenshot evidence with original provenance after compaction without replaying already admitted text or weakening reviewer input budgets and source isolation. | `codex-rs/core/src/context/node_repl_review_evidence.rs`<br>`codex-rs/core/src/guardian/input_budget.rs`<br>`codex-rs/core/src/guardian/review_session_images.rs` | Private review lifecycle, current screenshot selection, compaction, input budgeting | `fix(guardian): preserve private screenshot evidence across compaction` |
 | Attributed V1 messages and task-path discovery | Capability | Distinguish model-authored agent input from human prompts using compact escaped attribution and separate durable sender/recipient snapshots; assign root-scoped task labels independent of lifecycle ancestry; preserve closed-label uniqueness and report adoption remapping; expose opt-in root-controlled paginated `list_agents` to current and future members without enabling sends or restoring runtimes. | `codex-rs/core/src/agent/control/task_paths.rs`<br>`codex-rs/core/src/agent/control/directory.rs`<br>`codex-rs/core/src/context/attributed_agent_message.rs`<br>`codex-rs/state/src/runtime/agent_aliases/task_paths.rs`<br>`codex-rs/tui/src/history_cell/agent_input.rs` | V1 spawn/send/resume, role/model precedence, alias ownership transactions, typed input and transcript projections, tool availability, TUI selection and completion | `feat(multi-agent): add attributed V1 messages and task-path discovery` |
@@ -553,6 +554,41 @@ model context, an idle wake, a subscription, or a messaging grant. Cold state ne
 live obligation. Unknown publication quarantines the exact root without retry. The Legacy and
 Paginated request/persistence scenarios and lock-order/recheck regressions are source coverage,
 not passed executable validation.
+
+### Receiver-selected mailbox integration
+
+Ownership anchor: `feat(mailbox): add durable receiver-selected input delivery`.
+Direct V1 tools carry fixed mailbox operations to the ordered result recorder; nested `check_mail`
+is rejected, while nested and hosted-controller waits keep their ordinary completion contract.
+Accepted mail, a fixed claim, canonical context, typed presentation, and SQL consumption are separate
+boundaries. Recovery reads only receiver-owned canonical history, preserves original envelopes,
+and never interprets copied history, payload text, or a readable receipt as a new permission grant.
+
+Fresh user mail retains its user-origin classifications and ordering. Agent mail retains attributed
+content kinds for both text and media, so generic rich-input conversion cannot elevate it to user
+authorization. Retained-source revisions, MCP attribution, truncation policy, and media preparation
+are captured before canonical append and replayed without replacing newer input reservations.
+Reserved mailbox response IDs cannot be claimed by ordinary provider/public response publication.
+The receiver-owned claim assigns its delivery identity only after generic rich-input preparation
+and before retained-source capture; canonical context and presentation must carry that same ID.
+Accepted publication workers retain their quarantine guard before first poll as well as after it.
+
+Durable directed/subtree settings are restored only through the native runtime, including inside
+armed fork cleanup. An external controller is not silently replaced with native mailbox authority.
+The SQL setting is authoritative independently of any later target/source audit publication.
+
+Inventory keeps the complete immutable store snapshot and watermark but bounds fresh model text
+to 2,048 bytes and eight sender groups. Larger projections commit to every omitted field through
+SHA-256, and recovery still recognizes the original full format without rewriting existing records.
+This bound does not truncate selected payloads or change unfiltered consumption. The new direct
+dependency reuses the already locked SHA-256 crate version; Bazel lock regeneration remains a
+coordinated remote-generation requirement, not a local build or a claimed generated artifact.
+
+Live, replayed, and cold TUI labels accept only confirmed task-path metadata and explicit mapping
+clears; absent legacy metadata does not erase current paths. `/mail` retains full drafts and stable
+retry identity without silently becoming a steer or queued prompt. Authored regression scenarios
+and static Rust parsing are not executable qualification. Later cross-root/name-claim proposals
+and final-subscription APIs remain with their separate defining owners.
 
 ## Integration boundaries and deferred work
 

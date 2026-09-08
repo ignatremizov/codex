@@ -13,6 +13,8 @@ impl LocalAgentControl {
     ) -> CodexResult<()> {
         let state = self.runtime.upgrade()?;
         let thread_id = thread.session.thread_id();
+        self.restore_agent_send_settings(thread.session.presentation_id())
+            .await?;
         let disarm = thread.session.disarm_terminal_presentation();
         // A lifecycle/configuration parent does not turn a specialized session (for
         // example a reviewer) into a ThreadSpawn with ordinary completion delivery.

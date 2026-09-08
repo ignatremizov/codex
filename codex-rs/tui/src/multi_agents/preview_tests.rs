@@ -230,6 +230,7 @@ fn wait_completion_preserves_multiline_agent_response_snapshot() {
 
     let item = ThreadItem::CollabAgentToolCall {
         id: "call-wait".to_string(),
+        mailbox_input: None,
         tool: CollabAgentTool::Wait,
         status: CollabAgentToolCallStatus::Completed,
         observe_commentary: None,
@@ -297,6 +298,7 @@ fn spawn_prompt_preview_preserves_multiline_prompt_snapshot() {
 
     let item = ThreadItem::CollabAgentToolCall {
         id: "call-spawn".to_string(),
+        mailbox_input: None,
         tool: CollabAgentTool::SpawnAgent,
         status: CollabAgentToolCallStatus::Completed,
         observe_commentary: None,
@@ -364,6 +366,7 @@ fn preview_caps_wrapped_rows_for_long_single_lines() {
     let spawn = tool_call_history_cell(
         &ThreadItem::CollabAgentToolCall {
             id: "call-spawn".to_string(),
+            mailbox_input: None,
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,
@@ -391,6 +394,7 @@ fn preview_caps_wrapped_rows_for_long_single_lines() {
     let wait = tool_call_history_cell(
         &ThreadItem::CollabAgentToolCall {
             id: "call-wait".to_string(),
+            mailbox_input: None,
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,

@@ -512,6 +512,11 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub queue_input: Option<bool>,
+    /// Whether this send explicitly requested mailbox delivery (`send_input` with `w:z`).
+    /// This is presentation metadata, not evidence of receiver execution or visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_input: Option<bool>,
     pub sender_thread_id: ThreadId,
     #[serde(default)]
     pub receiver_thread_ids: Vec<ThreadId>,

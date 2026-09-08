@@ -95,6 +95,11 @@ impl ChatWidget {
         args: String,
         text_elements: Vec<TextElement>,
     ) {
+        if cmd == SlashCommand::Mail {
+            self.submit_mailbox_command(args, text_elements);
+            self.bottom_pane.record_pending_slash_command_history();
+            return;
+        }
         self.dispatch_command_with_args(cmd, args, text_elements);
         if cmd != SlashCommand::Goal
             && (!cmd.requires_dispatch_validation() || self.bottom_pane.composer_text().is_empty())
@@ -339,6 +344,9 @@ impl ChatWidget {
                 };
                 self.app_event_tx
                     .send(AppEvent::GenerateRecap { thread_id });
+            }
+            SlashCommand::Mail => {
+                self.submit_mailbox_command(String::new(), Vec::new());
             }
             SlashCommand::Review => {
                 if source == SlashCommandDispatchSource::Live {
@@ -1574,6 +1582,8 @@ impl ChatWidget {
             return QueueDrain::Stop;
         }
         match cmd {
+            // Mailbox acceptance does not start a payload-bearing turn or block queued work.
+            SlashCommand::Mail => QueueDrain::Continue,
             SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::Daemon

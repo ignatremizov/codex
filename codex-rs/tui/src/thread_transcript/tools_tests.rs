@@ -464,6 +464,7 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
                 | CollabAgentTool::Wait
         );
         let item = ThreadItem::CollabAgentToolCall {
+            mailbox_input: None,
             id: "pending-agent-call".to_string(),
             tool,
             status,

@@ -2423,10 +2423,12 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                     thread_id: receiver_thread_id.to_string(),
+                    task_path: None,
                     agent_nickname: Some("Parfit".to_string()),
                     agent_role: Some("reviewer".to_string()),
                 }],
@@ -2469,6 +2471,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -2515,6 +2518,7 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
                         wake_on_completion,
                         target_messages: Some(false),
                         queue_input: Some(false),
+                        mailbox_input: None,
                         sender_thread_id: observer_thread_id.to_string(),
                         receiver_thread_ids: vec![receiver_thread_id.to_string()],
                         receiver_agents: Vec::new(),
@@ -9686,6 +9690,14 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
         Some("explorer".to_string()),
         /*is_closed*/ false,
     );
+    app.agent_navigation.upsert_alias(
+        receiver_thread_id,
+        /*agent_ref*/ 2,
+        Some("Robie".to_string()),
+        codex_app_server_protocol::AgentAliasState::Active,
+    );
+    app.agent_navigation
+        .update_task_path(receiver_thread_id, Some("/root/mailbox-test".to_string()));
 
     let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
         requires_openai_auth: true,
@@ -9732,6 +9744,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             wake_on_completion: None,
                             target_messages: None,
                             queue_input: None,
+                            mailbox_input: None,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
                             receiver_agents: Vec::new(),
@@ -9754,7 +9767,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
     while let Ok(event) = app_event_rx.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {
             let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
-            saw_named_wait |= transcript.contains("Robie [explorer]");
+            saw_named_wait |= transcript.contains("Robie [explorer] /root/mailbox-test");
         }
     }
 
@@ -9789,10 +9802,12 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                     thread_id: receiver_thread_id.to_string(),
+                    task_path: None,
                     agent_nickname: None,
                     agent_role: None,
                 }],

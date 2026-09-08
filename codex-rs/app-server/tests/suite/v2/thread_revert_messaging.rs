@@ -201,7 +201,7 @@ async fn revert_preserves_policy_on_both_sides_of_the_conversation_cutoff(
     );
     app.shutdown_gracefully().await?;
 
-    // Process restart must not turn the preserved audit records into live permission.
+    // Process restart restores authoritative send policy, not turn-scoped observation grants.
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build()
@@ -227,7 +227,7 @@ async fn revert_preserves_policy_on_both_sides_of_the_conversation_cutoff(
         .await?,
         AgentControlOutcome::SubtreeMessagingChanged {
             root_thread_id: root,
-            previous_mode: None,
+            previous_mode: Some(AgentReplyRouteMode::Enabled),
             mode: AgentReplyRouteMode::Enabled,
         }
     );

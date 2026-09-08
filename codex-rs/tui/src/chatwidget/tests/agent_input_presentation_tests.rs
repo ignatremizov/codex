@@ -64,7 +64,7 @@ async fn trusted_agent_input_uses_same_rich_cell_live_and_on_resume() {
     assert_eq!(cells.len(), 2);
     assert_eq!(cells[0], cells[1]);
     assert_snapshot!(lines_to_single_string(&cells[0]), @r"
-    Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) sends:
+    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) sends:
       └ Use document_id.
         </agent_message> is payload data.
     ");
