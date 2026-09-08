@@ -6,15 +6,17 @@ use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
+use ratatui::text::Span;
 
 use super::HistoryCell;
+use crate::agent_color::nickname_color;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
 #[derive(Debug)]
 pub(crate) struct AgentInputHistoryCell {
     attribution: AgentInputAttribution,
-    title: String,
+    title: Line<'static>,
     payload: Vec<String>,
     preview_rows: usize,
 }
@@ -28,12 +30,13 @@ impl AgentInputHistoryCell {
     ) -> Self {
         let mut title = identity_label(&attribution.sender);
         if viewed_thread.is_some_and(|id| id.to_string() != attribution.recipient.thread_id) {
-            title.push_str(&format!(
-                " → {} (presentation only)",
-                identity_label(&attribution.recipient),
-            ));
+            title.spans.push(" → ".into());
+            title
+                .spans
+                .extend(identity_label(&attribution.recipient).spans);
+            title.spans.push(" (presentation only)".italic());
         }
-        title.push_str(" sends:");
+        title.spans.push(" sends:".bold());
         let payload = if input.is_empty() {
             vec![fallback_text]
         } else {
@@ -75,8 +78,10 @@ impl AgentInputHistoryCell {
     }
     fn render_lines(&self, width: u16, preview_rows: usize) -> Vec<Line<'static>> {
         let mut lines = word_wrap_lines(
-            [Line::from(self.title.clone().cyan())],
-            RtOptions::new(width.max(1) as usize),
+            [self.title.clone()],
+            RtOptions::new(width.max(1) as usize)
+                .initial_indent("• ".dim().into())
+                .subsequent_indent("  ".into()),
         );
         let mut payload_lines = Vec::new();
         for (index, text) in self
@@ -115,7 +120,7 @@ impl HistoryCell for AgentInputHistoryCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = vec![self.title.clone().into()];
+        let mut lines = vec![self.title.to_string().into()];
         lines.extend(
             self.payload
                 .iter()
@@ -136,13 +141,9 @@ impl HistoryCell for AgentInputHistoryCell {
     }
 }
 
-fn identity_label(identity: &AgentInputIdentity) -> String {
-    let mut label = identity
-        .nickname
-        .as_deref()
-        .unwrap_or(&identity.thread_id)
-        .escape_debug()
-        .to_string();
+fn identity_label(identity: &AgentInputIdentity) -> Line<'static> {
+    let nickname = identity.nickname.as_deref().unwrap_or(&identity.thread_id);
+    let mut label = String::new();
     if let Some(role) = &identity.role {
         label.push_str(&format!(" [{}]", role.escape_debug()));
     }
@@ -160,7 +161,13 @@ fn identity_label(identity: &AgentInputIdentity) -> String {
         (None, Some(effort)) => label.push_str(&format!(" ({effort})")),
         (None, None) => {}
     }
-    label
+    vec![
+        Span::from(nickname.escape_debug().to_string())
+            .fg(nickname_color(nickname))
+            .bold(),
+        label.dim(),
+    ]
+    .into()
 }
 
 #[cfg(test)]

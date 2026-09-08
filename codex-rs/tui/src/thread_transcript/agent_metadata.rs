@@ -2,6 +2,7 @@
 
 use super::TranscriptCells;
 use crate::multi_agents::AgentMetadata;
+use crate::multi_agents::AgentTaskPath;
 use crate::multi_agents::CollabAgentHistoryCell;
 use crate::multi_agents::spawn_request_summary;
 use codex_app_server_protocol::ThreadItem;
@@ -36,6 +37,12 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
                     if agent.agent_role.is_some() {
                         entry.agent_role.clone_from(&agent.agent_role);
                     }
+                    if let Some(task_path) = &agent.task_path {
+                        entry.task_path = AgentTaskPath::Known(Some(task_path.clone()));
+                    }
+                    if let Some(request) = spawn_request_summary(item) {
+                        entry.spawn_request = Some(request);
+                    }
                 }
                 if let Some(request) = spawn_request_summary(item) {
                     for thread_id in receiver_thread_ids {
@@ -50,6 +57,8 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
                 target_thread_id: Some(thread_id),
                 nickname,
                 role,
+                task_path,
+                task_path_mapping,
                 status: UserAgentControlStatus::Succeeded,
                 ..
             } => {
@@ -65,6 +74,15 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
                 }
                 if let Some(request) = spawn_request_summary(item) {
                     entry.spawn_request = Some(request);
+                }
+                if let Some(task_path) = task_path {
+                    entry.task_path = AgentTaskPath::Known(Some(task_path.clone()));
+                }
+                for mapping in task_path_mapping {
+                    if let Ok(thread_id) = ThreadId::from_string(&mapping.thread_id) {
+                        metadata.entry(thread_id).or_default().task_path =
+                            AgentTaskPath::Known(mapping.task_path.clone());
+                    }
                 }
             }
             _ => {}

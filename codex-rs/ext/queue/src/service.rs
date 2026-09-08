@@ -6,6 +6,7 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use codex_core::CodexThread;
+use codex_core::MailboxInventoryAdmission;
 use codex_core::StartIfIdleSubmission;
 use codex_core::ThreadManager;
 use codex_core::TurnInput;
@@ -187,21 +188,24 @@ impl QueuedItemService {
             }
             last_version = Some(version);
             last_revision = observed_revision;
-            newly_loaded_threads.clear();
+            let loaded_threads = std::mem::take(&mut newly_loaded_threads);
             dispatches.retain(|_, dispatch| !dispatch.is_finished());
 
             let mut changed_threads = HashSet::new();
             for (thread_id, _) in changes {
-                if !changed_threads.insert(thread_id) {
-                    continue;
+                if changed_threads.insert(thread_id) {
+                    service.emit_changed(thread_id);
                 }
-                service.emit_changed(thread_id);
+            }
+            changed_threads.extend(loaded_threads.iter().copied());
+            for thread_id in changed_threads {
                 if dispatches
                     .get(&thread_id)
                     .is_some_and(|dispatch| !dispatch.is_finished())
                 {
                     continue;
                 }
+                let mut reevaluate_loaded_idle = loaded_threads.contains(&thread_id);
                 let service = Arc::downgrade(&service);
                 let dispatch = tokio::spawn(async move {
                     loop {
@@ -229,8 +233,16 @@ impl QueuedItemService {
                                 .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
                                 .await
                             {
-                                Ok(items) if items.is_empty() => return,
-                                Ok(_) => service.wake_if_loaded(thread_id).await,
+                                Ok(items) if items.is_empty() => {
+                                    if reevaluate_loaded_idle {
+                                        service.wake_if_loaded(thread_id).await;
+                                    }
+                                    return;
+                                }
+                                Ok(_) => {
+                                    reevaluate_loaded_idle = false;
+                                    service.wake_if_loaded(thread_id).await;
+                                }
                                 Err(error) => {
                                     tracing::warn!(%thread_id, %error, "failed to check queued user input");
                                 }
@@ -463,6 +475,40 @@ impl QueuedItemService {
                         %error,
                         "core could not start queued user input"
                     );
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    pub(super) async fn dispatch_inventory_if_idle(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), QueueServiceError> {
+        loop {
+            let guard = self.dispatch_guard(thread_id).await;
+            if !self
+                .queue
+                .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
+                .await?
+                .is_empty()
+            {
+                return Ok(());
+            }
+            let Some(manager) = self.thread_manager.upgrade() else {
+                return Ok(());
+            };
+            let Ok(thread) = manager.get_thread(thread_id).await else {
+                return Ok(());
+            };
+            match thread
+                .try_start_mailbox_inventory_if_idle_with_lease(guard)
+                .await?
+            {
+                // Only proven obsolete precommit with newer mail retries.
+                // Core cleared its placeholder and released every lease.
+                MailboxInventoryAdmission::Retry => continue,
+                MailboxInventoryAdmission::Deferred | MailboxInventoryAdmission::Started => {
                     return Ok(());
                 }
             }

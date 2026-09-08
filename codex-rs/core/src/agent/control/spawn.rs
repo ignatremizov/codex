@@ -558,6 +558,7 @@ impl LocalAgentControl {
                     .unwrap_or(MultiAgentVersion::V1),
             )?;
         }
+        self.restore_agent_send_settings(new_thread.thread.session.presentation_id()).await?;
         state.publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
             if !reservation.commit_if_absent(agent_metadata.clone()) {
                 return Err(CodexErr::InvalidRequest("spawn registration changed during setup".into()));

@@ -422,6 +422,7 @@ async fn restore_thread_input_state_restores_pending_steers_without_downgrading_
             questions: None,
             initial_user_message: None,
             startup_submission: None,
+            mailbox_retry: None,
             composer: None,
             safety_buffering_prompt: None,
             safety_buffering_source: UserMessageSource::Prompt,
