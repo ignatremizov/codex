@@ -3,6 +3,7 @@ use crate::agent::control::AgentTerminalPresentation;
 use crate::agent::control::CompletionParentAdoption;
 use crate::agent::control::CompletionParentBinding;
 use crate::agent::control::LocalAgentControl;
+use crate::agent::control::PreparedRootCompletionAudit;
 use crate::agent::control::TerminalPresentationDelivery;
 use crate::codex_thread::CodexThread;
 
@@ -242,6 +243,52 @@ impl Session {
         turn_context: &TurnContext,
         event: &EventMsg,
     ) -> Option<AgentTerminalPresentation> {
+        if turn_context.multi_agent_version == MultiAgentVersion::V1
+            && let Some(status) = agent_status_from_event(event).filter(is_final)
+            && self
+                .terminal_presentation_armed
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let prepared: Option<PreparedRootCompletionAudit> = match self
+                .services
+                .agent_control
+                .prepare_root_completion_audit(self.presentation_id())
+                .await
+            {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    tracing::debug!(%error, "root conclusion audit is unavailable");
+                    None
+                }
+            };
+            if let Some(prepared) = prepared {
+                let _terminal = self
+                    .terminal_publication_lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Only an authored live turn can produce oversight. Received presentations,
+                // cold statuses and repeated teardown events do not arm this path.
+                let authored = self
+                    .response_observation_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .live_turn_id
+                    .as_deref()
+                    == Some(turn_context.sub_id.as_str());
+                if authored
+                    && !self
+                        .thread_removal_started
+                        .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    let _ = self.services.agent_control.record_root_completion_audit(
+                        prepared,
+                        self.presentation_id(),
+                        &turn_context.sub_id,
+                        status,
+                    );
+                }
+            }
+        }
         if self.spawn_parent_thread_id.is_none() {
             if let Some(status) = agent_status_from_event(event).filter(is_final) {
                 let _terminal_guard = self

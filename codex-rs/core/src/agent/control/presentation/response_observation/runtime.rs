@@ -16,20 +16,15 @@ impl LocalAgentControl {
             .and_then(Weak::upgrade);
         state.revoke_response_observation((parent, child));
         state.response_queued.remove(&(parent, child));
-        let keys = state
+        let terminals = state
             .response_terminals
-            .keys()
-            .filter(|(observer, target, _)| *observer == parent && *target == child)
-            .cloned()
+            .extract_if(|(observer, target, _), _| *observer == parent && *target == child)
+            .map(|(_, inner)| AgentTerminalPresentation { inner })
             .collect::<Vec<_>>();
-        let terminals = keys
-            .into_iter()
-            .filter_map(|key| {
-                let terminal = state.response_terminals.remove(&key)?;
-                state.contexts.remove(&terminal.context_id);
-                Some(AgentTerminalPresentation { inner: terminal })
-            })
-            .collect::<Vec<_>>();
+        // Release associated contexts while locked, but retain deliveries until after unlock.
+        for terminal in &terminals {
+            state.contexts.remove(&terminal.inner.context_id);
+        }
         if let Some(relationship) = state
             .response_observation_by_observer_child
             .get_mut(&(parent, child))
@@ -81,6 +76,36 @@ impl LocalAgentControl {
     ) -> Option<AgentTerminalPresentation> {
         let mut state = self.wait_agent_presentations.state();
         let key = (parent, child, turn_id.to_owned());
+        if state.root_audit_turns.contains(&key) {
+            let final_response = state
+                .response_observation_by_observer_child
+                .get(&(parent, child))
+                .and_then(|relationship| relationship.turns.get(turn_id))
+                .map(|observation| observation.final_response);
+            let final_response = final_response?;
+            // A racing actual observer may adopt the audit's immutable terminal/wait token,
+            // but only after obtaining its own accepted canonical-delivery capability.
+            if final_response != FinalResponseObservation::None {
+                let observer = state.response_observers.get(&(parent, child))?.upgrade()?;
+                if observer.session.presentation_id() != parent {
+                    return None;
+                }
+                let accepted = observer
+                    .session
+                    .submission_admission
+                    .try_accept_completion_delivery()?;
+                let inner = state.response_terminals.get(&key)?;
+                *inner
+                    .parent_thread
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(observer);
+                *inner
+                    .accepted
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(accepted);
+                state.root_audit_turns.remove(&key);
+            }
+        }
         if let Some(inner) = state.response_terminals.get(&key) {
             let status = inner.status.clone();
             let presentation = AgentTerminalPresentation {
