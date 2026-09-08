@@ -239,6 +239,19 @@ Permission updates need not enumerate all agents. Reuse existing identity/contex
 
 Preserve sender→recipient presentation in Main for peer communication, marked presentation-only relative to Main's model. Such display copies must not become Main model inputs or accidental subscriptions. Live, resumed, paginated, non-paginated, Review, and Full transcript projections must retain attribution and full auditable payloads under their existing presentation contracts.
 
+Main also receives a durable, presentation-only conclusion for subsequent live V1 child turns,
+including turns initiated by a peer. These conclusions use the canonical completion identity and
+the `NotVisible` marker (`○`): they do not add model context, wake Main, replace Main's own final
+response, or subscribe Main to future replies. Unlike live peer-input display copies, conclusion
+rows are stored for transcript replay. Cold resume does not regenerate audits from old turns or
+restore messaging grants.
+
+An explicit Main final-response observation of the same target turn (`f`, passive, or `x`) owns
+its existing canonical delivery instead of producing an additional oversight row. An active
+`wait_agent` can claim the same terminal presentation through normal wait arbitration. A policy
+on an earlier turn does not suppress a later peer-turn audit. The child must explicitly message
+or wake Main if model attention is needed; Main may then explicitly observe subsequent work.
+
 ## V1/V2 interoperability boundary
 
 Share identity, attribution envelopes, and transcript projection where semantics match. Retain V1's single `send_input` plus `w` contract. Do not import V2's task/mailbox lifecycle merely to obtain readable paths or sender attribution.

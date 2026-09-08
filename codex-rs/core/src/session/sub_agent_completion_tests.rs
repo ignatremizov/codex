@@ -719,12 +719,14 @@ async fn terminal_presentation_rearms_only_after_running_status() {
         "turn-1",
         AgentStatus::Completed(Some("done".to_string())),
         TerminalPresentationDelivery::Direct,
+        /*root_audit*/ None,
     );
     let teardown = session.record_sub_agent_terminal_presentation(
         parent_thread_id,
         "shutdown",
         AgentStatus::Shutdown,
         TerminalPresentationDelivery::Watcher,
+        /*root_audit*/ None,
     );
 
     assert!(first.is_some());
@@ -736,6 +738,7 @@ async fn terminal_presentation_rearms_only_after_running_status() {
         "turn-2",
         AgentStatus::Completed(Some("done again".to_string())),
         TerminalPresentationDelivery::Direct,
+        /*root_audit*/ None,
     );
     assert!(next.is_some());
 }
@@ -758,6 +761,7 @@ async fn historical_terminal_does_not_replace_a_newer_turn_status() {
         "historical-turn",
         AgentStatus::Completed(Some("historical result".to_string())),
         TerminalPresentationDelivery::Direct,
+        /*root_audit*/ None,
     );
     assert!(presentation.is_some());
     assert_eq!(session.agent_status.borrow().clone(), AgentStatus::Running);
@@ -812,6 +816,7 @@ async fn removal_settles_a_prepared_terminal_response_snapshot() {
                 "prepared-turn",
                 AgentStatus::Completed(Some("prepared result".to_string())),
                 TerminalPresentationDelivery::Direct,
+                /*root_audit*/ None,
             )
             .is_some()
     );
@@ -914,6 +919,7 @@ async fn watcher_terminal_is_recorded_for_every_observer_before_status_is_final(
         "turn-1",
         AgentStatus::Completed(Some("done".to_string())),
         TerminalPresentationDelivery::Watcher,
+        /*root_audit*/ None,
     );
 
     assert!(presentation.is_none());

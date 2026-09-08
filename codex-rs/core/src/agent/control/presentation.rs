@@ -20,10 +20,12 @@ use uuid::Uuid;
 
 mod live_revert_messaging;
 mod response_observation;
+mod root_completion_audit;
 mod subtree_messaging;
 
 use live_revert_messaging::LiveRevertMessagingContinuity;
 pub use live_revert_messaging::LiveRevertMessagingSnapshot;
+pub(crate) use root_completion_audit::PreparedRootCompletionAudit;
 
 pub(in crate::agent::control) use self::response_observation::CommentaryDeliveryRoute;
 pub(in crate::agent::control) use self::response_observation::FinalResponseObservationReplacement;
@@ -135,6 +137,8 @@ impl SessionPresentationId {
 pub(crate) enum TerminalPresentationDelivery {
     Direct,
     Watcher,
+    /// Main-only oversight of an otherwise unobserved V1 turn, without a subscription.
+    RootAudit,
 }
 
 pub(crate) enum ConditionalResponseObservationRevocation {
@@ -496,6 +500,14 @@ impl AgentControl {
     ) -> Option<AgentTerminalPresentation> {
         let mut state = self.wait_agent_presentations.state();
         let observer_child = (parent, child);
+        if delivery == TerminalPresentationDelivery::RootAudit
+            && state
+                .response_observation_by_observer_child
+                .get(&observer_child)
+                .is_some_and(|relationship| relationship.turns.contains_key(turn_id))
+        {
+            return None;
+        }
         if state
             .terminal_turns_by_observer_child
             .get(&observer_child)
@@ -557,6 +569,17 @@ impl AgentControl {
         on_recorded();
         let presentation = match delivery {
             TerminalPresentationDelivery::Direct => Some(presentation),
+            TerminalPresentationDelivery::RootAudit => {
+                // Let a wait admitted after status publication claim this same token,
+                // until automatic presentation wins the existing arbitration.
+                let in_flight = state
+                    .in_flight_watcher_terminals
+                    .entry(observer_child)
+                    .or_default();
+                in_flight.retain(|presentation| presentation.strong_count() > 0);
+                in_flight.push(Arc::downgrade(&presentation.inner));
+                Some(presentation)
+            }
             TerminalPresentationDelivery::Watcher => {
                 state
                     .watcher_terminals

@@ -3328,13 +3328,19 @@ impl Session {
         }
     }
 
-    /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
+    /// Presents V1 root oversight or forwards V2 terminal events to the direct parent.
     async fn maybe_notify_parent_of_terminal_turn(
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
         terminal_presentation: Option<AgentTerminalPresentation>,
     ) {
+        if turn_context.multi_agent_version == MultiAgentVersion::V1 {
+            if let Some(audit) = terminal_presentation {
+                audit.publish_root_completion_audit(self.services.agent_control.clone());
+            }
+            return;
+        }
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
             return;
         }

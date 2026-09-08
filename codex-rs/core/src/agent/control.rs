@@ -95,6 +95,7 @@ pub(crate) use self::legacy::LiveAgentMetadataDisposition;
 pub(crate) use self::presentation::AgentTerminalPresentation;
 use self::presentation::CommentaryDeliveryRoute;
 pub use self::presentation::LiveRevertMessagingSnapshot;
+pub(crate) use self::presentation::PreparedRootCompletionAudit;
 pub(crate) use self::presentation::ReplacedFinalResponseObservationBinding;
 use self::presentation::ResponseObservationBinding;
 use self::presentation::ResponseObservationBindingPublication;
