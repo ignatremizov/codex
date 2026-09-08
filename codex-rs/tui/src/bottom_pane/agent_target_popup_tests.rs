@@ -54,11 +54,6 @@ fn targets() -> Vec<AgentPromptTarget> {
         },
         AgentPromptTarget {
             thread_id: None,
-            selector: "sends".to_string(),
-            label: "Control directed or subtree messaging".to_string(),
-        },
-        AgentPromptTarget {
-            thread_id: None,
             selector: "reviewer".to_string(),
             label: "New reviewer agent".to_string(),
         },
@@ -150,17 +145,8 @@ fn action_target_completion_only_covers_existing_target_argument() {
         Some(AgentTargetCompletion {
             range: "/agent observe 2 ".len().."/agent observe 2 presentation".len(),
             query: "presentation".to_string(),
-            scope: AgentTargetCompletionScope::ObservationMode,
+            scope: AgentTargetCompletionScope::ObservationObserverOrMode,
             action: Some("observe"),
-        })
-    );
-    assert_eq!(
-        completion("/agent sends 2 enable", "/agent sends 2 enable".len()),
-        Some(AgentTargetCompletion {
-            range: "/agent sends 2 ".len().."/agent sends 2 enable".len(),
-            query: "enable".to_string(),
-            scope: AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
-            action: Some("sends"),
         })
     );
     assert_eq!(
@@ -299,76 +285,64 @@ fn observation_mode_popup_snapshot() {
 }
 
 #[test]
-fn subtree_sends_completion_offers_only_modes_after_all() {
-    let input = "/agent sends all ";
-    let completion =
-        agent_target_completion(input, input.len(), &[]).expect("subtree mode completion");
-    assert_eq!(completion.scope, AgentTargetCompletionScope::ReplyRouteMode);
+fn observe_completion_tracks_from_observer_and_final_mode_tokens() {
+    for (input, token, scope) in [
+        (
+            "/agent observe Main fr",
+            "fr",
+            AgentTargetCompletionScope::ObservationObserverOrMode,
+        ),
+        (
+            "/agent observe Main from ",
+            "",
+            AgentTargetCompletionScope::ExistingTarget,
+        ),
+        (
+            "/agent observe Main from nick:\"Charles Peirce\"",
+            "nick:\"Charles Peirce\"",
+            AgentTargetCompletionScope::ExistingTarget,
+        ),
+        (
+            "/agent observe Main from nick:\"Charles Peirce\" pa",
+            "pa",
+            AgentTargetCompletionScope::ObservationMode,
+        ),
+    ] {
+        assert_eq!(
+            completion(input, input.len()),
+            Some(AgentTargetCompletion {
+                range: input.len() - token.len()..input.len(),
+                query: token.to_string(),
+                scope,
+                action: Some("observe"),
+            }),
+            "{input}"
+        );
+    }
+    let input = "/agent observe Main from Peirce passive ";
+    assert_eq!(completion(input, input.len()), None);
 }
 
 #[test]
-fn reply_route_mode_popup_snapshot() {
-    let targets = AGENT_REPLY_ROUTE_MODE_CHOICES
+fn observation_observer_or_mode_popup_snapshot() {
+    let targets = AGENT_OBSERVATION_MODE_CHOICES
         .into_iter()
-        .chain([("to", "Choose a different recipient")])
+        .chain([("from", "Choose the observing agent")])
         .map(|(selector, label)| AgentPromptTarget {
             thread_id: None,
             selector: selector.to_string(),
             label: label.to_string(),
         })
         .collect();
-    let popup = AgentTargetPopup::new(
-        targets,
-        "",
-        AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
-    );
-
+    let input = "/agent observe Main ";
+    let completion = completion(input, input.len()).expect("observation choices");
+    let popup = AgentTargetPopup::new(targets, &completion.query, completion.scope);
     insta::assert_snapshot!(render_popup(&popup), @r"
-      enable   Allow messaging until disabled
-      disable  Block messaging until enabled
-      to       Choose a different recipient
+      passive       Deliver the final response without waking
+      wake          Deliver the final response and wake
+      presentation  Keep the final response out of model context
+      from          Choose the observing agent
     ");
-}
-
-#[test]
-fn completes_reply_recipient_and_then_mode() {
-    for (input, prefix, scope) in [
-        (
-            "/agent sends 2 to 3",
-            "/agent sends 2 to ",
-            AgentTargetCompletionScope::ExistingTarget,
-        ),
-        (
-            "/agent sends 2 to 3 disable",
-            "/agent sends 2 to 3 ",
-            AgentTargetCompletionScope::ReplyRouteMode,
-        ),
-        (
-            "/agent 2 sends to 3",
-            "/agent 2 sends to ",
-            AgentTargetCompletionScope::ExistingTarget,
-        ),
-        (
-            "/agent 2 sends to 3 disable",
-            "/agent 2 sends to 3 ",
-            AgentTargetCompletionScope::ReplyRouteMode,
-        ),
-        (
-            "/agent 2 sends enable",
-            "/agent 2 sends ",
-            AgentTargetCompletionScope::ReplyRouteRecipientOrMode,
-        ),
-    ] {
-        assert_eq!(
-            completion(input, input.len()),
-            Some(AgentTargetCompletion {
-                range: prefix.len()..input.len(),
-                query: input[prefix.len()..].to_string(),
-                scope,
-                action: Some("sends"),
-            })
-        );
-    }
 }
 
 #[test]

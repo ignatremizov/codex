@@ -3412,28 +3412,15 @@ impl App {
             AppEvent::ObserveAgent {
                 source_thread_id,
                 selector,
+                observer,
                 response_handling,
             } => {
                 self.observe_agent_from_selector(
                     app_server,
                     source_thread_id,
                     selector,
+                    observer,
                     response_handling,
-                )
-                .await;
-            }
-            AppEvent::SetAgentReplyRoute {
-                source_thread_id,
-                selector,
-                recipient,
-                mode,
-            } => {
-                self.set_agent_reply_route_from_selector(
-                    app_server,
-                    source_thread_id,
-                    selector,
-                    recipient,
-                    mode,
                 )
                 .await;
             }

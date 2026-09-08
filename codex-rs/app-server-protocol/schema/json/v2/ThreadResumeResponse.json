@@ -2569,6 +2569,13 @@
             "action": {
               "$ref": "#/definitions/UserAgentControlAction"
             },
+            "authoredObserverSelector": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "authoredSelector": {
               "type": [
                 "string",
@@ -2636,6 +2643,13 @@
             "observeCommentary": {
               "type": [
                 "boolean",
+                "null"
+              ]
+            },
+            "observerThreadId": {
+              "default": null,
+              "type": [
+                "string",
                 "null"
               ]
             },

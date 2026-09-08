@@ -21,7 +21,7 @@ fn response_flags_accept_reordering_repetition_and_counted_cancellation() {
         ("qfxx", "qx"),
         ("xqc", "cqx"),
         ("xq", "qx"),
-        ("ccmmqqxff", "cfmq"),
+        ("ccqqxff", "cfq"),
         ("xxff", "fx"),
     ] {
         let response = parse_response_mode(canonical).expect("valid canonical response flags");
@@ -251,56 +251,20 @@ fn double_dash_preserves_option_shaped_prompt_text() {
 }
 
 #[test]
-fn reply_routes_support_explicit_recipients_in_both_command_orders() {
-    for input in ["sends 2 to 3 enable", "2 sends to 3 enable"] {
-        assert_eq!(
-            parse_agent_command(input),
-            Ok(AgentCommand::ReplyRoute {
-                selector: selector(AgentSelectorKind::Ref(2), "2"),
-                recipient: Some(selector(AgentSelectorKind::Ref(3), "3")),
-                mode: AgentReplyRouteMode::Enabled,
-            })
-        );
-    }
-    for input in ["sends 2 to", "sends 2 to 3", "sends 2 to 3 enable extra"] {
-        assert!(parse_agent_command(input).is_err(), "{input}");
-    }
-}
-
-#[test]
-fn subtree_sends_requires_only_a_mode() {
-    assert_eq!(
-        parse_agent_command("sends all enable"),
-        Ok(AgentCommand::ReplyRoute {
-            selector: selector(AgentSelectorKind::UnprefixedName("all".into()), "all"),
-            recipient: None,
-            mode: AgentReplyRouteMode::Enabled,
-        })
-    );
-    for invalid in [
-        "sends all",
-        "sends all to 2 enable",
-        "sends all enable extra",
-    ] {
-        assert!(parse_agent_command(invalid).is_err(), "{invalid}");
-    }
-}
-
-#[test]
 fn parses_lifecycle_actions() {
     assert_eq!(
-        parse_agent_command("queue 2 w:cmqx follow up"),
+        parse_agent_command("queue 2 w:cqx follow up"),
         Ok(AgentCommand::Queue {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
             response: Some(AgentResponseHandling::new(
                 /*commentary*/ true,
                 AgentFinalResponseHandling::Presentation,
-                /*target_messages*/ true,
+                /*target_messages*/ false,
                 /*queue_input*/ true,
             )),
             prompt: Some(AgentCommandPrompt {
                 text: "follow up",
-                offset: "queue 2 w:cmqx ".len(),
+                offset: "queue 2 w:cqx ".len(),
             }),
         })
     );
@@ -377,25 +341,69 @@ fn parses_lifecycle_actions() {
         parse_agent_command("observe 2 presentation"),
         Ok(AgentCommand::Observe {
             selector: selector(AgentSelectorKind::Ref(2), "2"),
+            observer: None,
             mode: AgentObservationMode::Presentation,
         })
     );
-    assert_eq!(
-        parse_agent_command("sends 2 enable"),
-        Ok(AgentCommand::ReplyRoute {
-            selector: selector(AgentSelectorKind::Ref(2), "2"),
-            recipient: None,
-            mode: AgentReplyRouteMode::Enabled,
-        })
-    );
-    assert_eq!(
+    assert_matches!(
         parse_agent_command("2 sends disable"),
-        Ok(AgentCommand::ReplyRoute {
-            selector: selector(AgentSelectorKind::Ref(2), "2"),
-            recipient: None,
-            mode: AgentReplyRouteMode::Disabled,
+        Ok(AgentCommand::SelectOrDispatch {
+            selector: AgentSelector {
+                kind: AgentSelectorKind::Ref(2),
+                ..
+            },
+            prompt: Some(AgentCommandPrompt {
+                text: "sends disable",
+                ..
+            }),
+            ..
         })
     );
+}
+
+#[test]
+fn observe_accepts_an_explicit_observer_without_changing_target_or_mode() {
+    for (mode, expected_mode) in [
+        ("passive", AgentObservationMode::Passive),
+        ("wake", AgentObservationMode::Wake),
+        ("presentation", AgentObservationMode::Presentation),
+    ] {
+        assert_eq!(
+            parse_agent_command(&format!("observe Main from nick:\"Charles Peirce\" {mode}")),
+            Ok(AgentCommand::Observe {
+                selector: selector(AgentSelectorKind::Nickname("Main".to_string()), "Main"),
+                observer: Some(selector(
+                    AgentSelectorKind::Nickname("Charles Peirce".to_string()),
+                    "nick:\"Charles Peirce\"",
+                )),
+                mode: expected_mode,
+            })
+        );
+        assert_eq!(
+            parse_agent_command(&format!("observe 1 from ref:146 {mode}")),
+            Ok(AgentCommand::Observe {
+                selector: selector(AgentSelectorKind::Ref(1), "1"),
+                observer: Some(selector(AgentSelectorKind::Ref(146), "ref:146")),
+                mode: expected_mode,
+            })
+        );
+    }
+}
+
+#[test]
+fn observe_rejects_incomplete_repeated_or_trailing_observer_clauses() {
+    for input in [
+        "observe Main",
+        "observe Main from",
+        "observe Main from Peirce",
+        "observe Main from Peirce from Robie passive",
+        "observe Main passive from Peirce",
+        "observe Main from Peirce w:f",
+        "observe Main from Peirce passive extra",
+        "observe Main from nick:\"\" passive",
+    ] {
+        assert!(parse_agent_command(input).is_err(), "{input}");
+    }
 }
 
 #[test]
@@ -481,7 +489,6 @@ fn rejects_ambiguous_or_invalid_control_syntax_before_mutation() {
             "`close` accepts response handling but not a prompt",
         ),
         ("observe 2 maybe", "Invalid observation mode `maybe`"),
-        ("sends 2 maybe", "Invalid reply-route mode `maybe`"),
         ("nick:\"unterminated", "Unterminated double quote"),
         ("nick:\"bad\\q\"", "Unsupported escape `\\q`"),
     ] {
