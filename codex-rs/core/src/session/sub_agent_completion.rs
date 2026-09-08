@@ -3,6 +3,7 @@ use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::agent::agent_status_from_event;
 use crate::agent::control::AgentTerminalPresentation;
+use crate::agent::control::PreparedRootCompletionAudit;
 use crate::agent::control::TerminalPresentationDelivery;
 use crate::agent::status::is_final;
 use crate::turn_timing::now_unix_timestamp_ms;
@@ -349,6 +350,7 @@ impl Session {
         turn_id: &str,
         status: AgentStatus,
         delivery: TerminalPresentationDelivery,
+        root_audit: Option<PreparedRootCompletionAudit>,
     ) -> Option<AgentTerminalPresentation> {
         if !self
             .terminal_presentation_armed
@@ -366,6 +368,25 @@ impl Session {
             return None;
         }
         let child = self.presentation_id();
+        let mut _audit_observation = None;
+        let root_audit = root_audit.and_then(|prepared| {
+            _audit_observation = Some(prepared.observation);
+            let audit = self
+                .services
+                .agent_control
+                .record_agent_terminal_presentation(
+                    prepared.parent,
+                    child,
+                    turn_id,
+                    status.clone(),
+                    TerminalPresentationDelivery::RootAudit,
+                    || {},
+                );
+            if let Some(audit) = &audit {
+                audit.restore_accepted_completion_delivery(prepared.admission);
+            }
+            audit
+        });
         // Observer-owned callbacks must run before either V1 watcher or V2 direct publication
         // exposes final status. Mixed-version V1 callers can observe an independently controlled
         // V2 target through the same response-event stream.
@@ -382,7 +403,7 @@ impl Session {
                 if updates_agent_status {
                     self.replace_agent_status_for_turn_locked(status, Some(turn_id));
                 }
-                return None;
+                return root_audit;
             }
             // Publish every V1 observer's pending final-outcome presentation before making the
             // shared child status final. A wait that snapshots that final status can then claim
@@ -404,7 +425,7 @@ impl Session {
             if updates_agent_status {
                 self.replace_agent_status_for_turn_locked(status, Some(turn_id));
             }
-            return None;
+            return root_audit;
         }
         let parent = self
             .services
@@ -472,11 +493,33 @@ impl Session {
         if !is_final(&status) {
             return None;
         }
+        let root_audit = if turn_context.multi_agent_version
+            == codex_protocol::protocol::MultiAgentVersion::V1
+            && self
+                .terminal_presentation_armed
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            match self
+                .services
+                .agent_control
+                .prepare_root_completion_audit(self.presentation_id())
+                .await
+            {
+                Ok(audit) => audit,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to prepare root completion audit");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         self.record_sub_agent_terminal_presentation(
             *parent_thread_id,
             &turn_context.sub_id,
             status,
             delivery,
+            root_audit,
         )
     }
 
@@ -513,6 +556,7 @@ impl Session {
             turn_id,
             status,
             TerminalPresentationDelivery::Watcher,
+            /*root_audit*/ None,
         );
     }
 

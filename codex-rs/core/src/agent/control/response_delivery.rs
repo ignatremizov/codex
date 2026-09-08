@@ -687,13 +687,33 @@ impl AgentControl {
             .acquire_response_observation_transaction(terminal.presentation.parent())
             .await;
         let terminal_response_item_id = terminal.presentation.completion_context_response_item_id();
-        let (final_response_observation, response_item_id, queue_delivery) = self
+        let (mut final_response_observation, response_item_id, queue_delivery) = self
             .prepare_final_response_observation_delivery(
                 terminal.presentation.parent(),
                 terminal.presentation.child(),
                 &terminal.turn_id,
                 &terminal_response_item_id,
             );
+        // Commentary-only root observations still need terminal cleanup, but do not
+        // own final model delivery. Use the canonical hidden presentation locally;
+        // do not turn this oversight default into a persisted observation or grant.
+        if final_response_observation == FinalResponseObservation::None
+            && self.bound_session_id().map(ThreadId::from) == Some(parent_thread_id)
+            && self
+                .response_observation_relationship_snapshot(
+                    terminal.presentation.parent(),
+                    terminal.presentation.child(),
+                )
+                .and_then(|relationship| relationship.turns.get(&terminal.turn_id).cloned())
+                .is_some_and(|turn| turn.final_response == FinalResponseObservation::None)
+            && let Ok(state) = self.upgrade()
+            && let Ok(child) = state
+                .get_thread_including_pending(terminal.presentation.child().thread_id)
+                .await
+            && child.multi_agent_version() == Some(MultiAgentVersion::V1)
+        {
+            final_response_observation = FinalResponseObservation::PresentationOnly;
+        }
         if !self
             .persist_response_observation_snapshot(
                 terminal.presentation.parent(),
