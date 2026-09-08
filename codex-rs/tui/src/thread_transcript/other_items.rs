@@ -9,11 +9,14 @@ use crate::app_server_approval_conversions::file_update_changes_to_display;
 use crate::history_cell;
 use crate::history_cell::PlainHistoryCell;
 use crate::multi_agents;
+use crate::multi_agents::AgentMetadata;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::WebSearchAction;
+use codex_protocol::ThreadId;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(super) fn cells(
@@ -21,6 +24,7 @@ pub(super) fn cells(
     cwd: &AbsolutePathBuf,
     show_compact_summary: bool,
     agent_preview_line_limits: multi_agents::AgentPreviewLineLimits,
+    agent_metadata: &HashMap<ThreadId, AgentMetadata>,
 ) -> TranscriptCells {
     let mut cells: TranscriptCells = Vec::new();
     match item {
@@ -116,6 +120,10 @@ pub(super) fn cells(
         }
         item @ ThreadItem::UserAgentControl { .. } => {
             if let Some(cell) = history_cell::new_user_agent_control(item) {
+                let cell = cell.with_direction_recipient_label(|id| {
+                    let id = ThreadId::from_string(id).ok()?;
+                    agent_metadata.get(&id)?.agent_nickname.clone()
+                });
                 cells.push(Arc::new(cell));
             }
         }
