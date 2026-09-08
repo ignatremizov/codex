@@ -2654,8 +2654,15 @@ fn thread_start_params_with_reviewer(
         history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
         session_start_source,
         thread_source: Some(ThreadSource::User),
+        base_instructions: config.base_instructions.clone().filter(|_| {
+            !matches!(
+                config.base_instructions_provenance,
+                Some(BaseInstructionsProvenance::Model { .. })
+            )
+        }),
         developer_instructions: with_terminal_visualization_instructions(
-            config, /*control_instructions*/ None,
+            config,
+            config.developer_instructions.clone(),
         ),
         ..ThreadStartParams::default()
     }
@@ -3104,6 +3111,10 @@ pub(crate) fn thread_parent_thread_id(thread: &Thread) -> Option<ThreadId> {
             _ => None,
         })
 }
+
+#[cfg(test)]
+#[path = "app_server_session_instruction_tests.rs"]
+mod instruction_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4610,7 +4621,10 @@ mod tests {
             /*remote_cwd_override*/ None,
         );
 
-        assert_eq!(control_start.developer_instructions, None);
+        assert_eq!(
+            control_start.developer_instructions.as_deref(),
+            Some("Developer override.")
+        );
         assert_eq!(control_resume.developer_instructions, None);
         assert_eq!(
             control_fork.developer_instructions.as_deref(),
