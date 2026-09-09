@@ -4893,14 +4893,29 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     .await;
 
     test.submit_turn("send by compact ref").await?;
-    let environment_context = send_turn
+    let identity_context = send_turn
         .single_request()
-        .message_input_texts("user")
+        .message_input_texts("developer")
         .into_iter()
-        .find(|text| text.contains("<subagents>"))
-        .expect("parent environment context should list the active child");
-    assert!(environment_context.contains(&format!("- 2: {nickname}")));
-    assert!(!environment_context.contains(&spawned_id.to_string()));
+        .filter_map(|text| {
+            text.strip_prefix("<agent_identity_context>\n")?
+                .strip_suffix("\n</agent_identity_context>")?
+                .split_once('\n')
+                .map(|(_, body)| serde_json::from_str::<Value>(body))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        identity_context,
+        vec![json!([
+            {"ref": "1", "nickname": "Main", "task_path": "/root", "state": "active"},
+            {
+                "ref": "2",
+                "nickname": nickname,
+                "task_path": "/root/short-target",
+                "state": "active",
+            },
+        ])]
+    );
     let _ = wait_for_requests(&after_send).await?;
     let _ = wait_for_requests(&ref_child).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
@@ -6645,7 +6660,7 @@ async fn send_input_commentary_binds_to_the_interrupt_replacement_turn(
         ]),
     )
     .await;
-    mount_response_once_match(
+    let replacement_child = mount_response_once_match(
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, "replacement child task")
@@ -6688,8 +6703,73 @@ async fn send_input_commentary_binds_to_the_interrupt_replacement_turn(
 
     let request =
         wait_for_request_containing_text(&commentary_wake, "replacement acknowledged").await?;
-    assert!(request.body_contains_text("msg-replacement-commentary"));
+    let commentary = agent_message_text_containing(&request, "<subagent_commentary>")
+        .expect("replacement commentary model envelope");
+    let body = commentary
+        .strip_prefix("<subagent_commentary>")
+        .and_then(|body| body.strip_suffix("</subagent_commentary>"))
+        .expect("commentary markers");
+    assert_eq!(
+        serde_json::from_str::<Value>(body)?,
+        json!({"ref": "2", "message": "replacement acknowledged"})
+    );
     assert!(!request.body_contains_text("child done"));
+
+    // Turn/item identities belong to the durable audit, not the compact model projection.
+    // Check the admitted replacement turn rather than merely recognizing its message text.
+    let replacement_request = wait_for_requests(&replacement_child)
+        .await?
+        .into_iter()
+        .next()
+        .expect("replacement child request");
+    let replacement_turn_id = replacement_request.body_json()["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("replacement turn id")
+        .to_string();
+    wait_for_terminal_status(test.codex.as_ref()).await?;
+    test.codex.flush_rollout().await?;
+    let history = test
+        .thread_store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: test.session_configured.thread_id,
+            include_archived: false,
+        })
+        .await?;
+    #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+    struct CommentaryAudit {
+        agent_id: ThreadId,
+        turn_id: String,
+        item_id: String,
+        message: String,
+    }
+    let commentary_audit = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(envelope) => match &envelope.item {
+                ResponseItem::AgentMessage { content, .. } => Some(content),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|content| match content {
+            AgentMessageInputContent::InputText { text } => text
+                .strip_prefix("<subagent_commentary>")
+                .and_then(|body| body.strip_suffix("</subagent_commentary>"))
+                .map(serde_json::from_str::<CommentaryAudit>),
+            AgentMessageInputContent::EncryptedContent { .. } => None,
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        commentary_audit,
+        vec![CommentaryAudit {
+            agent_id: ThreadId::from_string(&spawned_id)?,
+            turn_id: replacement_turn_id,
+            item_id: "msg-replacement-commentary".to_string(),
+            message: "replacement acknowledged".to_string(),
+        }]
+    );
     Ok(())
 }
 

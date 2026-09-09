@@ -3,14 +3,14 @@ use codex_protocol::protocol::agent_delivery_receipt_from_response_item_id;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
-#[test_case(ThreadHistoryMode::Legacy, "", SubAgentCompletionModelVisibility::Visible; "legacy_passive")]
-#[test_case(ThreadHistoryMode::Paginated, "", SubAgentCompletionModelVisibility::Visible; "paginated_passive")]
-#[test_case(ThreadHistoryMode::Legacy, "x", SubAgentCompletionModelVisibility::NotVisible; "legacy_presentation_only")]
-#[test_case(ThreadHistoryMode::Paginated, "x", SubAgentCompletionModelVisibility::NotVisible; "paginated_presentation_only")]
+#[test_case(ThreadHistoryMode::Legacy, None, SubAgentCompletionModelVisibility::Visible; "legacy_passive")]
+#[test_case(ThreadHistoryMode::Paginated, None, SubAgentCompletionModelVisibility::Visible; "paginated_passive")]
+#[test_case(ThreadHistoryMode::Legacy, Some("x"), SubAgentCompletionModelVisibility::NotVisible; "legacy_presentation_only")]
+#[test_case(ThreadHistoryMode::Paginated, Some("x"), SubAgentCompletionModelVisibility::NotVisible; "paginated_presentation_only")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
     history_mode: ThreadHistoryMode,
-    response_handling: &str,
+    response_handling: Option<&str>,
     expected_visibility: SubAgentCompletionModelVisibility,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -46,6 +46,11 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
             UserAgentReplyRouteMode::Enabled,
         )
         .await?;
+    // Default passive delivery omits w; an explicitly empty flag string is invalid.
+    let mut send_args = json!({"target": "Main", "message": MESSAGE});
+    if let Some(response_handling) = response_handling {
+        send_args["w"] = json!(response_handling);
+    }
     let invocation = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -57,9 +62,7 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
                 CALL_ID,
                 MULTI_AGENT_V1_NAMESPACE,
                 "send_input",
-                &serde_json::to_string(&json!({
-                    "target": "Main", "message": MESSAGE, "w": response_handling,
-                }))?,
+                &serde_json::to_string(&send_args)?,
             ),
             ev_completed("receipt-child"),
         ]),
@@ -98,7 +101,16 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         )
         .await?;
     wait_for_request_containing_text(&invocation, PROMPT).await?;
-    wait_for_request_containing_text(&child_done, CALL_ID).await?;
+    let continuation = wait_for_request_containing_text(&child_done, CALL_ID).await?;
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &continuation
+                .function_call_output_text(CALL_ID)
+                .expect("send_input admission result"),
+        )?,
+        json!({"status": "submitted"}),
+        "Main must accept the input before receipt delivery is checked",
+    );
     wait_for_request_containing_text(&root_reply, MESSAGE).await?;
 
     let mut receipts = Vec::new();
