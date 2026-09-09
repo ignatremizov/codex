@@ -47,6 +47,7 @@ use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
 use super::remote_connection::RemoteConnectionStatus;
+use super::storage::StatusStorageDisplay;
 use super::thread_usage::StatusThreadUsage;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
@@ -117,6 +118,7 @@ impl StatusHistoryHandle {
 
 #[derive(Debug)]
 struct StatusHistoryCell {
+    storage: Option<StatusStorageDisplay>,
     model_name: String,
     model_details: Vec<String>,
     directory: PathBuf,
@@ -193,6 +195,7 @@ pub(crate) fn new_status_output_with_rate_limits(
         config,
         /*runtime_model_provider_base_url*/ None,
         /*remote_connection*/ None,
+        /*storage*/ None,
         account_display,
         token_info,
         total_usage,
@@ -216,6 +219,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     config: &Config,
     runtime_model_provider_base_url: Option<&str>,
     remote_connection: Option<&RemoteConnectionStatus>,
+    storage: Option<StatusStorageDisplay>,
     account_display: Option<&StatusAccountDisplay>,
     token_info: Option<&TokenUsageInfo>,
     total_usage: &TokenUsage,
@@ -232,7 +236,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     refreshing_rate_limits: bool,
 ) -> (CompositeHistoryCell, StatusHistoryHandle) {
     let command = PlainHistoryCell::new(vec!["/status".magenta().into()]);
-    let (card, handle) = StatusHistoryCell::new(
+    let (mut card, handle) = StatusHistoryCell::new(
         config,
         runtime_model_provider_base_url,
         remote_connection,
@@ -251,6 +255,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
         agents_summary,
         refreshing_rate_limits,
     );
+    card.storage = storage;
 
     (
         CompositeHistoryCell::new(vec![Box::new(command), Box::new(card)]),
@@ -368,6 +373,7 @@ impl StatusHistoryCell {
 
         (
             Self {
+                storage: None,
                 model_name,
                 model_details,
                 directory: config.cwd.to_path_buf(),
@@ -866,6 +872,11 @@ impl HistoryCell for StatusHistoryCell {
             && let Some(forked_from) = self.forked_from.as_ref()
         {
             lines.push(formatter.line("Forked from", vec![Span::from(forked_from.clone())]));
+        }
+
+        if let Some(storage) = &self.storage {
+            lines.push(Line::default());
+            lines.extend(storage.lines(available_inner_width));
         }
 
         lines.push(Line::from(Vec::<Span<'static>>::new()));

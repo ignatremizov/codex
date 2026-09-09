@@ -93,6 +93,42 @@ fn cache_no_project_root(chat: &mut ChatWidget) {
 }
 
 #[tokio::test]
+async fn codex_home_status_and_preview_follow_resolved_local_config() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["codex-home".to_string()]);
+    for (basename, expected) in [
+        (".codex-office", "codex-office"),
+        (".codex", "codex"),
+        ("custom-home", "custom-home"),
+        ("..codex-office", ".codex-office"),
+    ] {
+        chat.config.codex_home = test_path_buf("/homes").join(basename).abs();
+        assert_eq!(
+            (
+                chat.status_line_value_for_item(StatusLineItem::CodexHome),
+                status_preview_line_option(&mut chat, &[StatusLineItem::CodexHome]),
+            ),
+            (Some(expected.to_string()), Some(expected.to_string())),
+        );
+    }
+    chat.config.codex_home = chat
+        .config
+        .codex_home
+        .ancestors()
+        .last()
+        .expect("absolute path root")
+        .to_path_buf()
+        .abs();
+    assert_eq!(
+        (
+            chat.status_line_value_for_item(StatusLineItem::CodexHome),
+            status_preview_line_option(&mut chat, &[StatusLineItem::CodexHome]),
+        ),
+        (None, None),
+    );
+}
+
+#[tokio::test]
 async fn status_surface_hostname_preview_uses_current_machine_hostname() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

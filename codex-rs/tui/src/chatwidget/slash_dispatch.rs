@@ -570,17 +570,11 @@ impl ChatWidget {
                 self.add_plugins_output();
             }
             SlashCommand::Rollout => {
-                if let Some(path) = self.rollout_path() {
-                    self.add_info_message(
-                        format!("Current rollout path: {}", path.display()),
-                        /*hint*/ None,
-                    );
-                } else {
-                    self.add_info_message(
-                        "Rollout path is not available yet.".to_string(),
-                        /*hint*/ None,
-                    );
-                }
+                let text = self
+                    .rollout_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "Rollout path is not available.".to_string());
+                self.add_to_history(history_cell::PlainHistoryCell::new(vec![text.into()]));
             }
             SlashCommand::TestApproval => {
                 use std::collections::HashMap;

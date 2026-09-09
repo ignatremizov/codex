@@ -4147,25 +4147,40 @@ async fn slash_cd_rejects_pending_input_and_unsupported_session_ownership() {
 #[tokio::test]
 async fn slash_rollout_displays_current_path() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let rollout_path = PathBuf::from("/tmp/codex-test-rollout.jsonl");
-    chat.current_rollout_path = Some(rollout_path.clone());
-
-    chat.dispatch_command(SlashCommand::Rollout);
-
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected info message for rollout path");
-    let rendered = lines_to_single_string(&cells[0]);
-    assert!(
-        rendered.contains(&rollout_path.display().to_string()),
-        "expected rollout path to be shown: {rendered}"
-    );
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    for command in ["/rollout-path", "/rollout"] {
+        for path in [
+            "/server/sessions/original-day/a-very-long-session-name/rollout.jsonl",
+            r"C:\server\sessions\original-day\a-very-long-session-name\rollout.jsonl",
+        ] {
+            chat.current_rollout_path = Some(PathBuf::from(path));
+            submit_composer_text(&mut chat, command);
+            let cells: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|event| match event {
+                    AppEvent::InsertHistoryCell(cell) => Some(cell),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cells.len(), 1, "expected a single plain path cell");
+            let expected = vec![Line::from(path.to_string())];
+            assert_eq!(cells[0].display_lines(/*width*/ 12), expected);
+            assert_eq!(cells[0].raw_lines(), expected);
+            assert_eq!(cells[0].transcript_lines(/*width*/ 12), expected);
+            if command == "/rollout-path" && path.starts_with('/') {
+                insta::assert_snapshot!(
+                    cells[0].raw_lines()[0].to_string(),
+                    @"/server/sessions/original-day/a-very-long-session-name/rollout.jsonl"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
 async fn slash_rollout_handles_missing_path() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.dispatch_command(SlashCommand::Rollout);
+    submit_composer_text(&mut chat, "/rollout-path");
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(
@@ -4174,10 +4189,7 @@ async fn slash_rollout_handles_missing_path() {
         "expected info message explaining missing path"
     );
     let rendered = lines_to_single_string(&cells[0]);
-    assert!(
-        rendered.contains("not available"),
-        "expected missing rollout path message: {rendered}"
-    );
+    insta::assert_snapshot!(rendered.trim_end(), @"Rollout path is not available.");
 }
 
 #[tokio::test]

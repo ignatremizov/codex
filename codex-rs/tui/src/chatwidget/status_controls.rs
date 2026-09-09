@@ -259,6 +259,9 @@ impl ChatWidget {
             &self.config,
             self.runtime_model_provider_base_url.as_deref(),
             self.remote_connection.as_ref(),
+            Some(crate::status::StatusStorageDisplay {
+                local_codex_home: self.config.codex_home.display().to_string(),
+            }),
             self.status_account_display.as_ref(),
             token_info,
             total_usage,
