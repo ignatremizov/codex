@@ -118,13 +118,10 @@ async fn human_agent_prompts_keep_user_authorship(
     child.flush_rollout().await?;
     let history = test
         .thread_store
-        .load_rollback_history(LoadThreadHistoryParams {
-            thread_id: child_id,
-            include_archived: false,
-        })
+        .load_mailbox_canonical_history(child_id)
         .await?;
     assert!(
-        !serde_json::to_string(&history.items)?.contains("Agent message from"),
+        !serde_json::to_string(&history)?.contains("Agent message from"),
         "persisted human input must not become attributed presentation"
     );
     Ok(())
@@ -137,14 +134,13 @@ async fn human_agent_prompts_keep_user_authorship(
 #[test_case(ThreadHistoryMode::Paginated, InputDelivery::Direct; "paginated_direct")]
 #[test_case(ThreadHistoryMode::Paginated, InputDelivery::Queued; "paginated_queued")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_dispatch_has_compact_attribution_without_granting_replies(
+async fn model_dispatch_has_compact_attribution(
     history_mode: ThreadHistoryMode,
     delivery: InputDelivery,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     const PARENT_PROMPT: &str = "dispatch the attribution fixture";
     const DISPATCH_CALL: &str = "attribution-dispatch";
-    const REPLY_CALL: &str = "attribution-ungranted-reply";
     let server = start_mock_server().await;
     let test = test_codex()
         .with_history_mode(history_mode)
@@ -229,33 +225,12 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
     let received = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
-            body_contains(req, "attribution payload")
-                && !body_contains(req, DISPATCH_CALL)
-                && !body_contains(req, REPLY_CALL)
+            body_contains(req, "attribution payload") && !body_contains(req, DISPATCH_CALL)
         },
         sse(vec![
             ev_response_created("attribution-child"),
-            ev_function_call_with_namespace(
-                REPLY_CALL,
-                MULTI_AGENT_V1_NAMESPACE,
-                "send_input",
-                &serde_json::to_string(&json!({
-                    "target": test.session_configured.thread_id.to_string(),
-                    "message": "an identity is not a reply permission",
-                    "w": "x",
-                }))?,
-            ),
-            ev_completed("attribution-child"),
-        ]),
-    )
-    .await;
-    let child_done = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, REPLY_CALL),
-        sse(vec![
-            ev_response_created("attribution-child-done"),
             ev_assistant_message("attribution-child-final", "done"),
-            ev_completed("attribution-child-done"),
+            ev_completed("attribution-child"),
         ]),
     )
     .await;
@@ -272,19 +247,10 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
         .strip_prefix("<agent_message>")
         .and_then(|text| text.strip_suffix("</agent_message>"))
         .ok_or_else(|| anyhow::anyhow!("invalid attribution envelope"))?;
-    let mut attribution: Value = serde_json::from_str(body)?;
-    // Main's path is optional until task labels are allocated, but canonical IDs and turn
-    // IDs must not leak back into this compact model-visible representation.
-    if let Some(task_path) = attribution
-        .as_object_mut()
-        .and_then(|body| body.remove("task_path"))
-    {
-        assert_eq!(task_path, json!("/root"));
-    }
+    let attribution: Value = serde_json::from_str(body)?;
     assert_eq!(
         attribution,
         json!({
-            "nickname": "Main",
             "ref": "1",
             "message": format!("{ATTRIBUTION_PAYLOAD}\n[image]"),
         }),
@@ -304,13 +270,7 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
             }
         }
     }
-    let reply = wait_for_request_containing_text(&child_done, REPLY_CALL).await?;
     let parent_continuation = wait_for_request_containing_text(&parent_done, DISPATCH_CALL).await?;
-    // Presentation observation creates a relationship but does not grant a turn-scoped reply.
-    assert_eq!(
-        reply.function_call_output_text(REPLY_CALL).as_deref(),
-        Some("collab tool failed: no reply route for this target turn"),
-    );
     let child_id = match child_id {
         Some(child_id) => child_id,
         None => {
@@ -364,14 +324,54 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
     child.flush_rollout().await?;
     let history = test
         .thread_store
-        .load_rollback_history(LoadThreadHistoryParams {
-            thread_id: child_id,
-            include_archived: false,
-        })
+        .load_mailbox_canonical_history(child_id)
         .await?;
     assert!(
-        serde_json::to_string(&history.items)?.contains(&serde_json::to_string(audit)?),
+        serde_json::to_string(&history)?.contains(&serde_json::to_string(audit)?),
         "canonical identities and send-time metadata must survive persisted history"
+    );
+    let stored_envelopes = history
+        .iter()
+        .filter_map(|item| {
+            let RolloutItem::ResponseItem(envelope) = item else {
+                return None;
+            };
+            let ResponseItem::Message {
+                role,
+                content,
+                internal_chat_message_metadata_passthrough: Some(metadata),
+                ..
+            } = &envelope.item
+            else {
+                return None;
+            };
+            if role != "user"
+                || metadata.content_item_kinds.as_ref()?.first()?.0
+                    != "multi_agent.attributed_agent_message"
+            {
+                return None;
+            }
+            let Some(ContentItem::InputText { text }) = content.first() else {
+                return None;
+            };
+            text.strip_prefix("<agent_message>")?
+                .strip_suffix("</agent_message>")
+        })
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut expected_canonical = json!({
+        "agent_id": audit.sender.thread_id,
+        "nickname": "Main",
+        "ref": "1",
+        "message": format!("{ATTRIBUTION_PAYLOAD}\n[image]"),
+    });
+    if let Some(task_path) = &audit.sender.task_path {
+        expected_canonical["task_path"] = json!(task_path);
+    }
+    assert_eq!(
+        stored_envelopes,
+        vec![expected_canonical],
+        "persist the tagged UUID-bearing envelope, never the compact request projection",
     );
     assert_eq!(dispatched.requests().len(), 1);
     // ResponseMock records before mount_sse_once_match evaluates its custom matcher.
@@ -392,8 +392,8 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
             .iter()
             .filter(|request| request.url.path().ends_with("/responses"))
             .count(),
-        4,
-        "exactly two parent and two child requests; denied replies must not start another turn",
+        3,
+        "exactly two parent requests for dispatch and continuation, and one child request",
     );
     Ok(())
 }
@@ -413,7 +413,7 @@ enum ReplyDirection {
 #[test_case(ThreadHistoryMode::Paginated, ReplyDirection::Peer, "x"; "paginated_peer")]
 #[test_case(ThreadHistoryMode::Paginated, ReplyDirection::Peer, "xq"; "paginated_peer_queue")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
+async fn same_root_reverse_and_peer_messages_snapshot_the_real_sender(
     history_mode: ThreadHistoryMode,
     direction: ReplyDirection,
     flags: &str,
@@ -453,13 +453,6 @@ async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
                 .target_thread_id
         }
     };
-    test.codex
-        .set_agent_reply_route(
-            &sender_id.to_string(),
-            Some(&recipient_id.to_string()),
-            UserAgentReplyRouteMode::Enabled,
-        )
-        .await?;
     let sender_call = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| body_contains(req, PROMPT) && !body_contains(req, CALL_ID),
@@ -513,7 +506,6 @@ async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
         .await?;
     let request = wait_for_request_containing_text(&received, "attribution payload").await?;
     let sender = test.thread_manager.get_thread(sender_id).await?;
-    let nickname = sender.config_snapshot().await.session_source.get_nickname();
     let texts = request.message_input_texts("user");
     let envelope = texts
         .iter()
@@ -527,7 +519,7 @@ async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
         .ok_or_else(|| anyhow::anyhow!("invalid attributed directed input"))?;
     assert_eq!(
         serde_json::from_str::<Value>(body)?,
-        json!({"nickname": nickname, "ref": "2", "message": ATTRIBUTION_PAYLOAD}),
+        json!({"ref": "2", "message": ATTRIBUTION_PAYLOAD}),
     );
     let recipient = test.thread_manager.get_thread(recipient_id).await?;
     let presented = wait_for_event_match(recipient.as_ref(), |event| {
@@ -557,11 +549,13 @@ async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
         }])?,
     );
     let output = wait_for_request_containing_text(&sender_done, CALL_ID).await?;
-    assert!(
-        output
-            .function_call_output(CALL_ID)
-            .to_string()
-            .contains("submission_id"),
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &output
+                .function_call_output_text(CALL_ID)
+                .expect("send result text"),
+        )?,
+        json!({"status": if flags.contains('q') { "queued" } else { "submitted" }}),
     );
     wait_for_terminal_status(sender.as_ref()).await?;
     wait_for_terminal_status(recipient.as_ref()).await?;

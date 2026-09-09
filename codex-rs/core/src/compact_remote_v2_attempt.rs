@@ -195,6 +195,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             Some(input.window),
         ),
     };
+    // Preserve canonical evidence before projecting disposable request copies.
     let completion_source_items = crate::compact::completion_source_items(&input);
     let mut prompt_envelopes = input
         .into_iter()
@@ -202,6 +203,12 @@ pub(super) async fn run_remote_compact_v2_attempt(
         .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
         .collect::<Vec<_>>();
     sess.project_child_developer_instructions(turn_context, &mut prompt_envelopes);
+    if let Some(identities) = &step_context.agent_identities {
+        crate::context::world_state::prepare_v1_agent_model_input_annotated(
+            &mut prompt_envelopes,
+            identities,
+        );
+    }
     (input, prompt_input_metadata) = prompt_envelopes
         .into_iter()
         .map(|envelope| (envelope.item, envelope.metadata))

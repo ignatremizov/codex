@@ -327,7 +327,10 @@ impl Session {
                                 (content, Some(attributed.content_kind()))
                             }
                         };
-                        let response = session.response_item_from_user_input(input);
+                        let mut response = session.response_item_from_user_input(input);
+                        if matches!(&member.message.payload, MailboxPayload::Agent { .. }) {
+                            AttributedAgentMessage::mark_model_input(&mut response);
+                        }
                         let (prepared, preparations) = session
                             .prepare_conversation_items_for_history(
                                 &turn,

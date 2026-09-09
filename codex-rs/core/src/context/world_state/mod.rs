@@ -1,3 +1,4 @@
+mod agent_identities;
 mod agents_md;
 mod apps_instructions;
 mod collaboration_mode;
@@ -41,6 +42,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
+pub(crate) use agent_identities::AgentIdentitiesState;
+pub(crate) use agent_identities::prepare_v1_agent_model_input;
+pub(crate) use agent_identities::prepare_v1_agent_model_input_annotated;
 pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use collaboration_mode::CollaborationModeState;
