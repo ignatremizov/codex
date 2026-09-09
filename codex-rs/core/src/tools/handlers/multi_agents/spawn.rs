@@ -234,7 +234,7 @@ async fn handle_spawn_agent(
             }),
         )
         .await;
-    let new_thread_id = result?.thread_id;
+    let spawned_agent = result?;
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
@@ -243,9 +243,10 @@ async fn handle_spawn_agent(
     );
 
     Ok(SpawnAgentResult {
-        agent_id: new_thread_id.to_string(),
+        agent_id: spawned_agent.thread_id.to_string(),
         nickname,
         agent_ref: new_agent_ref.map(|agent_ref| agent_ref.to_string()),
+        task_path: spawned_agent.task_path,
     })
 }
 
@@ -276,6 +277,7 @@ pub(crate) struct SpawnAgentResult {
     nickname: Option<String>,
     #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     agent_ref: Option<String>,
+    task_path: Option<String>,
 }
 
 impl ToolOutput for SpawnAgentResult {

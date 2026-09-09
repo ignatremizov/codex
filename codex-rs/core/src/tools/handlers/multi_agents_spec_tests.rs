@@ -1,4 +1,5 @@
 use super::*;
+use codex_code_mode::render_json_schema_to_typescript;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -8,6 +9,101 @@ use codex_tools::JsonSchemaPrimitiveType;
 use codex_tools::JsonSchemaType;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+
+#[test]
+fn v1_result_schemas_preserve_projection_fields_in_code_mode() {
+    for (tool, required_type_fields) in [
+        (
+            create_spawn_agent_tool_v1(SpawnAgentToolOptions::default()),
+            vec![
+                "agent_id: string;",
+                "ref?: string;",
+                "nickname: string | null;",
+                "task_path: string | null;",
+            ],
+        ),
+        (
+            create_send_input_tool_v1(),
+            vec!["status: \"submitted\" | \"queued\" | \"mailboxAccepted\";"],
+        ),
+        (
+            create_resume_agent_tool(),
+            vec![
+                "ref: string;",
+                "agent_id: string;",
+                "nickname: string | null;",
+                "task_path: string | null;",
+                "status: \"idle\" | \"running\" | \"interrupted\" | \"errored\" | \"closed\" | \"notFound\";",
+                "error?: string;",
+                "adoption?:",
+            ],
+        ),
+    ] {
+        let ToolSpec::Namespace(namespace) = tool else {
+            panic!("expected V1 namespace");
+        };
+        let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace.tools.first() else {
+            panic!("expected namespace function");
+        };
+        let schema = tool.output_schema.as_ref().expect("output schema");
+        let rendered = render_json_schema_to_typescript(schema);
+        for field in required_type_fields {
+            assert!(rendered.contains(field), "{rendered} must expose {field}");
+        }
+    }
+}
+
+#[test]
+fn resume_schema_requires_one_identity_and_nullable_mapping_fields() {
+    let schema = resume_agent_output_schema();
+    let variants = schema["oneOf"].as_array().expect("identity alternatives");
+    assert_eq!(variants.len(), 2);
+    for (variant, identity) in variants.iter().zip(["ref", "agent_id"]) {
+        assert_eq!(
+            variant["required"],
+            json!([identity, "nickname", "task_path", "status"])
+        );
+        assert_eq!(
+            variant["properties"]
+                .as_object()
+                .expect("result properties")
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                identity,
+                "nickname",
+                "task_path",
+                "status",
+                "error",
+                "adoption"
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert_eq!(variant["additionalProperties"], json!(false));
+        assert_eq!(
+            variant["properties"]["nickname"],
+            json!({"type": ["string", "null"]})
+        );
+        assert_eq!(
+            variant["properties"]["task_path"],
+            json!({"type": ["string", "null"]})
+        );
+        assert_eq!(
+            (
+                variant["if"].clone(),
+                variant["then"].clone(),
+                variant["else"].clone()
+            ),
+            (
+                json!({"properties": {"status": {"const": "errored"}}}),
+                json!({"required": ["error"]}),
+                json!({"not": {"required": ["error"]}}),
+            )
+        );
+    }
+}
 
 fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
     ModelPreset {

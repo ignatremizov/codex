@@ -20,6 +20,11 @@ impl AgentControl {
         delivery_id: &str,
         text: &str,
     ) -> CodexResult<()> {
+        // Presentation-only delivery belongs to the recipient's durable transcript.
+        // Do not add another root row acknowledging that hidden delivery.
+        if recipient_model_visibility == SubAgentCompletionModelVisibility::NotVisible {
+            return Ok(());
+        }
         let Some(root_id) = self.bound_session_id().map(ThreadId::from) else {
             return Ok(());
         };

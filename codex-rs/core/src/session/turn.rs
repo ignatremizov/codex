@@ -1627,6 +1627,12 @@ async fn run_sampling_request(
             .messaging_context_snapshot(sess.presentation_id())
             .await?
             .reconcile(&mut prompt_input);
+        if let Some(identities) = &step_context.agent_identities {
+            crate::context::world_state::prepare_v1_agent_model_input(
+                &mut prompt_input,
+                identities,
+            );
+        }
         if let Some(executed_tool_calls) = sess.services.executed_tool_calls.as_ref()
             && executed_tool_calls
                 .attach_pending_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output)

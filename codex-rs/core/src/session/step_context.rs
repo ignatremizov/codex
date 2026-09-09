@@ -14,6 +14,8 @@ use codex_otel::SessionTelemetry;
 /// Request-scoped state that may change between model sampling requests.
 pub(crate) struct StepContext {
     pub(crate) turn: Arc<TurnContext>,
+    /// Receiver-scoped V1 identities shared by hydration and envelope projection.
+    pub(crate) agent_identities: Option<crate::agent::control::V1AgentIdentitySnapshot>,
     /// One immutable settings version captured before request preparation.
     pub(crate) settings: Arc<ResolvedStepSettings>,
     /// Frozen turn preferences resolved against this step's captured model.

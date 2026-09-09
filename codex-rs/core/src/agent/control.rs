@@ -92,6 +92,7 @@ pub(crate) use self::close_response::CloseAgentResponseDisposition;
 pub(crate) use self::close_response::ClosedAgent;
 pub(crate) use self::execution::AgentExecutionGuard;
 pub(crate) use self::execution::AgentExecutionLimiter;
+pub(crate) use self::identity_snapshot::V1AgentIdentitySnapshot;
 pub(crate) use self::legacy::LiveAgentMetadataDisposition;
 pub(crate) use self::presentation::AgentTerminalPresentation;
 use self::presentation::CommentaryDeliveryRoute;
@@ -380,7 +381,13 @@ impl InitialTerminalObservation {
                         terminal: Some((turn_id, status.clone())),
                         status,
                     }
-                } else if crate::agent::status::is_final(&snapshot_status) {
+                } else if crate::agent::status::is_final(&snapshot_status)
+                    && (active_turn_id.is_some()
+                        || !matches!(snapshot_status, AgentStatus::Completed(_)))
+                {
+                    // A completed-looking idle snapshot without a turn is not a new completion.
+                    // Real empty final responses remain authoritative through last_terminal or
+                    // the active turn identity above.
                     // Raw lifecycle events such as ShutdownComplete can make the session final
                     // without publishing a response-stream terminal. Preserve the active turn
                     // identity when one exists so an already-bound one-shot observation can
@@ -412,14 +419,19 @@ mod aliases;
 mod close_response;
 mod directory;
 mod execution;
+mod identity_snapshot;
 mod legacy;
 mod mailbox_input;
 mod mailbox_inventory;
 mod message_audit;
 mod presentation;
+mod presentation_ref;
 mod residency;
 mod response_delivery;
 mod response_observer;
+#[cfg(test)]
+#[path = "control/resume_observation_tests.rs"]
+mod resume_observation_tests;
 mod resume_registration;
 mod scoped_messages;
 pub(crate) mod setup_cleanup;

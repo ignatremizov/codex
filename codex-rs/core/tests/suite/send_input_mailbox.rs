@@ -253,7 +253,7 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
         .lookup_mailbox_input(receiver, &key)
         .await?
         .ok_or_else(|| anyhow::anyhow!("accepted mailbox row"))?;
-    assert_eq!(result, json!({"submission_id": accepted.id}));
+    assert_eq!(result, json!({"status": "mailboxAccepted"}));
     assert_eq!(accepted.state, MailboxMessageState::Pending);
     assert_eq!(
         accepted.sender,
@@ -702,10 +702,10 @@ async fn mailbox_acceptance_uses_durable_same_root_send_authority(
         .await?;
     match authority {
         SendAuthority::ConfiguredSubtree => {
-            let accepted = accepted.ok_or_else(|| anyhow::anyhow!("configured mail accepted"))?;
+            assert!(accepted.is_some(), "configured mail accepted");
             assert_eq!(
                 serde_json::from_str::<Value>(&result)?,
-                json!({"submission_id": accepted.id})
+                json!({"status": "mailboxAccepted"})
             );
         }
         SendAuthority::UnconfiguredPeer | SendAuthority::DirectedDisable => {

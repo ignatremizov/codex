@@ -1590,6 +1590,7 @@ async fn spawn_agent_returns_agent_id_without_task_name() {
     assert!(result["agent_id"].is_string());
     assert!(result.get("task_name").is_none());
     assert!(result.get("nickname").is_some());
+    assert_eq!(result.get("task_path"), Some(&json!(null)));
     assert_eq!(success, Some(true));
 }
 
@@ -3637,7 +3638,6 @@ async fn resume_agent_noops_for_active_agent() {
         .await
         .expect("start thread");
     let agent_id = thread.thread_id;
-    let status_before = manager.agent_control().get_status(agent_id).await;
     let invocation = invocation(
         Arc::clone(&parent.thread.session),
         parent.thread.session.new_default_turn().await,
@@ -3650,9 +3650,9 @@ async fn resume_agent_noops_for_active_agent() {
         .await
         .expect("resume_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
+    let result: serde_json::Value =
         serde_json::from_str(&content).expect("resume_agent result should be json");
-    assert_eq!(result.status, status_before);
+    assert_eq!(result["status"], json!("idle"));
     assert_eq!(success, Some(true));
 
     let mut thread_ids = manager.list_thread_ids().await;
@@ -3859,10 +3859,13 @@ async fn resume_agent_live_adoption_prefers_a_new_active_turn_over_historical_co
         .await
         .expect("resume_agent should adopt the live thread");
     let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
+    let result: serde_json::Value =
         serde_json::from_str(&content).expect("resume_agent result should be json");
 
-    assert_eq!((result.status, success), (AgentStatus::Running, Some(true)));
+    assert_eq!(
+        (result["status"].clone(), success),
+        (json!("running"), Some(true))
+    );
 }
 
 #[tokio::test]
@@ -3918,9 +3921,9 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         .await
         .expect("resume_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
+    let result: serde_json::Value =
         serde_json::from_str(&content).expect("resume_agent result should be json");
-    assert_ne!(result.status, AgentStatus::NotFound);
+    assert_ne!(result["status"], json!("notFound"));
     assert_eq!(success, Some(true));
     assert!(
         manager
@@ -3959,11 +3962,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     let (content, success) = expect_text_output(output);
     let result: serde_json::Value =
         serde_json::from_str(&content).expect("send_input result should be json");
-    let submission_id = result
-        .get("submission_id")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    assert!(!submission_id.is_empty());
+    assert_eq!(result, json!({"status": "submitted"}));
     assert_eq!(success, Some(true));
 
     let admitted_turn_id = timeout(Duration::from_secs(5), async {
@@ -4298,10 +4297,10 @@ async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() 
         .await
         .expect("resume_agent x should return the live target status");
     let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
+    let result: serde_json::Value =
         serde_json::from_str(&content).expect("resume_agent result should be json");
 
-    assert_eq!(result.status, child.thread.agent_status().await);
+    assert_eq!(result["status"], json!("idle"));
     assert_eq!(success, Some(true));
     assert!(
         manager
@@ -6176,9 +6175,9 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
         .await
         .expect("resume_agent should reopen the child subtree");
     let (child_resume_content, child_resume_success) = expect_text_output(child_resume_output);
-    let child_resume_result: resume_agent::ResumeAgentResult =
+    let child_resume_result: serde_json::Value =
         serde_json::from_str(&child_resume_content).expect("resume result should be json");
-    assert_ne!(child_resume_result.status, AgentStatus::NotFound);
+    assert_ne!(child_resume_result["status"], json!("notFound"));
     assert_eq!(child_resume_success, Some(true));
     assert_ne!(
         manager.agent_control().get_status(child_thread_id).await,
@@ -6254,9 +6253,9 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
         .await
         .expect("resume_agent should reopen the parent thread");
     let (parent_resume_content, parent_resume_success) = expect_text_output(parent_resume_output);
-    let parent_resume_result: resume_agent::ResumeAgentResult =
+    let parent_resume_result: serde_json::Value =
         serde_json::from_str(&parent_resume_content).expect("parent resume result should be json");
-    assert_ne!(parent_resume_result.status, AgentStatus::NotFound);
+    assert_ne!(parent_resume_result["status"], json!("notFound"));
     assert_eq!(parent_resume_success, Some(true));
     assert_ne!(
         manager.agent_control().get_status(parent_thread_id).await,

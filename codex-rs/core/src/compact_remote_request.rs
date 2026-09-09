@@ -80,6 +80,21 @@ pub(super) async fn run_remote_compact_attempt(
         .messaging_context_snapshot(sess.presentation_id())
         .await?
         .reconcile(&mut prompt_input);
+    if let Some(identities) = &step_context.agent_identities {
+        // Legacy compaction returns provider history directly. Unlike V2, there is
+        // no canonical replacement-history boundary, so retained agent envelopes
+        // must keep their UUIDs and exact payloads for later alias reprojection.
+        let mut annotated = prompt_input
+            .into_iter()
+            .map(codex_history::ResponseItemEnvelope::new)
+            .collect();
+        crate::context::world_state::AgentIdentitiesState::new(identities)
+            .reconcile_annotated(&mut annotated);
+        prompt_input = annotated
+            .into_iter()
+            .map(codex_history::ResponseItemEnvelope::into_item)
+            .collect();
+    }
     let tool_router = &step_context.tool_router;
     let prompt = Prompt {
         input: prompt_input,

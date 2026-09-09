@@ -1,3 +1,4 @@
+mod agent_identities;
 mod agents_md;
 mod apps_instructions;
 mod collaboration_mode;
@@ -36,6 +37,8 @@ use sha1::Sha1;
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub(crate) use agent_identities::AgentIdentitiesState;
+pub(crate) use agent_identities::prepare_v1_agent_model_input;
 pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use collaboration_mode::CollaborationModeState;

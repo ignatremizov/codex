@@ -1,6 +1,7 @@
 //! Context fragments injected into model input.
 
 mod agent_context_identity;
+mod agent_envelope_projection;
 mod agent_reply_route;
 mod approved_command_prefix_saved;
 mod apps_instructions;
@@ -55,6 +56,7 @@ mod user_shell_command;
 pub(crate) mod world_state;
 
 pub(crate) use agent_context_identity::AgentContextIdentity;
+pub(crate) use agent_envelope_projection::project_v1_agent_envelopes;
 pub(crate) use agent_reply_route::AgentReplyRoute;
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;

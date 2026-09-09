@@ -95,10 +95,17 @@ pub(super) async fn run_remote_compact_v2_attempt(
         .messaging_context_snapshot(sess.presentation_id())
         .await?
         .reconcile_annotated(&mut prompt_items);
+    if let Some(identities) = &step_context.agent_identities {
+        crate::context::world_state::AgentIdentitiesState::new(identities)
+            .reconcile_annotated(&mut prompt_items);
+    }
     let (mut input, prompt_input_metadata): (Vec<_>, Vec<_>) = prompt_items
         .into_iter()
         .map(|envelope| (envelope.item, envelope.metadata))
         .unzip();
+    if let Some(identities) = &step_context.agent_identities {
+        crate::context::project_v1_agent_envelopes(&mut input, &identities.refs);
+    }
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {
