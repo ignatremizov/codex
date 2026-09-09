@@ -4,6 +4,7 @@ use super::session::Session;
 use super::step_context::StepContext;
 use crate::connectors;
 use crate::context::TokenBudgetContext;
+use crate::context::world_state::AgentIdentitiesState;
 use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::CollaborationModeState;
@@ -127,7 +128,9 @@ impl Session {
                 model_instructions,
             )
         };
-        let environment_subagents = if turn_context.config.include_environment_context {
+        let environment_subagents = if turn_context.config.include_environment_context
+            && step_context.agent_identities.is_none()
+        {
             match turn_context.multi_agent_version {
                 MultiAgentVersion::V2 => {
                     let agent_paths = self
@@ -178,6 +181,9 @@ impl Session {
                 definitions,
                 Some(Arc::clone(&extension_metrics)),
             )?);
+        }
+        if let Some(identities) = &step_context.agent_identities {
+            world_state.add_section(AgentIdentitiesState::new(identities));
         }
         world_state.add_section(model_state);
         let token_budget_enabled = turn_context.config.features.enabled(Feature::TokenBudget)

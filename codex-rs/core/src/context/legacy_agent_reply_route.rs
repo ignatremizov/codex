@@ -8,6 +8,8 @@ use serde_json::Value;
 pub(crate) struct LegacyAgentReplyRoute;
 
 impl LegacyAgentReplyRoute {
+    pub(super) const CURRENT_TURN_CONTENT_KIND: &'static str = "multi_agent.agent_reply_route";
+
     pub(crate) fn matches_text(text: &str) -> bool {
         let text = text.trim();
         let (start, end) = Self::type_markers();
