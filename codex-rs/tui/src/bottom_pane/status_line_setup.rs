@@ -20,6 +20,7 @@
 //! - Usage limits (primary, secondary)
 //! - Session info (thread title, thread ID, tokens used)
 //! - Application version
+//! - Local TUI Codex home name
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -166,6 +167,9 @@ pub(crate) enum StatusLineItem {
     /// Model provider ID for the active thread.
     #[strum(to_string = "provider", serialize = "model-provider")]
     Provider,
+
+    /// Resolved local TUI Codex home basename, with one leading dot removed.
+    CodexHome,
 }
 
 impl StatusLineItem {
@@ -231,6 +235,7 @@ impl StatusLineItem {
             StatusLineItem::TaskProgress => {
                 "Latest task progress from update_plan (omitted until available)"
             }
+            StatusLineItem::CodexHome => "Local TUI Codex home name (not the remote server's home)",
         }
     }
 
@@ -269,6 +274,7 @@ impl StatusLineItem {
             StatusLineItem::ThreadTitle => StatusSurfacePreviewItem::ThreadTitle,
             StatusLineItem::WorkspaceHeadline => StatusSurfacePreviewItem::WorkspaceHeadline,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
+            StatusLineItem::CodexHome => StatusSurfacePreviewItem::CodexHome,
         }
     }
 }
@@ -803,6 +809,44 @@ mod tests {
         );
 
         assert_snapshot!(render_lines(&view, /*width*/ 100));
+    }
+
+    #[test]
+    fn setup_view_snapshot_includes_local_codex_home_and_saves_selection() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let mut view = StatusLineSetupView::new(
+            Some(&["codex-home".to_string()]),
+            /*use_theme_colors*/ false,
+            StatusSurfacePreviewData::from_iter([(
+                StatusSurfacePreviewItem::CodexHome,
+                "codex-office",
+            )]),
+            AppEventSender::new(tx_raw),
+            crate::keymap::RuntimeKeymap::defaults().list,
+        );
+
+        assert_snapshot!(
+            render_lines(&view, /*width*/ 100)
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        view.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let AppEvent::StatusLineSetup {
+            items,
+            use_theme_colors,
+        } = rx.try_recv().expect("status line selection")
+        else {
+            panic!("expected status line setup");
+        };
+        assert_eq!(
+            (items, use_theme_colors),
+            (vec![StatusLineItem::CodexHome], false)
+        );
     }
 
     #[test]

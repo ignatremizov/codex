@@ -43,6 +43,7 @@ pub(crate) enum StatusSurfacePreviewItem {
     Profile,
     Provider,
     TaskProgress,
+    CodexHome,
 }
 
 impl StatusSurfacePreviewItem {
@@ -83,6 +84,7 @@ impl StatusSurfacePreviewItem {
             StatusSurfacePreviewItem::Profile => "profile: <name>",
             StatusSurfacePreviewItem::Provider => "provider: <id>",
             StatusSurfacePreviewItem::TaskProgress => "Tasks 0/0",
+            StatusSurfacePreviewItem::CodexHome => "codex",
         }
     }
 
@@ -123,6 +125,7 @@ impl StatusSurfacePreviewItem {
             Self::Profile,
             Self::Provider,
             Self::TaskProgress,
+            Self::CodexHome,
         ]
         .into_iter()
     }
@@ -151,6 +154,11 @@ impl Default for StatusSurfacePreviewData {
             values: BTreeMap::new(),
         };
         for item in StatusSurfacePreviewItem::iter() {
+            // A guessed home would misidentify this TUI when no basename is available.
+            // Only show this identity from the resolved local configuration.
+            if item == StatusSurfacePreviewItem::CodexHome {
+                continue;
+            }
             data.set_placeholder(item, item.placeholder());
         }
         data
