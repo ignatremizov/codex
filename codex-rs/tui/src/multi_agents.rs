@@ -1057,7 +1057,7 @@ fn agent_identity_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
 
     if let Some(role) = role {
         spans.push(Span::from(" ").dim());
-        spans.push(Span::from(format!("[{role}]")));
+        spans.push(format!("[{role}]").dim());
     }
 
     spans
@@ -1065,7 +1065,7 @@ fn agent_identity_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
 
 fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<'static>> {
     spawn_request_label(spawn_request)
-        .map(|details| vec![Span::from(" ").dim(), Span::from(details).magenta()])
+        .map(|details| vec![Span::from(" ").dim(), details.dim()])
         .unwrap_or_default()
 }
 
@@ -1310,7 +1310,6 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
-    use ratatui::style::Color;
     use ratatui::style::Modifier;
     use std::collections::HashMap;
 
@@ -1950,9 +1949,10 @@ mod tests {
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
         assert_eq!(title.spans[4].style.fg, None);
-        assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
+        assert!(title.spans[4].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(title.spans[6].content.as_ref(), "(gpt-5 high)");
-        assert_eq!(title.spans[6].style.fg, Some(Color::Magenta));
+        assert_eq!(title.spans[6].style.fg, None);
+        assert!(title.spans[6].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

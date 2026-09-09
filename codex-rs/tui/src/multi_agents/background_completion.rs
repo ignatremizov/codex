@@ -85,7 +85,14 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         completion_status_verb(&status),
         Span::from(" (").bold(),
         completion_visibility_span(model_visibility),
-        Span::from(if details.is_empty() { ")" } else { "):" }).bold(),
+        Span::from(
+            if status == CollabAgentStatus::Completed || details.is_empty() {
+                ")"
+            } else {
+                "):"
+            },
+        )
+        .bold(),
     ];
     Some(if let Some(thread_id) = thread_id {
         CollabAgentHistoryCell::new_agent_labeled(
@@ -97,9 +104,11 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
     } else {
         let mut title = if agent_reference == AgentPath::ROOT {
             vec![
-                Span::from("Main").cyan().bold(),
+                Span::from("Main")
+                    .fg(crate::agent_color::nickname_color("Main"))
+                    .bold(),
                 Span::from(" ").dim(),
-                Span::from("[default]"),
+                Span::from("[default]").dim(),
             ]
         } else if agent_reference.is_empty() {
             vec![Span::from("agent").cyan()]
@@ -131,7 +140,7 @@ fn completion_status_verb(status: &CollabAgentStatus) -> Span<'static> {
         // Allow `.yellow()`
         #[allow(clippy::disallowed_methods)]
         CollabAgentStatus::Interrupted => "interrupted".yellow(),
-        CollabAgentStatus::Completed => "completed".green(),
+        CollabAgentStatus::Completed => "completed:".green(),
         CollabAgentStatus::Errored => "errored".red(),
         CollabAgentStatus::Shutdown => "shut down".into(),
         CollabAgentStatus::NotFound => "not found".red(),

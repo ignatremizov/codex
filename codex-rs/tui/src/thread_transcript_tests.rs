@@ -493,11 +493,11 @@ fn full_transcript_renders_collab_messages_with_persisted_agent_metadata_snapsho
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Robie [explorer] sends:
+    • Robie [explorer] commentary:
       └ I found the relevant path.
     • Robie [explorer] sends:
       └ Please confirm the boundary.
-    • Robie [explorer] completed (● visible):
+    • Robie [explorer] completed: (● visible)
       └ Finished the review.
     "
     );
@@ -580,7 +580,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Robie II [explorer] (gpt-5.6-sol high) /root/mailbox-test completed (● visible):
+    • Robie II [explorer] (gpt-5.6-sol high) /root/mailbox-test completed: (● visible)
       └ Finished the split-page review.
     "
     );
