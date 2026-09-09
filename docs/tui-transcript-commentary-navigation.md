@@ -89,6 +89,11 @@ Pressing `v` returns to Review mode.
 
 `/copy` and the response-copy shortcut use the latest completed ordinary assistant message, including commentary completed during an active turn. Code and quote selections retain that message's original source. Commentary does not replace the final-answer state used for completion notifications, and a later final answer or proposed plan supersedes it for copying. Attributed inter-agent input and background completion notices remain separate from this response-copy source; their full contents are available through transcript copy and export.
 
+After `/status`, `/copy` offers that card and its fields until a later command,
+accepted prompt or shell submission, or server-reported turn start. A delayed
+rate-limit refresh may update the old card, but must not restore it as the copy
+source after newer activity.
+
 ### Review-target navigation
 
 `[` jumps to the previous review target and `]` jumps to the next review
