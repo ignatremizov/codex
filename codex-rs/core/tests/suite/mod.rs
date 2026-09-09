@@ -221,6 +221,7 @@ mod stream_no_completed;
 mod subagent_notifications;
 mod subagent_observer_control;
 mod subagent_service_tier;
+mod subagent_sibling_prompt_isolation;
 #[path = "test_codex_submission_tests.rs"]
 mod test_codex_submission;
 mod token_budget;
@@ -250,6 +251,7 @@ mod user_notification;
 mod user_shell_cmd;
 mod user_shell_completion;
 mod user_shell_processes;
+mod v1_agent_identity_context;
 mod view_image;
 mod web_search;
 #[path = "web_search_system_proxy_tests.rs"]

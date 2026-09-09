@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_shared_instructions.rs
+assertion_line: 153
 expression: "context_snapshot::format_request_history_snapshot(\"A host replaces the provider after the parent restarts, then updates and clears instructions for surviving children and grandchildren.\",\n&request_history, &ContextSnapshotOptions::default(),)"
 ---
 Scenario: A host replaces the provider after the parent restarts, then updates and clears instructions for surviving children and grandchildren.
@@ -36,9 +37,6 @@ Scenario: A host replaces the provider after the parent restarts, then updates a
           <current_date><CURRENT_DATE></current_date>
           <timezone><HOST_TIMEZONE></timezone>
           <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
-          <subagents>
-            - <UUID 1>
-          </subagents>
         </environment_context>
 02:message/user:
     continue with the current instructions
@@ -66,7 +64,7 @@ Scenario: A host replaces the provider after the parent restarts, then updates a
 07:message/user:
     continue with the current instructions
 
-## Window 2 (after request 4: input diverged at item 01, settings changed (prompt_cache_key))
+## Window 2 (after request 4: input truncated at item 03, settings changed (prompt_cache_key))
 -- request 5 (turn) --
 00:message/developer:
     <permissions instructions>

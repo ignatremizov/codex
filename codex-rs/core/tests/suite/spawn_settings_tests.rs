@@ -187,7 +187,7 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
         .expect("parent receives successful spawn output");
     assert_eq!(
         serde_json::from_str::<Value>(&output)?,
-        json!({ "agent_id": child_id.to_string(), "nickname": "Captured", "ref": alias.agent_ref.to_string() }),
+        json!({ "agent_id": child_id.to_string(), "nickname": "Captured", "ref": alias.agent_ref.to_string(), "task_path": null }),
     );
     Ok(())
 }

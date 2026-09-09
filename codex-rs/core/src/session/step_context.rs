@@ -24,6 +24,8 @@ pub(crate) struct StepContext {
     pub(crate) preempt: Option<CancellationToken>,
     /// Realtime call activity and instructions captured for this sampling request.
     pub(crate) realtime: RealtimeConversationSnapshot,
+    /// Receiver-scoped V1 identities shared by hydration and envelope projection.
+    pub(crate) agent_identities: Option<crate::agent::control::V1AgentIdentitySnapshot>,
     /// One immutable settings version captured before request preparation.
     pub(crate) settings: Arc<ResolvedStepSettings>,
     /// Frozen turn preferences resolved against this step's captured model.

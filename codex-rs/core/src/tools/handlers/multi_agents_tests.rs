@@ -1583,6 +1583,7 @@ async fn spawn_agent_returns_agent_id_without_task_name() {
     assert!(result["agent_id"].is_string());
     assert!(result.get("task_name").is_none());
     assert!(result.get("nickname").is_some());
+    assert_eq!(result.get("task_path"), Some(&json!(null)));
     assert_eq!(success, Some(true));
 }
 
@@ -3761,8 +3762,10 @@ async fn resume_agent_reports_missing_agent() {
     );
 }
 
+#[test_case::test_case(true; "owned_live_child")]
+#[test_case::test_case(false; "foreign_live_root_is_rejected")]
 #[tokio::test]
-async fn resume_agent_noops_for_active_agent() {
+async fn resume_agent_only_reuses_agents_owned_by_current_root(owned: bool) {
     let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let config = turn.config.as_ref().clone();
@@ -3770,12 +3773,16 @@ async fn resume_agent_noops_for_active_agent() {
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start parent thread");
-    let thread = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
-    let status_before = manager.agent_control().get_status(agent_id).await;
+    let agent_id = if owned {
+        spawn_idle_v1_child(&parent.thread, config).await
+    } else {
+        manager
+            .start_thread(StartThreadOptions::new(config))
+            .await
+            .expect("independent live root")
+            .thread_id
+    };
+    let thread = manager.get_thread(agent_id).await.expect("live target");
     let invocation = invocation(
         Arc::clone(&parent.thread.session),
         parent.thread.session.new_default_turn().await,
@@ -3783,15 +3790,22 @@ async fn resume_agent_noops_for_active_agent() {
         function_payload(json!({"id": agent_id.to_string()})),
     );
 
-    let output = ResumeAgentHandler
-        .handle(invocation)
-        .await
-        .expect("resume_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
-        serde_json::from_str(&content).expect("resume_agent result should be json");
-    assert_eq!(result.status, status_before);
-    assert_eq!(success, Some(true));
+    let output = ResumeAgentHandler.handle(invocation).await;
+    if owned {
+        let (content, success) = expect_text_output(output.expect("owned resume succeeds"));
+        let result: serde_json::Value =
+            serde_json::from_str(&content).expect("resume_agent result should be json");
+        assert_eq!(result["status"], json!("idle"));
+        assert_eq!(success, Some(true));
+    } else {
+        assert_eq!(
+            output.err().expect("a live foreign root cannot be adopted"),
+            FunctionCallError::RespondToModel(format!(
+                "collab tool failed: agent {agent_id} is live under another root; close it before adoption"
+            ))
+        );
+        assert_eq!(thread.session_source.parent_thread_id(), None);
+    }
 
     let mut thread_ids = manager.list_thread_ids().await;
     thread_ids.sort_by_key(ToString::to_string);
@@ -3800,14 +3814,13 @@ async fn resume_agent_noops_for_active_agent() {
     assert_eq!(thread_ids, expected_thread_ids);
 
     let _ = thread
-        .thread
         .submit(Op::Shutdown {})
         .await
         .expect("shutdown should submit");
 }
 
 #[tokio::test]
-async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions() {
+async fn resume_agent_observes_owned_live_v1_thread_without_losing_terminal_transitions() {
     let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let config = turn.config.as_ref().clone();
@@ -3815,14 +3828,15 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("parent thread should start");
+    let child_thread_id = spawn_idle_v1_child(&parent.thread, config).await;
     let child = manager
-        .start_thread(StartThreadOptions::new(config))
+        .get_thread(child_thread_id)
         .await
-        .expect("independently resumed child thread should be live");
-    let child_thread_id = child.thread_id;
+        .expect("owned idle child should be live");
+    let native_source = child.session_source.clone();
     let parent_session = parent.thread.session.clone();
-    let child_turn = child.thread.session.new_default_turn().await;
-    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    let child_turn = child.session.new_default_turn().await;
+    publish_agent_turn_started(child.as_ref(), child_turn.as_ref()).await;
 
     let first_resume = tokio::spawn({
         let parent_session = Arc::clone(&parent_session);
@@ -3859,9 +3873,8 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
     })
     .await
     .expect("live completion watcher should be installed before resume start is presented");
-    publish_agent_turn_started(child.thread.as_ref(), child_turn.as_ref()).await;
+    publish_agent_turn_started(child.as_ref(), child_turn.as_ref()).await;
     child
-        .thread
         .session
         .send_event(
             child_turn.as_ref(),
@@ -3879,7 +3892,7 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
     first_resume
         .await
         .expect("first resume task should join")
-        .expect("first resume should adopt the already-live thread");
+        .expect("first resume should observe the owned live thread");
 
     let mut second_resume_invocation = invocation(
         parent_session.clone(),
@@ -3891,12 +3904,9 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
     ResumeAgentHandler
         .handle(second_resume_invocation)
         .await
-        .expect("resume_agent should idempotently retain the live adoption");
+        .expect("resume_agent should idempotently retain the live observation");
 
-    assert!(
-        parent_session.services.local_agent_runtime.control(parent_session.session_id()).get_agent_metadata(child_thread_id)
-            .is_none()
-    );
+    assert_eq!(child.session_source, native_source);
 
     timeout(Duration::from_secs(5), async {
         loop {
@@ -3911,12 +3921,15 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
         }
     })
     .await
-    .expect("completion should reach the adopting parent");
+    .expect("completion should reach the observing parent");
     assert_eq!(
         subagent_notification_texts(parent_session.as_ref()).await,
         vec![format_subagent_notification_message(
-            AgentContextIdentity::Canonical {
+            AgentContextIdentity::V1 {
                 agent_id: child_thread_id,
+                agent_ref: None,
+                task_path: None,
+                nickname: native_source.get_nickname(),
             },
             &AgentStatus::Completed(Some("child done".to_string())),
         )]
@@ -3924,7 +3937,7 @@ async fn resume_agent_adopts_live_v1_thread_without_losing_terminal_transitions(
 }
 
 #[tokio::test]
-async fn resume_agent_live_adoption_prefers_a_new_active_turn_over_historical_completion() {
+async fn resume_agent_owned_observation_prefers_a_new_active_turn_over_historical_completion() {
     let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let config = turn.config.as_ref().clone();
@@ -3932,24 +3945,22 @@ async fn resume_agent_live_adoption_prefers_a_new_active_turn_over_historical_co
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("parent thread should start");
+    let child_thread_id = spawn_idle_v1_child(&parent.thread, config).await;
     let child = manager
-        .start_thread(StartThreadOptions::new(config))
+        .get_thread(child_thread_id)
         .await
-        .expect("independently resumed child thread should be live");
+        .expect("owned idle child should be live");
     let historical_turn = child
-        .thread
         .session
         .new_turn_with_default_settings("historical-turn".to_string(), Default::default())
         .await;
     let active_turn = child
-        .thread
         .session
         .new_turn_with_default_settings("active-turn".to_string(), Default::default())
         .await;
-    publish_agent_turn_started(child.thread.as_ref(), historical_turn.as_ref()).await;
-    publish_agent_turn_started(child.thread.as_ref(), active_turn.as_ref()).await;
+    publish_agent_turn_started(child.as_ref(), historical_turn.as_ref()).await;
+    publish_agent_turn_started(child.as_ref(), active_turn.as_ref()).await;
     child
-        .thread
         .session
         .send_event(
             historical_turn.as_ref(),
@@ -3964,7 +3975,7 @@ async fn resume_agent_live_adoption_prefers_a_new_active_turn_over_historical_co
             }),
         )
         .await;
-    let (snapshot, response_subscription) = child.thread.session.subscribe_agent_responses();
+    let (snapshot, response_subscription) = child.session.subscribe_agent_responses();
     drop(response_subscription);
     assert_eq!(
         (
@@ -3988,17 +3999,20 @@ async fn resume_agent_live_adoption_prefers_a_new_active_turn_over_historical_co
             parent.thread.session.new_default_turn().await,
             "resume_agent",
             function_payload(json!({
-                "id": child.thread_id.to_string(),
+                "id": child_thread_id.to_string(),
                 "w": "f",
             })),
         ))
         .await
-        .expect("resume_agent should adopt the live thread");
+        .expect("resume_agent should observe the owned live thread");
     let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
+    let result: serde_json::Value =
         serde_json::from_str(&content).expect("resume_agent result should be json");
 
-    assert_eq!((result.status, success), (AgentStatus::Running, Some(true)));
+    assert_eq!(
+        (result["status"].clone(), success),
+        (json!("running"), Some(true))
+    );
 }
 
 #[tokio::test]
@@ -4074,9 +4088,9 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         .await
         .expect("resume_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
+    let result: serde_json::Value =
         serde_json::from_str(&content).expect("resume_agent result should be json");
-    assert_ne!(result.status, AgentStatus::NotFound);
+    assert_ne!(result["status"], json!("notFound"));
     assert_eq!(success, Some(true));
     assert!(
         manager
@@ -4115,11 +4129,7 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
     let (content, success) = expect_text_output(output);
     let result: serde_json::Value =
         serde_json::from_str(&content).expect("send_input result should be json");
-    let submission_id = result
-        .get("submission_id")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    assert!(!submission_id.is_empty());
+    assert_eq!(result, json!({"status": "submitted"}));
     assert_eq!(success, Some(true));
 
     let admitted_turn_id = timeout(Duration::from_secs(5), async {
@@ -4172,7 +4182,8 @@ async fn resume_agent_restores_closed_agent_and_accepts_send_input() {
         vec![format_subagent_notification_message(
             AgentContextIdentity::V1 {
                 agent_id,
-                agent_ref: None,
+                // The fresh durable session reserves 1 for the root before adopting this child.
+                agent_ref: Some(2),
                 nickname: resumed_nickname,
                 task_path: None,
             },
@@ -4446,10 +4457,11 @@ async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() 
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start parent thread");
+    let child_id = spawn_idle_v1_child(&parent.thread, config).await;
     let child = manager
-        .start_thread(StartThreadOptions::new(config))
+        .get_thread(child_id)
         .await
-        .expect("start target thread");
+        .expect("owned idle target");
     let session = Arc::clone(&parent.thread.session);
     let turn = session.new_default_turn().await;
 
@@ -4459,24 +4471,26 @@ async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() 
             turn,
             "resume_agent",
             function_payload(json!({
-                "id": child.thread_id.to_string(),
+                "id": child_id.to_string(),
                 "w": "x",
             })),
         ))
         .await
         .expect("resume_agent x should return the live target status");
     let (content, success) = expect_text_output(output);
-    let result: resume_agent::ResumeAgentResult =
+    let result: serde_json::Value =
         serde_json::from_str(&content).expect("resume_agent result should be json");
 
-    assert_eq!(result.status, child.thread.agent_status().await);
+    assert_eq!(result["status"], json!("idle"));
     assert_eq!(success, Some(true));
     assert!(
-        manager
-            .agent_control()
+        session
+            .services
+            .local_agent_runtime
+            .control(session.session_id())
             .response_observation_snapshots(
                 session.presentation_id(),
-                child.thread.session.presentation_id(),
+                child.session.presentation_id(),
             )
             .is_empty(),
         "x must not create a runtime response watcher relationship"
@@ -4502,19 +4516,25 @@ async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() 
         1,
         "the parent has no inherited lineage"
     );
-    let observation = stored
+    let observations = stored
         .segments
         .into_iter()
         .flatten()
-        .find_map(|item| match item {
+        .filter_map(|item| match item {
             RolloutItem::AgentResponseObservation(observation)
-                if observation.target_thread_id == child.thread_id =>
+                if observation.target_thread_id == child_id =>
             {
                 Some(observation)
             }
             _ => None,
         })
-        .expect("resolved x audit observation");
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observations.len(),
+        2,
+        "idle spawn and resume are both audited"
+    );
+    let observation = observations.last().expect("resolved x audit observation");
     assert_eq!(
         (
             observation.observer_thread_id,
@@ -4524,7 +4544,7 @@ async fn resume_agent_x_returns_status_and_persists_audit_without_subscribing() 
         ),
         (
             parent.thread_id,
-            child.thread_id,
+            child_id,
             false,
             codex_protocol::protocol::AgentResponseFinalDelivery::None,
         )
@@ -6309,20 +6329,26 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
 
 #[tokio::test]
 async fn close_agent_submits_shutdown_and_returns_previous_status() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    set_agent_control(&mut session, manager.agent_control());
     let config = turn.config.as_ref().clone();
-    let thread = manager
+    let parent = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
-    let status_before = manager.agent_control().get_status(agent_id).await;
+        .expect("start parent");
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let session = Arc::clone(&parent.thread.session);
+    let turn = session.new_default_turn().await;
+    let status_before = session
+        .services
+        .local_agent_runtime
+        .control(session.session_id())
+        .get_status(agent_id)
+        .await;
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "close_agent",
         function_payload(json!({"target": agent_id.to_string()})),
     );
@@ -6488,9 +6514,9 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
         .await
         .expect("resume_agent should reopen the child subtree");
     let (child_resume_content, child_resume_success) = expect_text_output(child_resume_output);
-    let child_resume_result: resume_agent::ResumeAgentResult =
+    let child_resume_result: serde_json::Value =
         serde_json::from_str(&child_resume_content).expect("resume result should be json");
-    assert_ne!(child_resume_result.status, AgentStatus::NotFound);
+    assert_ne!(child_resume_result["status"], json!("notFound"));
     assert_eq!(child_resume_success, Some(true));
     assert_ne!(
         manager.agent_control().get_status(child_thread_id).await,
@@ -6566,9 +6592,9 @@ async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtr
         .await
         .expect("resume_agent should reopen the parent thread");
     let (parent_resume_content, parent_resume_success) = expect_text_output(parent_resume_output);
-    let parent_resume_result: resume_agent::ResumeAgentResult =
+    let parent_resume_result: serde_json::Value =
         serde_json::from_str(&parent_resume_content).expect("parent resume result should be json");
-    assert_ne!(parent_resume_result.status, AgentStatus::NotFound);
+    assert_ne!(parent_resume_result["status"], json!("notFound"));
     assert_eq!(parent_resume_success, Some(true));
     assert_ne!(
         manager.agent_control().get_status(parent_thread_id).await,
