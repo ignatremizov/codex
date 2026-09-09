@@ -202,15 +202,16 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
 
 #[test]
 fn v1_lifecycle_tools_use_compact_response_observation_guidance() {
+    // Only send_input owns mailbox admission; spawn/resume keep the compact reference.
+    let send_input_description = format!(
+        "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering, starting a payload-bearing turn, or subscribing to replies. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. Normalize f/x first; z rejects c, m, q, and effective wake. z, zx, zfx, and zfxx are equivalent; repeated z is idempotent. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
+    );
     let tools = [
         (
             create_spawn_agent_tool_v1(SpawnAgentToolOptions::default()),
             RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION,
         ),
-        (
-            create_send_input_tool_v1(),
-            RESPONSE_OBSERVATION_DESCRIPTION,
-        ),
+        (create_send_input_tool_v1(), send_input_description.as_str()),
         (
             create_resume_agent_tool(),
             RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION,
@@ -232,7 +233,7 @@ fn v1_lifecycle_tools_use_compact_response_observation_guidance() {
         assert_eq!(
             properties.get("w"),
             Some(&response_observation_schema(expected_description)),
-            "{} should expose the shared wake/event state",
+            "{} should expose its surface-specific wake/event guidance",
             tool.name
         );
     }

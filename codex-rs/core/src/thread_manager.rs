@@ -1801,7 +1801,17 @@ impl ThreadManager {
             )));
         }
         if imports_agent_alias_reservations
-            && let Err(err) = self.state.publish_thread(&forked.thread).await
+            && let Err(err) = async {
+                forked
+                    .thread
+                    .session
+                    .services
+                    .agent_control
+                    .restore_agent_send_settings(forked.thread.session.presentation_id())
+                    .await?;
+                self.state.publish_thread(&forked.thread).await
+            }
+            .await
         {
             if let Some(setup_cleanup) = setup_cleanup.take()
                 && let Err(cleanup_err) = setup_cleanup.rollback().await
@@ -3030,13 +3040,15 @@ impl ThreadManagerState {
             }
         };
 
-        // Thread construction precedes the spawn/resume observer transactions. Restore only
-        // messaging settings here, before registration locks or initial input admission.
-        if let Err(error) = session
-            .services
-            .agent_control
-            .restore_agent_send_settings(session.presentation_id())
-            .await
+        // Immediate publication restores before registration or input admission. Deferred
+        // callers restore before their observer transactions and publication; live revert
+        // must first stage and rekey the replacement before waiting for messaging refresh.
+        if runtime_publication != ThreadRuntimePublication::Deferred
+            && let Err(error) = session
+                .services
+                .agent_control
+                .restore_agent_send_settings(session.presentation_id())
+                .await
         {
             if let Err(shutdown_error) = io.shutdown_and_wait().await {
                 warn!(

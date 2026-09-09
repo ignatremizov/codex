@@ -8,6 +8,7 @@ use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
 use codex_protocol::WakeEventFinalDelivery;
 use codex_protocol::WakeEventFlags;
 use codex_protocol::WakeEventSurface;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
@@ -232,7 +233,14 @@ impl Handler {
             }
         }
         .await
-        .map_err(|err| collab_agent_error(receiver_thread_id, err));
+        .map_err(|err| {
+            // Mailbox admission reports actionable policy denials, not a missing manager.
+            if mailbox && let CodexErrorDetails::UnsupportedOperation(message) = err.details() {
+                FunctionCallError::RespondToModel(message.clone())
+            } else {
+                collab_agent_error(receiver_thread_id, err)
+            }
+        });
         let status = session
             .services
             .agent_control

@@ -115,7 +115,12 @@ impl AgentControl {
     }
 
     async fn refresh_messaging_context_locked(&self, current: ThreadId) -> CodexResult<()> {
-        if let Ok(thread) = self.upgrade()?.get_thread_including_pending(current).await {
+        // Standalone sessions (including guardian reviews) have no manager.
+        // Restore durable policy only when a runtime exists; the authority check
+        // below still rejects a missing manager when live reconciliation is needed.
+        if let Ok(manager) = self.upgrade()
+            && let Ok(thread) = manager.get_thread_including_pending(current).await
+        {
             self.restore_agent_send_settings_locked(thread.session.presentation_id())
                 .await?;
         }

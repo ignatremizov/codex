@@ -18,6 +18,7 @@ impl AgentControl {
     pub(crate) async fn prepare_root_completion_audit(
         &self,
         child: SessionPresentationId,
+        turn_id: &str,
     ) -> codex_protocol::error::Result<Option<PreparedRootCompletionAudit>> {
         let Some(root_id) = self.bound_session_id().map(ThreadId::from) else {
             return Ok(None);
@@ -38,6 +39,16 @@ impl AgentControl {
         }
         self.require_current_agent_ownership(child.thread_id)
             .await?;
+        let parent = root.session.presentation_id();
+        // A watcher already owns this exact turn, including commentary-only observations.
+        // It can hold the observation transaction while waiting for the parent's durable
+        // context. Child terminal publication must not wait on that parent-side delivery.
+        if self
+            .response_observation_turn_final_response(parent, child, turn_id)
+            .is_some()
+        {
+            return Ok(None);
+        }
         let Some(admission) = root
             .session
             .submission_admission
@@ -45,10 +56,15 @@ impl AgentControl {
         else {
             return Ok(None);
         };
-        let parent = root.session.presentation_id();
         // Observation admission and audit registration must agree on the exact target
         // turn. The shared presentation lock checks policy and reserves the token atomically.
         let observation = self.acquire_response_observation_transaction(parent).await;
+        if self
+            .response_observation_turn_final_response(parent, child, turn_id)
+            .is_some()
+        {
+            return Ok(None);
+        }
         Ok(Some(PreparedRootCompletionAudit {
             parent,
             admission,

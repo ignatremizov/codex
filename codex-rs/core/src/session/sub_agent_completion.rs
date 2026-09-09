@@ -502,7 +502,7 @@ impl Session {
             match self
                 .services
                 .agent_control
-                .prepare_root_completion_audit(self.presentation_id())
+                .prepare_root_completion_audit(self.presentation_id(), &turn_context.sub_id)
                 .await
             {
                 Ok(audit) => audit,

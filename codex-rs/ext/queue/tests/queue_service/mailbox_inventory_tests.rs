@@ -354,7 +354,16 @@ async fn active_turn_defers_inventory_and_new_arrival_advances_frontier() -> any
         .build_with_streaming_server_auto_env(&server)
         .await?;
     let receiver = test.session_configured.thread_id;
-    test.submit_text_turn("keep working").await?;
+    // Admission must return before the gated response completes.
+    assert!(matches!(
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "keep working".to_string(),
+                text_elements: Vec::new(),
+            }]))
+            .await?,
+        TurnInputSubmission::Started { .. }
+    ));
     tokio::time::timeout(Duration::from_secs(/*secs*/ 15), active.wait_for_request()).await?;
     let first_sequence = accept_user_mail(&test, "first", "FIRST_PRIVATE_MAIL").await?;
     test.codex
@@ -447,11 +456,8 @@ async fn assert_inventory_resume(boundary: InventoryResumeBoundary) -> anyhow::R
         .build_with_auto_env(&server)
         .await?;
     let receiver = test.session_configured.thread_id;
+    // This helper already waits for and consumes the matching TurnComplete.
     test.submit_text_turn("establish receiver history").await?;
-    wait_for_event_match(test.codex.as_ref(), |event| {
-        matches!(event, EventMsg::TurnComplete(_)).then_some(())
-    })
-    .await;
     let queue = install_registered_queue(&test, &queue_slot)?;
     let mut fallback_registry = ExtensionRegistryBuilder::new();
     codex_queue_extension::install_inventory_fallback(&mut fallback_registry, queue.clone());

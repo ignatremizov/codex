@@ -1,4 +1,6 @@
 use super::*;
+use codex_core::UserAgentFinalResponseHandling;
+use codex_core::UserAgentObservationBinding;
 use codex_core::UserAgentObservationMode;
 use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use pretty_assertions::assert_eq;
@@ -167,7 +169,22 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
     match observation {
         RootObservation::Unobserved => {}
         RootObservation::Presentation | RootObservation::Passive => {
-            test.codex
+            // The initial assignment's subscription was consumed. Explicitly subscribe
+            // Main to this active peer turn before replacing its response policy.
+            let resumed = test
+                .codex
+                .resume_agent(
+                    &target_id.to_string(),
+                    /*task*/ None,
+                    UserAgentResponseHandling::Presentation,
+                )
+                .await?;
+            assert_eq!(
+                resumed.observation_binding,
+                Some(UserAgentObservationBinding::ActiveTurn),
+            );
+            let replaced = test
+                .codex
                 .observe_agent(
                     &target_id.to_string(),
                     /*observer*/ None,
@@ -178,6 +195,15 @@ async fn peer_completion_has_one_durable_root_row_without_implicit_model_deliver
                     },
                 )
                 .await?;
+            assert_eq!(
+                replaced,
+                (
+                    target_id,
+                    test.session_configured.thread_id,
+                    UserAgentFinalResponseHandling::Presentation,
+                    UserAgentObservationBinding::ActiveTurn,
+                ),
+            );
         }
     }
     release

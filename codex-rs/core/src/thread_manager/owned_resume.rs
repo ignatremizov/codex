@@ -597,7 +597,12 @@ impl ThreadManager {
                             .restore_before_publication(resumed.thread.as_ref())
                             .await?,
                     ),
-                    None => None,
+                    None => {
+                        agent_control
+                            .restore_agent_send_settings(resumed.thread.session.presentation_id())
+                            .await?;
+                        None
+                    }
                 };
                 let registration_commit = controlled_registration
                     .take()

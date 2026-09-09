@@ -94,11 +94,9 @@ pub enum AgentControlAction {
     Observe {
         target: String,
         /// Existing subscription owner. Omitted means the issuing source thread.
-        #[ts(optional = nullable)]
         observer: Option<String>,
         /// Original observer token for audit only, before client-side normalization.
         /// Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.
-        #[ts(optional = nullable)]
         authored_observer_selector: Option<String>,
         response_handling: AgentObservationMode,
     },

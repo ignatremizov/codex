@@ -137,7 +137,28 @@ async fn restart_restores_subtree_enable_and_directed_disable(
         let received = mount_sse_once_match(
             &server,
             move |req: &wiremock::Request| {
-                body_contains(req, "<agent_message>") && body_contains(req, &payload_match)
+                let Some(body) = request_body_bytes(req) else {
+                    return false;
+                };
+                let Ok(body) = serde_json::from_slice::<Value>(&body) else {
+                    return false;
+                };
+                // Match the received envelope, not a previous send_input payload in
+                // this recipient's history when it was the sender in the earlier case.
+                body["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| item["role"] == "user")
+                    .filter_map(|item| item["content"].as_array())
+                    .flatten()
+                    .filter_map(|part| part["text"].as_str())
+                    .filter_map(|text| {
+                        text.strip_prefix("<agent_message>")?
+                            .strip_suffix("</agent_message>")
+                    })
+                    .filter_map(|envelope| serde_json::from_str::<Value>(envelope).ok())
+                    .any(|envelope| envelope["message"] == payload_match)
             },
             sse(vec![
                 ev_response_created("settings-received"),

@@ -1,6 +1,47 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[tokio::test]
+async fn standalone_turn_refresh_does_not_require_a_thread_manager() {
+    let control = AgentControl::default();
+    let current = ThreadId::new();
+    control
+        .refresh_subtree_messaging(current)
+        .await
+        .expect("standalone turns have no durable agent policy to restore");
+    control
+        .refresh_subtree_messaging(current)
+        .await
+        .expect("repeated standalone turns remain independent of a manager");
+    let state = control.wait_agent_presentations.state();
+    assert!(state.subtree_messaging.is_empty());
+    assert!(state.inherited_message_routes.is_empty());
+    assert!(state.pending_messaging_context.is_empty());
+}
+
+#[tokio::test]
+async fn missing_manager_still_fails_when_live_messaging_authority_needs_reconciliation() {
+    let control = AgentControl::default();
+    let current = SessionPresentationId::new(ThreadId::new(), Uuid::now_v7());
+    control
+        .wait_agent_presentations
+        .state()
+        .subtree_messaging
+        .insert(current, (0, TargetMessageRouteMode::Enabled));
+    let error = control
+        .refresh_subtree_messaging(current.thread_id)
+        .await
+        .expect_err("live authority must not silently bypass reconciliation");
+    assert!(matches!(
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::UnsupportedOperation(_)
+    ));
+    assert_eq!(
+        control.wait_agent_presentations.state().subtree_messaging,
+        HashMap::from([(current, (0, TargetMessageRouteMode::Enabled))]),
+    );
+}
+
 #[test]
 fn continuity_cannot_bridge_a_different_published_presentation() {
     let thread_id = ThreadId::new();
