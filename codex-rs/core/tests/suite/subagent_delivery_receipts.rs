@@ -208,8 +208,8 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        child_presentations,
-        vec![TurnItem::AgentMessage(completion)],
+        serde_json::to_value(child_presentations)?,
+        serde_json::to_value(vec![TurnItem::AgentMessage(completion)])?,
         "recipient presentation remains durable for passive and x delivery",
     );
     test.codex.flush_rollout().await?;
@@ -241,8 +241,8 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        root_presentations,
-        vec![TurnItem::AgentMessage(root_child_completion)],
+        serde_json::to_value(root_presentations)?,
+        serde_json::to_value(vec![TurnItem::AgentMessage(root_child_completion)])?,
         "Main keeps its ordinary durable child-completion oversight",
     );
     assert!(!root_json.contains("Agent final answer from `/root`"));

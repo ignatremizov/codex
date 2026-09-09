@@ -541,7 +541,6 @@ async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
         .await?;
     let request = wait_for_request_containing_text(&received, "attribution payload").await?;
     let sender = test.thread_manager.get_thread(sender_id).await?;
-    let nickname = sender.config_snapshot().await.session_source.get_nickname();
     let texts = request.message_input_texts("user");
     let envelope = texts
         .iter()
