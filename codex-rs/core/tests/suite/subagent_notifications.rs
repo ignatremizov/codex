@@ -5165,8 +5165,21 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             state: codex_state::AgentAliasState::Active,
         }
     );
-    test.thread_manager.remove_thread(&spawned_id).await;
+    // This manager API force-removes the runtime and publishes a real NotFound terminal;
+    // it is not the silent residency-unload path. Resume must preserve that notification.
+    let removed_thread = test
+        .thread_manager
+        .remove_thread(&spawned_id)
+        .await
+        .expect("resumed runtime should be removed");
+    assert_eq!(removed_thread.agent_status().await, AgentStatus::NotFound);
+    drop(removed_thread);
     assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
+    wait_for_event_match(&test.codex, |event| {
+        sub_agent_completion_event(event)
+            .filter(|(_, status, _, _)| *status == SubAgentCompletionStatus::NotFound)
+    })
+    .await;
     let unloaded_call_id = "resume-unloaded-by-ref";
     mount_sse_once_match(
         &server,
@@ -5197,7 +5210,11 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let unloaded_request = wait_for_requests(&after_unloaded_resume)
         .await?
         .into_iter()
-        .next()
+        .find(|request| {
+            request
+                .function_call_output_text(unloaded_call_id)
+                .is_some()
+        })
         .expect("unloaded resume continuation");
     assert_eq!(
         serde_json::from_str::<Value>(
@@ -5207,7 +5224,24 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         )?,
         resume_output
     );
-    assert!(!unloaded_request.body_contains_text("<subagent_notification>"));
+    let notifications = unloaded_request
+        .inputs_of_type("agent_message")
+        .into_iter()
+        .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+        .filter_map(|content| {
+            content["text"]
+                .as_str()?
+                .strip_prefix("<subagent_notification>")?
+                .strip_suffix("</subagent_notification>")
+                .map(serde_json::from_str::<Value>)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        notifications,
+        vec![json!({"ref": "2", "status": "not_found"})],
+        "resume preserves the removal terminal without fabricating another completion"
+    );
+    assert_eq!(subagent_notification_count(&unloaded_request), 1);
     assert!(test.thread_manager.get_thread(spawned_id).await.is_ok());
     Ok(())
 }
@@ -6717,11 +6751,23 @@ async fn send_input_commentary_binds_to_the_interrupt_replacement_turn(
 
     // Turn/item identities belong to the durable audit, not the compact model projection.
     // Check the admitted replacement turn rather than merely recognizing its message text.
-    let replacement_request = wait_for_requests(&replacement_child)
-        .await?
+    // ResponseMock captures before the custom matcher is evaluated, so its first entry can
+    // be the parent's send_input request. The commentary wake proves the child request has
+    // arrived; select that request by canonical thread identity and replacement payload.
+    let replacement_requests = replacement_child
+        .requests()
         .into_iter()
-        .next()
-        .expect("replacement child request");
+        .filter(|request| {
+            request.body_json()["client_metadata"]["thread_id"] == json!(spawned_id)
+                && request.body_contains_text("replacement child task")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replacement_requests.len(),
+        1,
+        "one replacement child request"
+    );
+    let replacement_request = &replacement_requests[0];
     let replacement_turn_id = replacement_request.body_json()["client_metadata"]["turn_id"]
         .as_str()
         .expect("replacement turn id")

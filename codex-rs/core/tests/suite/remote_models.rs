@@ -961,13 +961,16 @@ async fn remote_models_apply_legacy_instructions() -> Result<()> {
             config.update_plan_enabled = true;
             config.model = Some("gpt-5.2".to_string());
         });
+    // Retain the home and executor environment through both turns. Destructuring the
+    // owning fixture would delete the databases before the model-switch followup.
+    let test = builder.build(&server).await?;
     let TestCodex {
         codex,
         cwd,
         config,
         thread_manager,
         ..
-    } = builder.build(&server).await?;
+    } = &test;
 
     let models_manager = thread_manager.get_models_manager();
     wait_for_model_available(&models_manager, model).await;
@@ -992,10 +995,10 @@ async fn remote_models_apply_legacy_instructions() -> Result<()> {
         )
         .await?;
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     core_test_support::submit_thread_settings(
-        &codex,
+        codex,
         ThreadSettingsOverrides {
             model: Some(model.to_string()),
             ..Default::default()
@@ -1022,7 +1025,7 @@ async fn remote_models_apply_legacy_instructions() -> Result<()> {
         )
         .await?;
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     let base_model_info = models_manager
         .get_model_info("gpt-5.2", &config.to_models_manager_config())
