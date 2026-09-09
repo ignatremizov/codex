@@ -458,19 +458,6 @@ async fn assert_inventory_resume(boundary: InventoryResumeBoundary) -> anyhow::R
     let receiver = test.session_configured.thread_id;
     // This helper already waits for and consumes the matching TurnComplete.
     test.submit_text_turn("establish receiver history").await?;
-    let queue = install_registered_queue(&test, &queue_slot)?;
-    let mut fallback_registry = ExtensionRegistryBuilder::new();
-    codex_queue_extension::install_inventory_fallback(&mut fallback_registry, queue.clone());
-    assert!(
-        inventory_slot
-            .extensions
-            .set(fallback_registry.build())
-            .is_ok()
-    );
-    // Start the real watcher. The registered proxy forwards real resume callbacks
-    // to this same service; no manual idle callback is used anywhere in this test.
-    let mut watcher_registry = ExtensionRegistryBuilder::<Config>::new();
-    codex_queue_extension::install(&mut watcher_registry, queue.clone());
     let rollout = test
         .codex
         .rollout_path()
@@ -504,6 +491,30 @@ async fn assert_inventory_resume(boundary: InventoryResumeBoundary) -> anyhow::R
     }
     test.codex.shutdown_and_wait().await?;
     test.thread_manager.remove_thread(&receiver).await;
+    assert_eq!(captured.requests().len(), 1);
+    assert_eq!(
+        test.thread_store
+            .read_mailbox_inventory(receiver)
+            .await?
+            .notified_through,
+        0,
+    );
+    // TurnComplete precedes the original runtime's idle callbacks. Keep both
+    // proxies uninstalled until it has stopped so those callbacks cannot deliver
+    // the pending inventory before the resume boundary this test exercises.
+    let queue = install_registered_queue(&test, &queue_slot)?;
+    let mut fallback_registry = ExtensionRegistryBuilder::new();
+    codex_queue_extension::install_inventory_fallback(&mut fallback_registry, queue.clone());
+    assert!(
+        inventory_slot
+            .extensions
+            .set(fallback_registry.build())
+            .is_ok()
+    );
+    // Start the real watcher before resume. The registered proxy forwards real
+    // resume callbacks to this service; no manual idle callback is used here.
+    let mut watcher_registry = ExtensionRegistryBuilder::<Config>::new();
+    codex_queue_extension::install(&mut watcher_registry, queue.clone());
     assert!(queue.list(receiver).await?.is_empty());
     let resumed = test
         .thread_manager

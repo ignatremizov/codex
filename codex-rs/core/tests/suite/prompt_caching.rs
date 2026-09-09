@@ -247,6 +247,8 @@ async fn prompt_tools_are_consistent_across_requests(
         "request_user_input",
         "apply_patch",
         "view_image",
+        // check_mail is direct-only even when other V1 tools are deferred to search.
+        "multi_agent_v1",
         "tool_search",
         "web_search",
     ]);
