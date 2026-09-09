@@ -2066,6 +2066,19 @@ async fn apply_patch_turn_diff_emits_portable_paths_for_remote_cwd() -> Result<(
     let harness = apply_patch_harness().await?;
     let test = harness.test();
     let codex = test.codex.clone();
+    let cwd = &test.executor_environment().selection().cwd;
+    // Own the repository boundary: an ambient ancestor .git (including one in the
+    // Docker harness's shared /tmp) must not add the temporary cwd to diff paths.
+    test.fs()
+        .create_directory(
+            &cwd.join(".git")?,
+            CreateDirectoryOptions {
+                recursive: true,
+                follow_symlinks: true,
+            },
+            /*sandbox*/ None,
+        )
+        .await?;
 
     let call_id = "apply-foreign-windows-diff";
     let file = "nested/foreign.txt";
@@ -2085,7 +2098,6 @@ async fn apply_patch_turn_diff_emits_portable_paths_for_remote_cwd() -> Result<(
     })
     .await;
 
-    let cwd = &test.executor_environment().selection().cwd;
     let file_uri = cwd.join(file)?;
     let expected_relative_path = match test_target_os() {
         TestTargetOs::Linux | TestTargetOs::MacOs => "nested/foreign.txt",
@@ -2151,6 +2163,19 @@ async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Re
     test.fs()
         .create_directory(
             &remote_cwd_uri,
+            CreateDirectoryOptions {
+                recursive: true,
+                follow_symlinks: true,
+            },
+            /*sandbox*/ None,
+        )
+        .await?;
+    // Each environment has its own repository root, independently of markers in
+    // shared temporary ancestors. Keep the expected environment prefixes exact.
+    fs::create_dir(local_cwd.join(".git"))?;
+    test.fs()
+        .create_directory(
+            &remote_cwd_uri.join(".git")?,
             CreateDirectoryOptions {
                 recursive: true,
                 follow_symlinks: true,
