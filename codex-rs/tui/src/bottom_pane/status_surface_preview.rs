@@ -41,6 +41,7 @@ pub(crate) enum StatusSurfacePreviewItem {
     ModelWithReasoning,
     Reasoning,
     TaskProgress,
+    CodexHome,
 }
 
 impl StatusSurfacePreviewItem {
@@ -79,6 +80,7 @@ impl StatusSurfacePreviewItem {
             StatusSurfacePreviewItem::ModelWithReasoning => "gpt-5.2-codex medium",
             StatusSurfacePreviewItem::Reasoning => "medium",
             StatusSurfacePreviewItem::TaskProgress => "Tasks 0/0",
+            StatusSurfacePreviewItem::CodexHome => "codex",
         }
     }
 
@@ -117,6 +119,7 @@ impl StatusSurfacePreviewItem {
             Self::ModelWithReasoning,
             Self::Reasoning,
             Self::TaskProgress,
+            Self::CodexHome,
         ]
         .into_iter()
     }
@@ -141,6 +144,11 @@ impl Default for StatusSurfacePreviewData {
             values: BTreeMap::new(),
         };
         for item in StatusSurfacePreviewItem::iter() {
+            // A guessed home would misidentify this TUI when no basename is available.
+            // Only show this identity from the resolved local configuration.
+            if item == StatusSurfacePreviewItem::CodexHome {
+                continue;
+            }
             data.set_placeholder(item, item.placeholder());
         }
         data
