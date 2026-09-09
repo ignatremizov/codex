@@ -4,6 +4,7 @@ use super::session::Session;
 use super::step_context::StepContext;
 use crate::connectors;
 use crate::context::TokenBudgetContext;
+use crate::context::world_state::AgentIdentitiesState;
 use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::BaseInstructionsState;
@@ -105,7 +106,9 @@ impl Session {
                         .cloned()
                 })
         };
-        let environment_subagents = if turn_context.config.include_environment_context {
+        let environment_subagents = if turn_context.config.include_environment_context
+            && step_context.agent_identities.is_none()
+        {
             match turn_context.multi_agent_version {
                 MultiAgentVersion::V2 => {
                     let agent_paths = self
@@ -155,6 +158,9 @@ impl Session {
                 Some(Arc::clone(&extension_metrics)),
             )?);
             world_state.add_section(BaseInstructionsState(base_instructions));
+        }
+        if let Some(identities) = &step_context.agent_identities {
+            world_state.add_section(AgentIdentitiesState::new(identities));
         }
         world_state.add_section(ModelInstructionsState::new(
             &model_info.slug,
