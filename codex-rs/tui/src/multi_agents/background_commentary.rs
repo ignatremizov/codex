@@ -40,7 +40,8 @@ pub(crate) fn background_commentary_history_cell_from_agent_message(
             )],
         });
     }
-    let (agent_reference, message) = sub_agent_commentary_transcript_parts(text).or_else(|| {
+    let commentary = sub_agent_commentary_transcript_parts(text);
+    let (agent_reference, message) = commentary.or_else(|| {
         is_attributed_agent_message_response_item_id(id)
             .then(|| attributed_agent_message_transcript_parts(text))
             .flatten()
@@ -53,7 +54,11 @@ pub(crate) fn background_commentary_history_cell_from_agent_message(
     Some(CollabAgentHistoryCell::new_agent_labeled(
         thread_id,
         &agent_metadata(thread_id),
-        vec![" sends:".bold()],
+        vec![if commentary.is_some() {
+            " commentary:".bold()
+        } else {
+            " sends:".bold()
+        }],
         details,
     ))
 }

@@ -103,7 +103,7 @@ async fn completion_requires_canonical_phase_and_replays_with_wait_rendering() {
     assert_snapshot!(
         lines_to_single_string(&cells[1]),
         @r"
-    • /root/reviewer completed (● visible):
+    • /root/reviewer completed: (● visible)
       └ Finished reviewing the change.
     "
     );
@@ -124,7 +124,7 @@ async fn root_background_completion_uses_the_main_agent_label() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Main [default] completed (● visible):
+    • Main [default] completed: (● visible)
       └ Parent task finished.
     "
     );
@@ -182,11 +182,11 @@ async fn background_completion_shows_parent_model_visibility() {
     assert_snapshot!(
         rendered,
         @r"
-    • Herschel [default] completed (● visible):
+    • Herschel [default] completed: (● visible)
       └ Finished.
 
 
-    • Herschel [default] completed (○ not visible):
+    • Herschel [default] completed: (○ not visible)
       └ Finished.
     "
     );
@@ -232,7 +232,7 @@ async fn background_completion_moves_terminal_status_to_agent_title() {
     assert_snapshot!(
         rendered,
         @r"
-    • Herschel [default] completed (● visible):
+    • Herschel [default] completed: (● visible)
       └ Finished.
 
 
@@ -297,7 +297,7 @@ async fn background_completion_and_later_wait_render_as_distinct_rows() {
         .map(|lines| lines_to_single_string(&lines))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("/root/reviewer completed (● visible)"));
+    assert!(rendered.contains("/root/reviewer completed: (● visible)"));
     assert!(rendered.contains("Finished waiting"));
     let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     assert_eq!(normalized.matches(response).count(), 2);
@@ -325,7 +325,7 @@ async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Herschel [default] completed (● visible):
+    • Herschel [default] completed: (● visible)
       └ Cinnamon
     "
     );
@@ -435,7 +435,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
       └ Give me one random ingredient.
 
 
-    • Herschel [default] (gpt-5.6-sol high) completed (● visible):
+    • Herschel [default] (gpt-5.6-sol high) completed: (● visible)
       └ Cinnamon
     "
     );

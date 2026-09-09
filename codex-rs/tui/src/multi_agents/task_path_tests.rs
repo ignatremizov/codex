@@ -20,7 +20,19 @@ fn lifecycle_labels_include_authoritative_task_path() {
     insta::assert_snapshot!(plain, @"Darwin [worker] (gpt-5 high) /root/mailbox-test");
     let title = title_with_agent("Spawned", label, /*spawn_request*/ None).to_string();
     insta::assert_snapshot!(title, @"• Spawned Darwin [worker] (gpt-5 high) /root/mailbox-test");
-    assert_eq!(styled.spans.last(), Some(&" /root/mailbox-test".dim()));
+    assert_eq!(
+        styled,
+        Line::from(vec![
+            "Darwin"
+                .fg(crate::agent_color::nickname_color("Darwin"))
+                .bold(),
+            " ".dim(),
+            "[worker]".dim(),
+            " ".dim(),
+            "(gpt-5 high)".dim(),
+            " /root/mailbox-test".dim(),
+        ])
+    );
 }
 
 #[test]

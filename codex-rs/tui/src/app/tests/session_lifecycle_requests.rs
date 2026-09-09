@@ -3344,7 +3344,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
             .eq(markdown.lines().filter(|line| line.starts_with("history")))
     );
     assert!(
-        markdown.contains("Robie [explorer] completed (● visible):"),
+        markdown.contains("Robie [explorer] completed: (● visible)"),
         "{markdown}"
     );
     assert!(
@@ -3392,7 +3392,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
     assert!(app.transcript_cells.iter().any(|cell| {
         cell.display_lines(/*width*/ 80).iter().any(|line| {
             line.to_string()
-                .contains("Robie [explorer] completed (● visible):")
+                .contains("Robie [explorer] completed: (● visible)")
         })
     }));
     let Some(Overlay::Transcript(overlay)) = app.overlay.as_mut() else {
