@@ -1,5 +1,6 @@
 use super::helpers::drain_insert_history_transcript;
 use super::*;
+use crate::bottom_pane::RestrictedInputMode;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::chatwidget::agent_command::AgentSelectorKind;
 use pretty_assertions::assert_eq;
@@ -1243,7 +1244,14 @@ async fn approvals_and_permissions_preserve_restricted_input_guards() {
             }
             chat.bottom_pane
                 .set_composer_text(command.into(), Vec::new(), Vec::new());
-            chat.handle_key_event(KeyCode::Enter.into());
+            if restriction == "disconnected" {
+                chat.handle_restricted_key(
+                    KeyCode::Enter.into(),
+                    RestrictedInputMode::Disconnected,
+                );
+            } else {
+                chat.handle_key_event(KeyCode::Enter.into());
+            }
 
             assert!(
                 !chat.bottom_pane.has_active_view(),
@@ -2736,6 +2744,7 @@ async fn slash_copy_picker_copies_status_fields_and_preserves_source_after_copyi
     chat.thread_name = Some("Clipboard example".to_string());
     chat.config.cwd = test_path_buf("/workspace").abs();
     let directory = chat.config.cwd.display().to_string();
+    let codex_home = chat.config.codex_home.display().to_string();
     chat.dispatch_command(SlashCommand::Status);
     drain_insert_history(&mut rx);
 
@@ -2747,17 +2756,17 @@ async fn slash_copy_picker_copies_status_fields_and_preserves_source_after_copyi
         "slash_copy_picker_status_fields",
         render_bottom_popup(&chat, /*width*/ 100)
             .replace(&directory, "[[workspace]]")
-            .replace(crate::version::CODEX_CLI_VERSION, "VERSION"),
+            .replace(crate::version::CODEX_CLI_VERSION_FOR_DISPLAY, "VERSION"),
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let (whole_status, label) = next_copy_selection(&mut rx);
     assert_eq!(label, "Whole status");
-    assert_chatwidget_snapshot!(
-        "slash_copy_whole_status",
-        whole_status
-            .replace(&directory, "[[workspace]]")
-            .replace(crate::version::CODEX_CLI_VERSION, "VERSION"),
-    );
+    assert!(whole_status.contains(&format!("Codex home (local TUI): {codex_home}")));
+    let normalized_status = whole_status
+        .replace(&directory, "[[workspace]]")
+        .replace(&codex_home, "[[codex-home]]")
+        .replace(crate::version::CODEX_CLI_VERSION_FOR_DISPLAY, "VERSION");
+    assert_chatwidget_snapshot!("slash_copy_whole_status", normalized_status);
     let expected = [
         ("Whole status", whole_status.as_str()),
         ("Model", "gpt-5.5"),
@@ -2808,8 +2817,10 @@ async fn slash_copy_status_omits_missing_fields_and_copies_full_directory() {
 
 #[tokio::test]
 async fn slash_copy_status_yields_to_later_turns_and_commands_even_after_refresh() {
+    #[derive(Debug)]
     enum NextTurn {
         Response,
+        Started,
         UserTurn,
         Command,
         InlineCommand,
@@ -2819,6 +2830,7 @@ async fn slash_copy_status_yields_to_later_turns_and_commands_even_after_refresh
     }
     for next in [
         NextTurn::Response,
+        NextTurn::Started,
         NextTurn::UserTurn,
         NextTurn::Command,
         NextTurn::InlineCommand,
@@ -2841,6 +2853,7 @@ async fn slash_copy_status_yields_to_later_turns_and_commands_even_after_refresh
             NextTurn::Response => {
                 complete_turn_with_message(&mut chat, "turn-2", Some("Next reply"))
             }
+            NextTurn::Started => handle_turn_started(&mut chat, "turn-2"),
             NextTurn::UserTurn => chat.submit_user_message(UserMessage::from("Next question")),
             NextTurn::Command => chat.dispatch_command(SlashCommand::Pwd),
             NextTurn::InlineCommand => chat.dispatch_command_with_args(
@@ -2866,7 +2879,8 @@ async fn slash_copy_status_yields_to_later_turns_and_commands_even_after_refresh
         };
         assert_eq!(
             next_copy_selection(&mut rx),
-            (expected.to_string(), "Whole response".to_string())
+            (expected.to_string(), "Whole response".to_string()),
+            "copy source after {next:?}"
         );
     }
 }
@@ -3713,6 +3727,8 @@ async fn slash_mcp_use_preserves_spaces_and_pre_session_fifo() {
         .join("\n");
     insta::assert_snapshot!(before_binding, @r"
     • MCP server `team docs` activation will be requested when the session starts.
+
+
     • MCP server `second` activation will be requested when the session starts.
     ");
     let thread_id = ThreadId::new();
@@ -4310,25 +4326,40 @@ async fn slash_cd_rejects_pending_input_and_unsupported_session_ownership() {
 #[tokio::test]
 async fn slash_rollout_displays_current_path() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let rollout_path = PathBuf::from("/tmp/codex-test-rollout.jsonl");
-    chat.current_rollout_path = Some(rollout_path.clone());
-
-    chat.dispatch_command(SlashCommand::Rollout);
-
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected info message for rollout path");
-    let rendered = lines_to_single_string(&cells[0]);
-    assert!(
-        rendered.contains(&rollout_path.display().to_string()),
-        "expected rollout path to be shown: {rendered}"
-    );
+    chat.bottom_pane.set_task_running(/*running*/ true);
+    for command in ["/rollout-path", "/rollout"] {
+        for path in [
+            "/server/sessions/original-day/a-very-long-session-name/rollout.jsonl",
+            r"C:\server\sessions\original-day\a-very-long-session-name\rollout.jsonl",
+        ] {
+            chat.current_rollout_path = Some(PathBuf::from(path));
+            submit_composer_text(&mut chat, command);
+            let cells: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|event| match event {
+                    AppEvent::InsertHistoryCell(cell) => Some(cell),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cells.len(), 1, "expected a single plain path cell");
+            let expected = vec![Line::from(path.to_string())];
+            assert_eq!(cells[0].display_lines(/*width*/ 12), expected);
+            assert_eq!(cells[0].raw_lines(), expected);
+            assert_eq!(cells[0].transcript_lines(/*width*/ 12), expected);
+            if command == "/rollout-path" && path.starts_with('/') {
+                insta::assert_snapshot!(
+                    cells[0].raw_lines()[0].to_string(),
+                    @"/server/sessions/original-day/a-very-long-session-name/rollout.jsonl"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
 async fn slash_rollout_handles_missing_path() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.dispatch_command(SlashCommand::Rollout);
+    submit_composer_text(&mut chat, "/rollout-path");
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(
@@ -4337,10 +4368,7 @@ async fn slash_rollout_handles_missing_path() {
         "expected info message explaining missing path"
     );
     let rendered = lines_to_single_string(&cells[0]);
-    assert!(
-        rendered.contains("not available"),
-        "expected missing rollout path message: {rendered}"
-    );
+    insta::assert_snapshot!(rendered.trim_end(), @"Rollout path is not available.");
 }
 
 #[tokio::test]
