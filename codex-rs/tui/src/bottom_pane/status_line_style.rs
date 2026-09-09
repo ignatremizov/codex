@@ -38,7 +38,9 @@ impl StatusLineAccent {
             StatusLineItem::ModelName
             | StatusLineItem::ModelWithReasoning
             | StatusLineItem::Reasoning => Self::Model,
-            StatusLineItem::CurrentDir | StatusLineItem::ProjectRoot => Self::Path,
+            StatusLineItem::CurrentDir
+            | StatusLineItem::ProjectRoot
+            | StatusLineItem::CodexHome => Self::Path,
             StatusLineItem::GitBranch
             | StatusLineItem::PullRequestNumber
             | StatusLineItem::BranchChanges => Self::Branch,
@@ -221,6 +223,33 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    #[test]
+    fn codex_home_uses_path_styling_or_secondary_style() {
+        for (use_theme_colors, expected) in [
+            (
+                true,
+                Line::from(Span::styled(
+                    "codex-office",
+                    Style::default().fg(Color::Green),
+                )),
+            ),
+            (
+                false,
+                Line::from(Span::styled("codex-office", secondary_text_style())),
+            ),
+        ] {
+            assert_eq!(
+                status_line_from_segments_with_resolver(
+                    [(StatusLineItem::CodexHome, "codex-office".to_string())],
+                    use_theme_colors,
+                    /*thread_id*/ None,
+                    |_| None,
+                ),
+                Some(expected),
+            );
+        }
     }
 
     #[test]
