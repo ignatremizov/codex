@@ -719,6 +719,10 @@ impl ChatWidget {
             }
             StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
             StatusLineItem::Hostname => os_host_name(),
+            StatusLineItem::CodexHome => self.config.codex_home.file_name().map(|name| {
+                let name = name.to_string_lossy();
+                name.strip_prefix('.').unwrap_or(&name).to_string()
+            }),
             StatusLineItem::GitBranch => self.status_line_branch.clone(),
             StatusLineItem::PullRequestNumber => self
                 .status_line_git_summary
@@ -846,6 +850,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::CurrentDir => StatusLineItem::CurrentDir,
             StatusSurfacePreviewItem::Hostname => StatusLineItem::Hostname,
             StatusSurfacePreviewItem::ThreadName => StatusLineItem::ThreadName,
+            StatusSurfacePreviewItem::CodexHome => StatusLineItem::CodexHome,
             StatusSurfacePreviewItem::ThreadTitle => StatusLineItem::ThreadTitle,
             StatusSurfacePreviewItem::GitBranch => StatusLineItem::GitBranch,
             StatusSurfacePreviewItem::PullRequestNumber => StatusLineItem::PullRequestNumber,
