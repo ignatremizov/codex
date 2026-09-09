@@ -130,6 +130,9 @@ async fn active_steer_promotes_before_sampling_and_survives_interrupt(
                 description,
                 SkillResourceId::new(format!("skill://{authority}/unwrap/SKILL.md")),
             )
+            // Typed skill selection resolves the display locator, independently of
+            // the opaque package and resource identities asserted below.
+            .with_display_path(format!("skill://{authority}/unwrap/SKILL.md"))
             .hidden_from_prompt(),
         ],
         warnings: Vec::new(),
