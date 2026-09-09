@@ -5175,11 +5175,9 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     assert_eq!(removed_thread.agent_status().await, AgentStatus::NotFound);
     drop(removed_thread);
     assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
-    wait_for_event_match(&test.codex, |event| {
-        sub_agent_completion_event(event)
-            .filter(|(_, status, _, _)| *status == SubAgentCompletionStatus::NotFound)
-    })
-    .await;
+    // Do not wait for a completion event here: this resumed runtime has not started a
+    // turn. The unloaded resume below can reconcile its NotFound fallback, so requiring
+    // that presentation before issuing the resume would prevent the lifecycle advancing.
     let unloaded_call_id = "resume-unloaded-by-ref";
     mount_sse_once_match(
         &server,
