@@ -3300,9 +3300,14 @@ async fn spawn_final_wake_starts_an_idle_parent_turn(
     assert!(request.body_contains_text("wake result"));
     let notification = agent_message_text_containing(&request, "<subagent_notification>")
         .expect("wake request should contain the completion fragment");
-    assert!(notification.contains(r#""ref":"2""#));
-    assert!(notification.contains(r#""nickname":"#));
-    assert!(!notification.contains("\"agent_path\""));
+    let body = notification
+        .strip_prefix("<subagent_notification>")
+        .and_then(|body| body.strip_suffix("</subagent_notification>"))
+        .expect("canonical notification markers");
+    assert_eq!(
+        serde_json::from_str::<Value>(body)?,
+        json!({"ref": "2", "status": {"completed": "wake result"}}),
+    );
     assert_input_item_ids_are_provider_compatible(&request);
     let completion_context = subagent_notification_agent_message(&request)
         .expect("wake request should contain completion context as an agent message");
@@ -3848,9 +3853,14 @@ async fn spawn_cx_wakes_once_and_keeps_final_out_of_model_context(
     assert!(request.body_contains_text("useful acknowledgement"));
     let commentary = agent_message_text_containing(&request, "<subagent_commentary>")
         .expect("commentary wake should contain the commentary fragment");
-    assert!(commentary.contains(r#""ref":"2""#));
-    assert!(commentary.contains(r#""nickname":"#));
-    assert!(!commentary.contains("\"agent_path\""));
+    let body = commentary
+        .strip_prefix("<subagent_commentary>")
+        .and_then(|body| body.strip_suffix("</subagent_commentary>"))
+        .expect("canonical commentary markers");
+    assert_eq!(
+        serde_json::from_str::<Value>(body)?,
+        json!({"ref": "2", "message": "useful acknowledgement"}),
+    );
     assert!(!request.body_contains_text("progress noise"));
     assert!(!request.body_contains_text("final result is not subscribed"));
     let (completion_id, status, agent_reference, payload) =
@@ -4706,6 +4716,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let spawn_call_id = "spawn-short-target";
     let spawn_args = serde_json::to_string(&json!({
         "message": "initial short-target task",
+        "task": "/root/short-target",
         "w": "x",
     }))?;
     let spawn_turn = mount_sse_once_match(
@@ -4780,6 +4791,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             .expect("spawn output"),
     )?;
     assert_eq!(spawn_output["ref"], "2");
+    assert_eq!(spawn_output["task_path"], "/root/short-target");
     let initial_child_request = wait_for_requests(&initial_child)
         .await?
         .into_iter()
@@ -4978,6 +4990,71 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         codex_state::AgentAliasState::Closed
     );
 
+    let failed_send_call_id = "send-to-closed-uuid";
+    let failed_send_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": "closed target must not load",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "send to closed UUID"),
+        sse(vec![
+            ev_response_created("resp-send-closed"),
+            ev_function_call_with_namespace(
+                failed_send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &failed_send_args,
+            ),
+            ev_completed("resp-send-closed"),
+        ]),
+    )
+    .await;
+    let after_failed_send = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, failed_send_call_id),
+        sse(vec![
+            ev_response_created("resp-after-send-closed"),
+            ev_assistant_message("msg-after-send-closed", "target remains closed"),
+            ev_completed("resp-after-send-closed"),
+        ]),
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "send to closed UUID".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let failed_send = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ItemCompleted(event) => match &event.item {
+            TurnItem::CollabAgentToolCall(call) if call.id == failed_send_call_id => {
+                Some(call.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        (failed_send.status, failed_send.receiver_agents),
+        (
+            codex_protocol::items::CollabAgentToolCallStatus::Failed,
+            vec![codex_protocol::protocol::CollabAgentRef {
+                thread_id: spawned_id,
+                task_path: Some("/root/short-target".to_string()),
+                agent_nickname: Some(nickname.clone()),
+                agent_role: None,
+            }],
+        )
+    );
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let _ = wait_for_requests(&after_failed_send).await?;
+    assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
+
     let resume_call_id = "resume-by-agent-ref";
     let resume_args = serde_json::to_string(&json!({
         "id": "2",
@@ -5008,8 +5085,55 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     )
     .await;
 
-    test.submit_turn("resume by compact ref").await?;
-    let _ = wait_for_requests(&after_resume).await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "resume by compact ref".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let resuming_agents = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ItemStarted(event) => match &event.item {
+            TurnItem::CollabAgentToolCall(call) if call.id == resume_call_id => {
+                Some(call.receiver_agents.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        resuming_agents,
+        vec![codex_protocol::protocol::CollabAgentRef {
+            thread_id: spawned_id,
+            task_path: Some("/root/short-target".to_string()),
+            agent_nickname: Some(nickname.clone()),
+            agent_role: None,
+        }]
+    );
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let resume_request = wait_for_requests(&after_resume)
+        .await?
+        .into_iter()
+        .next()
+        .expect("resume continuation request");
+    let resume_output: Value = serde_json::from_str(
+        &resume_request
+            .function_call_output_text(resume_call_id)
+            .expect("resume output"),
+    )?;
+    assert_eq!(
+        resume_output,
+        json!({
+            "ref": "2",
+            "nickname": nickname,
+            "task_path": "/root/short-target",
+            "status": "idle",
+        })
+    );
+    assert!(!resume_request.body_contains_text("<subagent_notification>"));
     assert_eq!(
         test.codex
             .state_db()
@@ -5022,10 +5146,54 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             thread_id: spawned_id,
             agent_ref: 2,
             nickname: Some(nickname),
-            task_path: None,
+            task_path: Some("/root/short-target".to_string()),
             state: codex_state::AgentAliasState::Active,
         }
     );
+    test.thread_manager.remove_thread(&spawned_id).await;
+    assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
+    let unloaded_call_id = "resume-unloaded-by-ref";
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "resume unloaded ref"),
+        sse(vec![
+            ev_response_created("resp-resume-unloaded"),
+            ev_function_call_with_namespace(
+                unloaded_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-resume-unloaded"),
+        ]),
+    )
+    .await;
+    let after_unloaded_resume = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, unloaded_call_id),
+        sse(vec![
+            ev_response_created("resp-after-resume-unloaded"),
+            ev_assistant_message("msg-after-resume-unloaded", "unloaded target resumed"),
+            ev_completed("resp-after-resume-unloaded"),
+        ]),
+    )
+    .await;
+    test.submit_turn("resume unloaded ref").await?;
+    let unloaded_request = wait_for_requests(&after_unloaded_resume)
+        .await?
+        .into_iter()
+        .next()
+        .expect("unloaded resume continuation");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &unloaded_request
+                .function_call_output_text(unloaded_call_id)
+                .expect("unloaded resume result"),
+        )?,
+        resume_output
+    );
+    assert!(!unloaded_request.body_contains_text("<subagent_notification>"));
+    assert!(test.thread_manager.get_thread(spawned_id).await.is_ok());
     Ok(())
 }
 
@@ -5167,7 +5335,6 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
     assert_eq!(
         envelopes,
         vec![json!({
-            "nickname": child_thread.config_snapshot().await.session_source.get_nickname(),
             "ref": "2",
             "message": CHILD_MESSAGE,
         })],

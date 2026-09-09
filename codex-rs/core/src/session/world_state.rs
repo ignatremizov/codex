@@ -5,6 +5,7 @@ use super::step_context::StepContext;
 use crate::connectors;
 use crate::context::ApprovalPromptContext;
 use crate::context::TokenBudgetContext;
+use crate::context::world_state::AgentIdentitiesState;
 use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
 use crate::context::world_state::CollaborationModeState;
@@ -79,7 +80,9 @@ impl Session {
         };
         let personality_is_baked = turn_context.model_info().supports_personality()
             && base_instructions == model_instructions;
-        let environment_subagents = if turn_context.config.include_environment_context {
+        let environment_subagents = if turn_context.config.include_environment_context
+            && step_context.agent_identities.is_none()
+        {
             self.services
                 .agent_control
                 .format_environment_context_subagents(self.thread_id)
@@ -88,6 +91,9 @@ impl Session {
             String::new()
         };
         let mut world_state = WorldState::default();
+        if let Some(identities) = &step_context.agent_identities {
+            world_state.add_section(AgentIdentitiesState::new(identities));
+        }
         world_state.add_section(ModelInstructionsState::new(
             &turn_context.model_info().slug,
             previous_model.as_deref(),

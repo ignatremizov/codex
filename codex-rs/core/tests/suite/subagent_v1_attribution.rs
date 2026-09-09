@@ -269,19 +269,10 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
         .strip_prefix("<agent_message>")
         .and_then(|text| text.strip_suffix("</agent_message>"))
         .ok_or_else(|| anyhow::anyhow!("invalid attribution envelope"))?;
-    let mut attribution: Value = serde_json::from_str(body)?;
-    // Main's path is optional until task labels are allocated, but canonical IDs and turn
-    // IDs must not leak back into this compact model-visible representation.
-    if let Some(task_path) = attribution
-        .as_object_mut()
-        .and_then(|body| body.remove("task_path"))
-    {
-        assert_eq!(task_path, json!("/root"));
-    }
+    let attribution: Value = serde_json::from_str(body)?;
     assert_eq!(
         attribution,
         json!({
-            "nickname": "Main",
             "ref": "1",
             "message": format!("{ATTRIBUTION_PAYLOAD}\n[image]"),
         }),
@@ -365,6 +356,50 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
     assert!(
         serde_json::to_string(&history.items)?.contains(&serde_json::to_string(audit)?),
         "canonical identities and send-time metadata must survive persisted history"
+    );
+    let stored_envelopes = history
+        .items
+        .iter()
+        .filter_map(|item| {
+            let RolloutItem::ResponseItem(envelope) = item else {
+                return None;
+            };
+            let ResponseItem::Message {
+                role,
+                content,
+                internal_chat_message_metadata_passthrough: Some(metadata),
+                ..
+            } = &envelope.item
+            else {
+                return None;
+            };
+            if role != "user"
+                || metadata.content_item_kinds.as_ref()?.first()?.0
+                    != "multi_agent.attributed_agent_message"
+            {
+                return None;
+            }
+            let Some(ContentItem::InputText { text }) = content.first() else {
+                return None;
+            };
+            text.strip_prefix("<agent_message>")?
+                .strip_suffix("</agent_message>")
+        })
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut expected_canonical = json!({
+        "agent_id": audit.sender.thread_id,
+        "nickname": "Main",
+        "ref": "1",
+        "message": format!("{ATTRIBUTION_PAYLOAD}\n[image]"),
+    });
+    if let Some(task_path) = &audit.sender.task_path {
+        expected_canonical["task_path"] = json!(task_path);
+    }
+    assert_eq!(
+        stored_envelopes,
+        vec![expected_canonical],
+        "persist the tagged UUID-bearing envelope, never the compact request projection",
     );
     assert_eq!(dispatched.requests().len(), 1);
     // ResponseMock records before mount_sse_once_match evaluates its custom matcher.
@@ -520,7 +555,7 @@ async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
         .ok_or_else(|| anyhow::anyhow!("invalid attributed directed input"))?;
     assert_eq!(
         serde_json::from_str::<Value>(body)?,
-        json!({"nickname": nickname, "ref": "2", "message": ATTRIBUTION_PAYLOAD}),
+        json!({"ref": "2", "message": ATTRIBUTION_PAYLOAD}),
     );
     let recipient = test.thread_manager.get_thread(recipient_id).await?;
     let presented = wait_for_event_match(recipient.as_ref(), |event| {
@@ -550,11 +585,13 @@ async fn permitted_reverse_and_peer_messages_snapshot_the_real_sender(
         }])?,
     );
     let output = wait_for_request_containing_text(&sender_done, CALL_ID).await?;
-    assert!(
-        output
-            .function_call_output(CALL_ID)
-            .to_string()
-            .contains("submission_id"),
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &output
+                .function_call_output_text(CALL_ID)
+                .expect("send result text"),
+        )?,
+        json!({"status": if flags.contains('q') { "queued" } else { "submitted" }}),
     );
     wait_for_terminal_status(sender.as_ref()).await?;
     wait_for_terminal_status(recipient.as_ref()).await?;

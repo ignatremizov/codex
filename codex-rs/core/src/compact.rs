@@ -341,6 +341,17 @@ async fn run_compact_task_inner_impl(
         )
         .await;
 
+    let agent_identities =
+        if turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V1 {
+            Some(
+                sess.services
+                    .agent_control
+                    .v1_agent_identity_snapshot()
+                    .await?,
+            )
+        } else {
+            None
+        };
     let (compaction_response_id, summary_suffix) = loop {
         // Clone is required because of the loop
         let mut turn_input = history
@@ -351,6 +362,9 @@ async fn run_compact_task_inner_impl(
             .messaging_context_snapshot(sess.presentation_id())
             .await?
             .reconcile(&mut turn_input);
+        if let Some(identities) = &agent_identities {
+            crate::context::world_state::prepare_v1_agent_model_input(&mut turn_input, identities);
+        }
         let turn_input_len = turn_input.len();
         let prompt = Prompt {
             input: turn_input,

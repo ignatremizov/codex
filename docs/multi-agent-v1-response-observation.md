@@ -236,9 +236,20 @@ All three tools should route through the same observation-policy parser and regi
   bare `x` returns the synchronous status without retaining a next-turn observer. Because resume
   carries no input, `q` only confirms next-turn binding and does not create queued work.
 
-The synchronous tool result remains available regardless of `w`. For example, `resume_agent` may
-return the saved result of a previously completed turn; `x` controls future event delivery and
-does not erase that direct tool response.
+The synchronous tool result remains available regardless of `w`. `resume_agent` returns the
+target's durable `ref`, nickname, and task path with its current runtime status (`idle` or
+`running`, or the applicable interrupted/error/closed/not-found state). The UUID is included
+only when no short reference is available. An idle resume does not replay a previous final
+answer or manufacture a completion notification; genuine undelivered turn completions retain
+their observation and delivery semantics.
+
+`spawn_agent` returns the new agent's UUID, ref, nickname, and task path together. The task path
+is `null` when no assignment was requested; it is the canonical assigned path otherwise.
+
+`send_input` returns an admission status: `submitted` for direct input, `queued` for FIFO input,
+or `mailboxAccepted` for a durable mailbox deposit. These are acceptance receipts, not claims
+that execution finished or the receiver model saw the input. Submission, queue, and mailbox
+identifiers remain internal and are not included in the model-facing tool result.
 
 ## Per-call semantics
 

@@ -5409,7 +5409,19 @@ impl Session {
                     .unwrap_or_default(),
             );
         }
+        let agent_identities = if turn_context.multi_agent_version == MultiAgentVersion::V1 {
+            Some(
+                self.services
+                    .agent_control
+                    .v1_agent_identity_snapshot()
+                    .or_cancel(cancellation_token)
+                    .await??,
+            )
+        } else {
+            None
+        };
         Ok(Arc::new(StepContext {
+            agent_identities,
             settings,
             token_budget,
             session_telemetry,
@@ -6432,7 +6444,17 @@ impl Session {
         // Persist prompt content as user-role model input. User-authored prompts keep their
         // attachment spans, while attributed agent input emits a separate trusted presentation
         // instead of asking clients to infer provenance from model-visible marker text.
-        let response_item = self.response_item_from_user_input(input.to_vec());
+        let mut response_item = self.response_item_from_user_input(input.to_vec());
+        if matches!(
+            &prompt_kind,
+            PromptInputKind::Agent {
+                presentation: AgentInputPresentation::AttributedInput { .. }
+            }
+        ) {
+            // Preserve canonical sender identity while allowing receiver-scoped projection
+            // on disposable model requests. Ordinary user text cannot set this marker.
+            crate::context::AttributedAgentMessage::mark_model_input(&mut response_item);
+        }
         self.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
             .await;
         let turn_item = match prompt_kind {

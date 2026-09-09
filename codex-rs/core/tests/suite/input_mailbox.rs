@@ -48,6 +48,8 @@ use tokio::sync::oneshot;
 
 #[path = "input_mailbox_permission_tests.rs"]
 mod permission_tests;
+#[path = "input_mailbox_projection_tests.rs"]
+mod projection_tests;
 #[path = "input_mailbox_selection_tests.rs"]
 mod selection_tests;
 #[path = "input_mailbox_wait_tests.rs"]

@@ -279,6 +279,9 @@ impl Session {
                             }
                         };
                         let mut response = session.response_item_from_user_input(input);
+                        if matches!(&member.message.payload, MailboxPayload::Agent { .. }) {
+                            AttributedAgentMessage::mark_model_input(&mut response);
+                        }
                         response.set_id(Some(response_id.clone()));
                         let (prepared, _) = session.prepare_conversation_items_for_history(
                             &turn,

@@ -188,6 +188,7 @@ mod unified_exec_zsh_fork_approvals;
 mod unstable_features_warning;
 mod user_notification;
 mod user_shell_cmd;
+mod v1_agent_identity_context;
 mod view_image;
 mod web_search;
 mod websocket_fallback;

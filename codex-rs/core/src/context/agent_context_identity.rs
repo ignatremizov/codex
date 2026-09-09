@@ -23,6 +23,28 @@ pub(crate) enum AgentContextIdentity {
 }
 
 impl AgentContextIdentity {
+    /// Projects an already receiver-scoped identity without changing canonical attribution.
+    ///
+    /// Callers must omit a V1 ref when it is not valid in the receiving root. Missing refs
+    /// use the UUID, never a nickname or task path that could identify a different agent.
+    pub(crate) fn compact_json_fields(&self) -> Map<String, Value> {
+        match self {
+            Self::V1 {
+                agent_ref: Some(agent_ref),
+                ..
+            } => Map::from_iter([("ref".to_string(), Value::String(agent_ref.to_string()))]),
+            Self::V1 {
+                agent_id,
+                agent_ref: None,
+                ..
+            }
+            | Self::Canonical { agent_id } => {
+                Map::from_iter([("agent_id".to_string(), Value::String(agent_id.to_string()))])
+            }
+            Self::V2 { .. } => self.json_fields(),
+        }
+    }
+
     pub(crate) fn json_fields(&self) -> Map<String, Value> {
         let mut fields = Map::new();
         match self {

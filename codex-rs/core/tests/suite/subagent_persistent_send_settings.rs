@@ -181,12 +181,15 @@ async fn restart_restores_subtree_enable_and_directed_disable(
         wait_for_request_containing_text(&invocation, &prompt).await?;
         let result = wait_for_request_containing_text(&output, &call_id)
             .await?
-            .function_call_output(&call_id)
-            .to_string();
+            .function_call_output_text(&call_id)
+            .expect("send_input result");
         let sender_thread = resumed.thread_manager.get_thread(sender).await?;
         wait_for_terminal_status(sender_thread.as_ref()).await?;
         if permitted {
-            assert!(result.contains("submission_id"), "{result}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&result)?,
+                json!({"status": "submitted"})
+            );
             wait_for_request_containing_text(&received, &payload).await?;
             let recipient_thread = resumed.thread_manager.get_thread(recipient).await?;
             wait_for_terminal_status(recipient_thread.as_ref()).await?;

@@ -75,7 +75,7 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let model_precedence_guidance =
         (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE);
     let return_value_description =
-        "Returns canonical agent id and, when available, compact ref and user-facing nickname.";
+        "Returns canonical agent id, nickname, assigned task path, and compact ref when available.";
     let mut properties = spawn_agent_common_properties_v1(&options.agent_type_description);
     properties.insert(
         "task".to_string(),
@@ -470,9 +470,13 @@ fn spawn_agent_output_schema_v1() -> Value {
             "ref": {
                 "type": "string",
                 "description": "Compact root-scoped ref preferred for V1 follow-up tools."
+            },
+            "task_path": {
+                "type": ["string", "null"],
+                "description": "Canonical assigned task path, or null when unassigned."
             }
         },
-        "required": ["agent_id", "nickname"],
+        "required": ["agent_id", "nickname", "task_path"],
         "additionalProperties": false
     })
 }
@@ -513,12 +517,13 @@ fn send_input_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "submission_id": {
+            "status": {
                 "type": "string",
-                "description": "Identifier for the accepted input, queued turn, or mailbox message. Mailbox acceptance is not a turn, receipt of model delivery, or consumption."
+                "enum": ["submitted", "queued", "mailboxAccepted"],
+                "description": "Input admission, not completion or model delivery: submitted directly, queued for its own turn, or accepted into the durable mailbox."
             }
         },
-        "required": ["submission_id"],
+        "required": ["status"],
         "additionalProperties": false
     })
 }
@@ -557,10 +562,16 @@ fn list_agents_output_schema() -> Value {
 }
 
 fn resume_agent_output_schema() -> Value {
-    json!({
+    let result = json!({
         "type": "object",
         "properties": {
-            "status": agent_status_output_schema(),
+            "nickname": {"type": ["string", "null"]},
+            "task_path": {"type": ["string", "null"]},
+            "status": {
+                "type": "string",
+                "enum": ["idle", "running", "interrupted", "errored", "closed", "notFound"]
+            },
+            "error": {"type": "string"},
             "adoption": {
                 "type": "object",
                 "description": "Committed assignment labels after cross-root adoption; omitted for ordinary resume.",
@@ -584,8 +595,28 @@ fn resume_agent_output_schema() -> Value {
                 "additionalProperties": false
             }
         },
-        "required": ["status"],
-        "additionalProperties": false
+        "required": ["nickname", "task_path", "status"],
+        "additionalProperties": false,
+        "if": {"properties": {"status": {"const": "errored"}}},
+        "then": {"required": ["error"]},
+        "else": {"not": {"required": ["error"]}}
+    });
+    // Full object variants also keep code-mode's TypeScript renderer from dropping the common
+    // fields when it renders oneOf. Exactly one identity is present in the model projection.
+    let mut with_ref = result.clone();
+    with_ref["properties"]["ref"] = json!({
+        "type": "string",
+        "description": "Compact root-scoped ref preferred for V1 follow-up tools."
+    });
+    with_ref["required"] = json!(["ref", "nickname", "task_path", "status"]);
+    let mut with_id = result;
+    with_id["properties"]["agent_id"] = json!({
+        "type": "string",
+        "description": "Canonical UUID fallback when no root-scoped ref is available."
+    });
+    with_id["required"] = json!(["agent_id", "nickname", "task_path", "status"]);
+    json!({
+        "oneOf": [with_ref, with_id]
     })
 }
 

@@ -104,7 +104,12 @@ impl Handler {
                 .await
                 .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
         }
-        let receiver_agent = receiver_agent.unwrap_or_default();
+        let receiver_agent = session
+            .services
+            .agent_control
+            .get_agent_presentation_ref(receiver_thread_id)
+            .await
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
         let agent_control = session.services.agent_control.clone();
         let sends_to_descendant = !mailbox
             && agent_control
@@ -138,7 +143,7 @@ impl Handler {
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
-                    receiver_agents: Vec::new(),
+                    receiver_agents: vec![receiver_agent.clone()],
                     prompt: Some(prompt.clone()),
                     model: None,
                     reasoning_effort: None,
@@ -168,6 +173,7 @@ impl Handler {
                     .await
                     .map(|accepted| SendInputResult {
                         submission_id: accepted.id,
+                        status: SendInputAdmissionStatus::MailboxAccepted,
                     })
             } else if sends_to_descendant {
                 let input = agent_control
@@ -192,6 +198,7 @@ impl Handler {
                         .await
                         .map(|submission| SendInputResult {
                             submission_id: submission.queue_id.to_string(),
+                            status: SendInputAdmissionStatus::Queued,
                         })
                 } else {
                     agent_control
@@ -203,7 +210,10 @@ impl Handler {
                             response_observation,
                         )
                         .await
-                        .map(|submission_id| SendInputResult { submission_id })
+                        .map(|submission_id| SendInputResult {
+                            submission_id,
+                            status: SendInputAdmissionStatus::Submitted,
+                        })
                 }
             } else if response_observation.queue_input() {
                 agent_control
@@ -218,6 +228,7 @@ impl Handler {
                     .await
                     .map(|submission| SendInputResult {
                         submission_id: submission.queue_id.to_string(),
+                        status: SendInputAdmissionStatus::Queued,
                     })
             } else {
                 agent_control
@@ -230,7 +241,10 @@ impl Handler {
                         response_observation,
                     )
                     .await
-                    .map(|submission_id| SendInputResult { submission_id })
+                    .map(|submission_id| SendInputResult {
+                        submission_id,
+                        status: SendInputAdmissionStatus::Submitted,
+                    })
             }
         }
         .await
@@ -269,12 +283,7 @@ impl Handler {
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
-                    receiver_agents: vec![CollabAgentRef {
-                        thread_id: receiver_thread_id,
-                        task_path: None,
-                        agent_nickname: receiver_agent.agent_nickname,
-                        agent_role: receiver_agent.agent_role,
-                    }],
+                    receiver_agents: vec![receiver_agent],
                     prompt: Some(prompt),
                     model: None,
                     reasoning_effort: None,
@@ -351,7 +360,25 @@ impl<'de> Deserialize<'de> for SendInputMode {
 #[derive(Debug, Serialize)]
 pub(crate) struct SendInputResult {
     submission_id: String,
+    status: SendInputAdmissionStatus,
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum SendInputAdmissionStatus {
+    Submitted,
+    Queued,
+    MailboxAccepted,
+}
+
+#[derive(Serialize)]
+struct SendInputModelResult<'a> {
+    status: &'a SendInputAdmissionStatus,
+}
+
+#[cfg(test)]
+#[path = "send_input_tests.rs"]
+mod tests;
 
 impl ToolOutput for SendInputResult {
     fn log_output(&self) -> String {
@@ -363,10 +390,23 @@ impl ToolOutput for SendInputResult {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, Some(true), "send_input")
+        tool_output_response_item(
+            call_id,
+            payload,
+            &SendInputModelResult {
+                status: &self.status,
+            },
+            Some(true),
+            "send_input",
+        )
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "send_input")
+        tool_output_code_mode_result(
+            &SendInputModelResult {
+                status: &self.status,
+            },
+            "send_input",
+        )
     }
 }
