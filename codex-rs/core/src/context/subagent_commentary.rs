@@ -1,8 +1,12 @@
+use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItemKind;
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use super::AgentContextIdentity;
 use super::ContextualUserFragment;
+use super::agent_envelope_projection::CanonicalEnvelopeIdentity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubagentCommentary {
@@ -13,6 +17,29 @@ pub(crate) struct SubagentCommentary {
 }
 
 impl SubagentCommentary {
+    pub(super) fn project_model_text(
+        text: &str,
+        aliases: &HashMap<ThreadId, u64>,
+    ) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Envelope {
+            #[serde(flatten)]
+            identity: CanonicalEnvelopeIdentity,
+            message: String,
+        }
+
+        let (start, end) = Self::type_markers();
+        let body = text.strip_prefix(start)?.strip_suffix(end)?;
+        let envelope: Envelope = serde_json::from_str(body).ok()?;
+        let mut fields = envelope.identity.for_model(aliases)?.compact_json_fields();
+        fields.insert("message".to_string(), Value::String(envelope.message));
+        let body = Value::Object(fields)
+            .to_string()
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e");
+        Some(format!("{start}\n{body}\n{end}"))
+    }
+
     pub(crate) fn new(
         agent: AgentContextIdentity,
         turn_id: impl Into<String>,

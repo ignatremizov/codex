@@ -239,6 +239,7 @@ mod subagent_observer_control;
 #[path = "subagent_rollback_mode_tests.rs"]
 mod subagent_rollback_mode;
 mod subagent_service_tier;
+mod subagent_sibling_prompt_isolation;
 #[path = "test_codex_submission_tests.rs"]
 mod test_codex_submission;
 mod token_budget;
@@ -268,6 +269,7 @@ mod user_notification;
 mod user_shell_cmd;
 mod user_shell_completion;
 mod user_shell_processes;
+mod v1_agent_identity_context;
 mod view_image;
 mod wake_reservation;
 mod web_search;
