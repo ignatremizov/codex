@@ -69,6 +69,7 @@ pub enum SlashCommand {
     Quit,
     Exit,
     Feedback,
+    #[strum(to_string = "rollout-path", serialize = "rollout")]
     Rollout,
     Ps,
     #[strum(to_string = "stop", serialize = "clean")]
@@ -293,7 +294,7 @@ impl SlashCommand {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::App => cfg!(any(target_os = "macos", target_os = "windows")),
-            SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
+            SlashCommand::TestApproval => cfg!(debug_assertions),
             _ => true,
         }
     }

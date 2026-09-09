@@ -100,6 +100,35 @@ surfaces such as pickers, pagers, and full-screen approvals. See
 [TUI Alternate Screen and Scrollback](./tui-alternate-screen.md) for mode behavior and resize-reflow
 limits.
 
+## TUI status line Codex home
+
+Select `codex-home` in `/status-line` to distinguish local Codex homes in the
+footer. This item is optional and does not change the default status line.
+It uses the basename of the TUI's resolved Codex home directory, with one
+leading dot removed: `.codex-office` displays as `codex-office`, and `.codex`
+as `codex`. It does not derive a name from a shell wrapper or command alias.
+When connected to a remote app-server, this still identifies the local TUI's
+home, not the remote server's home or rollout storage.
+
+You can also add `"codex-home"` to your existing `tui.status_line` list:
+
+```toml
+[tui]
+status_line = ["codex-home", "model-with-reasoning", "context-remaining"]
+```
+
+`/status` shows the full resolved local Codex home. Use `/rollout-path` to print
+the current rollout path reported by the app-server as a standalone plain-text
+line, outside the status box. With a remote app-server, this path belongs to the
+server and need not exist on the TUI machine; an unavailable path is reported
+explicitly.
+
+Normal resume appends to the existing rollout: sessions do not move into a new
+`sessions/YYYY/MM/DD` directory each day. The dated path is selected when a
+rollout is created. Operations such as paginated revert can create a replacement
+rollout for the same thread, and archive/unarchive can move it, so use the current
+reported path rather than reconstructing one from the thread's creation date.
+
 ## V1 agent discovery
 
 V1 agent discovery is opt-in:

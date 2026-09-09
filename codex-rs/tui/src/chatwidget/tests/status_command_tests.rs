@@ -6,6 +6,43 @@ use codex_app_server_protocol::ThreadUsageBreakdownGroup;
 use codex_utils_path_uri::PathUri;
 
 #[tokio::test]
+async fn status_command_wraps_resolved_local_home_without_rollout() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.codex_home =
+        test_path_buf("/configuration/profiles/local-tui/home/with/a/very-long-profile-name").abs();
+    chat.current_rollout_path = Some(PathBuf::from("/server/session/rollout.jsonl"));
+    chat.remote_connection = Some(crate::status::remote_connection::RemoteConnectionStatus {
+        address: "ws://server.example/".to_string(),
+        version: "v1".to_string(),
+    });
+    let home = chat.config.codex_home.display().to_string();
+
+    chat.dispatch_command(SlashCommand::Status);
+
+    let Ok(AppEvent::InsertHistoryCell(cell)) = rx.try_recv() else {
+        panic!("expected status output");
+    };
+    for width in [12, 24, 80, 120] {
+        let lines = cell.display_lines(width);
+        let values: String = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .filter(|span| !span.style.add_modifier.contains(Modifier::DIM))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            values.contains(&home),
+            "full local home at width {width}: {values}"
+        );
+        assert!(!values.contains("/server/session/rollout.jsonl"));
+    }
+    assert!(
+        lines_to_single_string(&cell.display_lines(/*width*/ 120))
+            .contains("Codex home (local TUI):")
+    );
+}
+
+#[tokio::test]
 async fn status_command_renders_immediately_and_refreshes_rate_limits_for_chatgpt_auth() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
@@ -204,6 +241,8 @@ async fn account_update_rejects_stale_status_rate_limit_snapshots() {
 #[tokio::test]
 async fn status_command_renders_immediately_and_updates_first_card_without_status_line() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    // The storage row must not make the card width depend on the temporary test home.
+    chat.config.codex_home = test_path_buf("/codex-home").abs();
     set_chatgpt_auth(&mut chat);
     let thread_id =
         ThreadId::from_string("019fc8ab-1fb2-7000-8000-000000000001").expect("valid thread id");
@@ -382,6 +421,7 @@ async fn status_command_stays_visible_and_updates_after_thread_usage_retry() {
 #[tokio::test]
 async fn status_command_renders_credits_and_breakdowns_without_usd_estimate() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.codex_home = test_path_buf("/codex-home").abs();
     set_chatgpt_auth(&mut chat);
     let thread_id = ThreadId::new();
     chat.thread_id = Some(thread_id);
