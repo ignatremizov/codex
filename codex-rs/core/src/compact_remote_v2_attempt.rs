@@ -189,8 +189,12 @@ pub(super) async fn run_remote_compact_v2_attempt(
             Some(input.window),
         ),
     };
+    // Preserve canonical evidence before projecting disposable request copies.
     let completion_source_items = crate::compact::completion_source_items(&input);
     sess.project_child_developer_instructions(turn_context, &mut input);
+    if let Some(identities) = &step_context.agent_identities {
+        crate::context::world_state::prepare_v1_agent_model_input(&mut input, identities);
+    }
     let tools_in_history = step_context.incremental_tools_feature().is_some()
         && input
             .iter()
