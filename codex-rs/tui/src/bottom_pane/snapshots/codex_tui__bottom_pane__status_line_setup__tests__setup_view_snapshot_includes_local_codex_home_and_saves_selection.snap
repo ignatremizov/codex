@@ -1,0 +1,21 @@
+---
+source: tui/src/bottom_pane/status_line_setup.rs
+expression: "render_lines(&view,\n100).lines().map(str::trim_end).collect::<Vec<_>>().join(\"\\n\")"
+---
+
+  Configure Status Line
+  Select which items to display in the status line.
+
+  Type to search
+  >
+› [ ] Use theme colors      Apply colors from the active /theme
+  ───────────────────────
+  [x] codex-home            Local TUI Codex home name (not the remote server's home)
+  [ ] model                 Current model name
+  [ ] model-with-reasoning  Current model name with reasoning level
+  [ ] reasoning             Current reasoning level
+  [ ] current-dir           Current working directory
+  [ ] project-name          Project name (omitted when unavailable)
+
+  codex-office
+  Press space to toggle; ←/→ to move; enter to confirm and close; esc to close

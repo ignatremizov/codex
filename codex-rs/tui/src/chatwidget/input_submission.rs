@@ -200,7 +200,12 @@ impl ChatWidget {
             parsed.command.to_string(),
             parsed.response_handling,
         );
-        self.submit_op(app_command.clone()).then_some(app_command)
+        if self.submit_op(app_command.clone()) {
+            self.transcript.last_status_copy_targets = None;
+            Some(app_command)
+        } else {
+            None
+        }
     }
 
     fn submit_shell_command_with_history(
@@ -497,6 +502,7 @@ impl ChatWidget {
         if !self.submit_op(op.clone()) {
             return (false, None);
         }
+        self.transcript.last_status_copy_targets = None;
         if source == UserMessageSource::Prompt {
             self.bottom_pane.clear_pending_questions();
         }
