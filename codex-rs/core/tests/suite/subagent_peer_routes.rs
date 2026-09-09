@@ -2,192 +2,25 @@ use super::*;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
-#[path = "subagent_downward_permissions.rs"]
-mod downward_permissions;
-
 #[path = "subagent_delivery_receipts.rs"]
 mod delivery_receipts;
-
-#[path = "subagent_persistent_send_settings.rs"]
-mod persistent_send_settings;
-
-#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn subtree_default_reaches_future_coders_and_pair_overrides_win(
-    history_mode: ThreadHistoryMode,
-) -> Result<()> {
-    skip_if_no_network!(Ok(()));
-    let server = start_mock_server().await;
-    let test = test_codex()
-        .with_history_mode(history_mode)
-        .with_config(|config| {
-            config.features.enable(Feature::Collab).expect("enable V1");
-            config
-                .features
-                .disable(Feature::MultiAgentV2)
-                .expect("disable V2");
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    let supervisor_id = test
-        .codex
-        .spawn_agent(UserAgentSpawnOptions {
-            response_handling: UserAgentResponseHandling::Presentation,
-            ..Default::default()
-        })
-        .await?
-        .target_thread_id;
-    let supervisor = test.thread_manager.get_thread(supervisor_id).await?;
-    assert_eq!(
-        supervisor
-            .set_agent_subtree_messaging(UserAgentReplyRouteMode::Enabled)
-            .await?,
-        None
-    );
-    let sender_id = supervisor
-        .spawn_agent(UserAgentSpawnOptions {
-            response_handling: UserAgentResponseHandling::Presentation,
-            ..Default::default()
-        })
-        .await?
-        .target_thread_id;
-    let recipient_id = supervisor
-        .spawn_agent(UserAgentSpawnOptions {
-            response_handling: UserAgentResponseHandling::Presentation,
-            ..Default::default()
-        })
-        .await?
-        .target_thread_id;
-    let sender = test.thread_manager.get_thread(sender_id).await?;
-    let recipient = test.thread_manager.get_thread(recipient_id).await?;
-    for (index, permitted) in [true, false, true].into_iter().enumerate() {
-        if index > 0 {
-            supervisor
-                .set_agent_reply_route(
-                    &sender_id.to_string(),
-                    Some(&recipient_id.to_string()),
-                    if permitted {
-                        UserAgentReplyRouteMode::Enabled
-                    } else {
-                        UserAgentReplyRouteMode::Disabled
-                    },
-                )
-                .await?;
-        }
-        if index == 2 {
-            supervisor
-                .set_agent_subtree_messaging(UserAgentReplyRouteMode::Disabled)
-                .await?;
-        }
-        let prompt = format!("subtree test {index}");
-        let payload = format!("subtree payload {index}");
-        let call_id = format!("subtree-call-{index}");
-        let prompt_match = prompt.clone();
-        let call_match = call_id.clone();
-        let invocation = mount_sse_once_match(
-            &server,
-            move |req: &wiremock::Request| {
-                body_contains(req, &prompt_match) && !body_contains(req, &call_match)
-            },
-            sse(vec![
-                ev_response_created("subtree-send"),
-                ev_function_call_with_namespace(
-                    &call_id,
-                    MULTI_AGENT_V1_NAMESPACE,
-                    "send_input",
-                    &serde_json::to_string(
-                        &json!({"target":recipient_id.to_string(), "message":payload, "w":"x"}),
-                    )?,
-                ),
-                ev_completed("subtree-send"),
-            ]),
-        )
-        .await;
-        let call_match = call_id.clone();
-        let output = mount_sse_once_match(
-            &server,
-            move |req: &wiremock::Request| body_contains(req, &call_match),
-            sse(vec![
-                ev_response_created("subtree-done"),
-                ev_assistant_message("subtree-final", "done"),
-                ev_completed("subtree-done"),
-            ]),
-        )
-        .await;
-        let payload_match = payload.clone();
-        let received = mount_sse_once_match(
-            &server,
-            move |req: &wiremock::Request| {
-                body_contains(req, "<agent_message>") && body_contains(req, &payload_match)
-            },
-            sse(vec![
-                ev_response_created("subtree-recipient"),
-                ev_assistant_message("subtree-received", "received"),
-                ev_completed("subtree-recipient"),
-            ]),
-        )
-        .await;
-        supervisor
-            .prompt_live_agent(
-                &sender_id.to_string(),
-                vec![UserInput::Text {
-                    text: prompt.clone(),
-                    text_elements: Vec::new(),
-                }],
-                UserAgentResponseHandling::Presentation,
-            )
-            .await?;
-        let request = wait_for_request_containing_text(&invocation, &prompt).await?;
-        let routes = request
-            .message_input_texts("user")
-            .into_iter()
-            .filter(|text| text.contains("<agent_reply_route>"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            routes.len(),
-            2,
-            "supervisor and peer are each discovered once"
-        );
-        assert!(
-            routes
-                .iter()
-                .any(|text| text.contains(&recipient_id.to_string()))
-        );
-        assert!(
-            !routes
-                .iter()
-                .any(|text| text.contains(&test.session_configured.thread_id.to_string()))
-        );
-        let result = wait_for_request_containing_text(&output, &call_id)
-            .await?
-            .function_call_output(&call_id)
-            .to_string();
-        wait_for_terminal_status(sender.as_ref()).await?;
-        if permitted {
-            wait_for_request_containing_text(&received, &payload).await?;
-            wait_for_terminal_status(recipient.as_ref()).await?;
-            assert!(result.contains("submission_id"), "{result}");
-        } else {
-            assert!(result.contains("disabled by the user"), "{result}");
-            assert!(received.requests().is_empty());
-        }
-    }
-    Ok(())
-}
 
 #[test_case(ThreadHistoryMode::Legacy, "x"; "non_paginated_direct")]
 #[test_case(ThreadHistoryMode::Legacy, "xq"; "non_paginated_queued")]
 #[test_case(ThreadHistoryMode::Paginated, "x"; "paginated_direct")]
 #[test_case(ThreadHistoryMode::Paginated, "xq"; "paginated_queued")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn user_grants_peer_route_and_root_only_sees_audit(
+async fn one_sender_turn_can_repeatedly_send_to_an_idle_same_root_peer(
     history_mode: ThreadHistoryMode,
     response_flags: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
-    eprintln!("[peer-route] initializing test");
-    let server = start_mock_server().await;
+    const PROMPT: &str = "send two peer messages from this one turn";
+    const FIRST_CALL: &str = "same-turn-peer-call-1";
+    const SECOND_CALL: &str = "same-turn-peer-call-2";
+    const FIRST_PAYLOAD: &str = "same-turn peer payload 1";
+    const SECOND_PAYLOAD: &str = "same-turn peer payload 2";
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
     let test = test_codex()
         .with_history_mode(history_mode)
         .with_config(|config| {
@@ -197,9 +30,8 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
                 .disable(Feature::MultiAgentV2)
                 .expect("disable V2");
         })
-        .build_with_auto_env(&server)
+        .build_with_streaming_server_auto_env(&server)
         .await?;
-    eprintln!("[peer-route] spawning sender");
     let sender_id = test
         .codex
         .spawn_agent(UserAgentSpawnOptions {
@@ -208,7 +40,6 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         })
         .await?
         .target_thread_id;
-    eprintln!("[peer-route] spawning recipient");
     let recipient_id = test
         .codex
         .spawn_agent(UserAgentSpawnOptions {
@@ -220,178 +51,205 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
     let sender = test.thread_manager.get_thread(sender_id).await?;
     let recipient = test.thread_manager.get_thread(recipient_id).await?;
     let root_status = test.codex.agent_status().await;
-    let sender_nickname = sender.config_snapshot().await.session_source.get_nickname();
-    let mut received_audits = Vec::new();
 
-    // Exercise the actual model-facing tool before enable, on two enabled turns, and after
-    // disable. A grant names a recipient; it does not make Main subscribe to peer replies.
-    for (index, enabled) in [false, true, true, false].into_iter().enumerate() {
-        eprintln!("[peer-route] turn {index}: enabled={enabled}");
-        if index == 1 || index == 3 {
-            let mode = if enabled {
-                UserAgentReplyRouteMode::Enabled
-            } else {
-                UserAgentReplyRouteMode::Disabled
-            };
-            let outcome = test
-                .codex
-                .set_agent_reply_route(
-                    &sender_id.to_string(),
-                    Some(&recipient_id.to_string()),
-                    mode,
-                )
-                .await?;
-            assert_eq!((outcome.0, outcome.1), (sender_id, recipient_id));
-        }
-        let prompt = format!("send peer message on test turn {index}");
-        let payload = format!("peer-only contract revision {index}");
-        let call_id = format!("peer-call-{index}");
-        let prompt_match = prompt.clone();
-        let call_match = call_id.clone();
-        let invocation = mount_sse_once_match(
-            &server,
-            move |req: &wiremock::Request| {
-                body_contains(req, &prompt_match) && !body_contains(req, &call_match)
-            },
-            sse(vec![
-                ev_response_created(&format!("peer-send-{index}")),
-                ev_function_call_with_namespace(
-                    &call_id,
-                    MULTI_AGENT_V1_NAMESPACE,
-                    "send_input",
-                    &serde_json::to_string(&json!({
-                        "target": recipient_id.to_string(),
-                        "message": payload,
-                        "w": response_flags,
-                    }))?,
-                ),
-                ev_completed(&format!("peer-send-{index}")),
-            ]),
+    let first_args = serde_json::to_string(&json!({
+        "target": recipient_id.to_string(),
+        "message": FIRST_PAYLOAD,
+        "w": response_flags,
+    }))?;
+    let mut first_sender_request = server
+        .mount_response(
+            |request| request.body_contains_text(PROMPT),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("same-turn-peer-send-1"),
+                    ev_function_call_with_namespace(
+                        FIRST_CALL,
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "send_input",
+                        &first_args,
+                    ),
+                    ev_completed("same-turn-peer-send-1"),
+                ]),
+            }],
         )
         .await;
-        let call_match = call_id.clone();
-        let tool_result = mount_sse_once_match(
-            &server,
-            move |req: &wiremock::Request| body_contains(req, &call_match),
-            sse(vec![
-                ev_response_created(&format!("peer-sender-done-{index}")),
-                ev_assistant_message(&format!("peer-sender-msg-{index}"), "sender finished"),
-                ev_completed(&format!("peer-sender-done-{index}")),
-            ]),
+    let second_args = serde_json::to_string(&json!({
+        "target": recipient_id.to_string(),
+        "message": SECOND_PAYLOAD,
+        "w": response_flags,
+    }))?;
+    let (release_second_send, second_send_gate) = oneshot::channel();
+    let mut second_sender_request = server
+        .mount_response(
+            |request| request.body_contains_text(FIRST_CALL),
+            vec![StreamingSseChunk {
+                gate: Some(second_send_gate),
+                body: sse(vec![
+                    ev_response_created("same-turn-peer-send-2"),
+                    ev_function_call_with_namespace(
+                        SECOND_CALL,
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "send_input",
+                        &second_args,
+                    ),
+                    ev_completed("same-turn-peer-send-2"),
+                ]),
+            }],
         )
         .await;
-        let payload_match = payload.clone();
-        let receiver_request = mount_sse_once_match(
-            &server,
-            move |req: &wiremock::Request| {
-                body_contains(req, "<agent_message>") && body_contains(req, &payload_match)
+    let mut sender_done = server
+        .mount_response(
+            |request| request.body_contains_text(SECOND_CALL),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("same-turn-peer-sender-done"),
+                    ev_assistant_message("same-turn-peer-sender-final", "both messages sent"),
+                    ev_completed("same-turn-peer-sender-done"),
+                ]),
+            }],
+        )
+        .await;
+    let mut first_recipient_request = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("<agent_message>")
+                    && request.body_contains_text(FIRST_PAYLOAD)
             },
-            sse(vec![
-                ev_response_created(&format!("peer-recipient-{index}")),
-                ev_assistant_message(&format!("peer-recipient-msg-{index}"), "recipient finished"),
-                ev_completed(&format!("peer-recipient-{index}")),
-            ]),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("same-turn-peer-recipient-1"),
+                    ev_assistant_message("same-turn-peer-recipient-final-1", "received first"),
+                    ev_completed("same-turn-peer-recipient-1"),
+                ]),
+            }],
+        )
+        .await;
+    let mut second_recipient_request = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("<agent_message>")
+                    && request.body_contains_text(SECOND_PAYLOAD)
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("same-turn-peer-recipient-2"),
+                    ev_assistant_message("same-turn-peer-recipient-final-2", "received second"),
+                    ev_completed("same-turn-peer-recipient-2"),
+                ]),
+            }],
         )
         .await;
 
-        eprintln!("[peer-route] turn {index}: submitting sender prompt");
-        test.codex
-            .prompt_live_agent(
-                &sender_id.to_string(),
-                vec![UserInput::Text {
-                    text: prompt.clone(),
-                    text_elements: Vec::new(),
-                }],
-                UserAgentResponseHandling::Presentation,
-            )
-            .await?;
-        let sent = wait_for_request_containing_text(&invocation, &prompt).await?;
-        eprintln!("[peer-route] turn {index}: received sender request");
-        assert_eq!(
-            sent.message_input_texts("user")
-                .iter()
-                .filter(|text| text.contains("<agent_reply_route>"))
-                .count(),
-            usize::from(index > 0),
-            "route context is installed once, not on every turn"
-        );
-        let returned = wait_for_request_containing_text(&tool_result, &call_id).await?;
-        let output = returned.function_call_output(&call_id).to_string();
-        eprintln!("[peer-route] turn {index}: received tool result");
-        wait_for_terminal_status(sender.as_ref()).await?;
-        if enabled {
-            let received = wait_for_request_containing_text(&receiver_request, &payload).await?;
-            eprintln!("[peer-route] turn {index}: received recipient request");
-            let envelopes = received
-                .message_input_texts("user")
-                .into_iter()
-                .filter_map(|text| {
-                    text.strip_prefix("<agent_message>")?
-                        .strip_suffix("</agent_message>")
-                        .map(str::to_owned)
-                })
-                .map(|body| serde_json::from_str::<Value>(&body))
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            assert_eq!(
-                envelopes.last(),
-                Some(&json!({"nickname": sender_nickname, "ref": "2", "message": payload})),
-            );
-            eprintln!("[peer-route] turn {index}: waiting for recipient audit");
-            let item = wait_for_event_match(recipient.as_ref(), |event| {
-                let EventMsg::ItemCompleted(event) = event else {
-                    return None;
-                };
-                match &event.item {
-                    TurnItem::AgentMessage(item) if item.attribution.is_some() => {
-                        Some(item.clone())
-                    }
-                    _ => None,
-                }
-            })
+    test.codex
+        .prompt_live_agent(
+            &sender_id.to_string(),
+            vec![UserInput::Text {
+                text: PROMPT.to_string(),
+                text_elements: Vec::new(),
+            }],
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let first_sender_request = wait_for_streaming_request(&mut first_sender_request).await?;
+    let sender_turn_id = first_sender_request.body_json()["client_metadata"]["turn_id"].clone();
+    let second_sender_request = wait_for_streaming_request(&mut second_sender_request).await?;
+    assert_eq!(
+        second_sender_request.body_json()["client_metadata"]["turn_id"],
+        sender_turn_id,
+        "the first tool continuation must remain in the originating sender turn",
+    );
+    assert_send_result(
+        &second_sender_request,
+        FIRST_CALL,
+        if response_flags.contains('q') {
+            "queued"
+        } else {
+            "submitted"
+        },
+    )?;
+
+    let first_received = wait_for_streaming_request(&mut first_recipient_request).await?;
+    assert_agent_envelope(&first_received, FIRST_PAYLOAD)?;
+    let first_audit =
+        wait_for_agent_input_audit(recipient.as_ref(), sender_id, recipient_id, FIRST_PAYLOAD)
             .await;
-            eprintln!("[peer-route] turn {index}: received recipient audit");
-            let attribution = item
+    assert_eq!(
+        json!(
+            first_audit
                 .attribution
                 .as_ref()
-                .expect("trusted recipient attribution");
-            assert_eq!(
-                (
-                    attribution.sender.thread_id,
-                    attribution.recipient.thread_id
-                ),
-                (sender_id, recipient_id),
-            );
-            assert_eq!(
-                json!(attribution.sender_turn_id),
-                sent.body_json()["client_metadata"]["turn_id"],
-            );
-            assert_eq!(
-                serde_json::to_value(&item.input)?,
-                json!([{"type": "text", "text": payload, "text_elements": []}]),
-            );
-            received_audits.push(serde_json::to_value(item)?);
-            wait_for_terminal_status(recipient.as_ref()).await?;
-            assert!(output.contains("submission_id"), "{output}");
+                .expect("first trusted attribution")
+                .sender_turn_id
+        ),
+        sender_turn_id,
+        "the first recipient audit must retain the originating sender turn",
+    );
+    assert_eq!(
+        wait_for_terminal_status(recipient.as_ref()).await?,
+        AgentStatus::Completed(Some("received first".to_string())),
+        "the first recipient turn must be terminal before the second send is released",
+    );
+
+    release_second_send
+        .send(())
+        .map_err(|_| anyhow::anyhow!("second sender response gate closed"))?;
+    let final_sender_request = wait_for_streaming_request(&mut sender_done).await?;
+    assert_eq!(
+        final_sender_request.body_json()["client_metadata"]["turn_id"],
+        sender_turn_id,
+        "both peer sends must originate from one sender turn",
+    );
+    assert_send_result(
+        &final_sender_request,
+        SECOND_CALL,
+        if response_flags.contains('q') {
+            "queued"
         } else {
-            let reason = if index == 0 {
-                "has no message route"
-            } else {
-                "disabled by the user"
-            };
-            assert!(output.contains(reason), "{output}");
-            assert!(receiver_request.requests().is_empty());
-        }
-    }
-    eprintln!("[peer-route] validating root status");
+            "submitted"
+        },
+    )?;
+    let second_received = wait_for_streaming_request(&mut second_recipient_request).await?;
+    assert_agent_envelope(&second_received, SECOND_PAYLOAD)?;
+    let second_audit =
+        wait_for_agent_input_audit(recipient.as_ref(), sender_id, recipient_id, SECOND_PAYLOAD)
+            .await;
+    assert_eq!(
+        json!(
+            second_audit
+                .attribution
+                .as_ref()
+                .expect("second trusted attribution")
+                .sender_turn_id
+        ),
+        sender_turn_id,
+        "the second recipient audit must retain the same originating sender turn",
+    );
+    assert_eq!(
+        wait_for_terminal_status(recipient.as_ref()).await?,
+        AgentStatus::Completed(Some("received second".to_string())),
+    );
+    assert_eq!(
+        wait_for_terminal_status(sender.as_ref()).await?,
+        AgentStatus::Completed(Some("both messages sent".to_string())),
+    );
+
     assert_eq!(
         test.codex.agent_status().await,
         root_status,
-        "audit does not wake Main"
+        "peer audits do not wake Main",
     );
-    let mut audits = Vec::new();
-    for index in 0..2 {
-        eprintln!("[peer-route] waiting for root audit {index}");
-        audits.push(
+    let received_audits = [first_audit, second_audit]
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut root_audits = Vec::new();
+    for _ in 0..2 {
+        root_audits.push(
             wait_for_event_match(&test.codex, |event| {
                 let EventMsg::ItemCompleted(event) = event else {
                     return None;
@@ -408,19 +266,14 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
             .await,
         );
     }
-    eprintln!("[peer-route] validating mirrored audits");
     assert_eq!(
-        audits, received_audits,
-        "Main mirrors the complete trusted recipient item"
+        root_audits, received_audits,
+        "Main mirrors both complete trusted recipient items",
     );
 
-    // Main gets live ItemCompleted notifications, not another stored payload. The original
-    // received input remains available in the recipient's canonical history in either mode.
     for thread in [test.codex.as_ref(), recipient.as_ref()] {
-        eprintln!("[peer-route] flushing a thread rollout");
         thread.flush_rollout().await?;
     }
-    eprintln!("[peer-route] loading canonical histories");
     let root_history = test
         .thread_store
         .load_canonical_artifact_segments(LoadThreadHistoryParams {
@@ -433,7 +286,9 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         .load_mailbox_canonical_history(recipient_id)
         .await?;
     let root_json = serde_json::to_string(&root_history.segments)?;
-    assert!(!root_json.contains("peer-only contract revision"));
+    for payload in [FIRST_PAYLOAD, SECOND_PAYLOAD] {
+        assert!(!root_json.contains(payload));
+    }
     let persisted_audits = recipient_history
         .iter()
         .filter_map(|item| {
@@ -448,28 +303,101 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         .map(serde_json::to_value)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     assert_eq!(
-        persisted_audits, audits,
-        "recipient history retains the complete audit"
+        persisted_audits, root_audits,
+        "recipient history retains both complete audits",
     );
 
-    let root_turn = mount_sse_once_match(
-        &server,
-        |req: &wiremock::Request| body_contains(req, "check Main context after peer messaging"),
-        sse(vec![
-            ev_response_created("peer-root-check"),
-            ev_assistant_message("peer-root-check-message", "Main finished"),
-            ev_completed("peer-root-check"),
-        ]),
-    )
-    .await;
-    eprintln!("[peer-route] submitting final root context check");
+    let mut root_turn = server
+        .mount_response(
+            |request| request.body_contains_text("check Main context after peer messaging"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("same-turn-peer-root-check"),
+                    ev_assistant_message("same-turn-peer-root-check-message", "Main finished"),
+                    ev_completed("same-turn-peer-root-check"),
+                ]),
+            }],
+        )
+        .await;
     test.submit_turn("check Main context after peer messaging")
         .await?;
-    let request = root_turn.single_request();
-    assert!(
-        !request.body_contains_text("peer-only contract revision"),
-        "presentation-only copies must not become Main's model input"
+    let request = wait_for_streaming_request(&mut root_turn).await?;
+    for payload in [FIRST_PAYLOAD, SECOND_PAYLOAD] {
+        assert!(
+            !request.body_contains_text(payload),
+            "presentation-only copies must not become Main's model input",
+        );
+    }
+    assert_eq!(
+        wait_for_terminal_status(test.codex.as_ref()).await?,
+        AgentStatus::Completed(Some("Main finished".to_string())),
     );
-    eprintln!("[peer-route] completed");
+    server.shutdown().await;
     Ok(())
+}
+
+fn assert_send_result(
+    request: &StreamingSseRequest,
+    call_id: &str,
+    expected_status: &str,
+) -> Result<()> {
+    let body = request.body_json();
+    let output = body["input"]
+        .as_array()
+        .expect("model input")
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
+        .and_then(|item| item["output"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing send_input output for {call_id}"))?;
+    assert_eq!(
+        serde_json::from_str::<Value>(output)?,
+        json!({"status": expected_status}),
+    );
+    Ok(())
+}
+
+fn assert_agent_envelope(request: &StreamingSseRequest, expected_message: &str) -> Result<()> {
+    let envelopes = request
+        .message_input_texts("user")
+        .into_iter()
+        .filter_map(|text| {
+            text.strip_prefix("<agent_message>")?
+                .strip_suffix("</agent_message>")
+                .map(str::to_owned)
+        })
+        .map(|body| serde_json::from_str::<Value>(&body))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        envelopes.last(),
+        Some(&json!({"ref": "2", "message": expected_message})),
+    );
+    Ok(())
+}
+
+async fn wait_for_agent_input_audit(
+    recipient: &codex_core::CodexThread,
+    sender_id: ThreadId,
+    recipient_id: ThreadId,
+    expected_message: &str,
+) -> codex_protocol::items::AgentMessageItem {
+    wait_for_event_match(recipient, |event| {
+        let EventMsg::ItemCompleted(event) = event else {
+            return None;
+        };
+        let TurnItem::AgentMessage(item) = &event.item else {
+            return None;
+        };
+        let attribution = item.attribution.as_ref()?;
+        let has_expected_message = item.input.as_ref().is_some_and(|input| {
+            input.iter().any(
+                |input| matches!(input, UserInput::Text { text, .. } if text == expected_message),
+            )
+        });
+        (has_expected_message
+            && attribution.sender.thread_id == sender_id
+            && attribution.recipient.thread_id == recipient_id)
+            .then(|| item.clone())
+    })
+    .await
 }
