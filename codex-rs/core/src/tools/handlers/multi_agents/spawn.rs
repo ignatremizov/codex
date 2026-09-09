@@ -86,6 +86,7 @@ async fn handle_spawn_agent(
                 wake_on_completion: args.w.wake_on_completion_item_value(),
                 target_messages: Some(args.w.target_messages()),
                 queue_input: Some(args.w.queue_input()),
+                mailbox_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: Vec::new(),
@@ -197,6 +198,10 @@ async fn handle_spawn_agent(
     let receiver_agents = new_thread_id
         .map(|thread_id| CollabAgentRef {
             thread_id,
+            task_path: result
+                .as_ref()
+                .ok()
+                .and_then(|agent| agent.task_path.clone()),
             agent_nickname: new_agent_nickname,
             agent_role: new_agent_role,
         })
@@ -216,6 +221,7 @@ async fn handle_spawn_agent(
                 wake_on_completion: args.w.wake_on_completion_item_value(),
                 target_messages: Some(args.w.target_messages()),
                 queue_input: Some(args.w.queue_input()),
+                mailbox_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids,

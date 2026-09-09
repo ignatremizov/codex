@@ -171,6 +171,7 @@ impl Handler {
                 .unwrap_or_default();
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
+                task_path: None,
                 agent_nickname: agent_metadata.agent_nickname,
                 agent_role: agent_metadata.agent_role,
             });
@@ -243,6 +244,7 @@ impl Handler {
                                 wake_on_completion: None,
                                 target_messages: None,
                                 queue_input: None,
+                                mailbox_input: None,
                                 deadline_at_ms: None,
                                 sender_thread_id: session.thread_id,
                                 receiver_thread_ids: statuses.keys().copied().collect(),
@@ -272,6 +274,7 @@ impl Handler {
                     wake_on_completion: None,
                     target_messages: None,
                     queue_input: None,
+                    mailbox_input: None,
                     deadline_at_ms,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: receiver_thread_ids.clone(),
@@ -366,6 +369,7 @@ impl Handler {
                     wake_on_completion: None,
                     target_messages: None,
                     queue_input: None,
+                    mailbox_input: None,
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: statuses_by_id.keys().copied().collect(),
@@ -418,6 +422,7 @@ fn wait_receiver_agents(
         .filter(|thread_id| !seen.contains_key(thread_id))
         .map(|thread_id| CollabAgentRef {
             thread_id: *thread_id,
+            task_path: None,
             agent_nickname: None,
             agent_role: None,
         })

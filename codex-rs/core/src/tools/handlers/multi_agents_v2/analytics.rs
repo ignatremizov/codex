@@ -29,6 +29,7 @@ impl ToolCallAnalytics {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: invocation.session.thread_id,
                 receiver_thread_ids: Vec::new(),

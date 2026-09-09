@@ -1027,11 +1027,22 @@ impl ChatWidget {
             .spawn_request = Some(spawn_request);
     }
 
+    pub(crate) fn set_collab_agent_task_path(
+        &mut self,
+        thread_id: ThreadId,
+        task_path: Option<String>,
+    ) {
+        let metadata = self.collab_agent_metadata.entry(thread_id).or_default();
+        metadata.task_path = crate::multi_agents::AgentTaskPath::Known(task_path);
+    }
+
     fn remember_user_agent_control_metadata(&mut self, item: &ThreadItem) {
         let ThreadItem::UserAgentControl {
             target_thread_id: Some(target_thread_id),
             nickname,
             role,
+            task_path,
+            task_path_mapping,
             ..
         } = item
         else {
@@ -1046,6 +1057,14 @@ impl ChatWidget {
             nickname.clone().or(previous.agent_nickname),
             role.clone().or(previous.agent_role),
         );
+        if let Some(task_path) = task_path {
+            self.set_collab_agent_task_path(thread_id, Some(task_path.clone()));
+        }
+        for mapping in task_path_mapping {
+            if let Some(thread_id) = crate::multi_agents::parse_thread_id(&mapping.thread_id) {
+                self.set_collab_agent_task_path(thread_id, mapping.task_path.clone());
+            }
+        }
         if let Some(spawn_request) = crate::multi_agents::spawn_request_summary(item) {
             self.set_collab_agent_spawn_request(thread_id, spawn_request);
         }

@@ -4,12 +4,12 @@ use codex_app_server_protocol::AgentInputAttribution;
 use codex_app_server_protocol::AgentInputIdentity;
 use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
-use ratatui::style::Color;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
 use super::HistoryCell;
+use crate::agent_color::nickname_color;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
@@ -77,8 +77,12 @@ impl AgentInputHistoryCell {
         )
     }
     fn render_lines(&self, width: u16, preview_rows: usize) -> Vec<Line<'static>> {
-        let mut lines =
-            word_wrap_lines([self.title.clone()], RtOptions::new(width.max(1) as usize));
+        let mut lines = word_wrap_lines(
+            [self.title.clone()],
+            RtOptions::new(width.max(1) as usize)
+                .initial_indent("• ".dim().into())
+                .subsequent_indent("  ".into()),
+        );
         let mut payload_lines = Vec::new();
         for (index, text) in self
             .payload
@@ -136,13 +140,6 @@ impl HistoryCell for AgentInputHistoryCell {
 
 fn identity_label(identity: &AgentInputIdentity) -> Line<'static> {
     let nickname = identity.nickname.as_deref().unwrap_or(&identity.thread_id);
-    // Fixed-width arithmetic keeps nickname colors stable across runs and platforms.
-    // Use terminal-theme ANSI colors, not RGB values or randomized hash state.
-    let hash = nickname.bytes().fold(0_u32, |hash, byte| {
-        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
-    });
-    let palette = [Color::Cyan, Color::Green, Color::Magenta];
-    let color = palette[(hash % palette.len() as u32) as usize];
     let mut label = String::new();
     if let Some(role) = &identity.role {
         label.push_str(&format!(" [{}]", role.escape_debug()));
@@ -163,7 +160,7 @@ fn identity_label(identity: &AgentInputIdentity) -> Line<'static> {
     }
     vec![
         Span::from(nickname.escape_debug().to_string())
-            .fg(color)
+            .fg(nickname_color(nickname))
             .bold(),
         label.dim(),
     ]

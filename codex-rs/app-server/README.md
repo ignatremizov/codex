@@ -633,8 +633,12 @@ Pass any combination of:
 - Responses include `nextCursor` to continue in the same direction and `backwardsCursor` to pass as `cursor` when reversing `sortDirection`.
 - Responses include `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
 - Collab-agent thread items include `receiverAgents` entries with each known receiver's
-  `threadId`, `agentNickname`, and `agentRole`. Clients can use this metadata to label a newly
-  spawned agent immediately instead of waiting for a later `thread/read`.
+  `threadId`, `agentNickname`, `agentRole`, and nullable `taskPath`. The task path is the known
+  assignment label, not lifecycle ancestry; older records omit it. Clients can label a newly
+  spawned agent immediately without waiting for a later `thread/read`.
+- Collab-agent thread items include nullable `mailboxInput`: `true` identifies an explicit
+  V1 mailbox send. Display acceptance separately from response subscriptions and receiver
+  consumption; missing or `null` metadata on older records must not be inferred from prompt text.
 - V1 `spawn_agent`, `send_input`, and `resume_agent` items include `observeCommentary` and
   `wakeOnCompletion` so clients can show whether that lifecycle call requested the target turn's
   first commentary response and an idle wake on completion. Other collab-agent tools report

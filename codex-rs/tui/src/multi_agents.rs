@@ -29,6 +29,11 @@ use std::collections::HashSet;
 
 mod background_commentary;
 mod background_completion;
+mod mailbox_send;
+
+#[cfg(test)]
+#[path = "multi_agents/task_path_tests.rs"]
+mod task_path_tests;
 
 pub(crate) use background_commentary::background_commentary_history_cell_from_agent_message;
 pub(crate) use background_completion::background_completion_history_cell_from_agent_message;
@@ -105,6 +110,9 @@ impl CollabAgentHistoryCell {
                 }
                 if metadata.spawn_request.is_some() {
                     stored.spawn_request = metadata.spawn_request;
+                }
+                if matches!(metadata.task_path, AgentTaskPath::Known(_)) {
+                    stored.task_path = metadata.task_path;
                 }
             }
         }
@@ -305,6 +313,8 @@ pub(crate) struct SubAgentActivityDisplay {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AgentMetadata {
+    /// Canonical task path supplied by durable agent aliases or lifecycle history.
+    pub(crate) task_path: AgentTaskPath,
     /// Human-friendly nickname shown in rendered tool-call rows.
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
@@ -313,8 +323,18 @@ pub(crate) struct AgentMetadata {
     pub(crate) spawn_request: Option<SpawnRequestSummary>,
 }
 
+/// Cached task-path knowledge; missing legacy metadata cannot erase an authoritative value.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AgentTaskPath {
+    #[default]
+    Unknown,
+    /// `None` is an explicit clear from an alias or lifecycle path mapping.
+    Known(Option<String>),
+}
+
 #[derive(Clone, Copy)]
 struct AgentLabel<'a> {
+    task_path: Option<&'a str>,
     thread_id: Option<ThreadId>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
@@ -486,6 +506,7 @@ pub(crate) fn tool_call_history_cell(
         wake_on_completion,
         target_messages,
         queue_input,
+        mailbox_input,
         receiver_thread_ids,
         prompt,
         agents_states,
@@ -532,6 +553,15 @@ pub(crate) fn tool_call_history_cell(
                 return None;
             }
             first_receiver.map(|receiver_thread_id| {
+                if *mailbox_input == Some(true) {
+                    return mailbox_send::history_cell(
+                        receiver_thread_id,
+                        status.clone(),
+                        prompt,
+                        agent_prompt_preview_lines,
+                        &mut agent_metadata,
+                    );
+                }
                 interaction_end(
                     receiver_thread_id,
                     status.clone(),
@@ -861,8 +891,10 @@ fn title_with_agent(
     spawn_request: Option<&SpawnRequestSummary>,
 ) -> Line<'static> {
     let mut spans = vec![Span::from(format!("{prefix} ")).bold()];
-    spans.extend(agent_identity_spans(agent));
-    spans.extend(spawn_request_spans(spawn_request.or(agent.spawn_request)));
+    spans.extend(agent_label_spans(AgentLabel {
+        spawn_request: spawn_request.or(agent.spawn_request),
+        ..agent
+    }));
     title_spans_line(spans)
 }
 
@@ -946,6 +978,10 @@ pub(crate) fn parse_thread_id(thread_id: &str) -> Option<ThreadId> {
 
 fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> {
     AgentLabel {
+        task_path: match &metadata.task_path {
+            AgentTaskPath::Unknown => None,
+            AgentTaskPath::Known(task_path) => task_path.as_deref(),
+        },
         thread_id: Some(thread_id),
         nickname: metadata.agent_nickname.as_deref(),
         role: metadata.agent_role.as_deref(),
@@ -970,8 +1006,16 @@ fn agent_label_plain(agent: AgentLabel<'_>) -> String {
         (None, None, Some(thread_id)) => thread_id.to_string(),
         (None, None, None) => "agent".to_string(),
     };
-    match spawn_request_label(agent.spawn_request) {
+    let identity = match spawn_request_label(agent.spawn_request) {
         Some(settings) => format!("{identity} {settings}"),
+        None => identity,
+    };
+    match agent
+        .task_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        Some(task_path) => format!("{identity} {task_path}"),
         None => identity,
     }
 }
@@ -979,6 +1023,13 @@ fn agent_label_plain(agent: AgentLabel<'_>) -> String {
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let mut spans = agent_identity_spans(agent);
     spans.extend(spawn_request_spans(agent.spawn_request));
+    if let Some(task_path) = agent
+        .task_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        spans.push(format!(" {task_path}").dim());
+    }
     spans
 }
 
@@ -991,9 +1042,15 @@ fn agent_identity_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
 
     if let Some(nickname) = nickname {
-        spans.push(Span::from(nickname.to_string()).cyan().bold());
+        spans.push(
+            Span::from(nickname.to_string())
+                .fg(crate::agent_color::nickname_color(nickname))
+                .bold(),
+        );
     } else if let Some(thread_id) = agent.thread_id {
-        spans.push(Span::from(thread_id.to_string()).cyan());
+        let identity = thread_id.to_string();
+        let color = crate::agent_color::nickname_color(&identity);
+        spans.push(Span::from(identity).fg(color));
     } else {
         spans.push(Span::from("agent").cyan());
     }
@@ -1347,6 +1404,7 @@ mod tests {
                 wake_on_completion: Some(true),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1374,6 +1432,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(true),
                 queue_input: Some(true),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1401,6 +1460,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1428,6 +1488,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1452,6 +1513,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string(), bob_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1485,6 +1547,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(true),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1512,6 +1575,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1579,6 +1643,7 @@ mod tests {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
             receiver_agents: Vec::new(),
@@ -1647,6 +1712,7 @@ mod tests {
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
             receiver_agents: Vec::new(),
@@ -1714,6 +1780,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1741,6 +1808,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1853,6 +1921,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1874,7 +1943,10 @@ mod tests {
         let lines = cell.display_lines(/*width*/ 200);
         let title = &lines[0];
         assert_eq!(title.spans[2].content.as_ref(), "Robie");
-        assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
+        assert_eq!(
+            title.spans[2].style.fg,
+            Some(crate::agent_color::nickname_color("Robie"))
+        );
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
         assert_eq!(title.spans[4].style.fg, None);
@@ -1899,6 +1971,7 @@ mod tests {
                 wake_on_completion: Some(true),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1930,6 +2003,7 @@ mod tests {
     fn metadata_for(thread_id: ThreadId, robie_id: ThreadId, bob_id: ThreadId) -> AgentMetadata {
         if thread_id == robie_id {
             AgentMetadata {
+                task_path: AgentTaskPath::Unknown,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 spawn_request: Some(SpawnRequestSummary {
@@ -1939,6 +2013,7 @@ mod tests {
             }
         } else if thread_id == bob_id {
             AgentMetadata {
+                task_path: AgentTaskPath::Unknown,
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),
                 spawn_request: Some(SpawnRequestSummary {

@@ -474,6 +474,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -498,9 +499,15 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
-                receiver_agents: Vec::new(),
+                receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
+                    thread_id: spawned_thread_id.to_string(),
+                    agent_nickname: None,
+                    agent_role: None,
+                    task_path: Some("/root/mailbox-test".to_string()),
+                }],
                 prompt: Some("Explore the repo".to_string()),
                 model: None,
                 reasoning_effort: None,
@@ -525,7 +532,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
     assert!(
         rendered.contains(
-            "Spawned Robie [explorer] (gpt-5 high) \
+            "Spawned Robie [explorer] (gpt-5 high) /root/mailbox-test \
              (no commentary · no wake on completion)"
         ),
         "expected spawn line to include agent metadata, requested model, and response observation, got {rendered:?}"
@@ -778,6 +785,7 @@ async fn live_app_server_primary_events_use_main_agent_metadata() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: vec![primary_thread_id.to_string()],
                 receiver_agents: Vec::new(),
@@ -1510,6 +1518,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1538,6 +1547,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![
                     receiver_thread_id.to_string(),
@@ -1598,6 +1608,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -1623,6 +1634,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 receiver_agents: Vec::new(),

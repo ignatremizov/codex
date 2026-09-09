@@ -3224,11 +3224,13 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: thread_id,
                 receiver_thread_ids: vec![child_thread_id],
                 receiver_agents: vec![CollabAgentRef {
                     thread_id: child_thread_id,
+                    task_path: None,
                     agent_nickname: Some("Robie".to_string()),
                     agent_role: Some("explorer".to_string()),
                 }],
