@@ -256,6 +256,8 @@ mod bedrock_catalog_tests;
 mod composer_submission;
 #[path = "tests/config_errors_tests.rs"]
 mod config_errors;
+#[path = "tests/duplicate_completion_tests.rs"]
+mod duplicate_completion;
 mod exec_flow;
 mod goal_menu;
 mod goal_validation;

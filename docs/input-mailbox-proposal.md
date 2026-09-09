@@ -121,6 +121,8 @@ Pending mail remains pending across restart; restart alone neither rejects it no
 
 Accepted, pending, consumed, and rejected states should be distinguishable in presentation. Do not label merely accepted mail as already visible to the receiver model. Preserve full payloads in durable records; configured TUI previews remain presentation-only.
 
+Agent mailbox-send tool rows use explicit structured mailbox metadata and display “Saved to mailbox for …” on successful acceptance, with distinct failed/interrupted wording. They do not show commentary/final subscription labels: mailbox acceptance creates no such subscription and does not establish consumption. Legacy tool-call records without this metadata retain their existing presentation. Incoming agent messages use the standard bullet and hanging indentation; nickname colors are deterministic and shared with lifecycle headers, whose task paths come from known agent metadata.
+
 ## Shared app-server and cross-root communication
 
 Use the existing thread store and a shared host app-server rather than introducing a separate filesystem mailbox service. The thread store owns durable mail and consumption state. The app-server hosts and exposes the control plane; model tools and client requests share the existing Core/runtime recipient resolution, permission transactions, session queues, input admission, and inventory scheduling. Do not duplicate enforcement in an app-server-only path or relocate the whole runtime into app-server. `/agents` provides discovery and user communication controls. The agent graph continues to represent orchestration ownership, not every communication relationship.

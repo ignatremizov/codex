@@ -11,6 +11,8 @@ use codex_core::TurnInputRequest;
 use codex_core::UserAgentReplyRouteMode;
 use codex_core::UserAgentSpawnOptions;
 use codex_features::Feature;
+use codex_protocol::items::CollabAgentToolCallStatus;
+use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -186,6 +188,50 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
     let TurnInputSubmission::Started { turn_id } = submission else {
         anyhow::bail!("sender should start a new turn");
     };
+    let started = wait_for_event(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::ItemStarted(event)
+            if matches!(&event.item, TurnItem::CollabAgentToolCall(call) if call.id == "mail-accept"))
+    })
+    .await;
+    let completed = wait_for_event(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::ItemCompleted(event)
+            if matches!(&event.item, TurnItem::CollabAgentToolCall(call) if call.id == "mail-accept"))
+    })
+    .await;
+    let EventMsg::ItemStarted(started) = started else {
+        anyhow::bail!("expected send_input start");
+    };
+    let EventMsg::ItemCompleted(completed) = completed else {
+        anyhow::bail!("expected send_input completion");
+    };
+    for (item, status) in [
+        (started.item, CollabAgentToolCallStatus::InProgress),
+        (completed.item, CollabAgentToolCallStatus::Completed),
+    ] {
+        let TurnItem::CollabAgentToolCall(call) = item else {
+            anyhow::bail!("expected structured send_input item");
+        };
+        assert_eq!(
+            (
+                call.status,
+                call.mailbox_input,
+                call.observe_commentary,
+                call.wake_on_completion,
+                call.target_messages,
+                call.queue_input,
+                call.agents_states,
+            ),
+            (
+                status,
+                Some(true),
+                Some(false),
+                None,
+                Some(false),
+                Some(false),
+                Default::default(),
+            ),
+        );
+    }
     wait_for_event(test.codex.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

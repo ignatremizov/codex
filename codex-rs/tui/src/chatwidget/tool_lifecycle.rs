@@ -143,6 +143,9 @@ impl ChatWidget {
                 receiver.agent_nickname.clone().or(previous.agent_nickname),
                 receiver.agent_role.clone().or(previous.agent_role),
             );
+            if let Some(task_path) = &receiver.task_path {
+                self.set_collab_agent_task_path(thread_id, Some(task_path.clone()));
+            }
         }
         let spawn_request = if matches!(tool, CollabAgentTool::SpawnAgent) {
             multi_agents::spawn_request_summary(&item)

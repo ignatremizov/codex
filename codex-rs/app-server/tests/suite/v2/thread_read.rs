@@ -2439,6 +2439,7 @@ async fn persist_exact_rollback_completion_thread(
         wake_on_completion: None,
         target_messages: None,
         queue_input: None,
+        mailbox_input: None,
         deadline_at_ms: None,
         sender_thread_id: thread_id,
         receiver_thread_ids: vec![child_thread_id],

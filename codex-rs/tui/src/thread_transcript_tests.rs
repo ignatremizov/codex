@@ -27,6 +27,54 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 
 #[test]
+fn lifecycle_task_mapping_preserves_an_authoritative_clear_in_history() {
+    let target = ThreadId::new();
+    let item = ThreadItem::UserAgentControl {
+        id: "resume-1".to_string(),
+        action: codex_app_server_protocol::UserAgentControlAction::Resume,
+        authored_selector: None,
+        target_thread_id: Some(target.to_string()),
+        observer_thread_id: None,
+        authored_observer_selector: None,
+        reply_recipient_thread_id: None,
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        agent_ref: None,
+        nickname: Some("Darwin".to_string()),
+        role: None,
+        task: None,
+        task_path: Some("/root/previous".to_string()),
+        task_path_mapping: vec![codex_app_server_protocol::AgentTaskPathMapping {
+            thread_id: target.to_string(),
+            previous_task_path: Some("/root/previous".to_string()),
+            task_path: None,
+        }],
+        model: None,
+        reasoning_effort: None,
+        prompt_preview: None,
+        resumed_target: true,
+        fork_mode: None,
+        observe_commentary: None,
+        final_response: None,
+        target_messages: None,
+        queue_input: None,
+        status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
+        error: None,
+    };
+    assert_eq!(
+        collab_agent_metadata_from_items([&item]),
+        HashMap::from([(
+            target,
+            crate::multi_agents::AgentMetadata {
+                agent_nickname: Some("Darwin".to_string()),
+                task_path: crate::multi_agents::AgentTaskPath::Known(None),
+                ..Default::default()
+            }
+        )])
+    );
+}
+
+#[test]
 fn older_review_boundaries_hide_nested_inputs_without_hiding_following_prompts() {
     let user = |id: &str, text: &str| ThreadItem::UserMessage {
         id: id.to_string(),
@@ -272,6 +320,7 @@ fn collab_response_observation_transcript_snapshot() {
             wake_on_completion,
             target_messages: None,
             queue_input: None,
+            mailbox_input: None,
             sender_thread_id: ThreadId::new().to_string(),
             receiver_thread_ids: Vec::new(),
             receiver_agents: Vec::new(),
@@ -369,10 +418,12 @@ fn full_transcript_renders_collab_messages_with_persisted_agent_metadata_snapsho
                     wake_on_completion: Some(false),
                     target_messages: Some(false),
                     queue_input: Some(false),
+                    mailbox_input: None,
                     sender_thread_id: parent_thread_id.to_string(),
                     receiver_thread_ids: vec![child_thread_id.to_string()],
                     receiver_agents: vec![CollabAgentRef {
                         thread_id: child_thread_id.to_string(),
+                        task_path: None,
                         agent_nickname: Some("Robie".to_string()),
                         agent_role: Some("explorer".to_string()),
                     }],
@@ -464,10 +515,12 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
         wake_on_completion: Some(false),
         target_messages: Some(false),
         queue_input: Some(false),
+        mailbox_input: None,
         sender_thread_id: parent_thread_id.to_string(),
         receiver_thread_ids: vec![child_thread_id.to_string()],
         receiver_agents: vec![CollabAgentRef {
             thread_id: child_thread_id.to_string(),
+            task_path: Some("/root/mailbox-test".to_string()),
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
         }],
@@ -508,6 +561,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     };
     *receiver_agents = vec![CollabAgentRef {
         thread_id: child_thread_id.to_string(),
+        task_path: None,
         agent_nickname: Some("Robie II".to_string()),
         agent_role: None,
     }];
@@ -526,7 +580,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Robie II [explorer] (gpt-5.6-sol high) completed (● visible):
+    • Robie II [explorer] (gpt-5.6-sol high) /root/mailbox-test completed (● visible):
       └ Finished the split-page review.
     "
     );

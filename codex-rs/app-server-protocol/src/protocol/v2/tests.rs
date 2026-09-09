@@ -3749,6 +3749,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     let receiver_thread_id = codex_protocol::ThreadId::default();
     let receiver_agent = codex_protocol::protocol::CollabAgentRef {
         thread_id: receiver_thread_id,
+        task_path: None,
         agent_nickname: Some("Parfit".to_string()),
         agent_role: Some("reviewer".to_string()),
     };
@@ -3760,6 +3761,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         wake_on_completion: Some(true),
         target_messages: Some(true),
         queue_input: Some(false),
+        mailbox_input: None,
         deadline_at_ms: None,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
@@ -3783,10 +3785,12 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             wake_on_completion: Some(true),
             target_messages: Some(true),
             queue_input: Some(false),
+            mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                task_path: None,
                 agent_nickname: Some("Parfit".to_string()),
                 agent_role: Some("reviewer".to_string()),
             }],

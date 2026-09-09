@@ -256,6 +256,10 @@ impl App {
         }
         self.agent_navigation
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
+        if let Some(alias) = self.agent_navigation.alias(thread_id) {
+            self.chat_widget
+                .set_collab_agent_task_path(thread_id, alias.task_path.clone());
+        }
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
             if self.agent_root_thread_id() == Some(thread_id) {
                 self.chat_widget
@@ -502,6 +506,9 @@ impl App {
             chat_widget.set_primary_collab_agent_metadata(agent_root_thread_id);
         }
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+            if let Some(alias) = self.agent_navigation.alias(thread_id) {
+                chat_widget.set_collab_agent_task_path(thread_id, alias.task_path.clone());
+            }
             if agent_root_thread_id == Some(thread_id) {
                 continue;
             }

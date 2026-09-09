@@ -1394,6 +1394,12 @@ impl App {
                     receiver.agent_role.clone(),
                     /*is_closed*/ false,
                 );
+                if let Some(task_path) = &receiver.task_path {
+                    self.agent_navigation
+                        .update_task_path(thread_id, Some(task_path.clone()));
+                    self.chat_widget
+                        .set_collab_agent_task_path(thread_id, Some(task_path.clone()));
+                }
             }
         }
 

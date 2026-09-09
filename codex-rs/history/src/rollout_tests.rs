@@ -197,6 +197,7 @@ fn completion_wait_event(turn_id: &str) -> RolloutItem {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            mailbox_input: None,
             deadline_at_ms: None,
             sender_thread_id: ThreadId::new(),
             receiver_thread_ids: vec![child_thread_id],

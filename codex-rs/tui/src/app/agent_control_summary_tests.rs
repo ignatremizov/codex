@@ -158,6 +158,7 @@ fn spawned_agent_settings_merge_user_control_and_v1_spawn_items() {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                mailbox_input: None,
                 sender_thread_id: target_thread_id.to_string(),
                 receiver_thread_ids: vec![v1_thread_id.to_string()],
                 receiver_agents: Vec::new(),

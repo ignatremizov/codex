@@ -346,6 +346,10 @@ fn extend_collab_agent_metadata<'a>(
                     if receiver.agent_role.is_some() {
                         metadata.agent_role = receiver.agent_role.clone();
                     }
+                    if receiver.task_path.is_some() {
+                        metadata.task_path =
+                            crate::multi_agents::AgentTaskPath::Known(receiver.task_path.clone());
+                    }
                 }
                 if let Some(spawn_request) = crate::multi_agents::spawn_request_summary(item) {
                     for receiver_thread_id in receiver_thread_ids {
@@ -361,11 +365,24 @@ fn extend_collab_agent_metadata<'a>(
                 target_thread_id: Some(target_thread_id),
                 nickname,
                 role,
+                task_path,
+                task_path_mapping,
                 ..
             } => {
                 let Some(thread_id) = parse_thread_id(target_thread_id) else {
                     continue;
                 };
+                if task_path.is_some() {
+                    metadata.entry(thread_id).or_default().task_path =
+                        crate::multi_agents::AgentTaskPath::Known(task_path.clone());
+                }
+                for mapping in task_path_mapping {
+                    if let Some(thread_id) = parse_thread_id(&mapping.thread_id) {
+                        let metadata = metadata.entry(thread_id).or_default();
+                        metadata.task_path =
+                            crate::multi_agents::AgentTaskPath::Known(mapping.task_path.clone());
+                    }
+                }
                 let metadata = metadata.entry(thread_id).or_default();
                 if nickname.is_some() {
                     metadata.agent_nickname = nickname.clone();

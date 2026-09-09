@@ -460,6 +460,10 @@ pub enum ThreadItem {
         target_messages: Option<bool>,
         /// Whether this V1 send was queued as a distinct future target turn.
         queue_input: Option<bool>,
+        /// Whether this send explicitly requested mailbox delivery (`send_input` with `w:z`).
+        /// This is presentation metadata, not evidence of receiver execution or visibility.
+        #[serde(default)]
+        mailbox_input: Option<bool>,
         /// Thread ID of the agent issuing the collab request.
         sender_thread_id: String,
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
@@ -1177,6 +1181,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 wake_on_completion: call.wake_on_completion,
                 target_messages: call.target_messages,
                 queue_input: call.queue_input,
+                mailbox_input: call.mailbox_input,
                 sender_thread_id: call.sender_thread_id.to_string(),
                 receiver_thread_ids: call
                     .receiver_thread_ids
@@ -1487,6 +1492,9 @@ pub enum CollabAgentToolCallStatus {
 #[ts(export_to = "v2/")]
 pub struct CollabAgentRef {
     pub thread_id: String,
+    /// Trusted task assignment path, when available from the agent alias.
+    #[serde(default)]
+    pub task_path: Option<String>,
     pub agent_nickname: Option<String>,
     pub agent_role: Option<String>,
 }
@@ -1495,6 +1503,7 @@ impl From<codex_protocol::protocol::CollabAgentRef> for CollabAgentRef {
     fn from(value: codex_protocol::protocol::CollabAgentRef) -> Self {
         Self {
             thread_id: value.thread_id.to_string(),
+            task_path: value.task_path,
             agent_nickname: value.agent_nickname,
             agent_role: value.agent_role,
         }
