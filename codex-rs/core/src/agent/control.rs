@@ -66,6 +66,8 @@ pub(crate) use aliases::AgentResumeOwnership;
 mod close_response;
 mod completion;
 mod completion_watcher;
+mod identity_snapshot;
+pub(crate) use identity_snapshot::V1AgentIdentitySnapshot;
 mod input;
 mod mailbox_input;
 mod mailbox_inventory;
@@ -74,6 +76,7 @@ mod message_audit;
 #[cfg(test)]
 pub(crate) mod messaging_test_hooks;
 mod presentation;
+mod presentation_ref;
 mod response_delivery;
 mod response_observer;
 mod scoped_messages;
@@ -87,6 +90,7 @@ mod user_dispatch;
 mod user_observation;
 mod user_reply_route;
 mod user_resume;
+pub(crate) use user_resume::AgentAdoptionRequest;
 mod user_spawn;
 pub(in crate::agent) use presentation::ReplacedFinalResponseObservationBinding;
 pub(crate) use user_dispatch::ResponseObservationSubmission;
@@ -118,6 +122,10 @@ pub(crate) use presentation::TerminalPresentationDelivery;
 pub(crate) use presentation::WaitAgentPresentationCommit;
 mod delivery;
 mod directory;
+#[cfg(test)]
+pub(crate) use directory::AgentDirectoryEntry;
+#[cfg(test)]
+pub(crate) use directory::AgentDirectoryEntryStatus;
 pub(crate) use directory::AgentDirectoryPage;
 pub(crate) use directory::AgentDirectoryStatus;
 mod execution;

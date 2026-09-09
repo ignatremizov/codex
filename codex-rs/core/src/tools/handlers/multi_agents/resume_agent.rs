@@ -63,8 +63,9 @@ async fn handle_resume_agent(
         .local_agent_runtime
         .control(session.session_id());
     let receiver_agent = local_agent_control
-        .get_agent_metadata(receiver_thread_id)
-        .unwrap_or_default();
+        .get_agent_presentation_ref(receiver_thread_id)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let resume_plan = local_agent_control
         .plan_agent_resume(receiver_thread_id)
         .await
@@ -135,12 +136,7 @@ async fn handle_resume_agent(
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![receiver_thread_id],
-                receiver_agents: vec![CollabAgentRef {
-                    thread_id: receiver_thread_id,
-                    task_path: None,
-                    agent_nickname: receiver_agent.agent_nickname.clone(),
-                    agent_role: receiver_agent.agent_role.clone(),
-                }],
+                receiver_agents: vec![receiver_agent.clone()],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -165,10 +161,11 @@ async fn handle_resume_agent(
         {
             Ok(outcome) => {
                 adoption = outcome;
-                status = local_agent_control.get_status(receiver_thread_id)
-                    .await;
+                status = local_agent_control.get_status(receiver_thread_id).await;
                 (
-                    session.services.local_agent_runtime.control(session.session_id()).get_agent_metadata(receiver_thread_id)
+                    local_agent_control
+                        .get_agent_presentation_ref(receiver_thread_id)
+                        .await
                         .unwrap_or(receiver_agent),
                     None,
                 )
@@ -210,12 +207,7 @@ async fn handle_resume_agent(
                 deadline_at_ms: None,
                 sender_thread_id: session.thread_id(),
                 receiver_thread_ids: vec![receiver_thread_id],
-                receiver_agents: vec![CollabAgentRef {
-                    thread_id: receiver_thread_id,
-                    task_path: None,
-                    agent_nickname: receiver_agent.agent_nickname,
-                    agent_role: receiver_agent.agent_role,
-                }],
+                receiver_agents: vec![receiver_agent.clone()],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -231,7 +223,18 @@ async fn handle_resume_agent(
     turn.session_telemetry
         .counter("codex.multi_agent.resume", /*inc*/ 1, &[]);
 
-    Ok(ResumeAgentResult { status, adoption })
+    let alias = local_agent_control
+        .current_agent_alias(receiver_thread_id)
+        .await
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    Ok(ResumeAgentResult {
+        status,
+        adoption,
+        agent_id: receiver_thread_id,
+        agent_ref: alias.map(|alias| alias.agent_ref.to_string()),
+        nickname: receiver_agent.agent_nickname,
+        task_path: receiver_agent.task_path,
+    })
 }
 
 impl CoreToolRuntime for Handler {
@@ -251,9 +254,56 @@ struct ResumeAgentArgs {
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ResumeAgentResult {
     pub(crate) status: AgentStatus,
+    pub(crate) agent_id: ThreadId,
+    pub(crate) agent_ref: Option<String>,
+    pub(crate) nickname: Option<String>,
+    pub(crate) task_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) adoption: Option<ResumeAgentAdoptionResult>,
 }
+
+#[derive(Serialize)]
+struct ResumeAgentModelResult<'a> {
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    agent_ref: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<ThreadId>,
+    nickname: Option<&'a str>,
+    task_path: Option<&'a str>,
+    status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adoption: Option<&'a ResumeAgentAdoptionResult>,
+}
+
+impl ResumeAgentResult {
+    fn model_result(&self) -> ResumeAgentModelResult<'_> {
+        let (status, error) = match &self.status {
+            // Resume has finished runtime initialization. A thread with no admitted turn still
+            // carries PendingInit internally, but is ready to accept input.
+            AgentStatus::PendingInit | AgentStatus::Completed(_) => ("idle", None),
+            AgentStatus::Running => ("running", None),
+            AgentStatus::Interrupted => ("interrupted", None),
+            AgentStatus::Errored(error) => ("errored", Some(error.as_str())),
+            AgentStatus::Shutdown => ("closed", None),
+            AgentStatus::NotFound => ("notFound", None),
+        };
+        ResumeAgentModelResult {
+            agent_ref: self.agent_ref.as_deref(),
+            agent_id: self.agent_ref.is_none().then_some(self.agent_id),
+            nickname: self.nickname.as_deref(),
+            task_path: self.task_path.as_deref(),
+            status,
+            error,
+            adoption: self.adoption.as_ref(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "resume_agent_tests.rs"]
+mod tests;
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ResumeAgentAdoptionResult {
@@ -271,11 +321,17 @@ impl ToolOutput for ResumeAgentResult {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        tool_output_response_item(call_id, payload, self, Some(true), "resume_agent")
+        tool_output_response_item(
+            call_id,
+            payload,
+            &self.model_result(),
+            Some(true),
+            "resume_agent",
+        )
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        tool_output_code_mode_result(self, "resume_agent")
+        tool_output_code_mode_result(&self.model_result(), "resume_agent")
     }
 }
 

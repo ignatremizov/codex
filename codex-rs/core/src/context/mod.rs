@@ -1,6 +1,7 @@
 //! Context fragments injected into model input.
 
 mod agent_context_identity;
+mod agent_envelope_projection;
 mod agent_message_board_notification;
 mod agent_messaging_policy;
 mod agent_reply_route;
@@ -67,6 +68,7 @@ mod user_verification_notice;
 pub(crate) mod world_state;
 
 pub(crate) use agent_context_identity::AgentContextIdentity;
+pub(crate) use agent_envelope_projection::project_v1_agent_envelopes;
 pub(crate) use agent_message_board_notification::AgentMessageBoardNotification;
 pub(crate) use agent_messaging_policy::AGENT_MESSAGING_POLICY_PREFIX;
 pub(crate) use agent_messaging_policy::AgentMessagingPolicyNotice;

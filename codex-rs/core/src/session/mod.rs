@@ -3855,6 +3855,18 @@ impl Session {
                 .enabled(Feature::InstantInterrupt)
                 .then(CancellationToken::new),
             realtime: self.conversation.snapshot().await,
+            agent_identities: if turn_context.multi_agent_version == MultiAgentVersion::V1 {
+                Some(
+                    self.services
+                        .local_agent_runtime
+                        .control(self.session_id())
+                        .v1_agent_identity_snapshot()
+                        .or_cancel(cancellation_token)
+                        .await??,
+                )
+            } else {
+                None
+            },
             settings,
             token_budget,
             session_telemetry,

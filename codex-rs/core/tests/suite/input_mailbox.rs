@@ -51,6 +51,8 @@ mod permission_tests;
 
 #[path = "input_mailbox_authority_tests.rs"]
 mod authority_tests;
+#[path = "input_mailbox_projection_tests.rs"]
+mod projection_tests;
 #[path = "input_mailbox_selection_tests.rs"]
 mod selection_tests;
 #[path = "input_mailbox_wait_tests.rs"]

@@ -200,19 +200,26 @@ async fn handle_spawn_agent(
         Ok((spawned_agent, _)) => (Some(spawned_agent.thread_id), spawned_agent.status.clone()),
         Err(_) => (None, AgentStatus::NotFound),
     };
-    let new_agent_ref = match new_thread_id {
-        Some(thread_id) => match session.services.local_agent_runtime.control(session.session_id())
+    let (new_agent_ref, task_path) = match new_thread_id {
+        Some(thread_id) => match session
+            .services
+            .local_agent_runtime
+            .control(session.session_id())
             .model_visible_agent_identity_for_version(MultiAgentVersion::V1, thread_id)
             .await
         {
-            Ok(crate::context::AgentContextIdentity::V1 { agent_ref, .. }) => agent_ref,
-            Ok(_) => None,
+            Ok(crate::context::AgentContextIdentity::V1 {
+                agent_ref,
+                task_path,
+                ..
+            }) => (agent_ref, task_path),
+            Ok(_) => (None, None),
             Err(error) => {
                 tracing::warn!(%thread_id, %error, "spawn accepted without an available local alias");
-                None
+                (None, None)
             }
         },
-        None => None,
+        None => (None, None),
     };
     let agent_snapshot = result.as_ref().ok().map(|(_, config)| config);
     let new_agent_nickname =
@@ -230,10 +237,7 @@ async fn handle_spawn_agent(
     let receiver_agents = new_thread_id
         .map(|thread_id| CollabAgentRef {
             thread_id,
-            task_path: result
-                .as_ref()
-                .ok()
-                .and_then(|agent| agent.task_path.clone()),
+            task_path: task_path.clone(),
             agent_nickname: new_agent_nickname,
             agent_role: new_agent_role,
         })
@@ -267,7 +271,6 @@ async fn handle_spawn_agent(
         )
         .await;
     let (spawned_agent, _) = result?;
-    let new_thread_id = spawned_agent.thread_id;
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
@@ -276,9 +279,10 @@ async fn handle_spawn_agent(
     );
 
     Ok(SpawnAgentResult {
-        agent_id: new_thread_id.to_string(),
+        agent_id: spawned_agent.thread_id.to_string(),
         nickname,
         agent_ref: new_agent_ref.map(|agent_ref| agent_ref.to_string()),
+        task_path,
     })
 }
 
@@ -309,6 +313,7 @@ pub(crate) struct SpawnAgentResult {
     nickname: Option<String>,
     #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
     agent_ref: Option<String>,
+    task_path: Option<String>,
 }
 
 impl ToolOutput for SpawnAgentResult {

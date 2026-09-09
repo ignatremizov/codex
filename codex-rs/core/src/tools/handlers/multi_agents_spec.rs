@@ -75,7 +75,7 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let model_precedence_guidance =
         (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE);
     let return_value_description =
-        "Returns canonical agent id and, when available, compact ref and user-facing nickname.";
+        "Returns canonical agent id, nickname, assigned task path, and compact ref when available.";
     let mut properties = spawn_agent_common_properties_v1(&options.agent_type_description);
     properties.insert(
         "task".to_string(),
@@ -477,9 +477,13 @@ fn spawn_agent_output_schema_v1() -> Value {
             "ref": {
                 "type": "string",
                 "description": "Compact root-scoped ref preferred for V1 follow-up tools."
+            },
+            "task_path": {
+                "type": ["string", "null"],
+                "description": "Canonical assigned task path, or null when unassigned."
             }
         },
-        "required": ["agent_id", "nickname"],
+        "required": ["agent_id", "nickname", "task_path"],
         "additionalProperties": false
     })
 }
@@ -520,12 +524,13 @@ fn send_input_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "submission_id": {
+            "status": {
                 "type": "string",
-                "description": "Identifier for the accepted input, queued turn, or mailbox message. Mailbox acceptance is not a turn, receipt of model delivery, or consumption."
+                "enum": ["submitted", "queued", "mailboxAccepted"],
+                "description": "Input admission, not completion or model delivery: submitted directly, queued for its own turn, or accepted into the durable mailbox."
             }
         },
-        "required": ["submission_id"],
+        "required": ["status"],
         "additionalProperties": false
     })
 }
@@ -564,10 +569,16 @@ fn list_agents_output_schema() -> Value {
 }
 
 fn resume_agent_output_schema() -> Value {
-    json!({
+    let result = json!({
         "type": "object",
         "properties": {
-            "status": agent_status_output_schema(),
+            "nickname": {"type": ["string", "null"]},
+            "task_path": {"type": ["string", "null"]},
+            "status": {
+                "type": "string",
+                "enum": ["idle", "running", "interrupted", "errored", "closed", "notFound"]
+            },
+            "error": {"type": "string"},
             "adoption": {
                 "type": "object",
                 "description": "Committed assignment labels after cross-root adoption; omitted for ordinary resume.",
@@ -591,8 +602,28 @@ fn resume_agent_output_schema() -> Value {
                 "additionalProperties": false
             }
         },
-        "required": ["status"],
-        "additionalProperties": false
+        "required": ["nickname", "task_path", "status"],
+        "additionalProperties": false,
+        "if": {"properties": {"status": {"const": "errored"}}},
+        "then": {"required": ["error"]},
+        "else": {"not": {"required": ["error"]}}
+    });
+    // Full object variants also keep code-mode's TypeScript renderer from dropping the common
+    // fields when it renders oneOf. Exactly one identity is present in the model projection.
+    let mut with_ref = result.clone();
+    with_ref["properties"]["ref"] = json!({
+        "type": "string",
+        "description": "Compact root-scoped ref preferred for V1 follow-up tools."
+    });
+    with_ref["required"] = json!(["ref", "nickname", "task_path", "status"]);
+    let mut with_id = result;
+    with_id["properties"]["agent_id"] = json!({
+        "type": "string",
+        "description": "Canonical UUID fallback when no root-scoped ref is available."
+    });
+    with_id["required"] = json!(["agent_id", "nickname", "task_path", "status"]);
+    json!({
+        "oneOf": [with_ref, with_id]
     })
 }
 
@@ -876,33 +907,18 @@ Requests for depth, thoroughness, research, investigation, or detailed codebase 
 {agent_role_usage_hint}
 
 ### When to delegate vs. do the subtask yourself
-- First, quickly analyze the overall user task and form a succinct high-level plan. Identify which tasks are immediate blockers on the critical path, and which tasks are sidecar tasks that are needed but can run in parallel without blocking the next local step. As part of that plan, explicitly decide what immediate task you should do locally right now. Do this planning step before delegating to agents so you do not hand off the immediate blocking task to a submodel and then waste time waiting on it.
-- Use a subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.
-- Do not delegate urgent blocking work when your immediate next step depends on that result. If the very next action is blocked on that task, the main rollout should usually do it locally to keep the critical path moving.
-- Keep work local when the subtask is too difficult to delegate well and when it is tightly coupled, urgent, or likely to block your immediate next step.
+- Plan first: keep the immediate critical-path task local, and delegate only useful, bounded side work that can proceed in parallel.
+- Keep tightly coupled or urgent work local; use an agent when its task is concrete and self-contained.
 
 ### Designing delegated subtasks
-- Subtasks must be concrete, well-defined, and self-contained.
-- Delegated subtasks must materially advance the main task.
-- Do not duplicate work between the main rollout and delegated subtasks.
-- Avoid issuing multiple delegate calls on the same unresolved thread unless the new delegated task is genuinely different and necessary.
-- Narrow the delegated ask to the concrete output you need next.
-- For coding tasks, prefer delegating concrete code-change worker subtasks over read-only explorer analysis when the subagent can make a bounded patch in a clear write scope.
-- When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
-- For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
+- Delegate concrete, non-overlapping work that materially advances the task; do not duplicate unresolved work or issue redundant delegations.
+- Keep each delegation narrow and self-contained, with a clear output and disjoint write scope.
 
 ### After you delegate
-- Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
-- Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
-- While the subagent is running in the background, do meaningful non-overlapping work immediately.
-- Do not repeatedly wait by reflex.
-- When a delegated coding task returns, quickly review the uploaded changes, then integrate or refine them.
+- Continue useful independent work while agents run; wait only when the result is needed for the next critical-path step, then review it before integrating.
 
 ### Parallel delegation patterns
-- Run multiple independent information-seeking subtasks in parallel when you have distinct questions that can be answered independently.
-- Split implementation into disjoint codebase slices and spawn multiple agents for them in parallel when the write scopes do not overlap.
-- Delegate verification only when it can run in parallel with ongoing implementation and is likely to catch a concrete risk before final integration.
-- The key is to find opportunities to spawn multiple independent subtasks in parallel within the same round, while ensuring each subtask is well-defined, self-contained, and materially advances the main task."#
+- Use parallel delegation for independent, non-overlapping tasks when it materially advances the work."#
     )
 }
 
