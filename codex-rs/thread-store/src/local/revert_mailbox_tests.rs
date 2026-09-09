@@ -11,6 +11,7 @@ use crate::MailboxInvocation;
 use crate::MailboxMessageState;
 use crate::MailboxPayload;
 use crate::MailboxSelection;
+use crate::PersistContext;
 use crate::RevertThreadParams;
 use crate::ThreadStore;
 use crate::ThreadStoreError;
@@ -75,7 +76,10 @@ async fn recovery_does_not_treat_malformed_canonical_history_as_unrecorded_mail(
     let expected = store.claim_mailbox_input(params.clone()).await.unwrap();
     // Mailbox acceptance and claims only write SQL; materialize canonical history
     // before closing its writer and injecting a malformed persisted line.
-    store.persist_thread(receiver).await.unwrap();
+    store
+        .persist_thread(receiver, PersistContext::Standard)
+        .await
+        .unwrap();
     let path = store.live_rollout_path(receiver).await.unwrap();
     store.shutdown_thread(receiver).await.unwrap();
     codex_rollout::state_db::reconcile_rollout(

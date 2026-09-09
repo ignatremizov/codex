@@ -80,12 +80,12 @@ responseHandling: AgentResponseHandling | null, } | { "type": "observe", target:
 /**
  * Existing subscription owner. Omitted means the issuing source thread.
  */
-observer?: string | null,
+observer: string | null,
 /**
  * Original observer token for audit only, before client-side normalization.
  * Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.
  */
-authoredObserverSelector?: string | null, responseHandling: AgentObservationMode, } | { "type": "replyRoute", target: string,
+authoredObserverSelector: string | null, responseHandling: AgentObservationMode, } | { "type": "replyRoute", target: string,
 /**
  * Omitted means the source thread issuing the user command.
  */
