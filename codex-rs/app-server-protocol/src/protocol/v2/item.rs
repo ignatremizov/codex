@@ -55,6 +55,7 @@ use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAutho
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::agent_delivery_receipt_from_response_item_id;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::ordinary_agent_message_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_transcript_from_agent_message_id;
@@ -1086,8 +1087,14 @@ impl From<CoreTurnItem> for ThreadItem {
                     .collect(),
             },
             CoreTurnItem::AgentMessage(agent) => {
+                // Provider messages have their reserved IDs escaped by core's
+                // parse_agent_message before becoming turn items. Core-authored delivery
+                // receipts bypass that parser and must retain their presentation identity.
+                let is_delivery_receipt = agent.phase == Some(MessagePhase::Commentary)
+                    && agent_delivery_receipt_from_response_item_id(&agent.id).is_some();
                 let id = if agent.has_sub_agent_completion_identity()
                     || agent.is_attributed_agent_input_presentation()
+                    || is_delivery_receipt
                 {
                     agent.id.clone()
                 } else {
@@ -2109,3 +2116,7 @@ pub struct ToolRequestUserInputAnswer {
 pub struct ToolRequestUserInputResponse {
     pub answers: HashMap<String, ToolRequestUserInputAnswer>,
 }
+
+#[cfg(test)]
+#[path = "receipt_conversion_tests.rs"]
+mod receipt_conversion_tests;
