@@ -678,7 +678,7 @@ async fn response_observation_has_no_pending_work(
     target_thread_id: ThreadId,
 ) -> Result<bool> {
     let history = store
-        .load_rollback_history(LoadThreadHistoryParams {
+        .load_history(LoadThreadHistoryParams {
             thread_id: observer_thread_id,
             include_archived: false,
         })
@@ -3358,9 +3358,14 @@ async fn spawn_final_wake_starts_an_idle_parent_turn(
     assert!(request.body_contains_text("wake result"));
     let notification = agent_message_text_containing(&request, "<subagent_notification>")
         .expect("wake request should contain the completion fragment");
-    assert!(notification.contains(r#""ref":"2""#));
-    assert!(notification.contains(r#""nickname":"#));
-    assert!(!notification.contains("\"agent_path\""));
+    let body = notification
+        .strip_prefix("<subagent_notification>")
+        .and_then(|body| body.strip_suffix("</subagent_notification>"))
+        .expect("canonical notification markers");
+    assert_eq!(
+        serde_json::from_str::<Value>(body)?,
+        json!({"ref": "2", "status": {"completed": "wake result"}}),
+    );
     assert_input_item_ids_are_provider_compatible(&request);
     let completion_context = subagent_notification_agent_message(&request)
         .expect("wake request should contain completion context as an agent message");
@@ -3906,9 +3911,14 @@ async fn spawn_cx_wakes_once_and_keeps_final_out_of_model_context(
     assert!(request.body_contains_text("useful acknowledgement"));
     let commentary = agent_message_text_containing(&request, "<subagent_commentary>")
         .expect("commentary wake should contain the commentary fragment");
-    assert!(commentary.contains(r#""ref":"2""#));
-    assert!(commentary.contains(r#""nickname":"#));
-    assert!(!commentary.contains("\"agent_path\""));
+    let body = commentary
+        .strip_prefix("<subagent_commentary>")
+        .and_then(|body| body.strip_suffix("</subagent_commentary>"))
+        .expect("canonical commentary markers");
+    assert_eq!(
+        serde_json::from_str::<Value>(body)?,
+        json!({"ref": "2", "message": "useful acknowledgement"}),
+    );
     assert!(!request.body_contains_text("progress noise"));
     assert!(!request.body_contains_text("final result is not subscribed"));
     let (completion_id, status, agent_reference, payload) =
@@ -4756,6 +4766,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let spawn_call_id = "spawn-short-target";
     let spawn_args = serde_json::to_string(&json!({
         "message": "initial short-target task",
+        "task": "/root/short-target",
         "w": "x",
     }))?;
     let spawn_turn = mount_sse_once_match(
@@ -4821,7 +4832,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let after_spawn = wait_for_requests(&after_spawn)
         .await?
         .into_iter()
-        .next()
+        .find(|request| request.function_call_output_text(spawn_call_id).is_some())
         .expect("spawn continuation request");
     let spawn_output: Value = serde_json::from_str(
         after_spawn
@@ -4830,17 +4841,21 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             .expect("spawn output"),
     )?;
     assert_eq!(spawn_output["ref"], "2");
-    let initial_child_request = wait_for_requests(&initial_child)
-        .await?
-        .into_iter()
-        .next()
-        .expect("initial child request");
+    assert_eq!(spawn_output["task_path"], "/root/short-target");
     let child_thread = test.thread_manager.get_thread(spawned_id).await?;
     let _ = diagnostic_stage(
         "initial child completion",
         wait_for_terminal_status(child_thread.as_ref()),
     )
     .await?;
+    let initial_child_request = initial_child
+        .requests()
+        .into_iter()
+        .find(|request| {
+            request.body_json()["client_metadata"]["thread_id"] == json!(spawned_id)
+                && request.body_contains_text("initial short-target task")
+        })
+        .expect("completed initial child should have issued its request");
 
     let root_thread_id = test.session_configured.thread_id;
     let aliases = test
@@ -4931,17 +4946,46 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     .await;
 
     test.submit_turn("send by compact ref").await?;
-    let environment_context = send_turn
+    let identity_context = send_turn
         .single_request()
-        .message_input_texts("user")
+        .message_input_texts("developer")
         .into_iter()
-        .find(|text| text.contains("<subagents>"))
-        .expect("parent environment context should list the active child");
-    assert!(environment_context.contains(&format!("- 2: {nickname}")));
-    assert!(!environment_context.contains(&spawned_id.to_string()));
+        .filter_map(|text| {
+            text.strip_prefix("<agent_identity_context>\n")?
+                .strip_suffix("\n</agent_identity_context>")?
+                .split_once('\n')
+                .map(|(_, body)| serde_json::from_str::<Value>(body))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        identity_context,
+        vec![json!([
+            {"ref": "1", "nickname": "Main", "task_path": "/root", "state": "active"},
+            {
+                "ref": "2",
+                "nickname": nickname,
+                "task_path": "/root/short-target",
+                "state": "active",
+            },
+        ])]
+    );
     let _ = wait_for_requests(&after_send).await?;
-    let _ = wait_for_requests(&ref_child).await?;
-    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            if ref_child.requests().iter().any(|request| {
+                request.body_json()["client_metadata"]["thread_id"] == json!(spawned_id)
+                    && request.body_contains_text("compact-ref follow-up")
+            }) {
+                break;
+            }
+            sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("compact ref result".to_string()))
+    );
 
     let wait_call_id = "wait-by-agent-nickname";
     let wait_args = serde_json::to_string(&json!({
@@ -4977,7 +5021,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let wait_request = wait_for_requests(&after_wait)
         .await?
         .into_iter()
-        .next()
+        .find(|request| request.function_call_output_text(wait_call_id).is_some())
         .expect("wait continuation request");
     assert!(
         wait_request
@@ -5028,6 +5072,71 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         codex_state::AgentAliasState::Closed
     );
 
+    let failed_send_call_id = "send-to-closed-uuid";
+    let failed_send_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": "closed target must not load",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "send to closed UUID"),
+        sse(vec![
+            ev_response_created("resp-send-closed"),
+            ev_function_call_with_namespace(
+                failed_send_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &failed_send_args,
+            ),
+            ev_completed("resp-send-closed"),
+        ]),
+    )
+    .await;
+    let after_failed_send = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, failed_send_call_id),
+        sse(vec![
+            ev_response_created("resp-after-send-closed"),
+            ev_assistant_message("msg-after-send-closed", "target remains closed"),
+            ev_completed("resp-after-send-closed"),
+        ]),
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "send to closed UUID".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let failed_send = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ItemCompleted(event) => match &event.item {
+            TurnItem::CollabAgentToolCall(call) if call.id == failed_send_call_id => {
+                Some(call.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        (failed_send.status, failed_send.receiver_agents),
+        (
+            codex_protocol::items::CollabAgentToolCallStatus::Failed,
+            vec![codex_protocol::protocol::CollabAgentRef {
+                thread_id: spawned_id,
+                task_path: Some("/root/short-target".to_string()),
+                agent_nickname: Some(nickname.clone()),
+                agent_role: None,
+            }],
+        )
+    );
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let _ = wait_for_requests(&after_failed_send).await?;
+    assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
+
     let resume_call_id = "resume-by-agent-ref";
     let resume_args = serde_json::to_string(&json!({
         "id": "2",
@@ -5058,8 +5167,103 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     )
     .await;
 
-    test.submit_turn("resume by compact ref").await?;
-    let _ = wait_for_requests(&after_resume).await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "resume by compact ref".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let resuming_agents = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ItemStarted(event) => match &event.item {
+            TurnItem::CollabAgentToolCall(call) if call.id == resume_call_id => {
+                Some(call.receiver_agents.clone())
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        resuming_agents,
+        vec![codex_protocol::protocol::CollabAgentRef {
+            thread_id: spawned_id,
+            task_path: Some("/root/short-target".to_string()),
+            agent_nickname: Some(nickname.clone()),
+            agent_role: None,
+        }]
+    );
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let resume_request = wait_for_requests(&after_resume)
+        .await?
+        .into_iter()
+        .find(|request| request.function_call_output_text(resume_call_id).is_some())
+        .expect("resume continuation request");
+    let resume_output: Value = serde_json::from_str(
+        &resume_request
+            .function_call_output_text(resume_call_id)
+            .expect("resume output"),
+    )?;
+    assert_eq!(
+        resume_output,
+        json!({
+            "ref": "2",
+            "nickname": nickname,
+            "task_path": "/root/short-target",
+            "status": "idle",
+        })
+    );
+    let notification_payloads = |request: &ResponsesRequest| {
+        request
+            .inputs_of_type("agent_message")
+            .into_iter()
+            .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+            .filter_map(|content| {
+                content["text"]
+                    .as_str()?
+                    .strip_prefix("<subagent_notification>")?
+                    .strip_suffix("</subagent_notification>")
+                    .map(serde_json::from_str::<Value>)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+    };
+    let expected_notifications =
+        vec![json!({"ref": "2", "status": {"completed": "compact ref result"}})];
+    let resume_notifications = notification_payloads(&resume_request)?;
+    // Resume reconstructs the real terminal turn from the rollout. Its passive watcher
+    // delivers asynchronously, so the first continuation may precede that delivery.
+    assert!(
+        resume_notifications.is_empty() || resume_notifications == expected_notifications,
+        "resume may reconcile only the child's genuine final answer: {resume_notifications:?}"
+    );
+    assert_eq!(
+        subagent_notification_count(&resume_request),
+        resume_notifications.len()
+    );
+    // TurnComplete can consume or precede the asynchronous presentation. Synchronize on
+    // durable, model-visible delivery, not on another read of the parent event stream.
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            test.codex.flush_rollout().await?;
+            if read_test_rollout_items(&test)?.iter().any(|item| {
+                let RolloutItem::EventMsg(event) = item else {
+                    return false;
+                };
+                sub_agent_completion_event(event).is_some_and(|(id, status, _, payload)| {
+                    status == SubAgentCompletionStatus::Completed
+                        && payload == "compact ref result"
+                        && sub_agent_completion_model_visibility_from_response_item_id(&id)
+                            == Some(SubAgentCompletionModelVisibility::Visible)
+                })
+            }) {
+                break Ok::<_, anyhow::Error>(());
+            }
+            sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await??;
     assert_eq!(
         test.codex
             .state_db()
@@ -5072,10 +5276,72 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             thread_id: spawned_id,
             agent_ref: 2,
             nickname: Some(nickname),
-            task_path: None,
+            task_path: Some("/root/short-target".to_string()),
             state: codex_state::AgentAliasState::Active,
         }
     );
+    // This manager API force-removes the runtime; it is not silent residency unload.
+    // Its NotFound runtime status is distinct from the restored last terminal turn.
+    let removed_thread = test
+        .thread_manager
+        .remove_thread(&spawned_id)
+        .await
+        .expect("resumed runtime should be removed");
+    assert_eq!(removed_thread.agent_status().await, AgentStatus::NotFound);
+    drop(removed_thread);
+    assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
+    // No turn was admitted in this runtime, so do not require a NotFound completion event.
+    let unloaded_call_id = "resume-unloaded-by-ref";
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "resume unloaded ref"),
+        sse(vec![
+            ev_response_created("resp-resume-unloaded"),
+            ev_function_call_with_namespace(
+                unloaded_call_id,
+                MULTI_AGENT_V1_NAMESPACE,
+                "resume_agent",
+                &resume_args,
+            ),
+            ev_completed("resp-resume-unloaded"),
+        ]),
+    )
+    .await;
+    let after_unloaded_resume = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| body_contains(request, unloaded_call_id),
+        sse(vec![
+            ev_response_created("resp-after-resume-unloaded"),
+            ev_assistant_message("msg-after-resume-unloaded", "unloaded target resumed"),
+            ev_completed("resp-after-resume-unloaded"),
+        ]),
+    )
+    .await;
+    test.submit_turn("resume unloaded ref").await?;
+    let unloaded_request = wait_for_requests(&after_unloaded_resume)
+        .await?
+        .into_iter()
+        .find(|request| {
+            request
+                .function_call_output_text(unloaded_call_id)
+                .is_some()
+        })
+        .expect("unloaded resume continuation");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &unloaded_request
+                .function_call_output_text(unloaded_call_id)
+                .expect("unloaded resume result"),
+        )?,
+        resume_output
+    );
+    assert_eq!(
+        notification_payloads(&unloaded_request)?,
+        expected_notifications,
+        "resume preserves one genuine final answer without fabricating another completion"
+    );
+    assert_eq!(subagent_notification_count(&unloaded_request), 1);
+    assert!(test.thread_manager.get_thread(spawned_id).await.is_ok());
     Ok(())
 }
 
@@ -5217,7 +5483,6 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
     assert_eq!(
         envelopes,
         vec![json!({
-            "nickname": child_thread.config_snapshot().await.session_source.get_nickname(),
             "ref": "2",
             "message": CHILD_MESSAGE,
         })],
@@ -5226,7 +5491,7 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
     test.codex.flush_rollout().await?;
     let history = test
         .thread_store
-        .load_rollback_history(LoadThreadHistoryParams {
+        .load_history(LoadThreadHistoryParams {
             thread_id: test.session_configured.thread_id,
             include_archived: false,
         })
@@ -5353,7 +5618,7 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
     child_thread.flush_rollout().await?;
     let child_history = test
         .thread_store
-        .load_rollback_history(LoadThreadHistoryParams {
+        .load_history(LoadThreadHistoryParams {
             thread_id: child_thread_id,
             include_archived: false,
         })
@@ -6528,7 +6793,7 @@ async fn send_input_commentary_binds_to_the_interrupt_replacement_turn(
         ]),
     )
     .await;
-    mount_response_once_match(
+    let replacement_child = mount_response_once_match(
         &server,
         move |request: &wiremock::Request| {
             body_contains(request, "replacement child task")
@@ -6571,8 +6836,85 @@ async fn send_input_commentary_binds_to_the_interrupt_replacement_turn(
 
     let request =
         wait_for_request_containing_text(&commentary_wake, "replacement acknowledged").await?;
-    assert!(request.body_contains_text("msg-replacement-commentary"));
+    let commentary = agent_message_text_containing(&request, "<subagent_commentary>")
+        .expect("replacement commentary model envelope");
+    let body = commentary
+        .strip_prefix("<subagent_commentary>")
+        .and_then(|body| body.strip_suffix("</subagent_commentary>"))
+        .expect("commentary markers");
+    assert_eq!(
+        serde_json::from_str::<Value>(body)?,
+        json!({"ref": "2", "message": "replacement acknowledged"})
+    );
     assert!(!request.body_contains_text("child done"));
+
+    // Turn/item identities belong to the durable audit, not the compact model projection.
+    // Check the admitted replacement turn rather than merely recognizing its message text.
+    // ResponseMock captures before the custom matcher is evaluated, so its first entry can
+    // be the parent's send_input request. The commentary wake proves the child request has
+    // arrived; select that request by canonical thread identity and replacement payload.
+    let replacement_requests = replacement_child
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.body_json()["client_metadata"]["thread_id"] == json!(spawned_id)
+                && request.body_contains_text("replacement child task")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replacement_requests.len(),
+        1,
+        "one replacement child request"
+    );
+    let replacement_request = &replacement_requests[0];
+    let replacement_turn_id = replacement_request.body_json()["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("replacement turn id")
+        .to_string();
+    wait_for_terminal_status(test.codex.as_ref()).await?;
+    test.codex.flush_rollout().await?;
+    let history = test
+        .thread_store
+        .load_history(LoadThreadHistoryParams {
+            thread_id: test.session_configured.thread_id,
+            include_archived: false,
+        })
+        .await?;
+    #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+    struct CommentaryAudit {
+        agent_id: ThreadId,
+        turn_id: String,
+        item_id: String,
+        message: String,
+    }
+    let commentary_audit = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(envelope) => match &envelope.item {
+                ResponseItem::AgentMessage { content, .. } => Some(content),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|content| match content {
+            AgentMessageInputContent::InputText { text } => text
+                .strip_prefix("<subagent_commentary>")
+                .and_then(|body| body.strip_suffix("</subagent_commentary>"))
+                .map(serde_json::from_str::<CommentaryAudit>),
+            AgentMessageInputContent::EncryptedContent { .. } => None,
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        commentary_audit,
+        vec![CommentaryAudit {
+            agent_id: ThreadId::from_string(&spawned_id)?,
+            turn_id: replacement_turn_id,
+            item_id: "msg-replacement-commentary".to_string(),
+            message: "replacement acknowledged".to_string(),
+        }]
+    );
     Ok(())
 }
 
@@ -6757,7 +7099,7 @@ async fn final_delivery_failed_barrier_quarantines_even_with_readable_records() 
     // Its presence must not become success, trigger another append, or wake the model.
     assert_eq!(
         store
-            .load_rollback_history(LoadThreadHistoryParams {
+            .load_history(LoadThreadHistoryParams {
                 thread_id: test.session_configured.thread_id,
                 include_archived: false,
             })
@@ -7430,7 +7772,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         }
         ThreadHistoryMode::Paginated => {
             store
-                .load_rollback_history(LoadThreadHistoryParams {
+                .load_history(LoadThreadHistoryParams {
                     thread_id: parent_thread_id,
                     include_archived: false,
                 })
@@ -7908,7 +8250,7 @@ async fn failed_response_observation_persistence_quarantines_without_compensatio
         "readable canonical records after a failed barrier are not an acknowledgement"
     );
     let history = store
-        .load_rollback_history(LoadThreadHistoryParams {
+        .load_history(LoadThreadHistoryParams {
             thread_id: test.session_configured.thread_id,
             include_archived: false,
         })

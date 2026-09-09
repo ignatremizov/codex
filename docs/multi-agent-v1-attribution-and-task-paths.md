@@ -78,12 +78,15 @@ Model-visible context uses a compact `<agent_message>` envelope, omitting role, 
 
 ```text
 <agent_message>
-Pascal /root/backend/auth (3):
-API now requires document_id. Update the client.
+{"ref":"3","message":"API now requires document_id. Update the client."}
 </agent_message>
 ```
 
-This is the proposed compact rendering. The existing attributed-input fragment already uses `<agent_message>` markers, with a JSON body containing identity, turn ID, and message. Keep structured audit identity separate from the concise model-visible presentation.
+Routine V1 commentary and completion envelopes likewise project only the receiver-local ref and message or status. When that receiver has no current mapping for the sender, the projection retains `agent_id` instead of borrowing another root's ref. Turn and item IDs remain internal delivery identities rather than repeated model-visible fields.
+
+Projection applies to disposable sampling, local compaction, and V2 remote-compaction requests, not canonical history. Legacy remote compaction still receives identity hydration but keeps agent envelopes canonical: its provider-returned history is retained directly, without a separate canonical replacement-history boundary. No text-based attribution recovery is performed. Canonical envelopes and typed presentation retain the full UUID and send-time attribution. Fresh attributed user-role input is marked at its trusted recording boundary using the existing content-kind metadata; marker-looking ordinary user text is not rewritten. Unsupported legacy envelopes remain readable without inventing identity. Retaining canonical UUIDs lets later requests safely project against changed receiver mappings after transfer or adoption.
+
+Spawn and resume results hydrate the ref, nickname, and task path together. Receiver-scoped identity context is refreshed for model requests and after compaction, including closed but addressable members; it is not conditional on environment-context display. A namespace containing only its root omits both hydration and compact-ref projection; once another owned member exists, Main is eligible alongside that member. The discovery summary has a 2,048 approximate-token budget, including framing and an omission notice. It prioritizes active aliases in ascending ref order, then closed aliases in descending durable ref order; newer refs are not a measure of last closure time. Entries fit whole or are skipped, never shortened. The projection map contains exactly the advertised subset, with UUID fallback for omissions and an omission notice pointing to existing agent discovery. This budget does not cap labels, task assignment, messages, spawn/resume results, or canonical history. Current labels support targeting, while the durable audit retains historical send-time labels.
 
 The example is illustrative, not permission to concatenate arbitrary text into delimiters. Use reversible escaping or structured serialization for header values and payload text so embedded `<agent_message>`/`</agent_message>` strings, newlines in labels, or fabricated sender headers remain data rather than additional envelope structure. Preserve the original payload in audit storage and recover it exactly for human presentation. This prevents structural ambiguity; it is not a claim that serialization alone prevents model confusion or prompt injection.
 

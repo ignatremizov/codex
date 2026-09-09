@@ -33,10 +33,19 @@ impl Session {
         additional_context: Vec<ResponseItemEnvelope>,
     ) -> CodexResult<()> {
         let mut image_positions = HashMap::new();
-        let response_item = self.response_item_from_user_input_with_image_positions(
+        let mut response_item = self.response_item_from_user_input_with_image_positions(
             input.to_vec(),
             &mut image_positions,
         );
+        if matches!(
+            &prompt_kind,
+            PromptInputKind::Agent {
+                presentation: AgentInputPresentation::AttributedInput { .. }
+            }
+        ) {
+            // The marker permits disposable receiver projection, not canonical rewriting.
+            crate::context::AttributedAgentMessage::mark_model_input(&mut response_item);
+        }
         let mut items = vec![ResponseItemEnvelope {
             item: response_item,
             metadata: acceptance_order.map(|order| CodexHarnessMetadata {

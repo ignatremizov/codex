@@ -74,6 +74,8 @@ pub(crate) use aliases::AgentResumeOwnership;
 mod close_response;
 mod completion;
 mod completion_watcher;
+mod identity_snapshot;
+pub(crate) use identity_snapshot::V1AgentIdentitySnapshot;
 mod input;
 mod mailbox_input;
 mod mailbox_inventory;
@@ -82,6 +84,7 @@ mod message_audit;
 #[cfg(test)]
 pub(crate) mod messaging_test_hooks;
 mod presentation;
+mod presentation_ref;
 mod response_delivery;
 mod response_observer;
 mod response_submission;

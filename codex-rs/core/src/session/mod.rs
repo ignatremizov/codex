@@ -3797,6 +3797,17 @@ impl Session {
         .or_cancel(cancellation_token)
         .await??;
         Ok(Arc::new(StepContext {
+            agent_identities: if turn_context.multi_agent_version == MultiAgentVersion::V1 {
+                Some(
+                    self.services
+                        .agent_control
+                        .v1_agent_identity_snapshot()
+                        .or_cancel(cancellation_token)
+                        .await??,
+                )
+            } else {
+                None
+            },
             settings,
             token_budget,
             session_telemetry,

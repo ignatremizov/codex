@@ -3,11 +3,15 @@ use codex_protocol::protocol::agent_delivery_receipt_from_response_item_id;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
-#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[test_case(ThreadHistoryMode::Legacy, None, SubAgentCompletionModelVisibility::Visible; "legacy_passive")]
+#[test_case(ThreadHistoryMode::Paginated, None, SubAgentCompletionModelVisibility::Visible; "paginated_passive")]
+#[test_case(ThreadHistoryMode::Legacy, Some("x"), SubAgentCompletionModelVisibility::NotVisible; "legacy_presentation_only")]
+#[test_case(ThreadHistoryMode::Paginated, Some("x"), SubAgentCompletionModelVisibility::NotVisible; "paginated_presentation_only")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
     history_mode: ThreadHistoryMode,
+    response_handling: Option<&str>,
+    expected_visibility: SubAgentCompletionModelVisibility,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     const PROMPT: &str = "ask Main for the receipt contract";
@@ -42,6 +46,11 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
             UserAgentReplyRouteMode::Enabled,
         )
         .await?;
+    // Default passive delivery omits w; an explicitly empty flag string is invalid.
+    let mut send_args = json!({"target": "Main", "message": MESSAGE});
+    if let Some(response_handling) = response_handling {
+        send_args["w"] = json!(response_handling);
+    }
     let invocation = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -53,9 +62,7 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
                 CALL_ID,
                 MULTI_AGENT_V1_NAMESPACE,
                 "send_input",
-                &serde_json::to_string(&json!({
-                    "target": "Main", "message": MESSAGE, "w": "x",
-                }))?,
+                &serde_json::to_string(&send_args)?,
             ),
             ev_completed("receipt-child"),
         ]),
@@ -94,33 +101,61 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         )
         .await?;
     wait_for_request_containing_text(&invocation, PROMPT).await?;
-    wait_for_request_containing_text(&child_done, CALL_ID).await?;
+    let continuation = wait_for_request_containing_text(&child_done, CALL_ID).await?;
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &continuation
+                .function_call_output_text(CALL_ID)
+                .expect("send_input admission result"),
+        )?,
+        json!({"status": "submitted"}),
+        "Main must accept the input before receipt delivery is checked",
+    );
     wait_for_request_containing_text(&root_reply, MESSAGE).await?;
 
-    let receipt = wait_for_event_match(test.codex.as_ref(), |event| {
+    let mut receipts = Vec::new();
+    let mut root_child_completion = None;
+    wait_for_event(test.codex.as_ref(), |event| {
         let EventMsg::ItemCompleted(event) = event else {
-            return None;
+            return false;
         };
         let TurnItem::AgentMessage(item) = &event.item else {
-            return None;
+            return false;
         };
-        agent_delivery_receipt_from_response_item_id(&item.id).map(|_| item.clone())
+        if agent_delivery_receipt_from_response_item_id(&item.id).is_some() {
+            receipts.push(item.clone());
+        }
+        if item.has_sub_agent_completion_identity()
+            && serde_json::to_string(&item.content)
+                .is_ok_and(|text| text.contains("Child finished asking."))
+        {
+            root_child_completion = Some(item.clone());
+        }
+        root_child_completion.is_some()
+            && (expected_visibility == SubAgentCompletionModelVisibility::NotVisible
+                || !receipts.is_empty())
     })
     .await;
-    assert_eq!(
-        agent_delivery_receipt_from_response_item_id(&receipt.id),
-        Some((
-            test.session_configured.thread_id,
-            child_id,
-            MessagePhase::FinalAnswer,
-            SubAgentCompletionModelVisibility::NotVisible,
-        ))
-    );
-    assert_eq!(
-        serde_json::to_value(&receipt.content)?,
-        json!([{"type": "Text", "text": ANSWER}])
-    );
-    assert!(!receipt.is_attributed_agent_input_presentation());
+    if expected_visibility == SubAgentCompletionModelVisibility::Visible {
+        assert_eq!(receipts.len(), 1);
+        let receipt = &receipts[0];
+        assert_eq!(
+            agent_delivery_receipt_from_response_item_id(&receipt.id),
+            Some((
+                test.session_configured.thread_id,
+                child_id,
+                MessagePhase::FinalAnswer,
+                expected_visibility,
+            ))
+        );
+        assert_eq!(
+            serde_json::to_value(&receipt.content)?,
+            json!([{"type": "Text", "text": ANSWER}])
+        );
+        assert!(!receipt.is_attributed_agent_input_presentation());
+    } else {
+        assert!(receipts.is_empty(), "x must not emit an extra root receipt");
+    }
     let completion = wait_for_event_match(child.as_ref(), |event| {
         let EventMsg::ItemCompleted(event) = event else {
             return None;
@@ -137,20 +172,90 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
         json!([{"type": "Text", "text": format!("Agent final answer from `/root`:\n\n{ANSWER}")}]),
         "child keeps the canonical Main-authored completion"
     );
+    assert_eq!(
+        sub_agent_completion_model_visibility_from_response_item_id(&completion.id),
+        Some(expected_visibility),
+    );
     wait_for_terminal_status(child.as_ref()).await?;
     wait_for_terminal_status(test.codex.as_ref()).await?;
+    if expected_visibility == SubAgentCompletionModelVisibility::NotVisible {
+        // The recipient event is emitted before the independently spawned delivery worker
+        // attempts the root mirror. Check its absence beyond that event boundary.
+        assert!(
+            timeout(
+                Duration::from_millis(250),
+                wait_for_event_match(test.codex.as_ref(), |event| {
+                    let EventMsg::ItemCompleted(event) = event else {
+                        return None;
+                    };
+                    let TurnItem::AgentMessage(item) = &event.item else {
+                        return None;
+                    };
+                    agent_delivery_receipt_from_response_item_id(&item.id)
+                }),
+            )
+            .await
+            .is_err(),
+            "presentation-only delivery must not mirror a root receipt",
+        );
+    }
+    child.flush_rollout().await?;
+    let child_history = test
+        .thread_store
+        .load_history(LoadThreadHistoryParams {
+            thread_id: child_id,
+            include_archived: false,
+        })
+        .await?;
+    let child_presentations = child_history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if event.item.id() == completion.id =>
+            {
+                Some(event.item.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(child_presentations)?,
+        serde_json::to_value(vec![TurnItem::AgentMessage(completion)])?,
+        "recipient presentation remains durable for passive and x delivery",
+    );
     test.codex.flush_rollout().await?;
     let root_history = test
         .thread_store
-        .load_rollback_history(LoadThreadHistoryParams {
+        .load_history(LoadThreadHistoryParams {
             thread_id: test.session_configured.thread_id,
             include_archived: false,
         })
         .await?;
     let root_json = serde_json::to_string(&root_history.items)?;
-    assert!(
-        !root_json.contains(&receipt.id),
-        "receipt is never persisted"
+    for receipt in &receipts {
+        assert!(
+            !root_json.contains(&receipt.id),
+            "receipt is never persisted"
+        );
+    }
+    let root_child_completion = root_child_completion.expect("ordinary child completion");
+    let root_presentations = root_history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if event.item.id() == root_child_completion.id =>
+            {
+                Some(event.item.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(root_presentations)?,
+        serde_json::to_value(vec![TurnItem::AgentMessage(root_child_completion)])?,
+        "Main keeps its ordinary durable child-completion oversight",
     );
     assert!(!root_json.contains("Agent final answer from `/root`"));
 
@@ -166,7 +271,9 @@ async fn main_final_receipt_is_live_only_and_keeps_original_authorship(
     .await;
     test.submit_turn("check receipt isolation").await?;
     let request = follow_up.single_request();
-    assert!(!request.body_contains_text(&receipt.id));
+    for receipt in &receipts {
+        assert!(!request.body_contains_text(&receipt.id));
+    }
     assert!(
         !request.body_contains_text("Agent final answer from"),
         "no receipt echo enters Main's model context"

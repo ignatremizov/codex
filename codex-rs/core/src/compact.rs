@@ -98,7 +98,8 @@ pub(crate) enum InitialContextInjection {
 /// `CompactedItem`. Canonical checkpoints additionally retain acknowledged mailbox completion
 /// context that is deliberately absent from the live history until its lease is consumed.
 pub(crate) struct CompactedHistoryMetadata {
-    /// Exact completion/task payloads included in the successful compaction request.
+    /// Canonical completion/task payloads represented in the successful compaction request,
+    /// captured before disposable receiver-identity projection.
     pub(crate) completion_source_items: Vec<ResponseItem>,
     pub(crate) message: String,
     pub(crate) compaction_summary_tokens: Option<i64>,
@@ -110,8 +111,9 @@ pub(crate) struct CompactedHistoryMetadata {
 }
 
 pub(crate) fn completion_source_items(items: &[ResponseItem]) -> Vec<ResponseItem> {
-    // These are candidates from the actual request, not proof of canonical provenance. Checkpoint
-    // publication matches full payloads against acknowledged completion and task receipts.
+    // Capture candidates before disposable identity projection, not from rewritten model refs.
+    // These are not proof of provenance: checkpoint publication still matches full canonical
+    // payloads against acknowledged completion and task receipts.
     items
         .iter()
         .filter(|item| {
@@ -345,6 +347,17 @@ async fn run_compact_task_inner_impl(
         .compaction_responses_metadata(turn_context.as_ref(), compaction_metadata)
         .await;
 
+    let agent_identities =
+        if turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V1 {
+            Some(
+                sess.services
+                    .agent_control
+                    .v1_agent_identity_snapshot()
+                    .await?,
+            )
+        } else {
+            None
+        };
     let (compaction_response, completion_source_items) = loop {
         sess.await_history_publication().await;
         sess.check_history_publication()?;
@@ -360,6 +373,11 @@ async fn run_compact_task_inner_impl(
         sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);
+        // Checkpoint publication compares exact canonical payloads, never projected refs.
+        let completion_source_items = crate::compact::completion_source_items(&turn_input);
+        if let Some(identities) = &agent_identities {
+            crate::context::world_state::prepare_v1_agent_model_input(&mut turn_input, identities);
+        }
         let turn_input_len = turn_input.len();
         let prompt = Prompt {
             input: turn_input,
@@ -380,10 +398,7 @@ async fn run_compact_task_inner_impl(
 
         match attempt_result {
             Ok(response) => {
-                break (
-                    response,
-                    crate::compact::completion_source_items(&prompt.input),
-                );
+                break (response, completion_source_items);
             }
             Err(err)
                 if matches!(
