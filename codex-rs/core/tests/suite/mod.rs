@@ -229,6 +229,7 @@ mod user_notification;
 mod user_shell_cmd;
 mod user_shell_completion;
 mod user_shell_processes;
+mod v1_agent_identity_context;
 mod view_image;
 mod web_search;
 mod websocket_fallback;

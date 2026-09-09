@@ -100,6 +100,12 @@ pub(super) async fn run_remote_compact_v2_attempt(
     sess.services
         .executed_tool_calls
         .attach_to_compaction_prompt(&mut input);
+    // Retain canonical candidates for the exact-evidence checkpoint gate. The replacement
+    // history above and these candidates must never contain receiver-local projections.
+    let completion_source_items = crate::compact::completion_source_items(&input);
+    if let Some(identities) = &step_context.agent_identities {
+        crate::context::world_state::prepare_v1_agent_model_input(&mut input, identities);
+    }
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});
     let prompt = Prompt {
@@ -146,7 +152,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         token_usage,
     } = compaction_output_result?;
     Ok(RemoteCompactV2Attempt {
-        completion_source_items: crate::compact::completion_source_items(&prompt.input),
+        completion_source_items,
         trace_input_history,
         replacement_history_input,
         compacted_prefix_len,

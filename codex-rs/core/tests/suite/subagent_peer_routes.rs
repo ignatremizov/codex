@@ -161,13 +161,16 @@ async fn subtree_default_reaches_future_coders_and_pair_overrides_win(
         );
         let result = wait_for_request_containing_text(&output, &call_id)
             .await?
-            .function_call_output(&call_id)
-            .to_string();
+            .function_call_output_text(&call_id)
+            .expect("send result text");
         wait_for_terminal_status(sender.as_ref()).await?;
         if permitted {
             wait_for_request_containing_text(&received, &payload).await?;
             wait_for_terminal_status(recipient.as_ref()).await?;
-            assert!(result.contains("submission_id"), "{result}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&result)?,
+                json!({"status": "submitted"})
+            );
         } else {
             assert!(result.contains("disabled by the user"), "{result}");
             assert!(received.requests().is_empty());
@@ -217,7 +220,6 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
     let sender = test.thread_manager.get_thread(sender_id).await?;
     let recipient = test.thread_manager.get_thread(recipient_id).await?;
     let root_status = test.codex.agent_status().await;
-    let sender_nickname = sender.config_snapshot().await.session_source.get_nickname();
     let mut received_audits = Vec::new();
 
     // Exercise the actual model-facing tool before enable, on two enabled turns, and after
@@ -310,7 +312,9 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
             "route context is installed once, not on every turn"
         );
         let returned = wait_for_request_containing_text(&tool_result, &call_id).await?;
-        let output = returned.function_call_output(&call_id).to_string();
+        let output = returned
+            .function_call_output_text(&call_id)
+            .expect("send result text");
         wait_for_terminal_status(sender.as_ref()).await?;
         if enabled {
             let received = wait_for_request_containing_text(&receiver_request, &payload).await?;
@@ -326,7 +330,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             assert_eq!(
                 envelopes.last(),
-                Some(&json!({"nickname": sender_nickname, "ref": "2", "message": payload})),
+                Some(&json!({"ref": "2", "message": payload})),
             );
             let item = wait_for_event_match(recipient.as_ref(), |event| {
                 let EventMsg::ItemCompleted(event) = event else {
@@ -361,7 +365,10 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
             );
             received_audits.push(serde_json::to_value(item)?);
             wait_for_terminal_status(recipient.as_ref()).await?;
-            assert!(output.contains("submission_id"), "{output}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&output)?,
+                json!({"status": if response_flags.contains('q') { "queued" } else { "submitted" }}),
+            );
         } else {
             let reason = if index == 0 {
                 "has no message route"
