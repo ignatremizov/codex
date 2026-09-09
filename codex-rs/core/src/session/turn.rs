@@ -371,14 +371,14 @@ pub(crate) async fn run_turn(
             Vec::new()
         };
 
-        if run_hooks_and_record_inputs(
+        let (stop, accepted_input) = run_hooks_and_record_inputs_with_accepted(
             &sess,
             &turn_context,
             &pending_input,
             PersistContext::Standard,
         )
-        .await
-        {
+        .await;
+        if stop {
             break;
         }
 
@@ -393,12 +393,12 @@ pub(crate) async fn run_turn(
         // Capture once so context, advertised tools, and tool calls share one request view.
         let step_context = match next_step_context.take() {
             Some(step_context) => step_context,
-            None if pending_input.is_empty() => {
+            None if accepted_input.is_empty() => {
                 sess.capture_step_context(Arc::clone(&turn_context), &cancellation_token)
                     .await?
             }
             None => {
-                let pending_user_input = turn_user_input(&pending_input);
+                let pending_user_input = turn_user_input(&accepted_input);
                 let (required_servers, _) = required_mcp_servers_for_input(
                     &sess,
                     turn_context.as_ref(),
@@ -414,6 +414,37 @@ pub(crate) async fn run_turn(
                 .await?
             }
         };
+        let accepted_user_input = turn_user_input(&accepted_input);
+        if !accepted_user_input.is_empty()
+            && !turn_context.is_compact_subagent()
+            && !crate::guardian::is_basic_session_source(&turn_context.session_source)
+        {
+            let Some(contributions) = build_extension_turn_input_items(
+                &sess,
+                step_context.as_ref(),
+                &accepted_user_input,
+                &cancellation_token,
+            )
+            .await
+            else {
+                break;
+            };
+            // Steers become model-visible at the same boundary as their durable context.
+            // Acknowledge promotion only after persistence, just as at turn start.
+            for contribution in contributions {
+                sess.record_durable_context_items(
+                    Arc::clone(&turn_context),
+                    contribution.items,
+                    contribution.acknowledgement,
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to persist extension turn input contribution: {err}"
+                    ))
+                })?;
+            }
+        }
         let sampling_request_result: CodexResult<_> = async {
             super::time_reminder::maybe_record_current_time_reminder(
                 sess.as_ref(),
@@ -706,9 +737,22 @@ pub(crate) async fn run_hooks_and_record_inputs(
     input: &[TurnInput],
     persist_context: PersistContext,
 ) -> bool {
+    run_hooks_and_record_inputs_with_accepted(sess, turn_context, input, persist_context)
+        .await
+        .0
+}
+
+#[instrument(level = "trace", skip_all)]
+async fn run_hooks_and_record_inputs_with_accepted(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    input: &[TurnInput],
+    persist_context: PersistContext,
+) -> (bool, Vec<TurnInput>) {
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     let mut persistence_failed = false;
+    let mut accepted_input = Vec::new();
     for input_item in input {
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
@@ -735,10 +779,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 // Preserve later drained inputs, but stop before sampling so a
                 // later queue retry cannot execute this message twice.
                 persistence_failed = true;
+            } else {
+                accepted_input.push(input_item.clone());
             }
         }
     }
-    persistence_failed || (blocked_input && !accepted_user_input)
+    (
+        persistence_failed || (blocked_input && !accepted_user_input),
+        accepted_input,
+    )
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {

@@ -84,6 +84,9 @@ use pretty_assertions::assert_eq;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[path = "skills_extension/promotion_tests.rs"]
+mod promotion_tests;
+
 #[path = "skills_extension/shadow_task_context_tests.rs"]
 mod shadow_task_context_tests;
 

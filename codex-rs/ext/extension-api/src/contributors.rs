@@ -341,8 +341,9 @@ pub trait TurnLifecycleContributor: Send + Sync {
 /// host-specific dependencies belong on the extension value installed by the
 /// host, not in this input.
 pub trait TurnInputContributor: Send + Sync {
-    /// Returns additional contextual fragments for one submitted turn. The optional metrics
-    /// capability is bound to the effective model for that turn.
+    /// Returns additional contextual fragments for initial turn input and for admitted queued
+    /// input drained during an active turn before the next sample.
+    /// The optional metrics capability is bound to the effective model for that turn.
     fn contribute<'a>(
         &'a self,
         input: TurnInputContext<'a>,
@@ -363,6 +364,8 @@ pub trait TurnInputContributor: Send + Sync {
     }
 
     /// Returns fragments plus optional state committed only after durable recording.
+    /// This may be called more than once within a turn; implementations must keep durable
+    /// projections idempotent and must not commit them before acknowledgement.
     fn contribute_durable<'a>(
         &'a self,
         input: TurnInputContext<'a>,

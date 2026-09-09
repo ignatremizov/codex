@@ -442,7 +442,12 @@ where
             thread_state
                 .replace_shadow_selection_turn(input.turn_id.clone(), shadow_selection_turn);
             let mut fragments: Vec<Box<dyn ContextualUserFragment + Send>> = Vec::new();
-            if config.include_instructions && !host_catalog_in_world_state {
+            // A steer reuses this turn store. Do not append an unpromoted baseline after
+            // the canonical inventory has already been promoted earlier in the turn.
+            if config.include_instructions
+                && !host_catalog_in_world_state
+                && turn_store.get::<SkillsTurnState>().is_none()
+            {
                 let mut turn_catalog = catalog.clone();
                 turn_catalog.entries.retain(|entry| {
                     entry.authority.kind != SkillSourceKind::Executor

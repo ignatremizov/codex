@@ -99,6 +99,9 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
 
+#[path = "skills_extension/steer_tests.rs"]
+mod steer_tests;
+
 struct StaticSkillProvider {
     catalog: SkillCatalog,
     main_prompt_contents: Option<String>,
