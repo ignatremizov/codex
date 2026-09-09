@@ -367,7 +367,27 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
         "canonical identities and send-time metadata must survive persisted history"
     );
     assert_eq!(dispatched.requests().len(), 1);
-    assert_eq!(parent_done.requests().len(), 1);
+    // ResponseMock records before mount_sse_once_match evaluates its custom matcher.
+    // A concurrent child request can be recorded here without matching this response.
+    assert_eq!(
+        parent_done
+            .requests()
+            .iter()
+            .filter(|request| request.has_function_call(DISPATCH_CALL))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("mock request recording enabled")
+            .iter()
+            .filter(|request| request.url.path().ends_with("/responses"))
+            .count(),
+        4,
+        "exactly two parent and two child requests; denied replies must not start another turn",
+    );
     Ok(())
 }
 

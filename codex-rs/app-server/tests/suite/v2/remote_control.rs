@@ -860,7 +860,15 @@ impl ConnectedRemoteControlBackend {
                 )
                 .await?;
 
-                let (stream, _) = listener.accept().await?;
+                // Model refresh shares this listener and can arrive after enrollment.
+                // Route it normally, then replay the untouched upgrade request through
+                // tungstenite so the real WebSocket handshake is still validated.
+                let request = read_http_request(&listener).await?;
+                let (reader, writer) = tokio::io::split(request.reader);
+                let stream = tokio::io::join(
+                    std::io::Cursor::new(request.raw_request).chain(reader),
+                    writer,
+                );
                 let mut websocket = accept_async(stream).await?;
                 websocket
                     .send(Message::Text(
@@ -1203,6 +1211,7 @@ impl Drop for ClientManagementRemoteControlBackend {
 struct HttpRequest {
     request_line: String,
     body: String,
+    raw_request: Vec<u8>,
     reader: BufReader<TcpStream>,
 }
 
@@ -1234,10 +1243,12 @@ async fn read_http_request(listener: &TcpListener) -> Result<HttpRequest> {
 
         let mut request_line = String::new();
         reader.read_line(&mut request_line).await?;
+        let mut raw_request = request_line.as_bytes().to_vec();
         let mut content_length = 0;
         loop {
             let mut line = String::new();
             reader.read_line(&mut line).await?;
+            raw_request.extend_from_slice(line.as_bytes());
             if line == "\r\n" {
                 break;
             }
@@ -1253,6 +1264,7 @@ async fn read_http_request(listener: &TcpListener) -> Result<HttpRequest> {
         if content_length > 0 {
             reader.read_exact(&mut body).await?;
         }
+        raw_request.extend_from_slice(&body);
 
         let request_line = request_line.trim_end().to_string();
         if request_line.starts_with("GET ") && request_line.contains("/v1/models?") {
@@ -1263,6 +1275,7 @@ async fn read_http_request(listener: &TcpListener) -> Result<HttpRequest> {
         return Ok(HttpRequest {
             request_line,
             body: String::from_utf8(body)?,
+            raw_request,
             reader,
         });
     }
