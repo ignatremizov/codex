@@ -34,6 +34,7 @@ use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use test_case::test_case;
@@ -148,12 +149,8 @@ async fn prompt_tools_are_consistent_across_requests(
     )
     .await;
 
-    let TestCodex {
-        codex,
-        config,
-        thread_manager,
-        ..
-    } = test_codex()
+    // Keep the home, cwd, and executor guards alive while both turns use the runtime.
+    let test = test_codex()
         .with_pre_build_hook(write_global_instructions)
         .with_config(move |config| {
             config.model = Some("gpt-5.2".to_string());
@@ -177,6 +174,12 @@ async fn prompt_tools_are_consistent_across_requests(
         })
         .build(&server)
         .await?;
+    let TestCodex {
+        codex,
+        config,
+        thread_manager,
+        ..
+    } = &test;
     let model_info = thread_manager
         .get_models_manager()
         .get_model_info(
@@ -229,7 +232,12 @@ async fn prompt_tools_are_consistent_across_requests(
             }),
         )
         .await?;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let first_error = wait_for_event_match(codex, |event| match event {
+        EventMsg::TurnComplete(completed) => Some(completed.error.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(first_error, None, "first prompt-caching turn must succeed");
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -237,7 +245,15 @@ async fn prompt_tools_are_consistent_across_requests(
             text_elements: Vec::new(),
         }]))
         .await?;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let second_error = wait_for_event_match(codex, |event| match event {
+        EventMsg::TurnComplete(completed) => Some(completed.error.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        second_error, None,
+        "second prompt-caching turn must succeed"
+    );
 
     let mut expected_tools_names = vec!["exec_command", "write_stdin"];
     if expected_update_plan_enabled {
