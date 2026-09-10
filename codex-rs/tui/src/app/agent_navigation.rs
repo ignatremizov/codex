@@ -16,8 +16,8 @@
 //! - mutating UI state such as switching threads or updating the footer widget
 //!
 //! The key invariant is that traversal follows first-seen spawn order rather than thread-id sort
-//! order. Once a thread id is observed it keeps its place in the cycle even if the entry is later
-//! updated or marked closed.
+//! order. Once a thread id is observed it keeps its historical position even if later closed.
+//! Keyboard traversal skips unavailable entries without changing the picker inventory.
 
 use super::agent_observation_display::AgentResponseObservationBinding;
 use super::agent_observation_display::AgentResponseObservationDisplay;
@@ -43,6 +43,9 @@ mod task_paths;
 
 #[path = "agent_activity.rs"]
 mod activity;
+
+#[path = "agent_cycle_order.rs"]
+mod cycle_order;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AgentAliasEntry {
@@ -604,9 +607,8 @@ impl AgentNavigationState {
     /// Marks a thread as closed without removing it from the traversal cache.
     ///
     /// Closed threads stay in the picker and in spawn order so users can still review them and so
-    /// next/previous navigation does not reshuffle around disappearing entries. If a caller "cleans
-    /// this up" by deleting the entry instead, wraparound navigation will silently change shape
-    /// mid-session.
+    /// reopening a thread restores its original traversal position. Keyboard shortcuts skip closed
+    /// entries; explicit picker selection can still inspect their history.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
         self.subtree_messaging.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
@@ -743,6 +745,7 @@ impl AgentNavigationState {
         &self,
         current_displayed_thread_id: Option<ThreadId>,
         direction: AgentNavigationDirection,
+        is_available: impl Fn(ThreadId) -> bool,
     ) -> Option<ThreadId> {
         let current_thread_id = current_displayed_thread_id?;
         let current_idx = self
@@ -758,7 +761,8 @@ impl AgentNavigationState {
             };
             let thread_id = self.order[idx];
             (self.threads.contains_key(&thread_id)
-                && !self.picker_excluded_threads.contains(&thread_id))
+                && !self.picker_excluded_threads.contains(&thread_id)
+                && is_available(thread_id))
             .then_some(thread_id)
         })
     }
@@ -1021,15 +1025,27 @@ mod regression_tests {
         let (state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
 
         assert_eq!(
-            state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Next),
+            state.adjacent_thread_id(
+                Some(second_agent_id),
+                AgentNavigationDirection::Next,
+                |_| true,
+            ),
             Some(main_thread_id)
         );
         assert_eq!(
-            state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Previous),
+            state.adjacent_thread_id(
+                Some(second_agent_id),
+                AgentNavigationDirection::Previous,
+                |_| true,
+            ),
             Some(first_agent_id)
         );
         assert_eq!(
-            state.adjacent_thread_id(Some(main_thread_id), AgentNavigationDirection::Previous),
+            state.adjacent_thread_id(
+                Some(main_thread_id),
+                AgentNavigationDirection::Previous,
+                |_| true,
+            ),
             Some(second_agent_id)
         );
 
