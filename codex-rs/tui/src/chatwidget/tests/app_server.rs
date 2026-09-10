@@ -459,6 +459,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
         Some("Robie".to_string()),
         Some("explorer".to_string()),
     );
+    chat.set_collab_agent_ref(spawned_thread_id, "5".to_string());
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -532,7 +533,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
     assert!(
         rendered.contains(
-            "Spawned Robie [explorer] (gpt-5 high) /root/mailbox-test \
+            "Spawned Robie [explorer] /root/mailbox-test (5) (gpt-5 high) \
              (no commentary · no wake on completion)"
         ),
         "expected spawn line to include agent metadata, requested model, and response observation, got {rendered:?}"

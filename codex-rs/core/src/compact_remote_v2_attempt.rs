@@ -105,6 +105,13 @@ pub(super) async fn run_remote_compact_v2_attempt(
         .unzip();
     if let Some(identities) = &step_context.agent_identities {
         crate::context::project_v1_agent_envelopes(&mut input, &identities.refs);
+        crate::context::project_check_mail_results(
+            &mut input,
+            sess.thread_id,
+            sess.services.thread_store.as_ref(),
+            &identities.refs,
+        )
+        .await?;
     }
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});

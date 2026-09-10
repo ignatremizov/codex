@@ -258,6 +258,8 @@ impl App {
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
         if let Some(alias) = self.agent_navigation.alias(thread_id) {
             self.chat_widget
+                .set_collab_agent_ref(thread_id, alias.agent_ref.to_string());
+            self.chat_widget
                 .set_collab_agent_task_path(thread_id, alias.task_path.clone());
         }
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
@@ -507,6 +509,7 @@ impl App {
         }
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
             if let Some(alias) = self.agent_navigation.alias(thread_id) {
+                chat_widget.set_collab_agent_ref(thread_id, alias.agent_ref.to_string());
                 chat_widget.set_collab_agent_task_path(thread_id, alias.task_path.clone());
             }
             if agent_root_thread_id == Some(thread_id) {
@@ -528,6 +531,33 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<()> {
+        self.select_agent_thread_with_mode(
+            tui,
+            app_server,
+            thread_id,
+            super::agent_cycling::AgentThreadSelectionMode::Inspect,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    pub(super) async fn select_agent_thread_with_mode(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        mode: super::agent_cycling::AgentThreadSelectionMode,
+    ) -> Result<bool> {
+        use super::agent_cycling::AgentThreadSelectionMode;
+
+        let available_only = mode == AgentThreadSelectionMode::AvailableOnly;
+        if available_only
+            && !self
+                .refresh_available_agent_for_cycle(app_server, thread_id)
+                .await
+        {
+            return Ok(false);
+        }
         let cached_session = if self.thread_unavailable(thread_id) {
             self.thread_event_channels[&thread_id]
                 .store
@@ -540,7 +570,7 @@ impl App {
         };
         if self.active_thread_id == Some(thread_id) {
             if !self.thread_unavailable(thread_id) {
-                return Ok(());
+                return Ok(true);
             }
             // Detach the cached receiver before a successful attachment replaces its channel.
             self.store_active_thread_receiver().await;
@@ -548,15 +578,16 @@ impl App {
 
         // A tracked side thread stays loaded until it is explicitly discarded and already has a
         // replay channel, so another liveness read cannot add anything before selection.
-        if !(self.side_threads.contains_key(&thread_id)
-            && self.thread_event_channels.contains_key(&thread_id)
-            || self
-                .refresh_agent_picker_thread_liveness(app_server, thread_id)
-                .await)
+        if !available_only
+            && !(self.side_threads.contains_key(&thread_id)
+                && self.thread_event_channels.contains_key(&thread_id)
+                || self
+                    .refresh_agent_picker_thread_liveness(app_server, thread_id)
+                    .await)
         {
             self.chat_widget
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
+            return Ok(false);
         }
 
         let mut is_replay_only = self
@@ -570,9 +601,13 @@ impl App {
                 .await
             {
                 Ok(live_attached) => {
+                    if available_only && !live_attached {
+                        return Ok(false);
+                    }
                     attached_replay_only = !live_attached;
                     is_replay_only = attached_replay_only;
                 }
+                Err(_) if available_only => return Ok(false),
                 Err(_) if self.thread_event_channels.contains_key(&thread_id) => {
                     is_replay_only = true;
                     attached_replay_only = true;
@@ -581,13 +616,13 @@ impl App {
                     self.chat_widget.add_error_message(format!(
                         "Failed to attach to agent thread {thread_id}: {err}"
                     ));
-                    return Ok(());
+                    return Ok(false);
                 }
             }
         } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
             self.chat_widget
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
+            return Ok(false);
         }
 
         let previous_thread_id = self.active_thread_id;
@@ -595,12 +630,14 @@ impl App {
         self.active_thread_id = None;
         let Some((receiver, mut snapshot)) = self.activate_thread_for_replay(thread_id).await
         else {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is already active."));
+            if !available_only {
+                self.chat_widget
+                    .add_error_message(format!("Agent thread {thread_id} is already active."));
+            }
             if let Some(previous_thread_id) = previous_thread_id {
                 self.activate_thread_channel(previous_thread_id).await;
             }
-            return Ok(());
+            return Ok(false);
         };
 
         self.refresh_snapshot_session_if_needed(
@@ -613,9 +650,14 @@ impl App {
         // Refreshing can merge restored turns into the store, so recap progress must be read only
         // after the refresh while the activated thread channel is still retained.
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
+            if !available_only {
+                self.chat_widget
+                    .add_error_message(format!("Agent thread {thread_id} is no longer available."));
+            }
+            if let Some(previous_thread_id) = previous_thread_id {
+                self.activate_thread_channel(previous_thread_id).await;
+            }
+            return Ok(false);
         };
         let recap_progress = {
             let mut store = channel.store.lock().await;
@@ -668,7 +710,7 @@ impl App {
         }
         self.refresh_pending_thread_approvals().await;
 
-        Ok(())
+        Ok(true)
     }
 
     pub(super) fn render_thread_snapshot(
@@ -1116,8 +1158,8 @@ impl App {
         }
     }
 
-    /// Returns the adjacent thread id for keyboard navigation, backfilling from the server if the
-    /// local cache has no neighbor.
+    /// Returns an eligible neighbor for keyboard navigation, backfilling loaded descendants if
+    /// the local cache has no available, unattempted member of the current root.
     ///
     /// Tries the fast path first: ask `AgentNavigationState` directly. If it returns `None` (no
     /// adjacent entry exists, typically because the cache was never populated with remote
@@ -1128,12 +1170,16 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         direction: AgentNavigationDirection,
+        attempted: &HashSet<ThreadId>,
     ) -> Option<ThreadId> {
         let current_thread = self.current_displayed_thread_id();
-        if let Some(thread_id) = self
-            .agent_navigation
-            .adjacent_thread_id(current_thread, direction)
-        {
+        let root = self.agent_root_thread_id()?;
+        if let Some(thread_id) = self.agent_navigation.adjacent_available_thread_id(
+            root,
+            current_thread,
+            direction,
+            |id| !attempted.contains(&id) && self.cycle_attachment_available(id),
+        ) {
             return Some(thread_id);
         }
 
@@ -1149,8 +1195,12 @@ impl App {
         {
             self.last_subagent_backfill_attempt = Some(primary_thread_id);
         }
-        self.agent_navigation
-            .adjacent_thread_id(self.current_displayed_thread_id(), direction)
+        self.agent_navigation.adjacent_available_thread_id(
+            self.agent_root_thread_id()?,
+            self.current_displayed_thread_id(),
+            direction,
+            |id| !attempted.contains(&id) && self.cycle_attachment_available(id),
+        )
     }
 
     pub(super) fn fresh_session_config(&self) -> Config {

@@ -364,6 +364,13 @@ async fn run_compact_task_inner_impl(
             .reconcile(&mut turn_input);
         if let Some(identities) = &agent_identities {
             crate::context::world_state::prepare_v1_agent_model_input(&mut turn_input, identities);
+            crate::context::project_check_mail_results(
+                &mut turn_input,
+                sess.thread_id,
+                sess.services.thread_store.as_ref(),
+                &identities.refs,
+            )
+            .await?;
         }
         let turn_input_len = turn_input.len();
         let prompt = Prompt {

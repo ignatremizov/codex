@@ -39,6 +39,9 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     Omit from to consume all pending mail, or select one sender by agent ref, nickname, task path, \
                     full UUID, or user. The selected batch is fixed; later arrivals and unselected senders remain pending. \
                     This does not consume queued prompts or start another turn. Output contains metadata, not message bodies. \
+                    Completed fixed batches report empty, delivered, or rejected with delivered_count and rejected_count; \
+                    counts include earlier attempts of the same invocation. Delivery_requested means acceptance only. \
+                    From uses a hydrated receiver ref when available, otherwise UUID; user and null retain their meanings. \
                     Direct calls only; unavailable inside code-mode or nested tool execution.".to_string(),
                 strict: false,
                 defer_loading: None,
@@ -50,13 +53,28 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     /*additional_properties*/ Some(false.into()),
                 ),
                 output_schema: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "status": {"type": "string", "enum": ["delivery_requested"]},
-                        "from": {"type": ["string", "null"]}
-                    },
-                    "required": ["status", "from"],
-                    "additionalProperties": false
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string", "enum": ["delivery_requested"]},
+                                "from": {"type": ["string", "null"]}
+                            },
+                            "required": ["status", "from"],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string", "enum": ["empty", "delivered", "rejected"]},
+                                "from": {"type": ["string", "null"]},
+                                "delivered_count": {"type": "integer", "minimum": 0},
+                                "rejected_count": {"type": "integer", "minimum": 0}
+                            },
+                            "required": ["status", "from", "delivered_count", "rejected_count"],
+                            "additionalProperties": false
+                        }
+                    ]
                 })),
             })],
         })

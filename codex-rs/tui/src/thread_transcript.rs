@@ -365,6 +365,7 @@ fn extend_collab_agent_metadata<'a>(
                 target_thread_id: Some(target_thread_id),
                 nickname,
                 role,
+                agent_ref,
                 task_path,
                 task_path_mapping,
                 ..
@@ -384,6 +385,9 @@ fn extend_collab_agent_metadata<'a>(
                     }
                 }
                 let metadata = metadata.entry(thread_id).or_default();
+                if agent_ref.is_some() {
+                    metadata.agent_ref = agent_ref.clone();
+                }
                 if nickname.is_some() {
                     metadata.agent_nickname = nickname.clone();
                 }

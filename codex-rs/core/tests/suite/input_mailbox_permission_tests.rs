@@ -220,6 +220,44 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
+    for (request, call_id, expected) in [
+        (
+            &repaired_request,
+            "recover-admitted",
+            json!({
+                "status":"delivered", "from":child.agent_ref.expect("ref").to_string(),
+                "delivered_count":1, "rejected_count":0
+            }),
+        ),
+        (
+            &final_request,
+            "recover-admitted",
+            json!({
+                "status":"delivered", "from":child.agent_ref.expect("ref").to_string(),
+                "delivered_count":1, "rejected_count":0
+            }),
+        ),
+        (
+            &final_request,
+            "consume-new",
+            json!({
+                "status":"rejected", "from":child.agent_ref.expect("ref").to_string(),
+                "delivered_count":0, "rejected_count":1
+            }),
+        ),
+    ] {
+        let body = request.body_json();
+        let output = body["input"]
+            .as_array()
+            .expect("input")
+            .iter()
+            .find(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
+            .expect("mail result");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(output["output"].as_str().expect("result"))?,
+            expected
+        );
+    }
     for request in [repaired_request, final_request] {
         let request = request.body_json();
         assert_eq!(
@@ -288,6 +326,31 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
         vec![context]
     );
     let mut expected = AgentMessageItem::new(&[]);
+    let canonical_results = history
+        .items
+        .iter()
+        .filter_map(|item| {
+            let RolloutItem::ResponseItem(envelope) = item else {
+                return None;
+            };
+            match &envelope.item {
+                ResponseItem::FunctionCallOutput {
+                    call_id: Some(id),
+                    output,
+                    ..
+                } if id == "recover-admitted" || id == "consume-new" => {
+                    Some(serde_json::from_str::<serde_json::Value>(
+                        output.text_content().expect("canonical acceptance"),
+                    ))
+                }
+                _ => None,
+            }
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        canonical_results,
+        vec![json!({"status":"delivery_requested", "from":sender.to_string()}); 2]
+    );
     expected.id = id.to_string();
     expected.phase = Some(MessagePhase::Commentary);
     expected.attribution = Some(attribution);
