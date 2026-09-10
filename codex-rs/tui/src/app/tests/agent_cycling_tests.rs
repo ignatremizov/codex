@@ -17,25 +17,31 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
     .await?;
     let root = server.start_thread(&app.config).await?.session.thread_id;
     let foreign = server.start_thread(&app.config).await?.session.thread_id;
-    let idle = ThreadId::from_string(&app_test_support::create_fake_parented_rollout_with_source(
-        app.config.codex_home.as_path(),
-        "2026-01-01T00-00-01",
-        "2026-01-01T00:00:01Z",
-        "saved idle transcript",
-        Some(app.config.model_provider_id.as_str()),
-        /*git_info*/ None,
-        codex_protocol::protocol::SessionSource::SubAgent(
-            codex_protocol::protocol::SubAgentSource::ThreadSpawn {
-                parent_thread_id: root,
-                depth: 1,
-                agent_path: Some(codex_protocol::AgentPath::try_from("/root/idle")?),
-                agent_nickname: Some("idle".to_string()),
-                agent_role: None,
-            },
-        ),
-        root.into(),
-        root,
-    )?)?;
+    let idle = ThreadId::from_string(
+        &app_test_support::create_fake_parented_rollout_with_source(
+            app.config.codex_home.as_path(),
+            "2026-01-01T00-00-01",
+            "2026-01-01T00:00:01Z",
+            "saved idle transcript",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+            codex_protocol::protocol::SessionSource::SubAgent(
+                codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root,
+                    depth: 1,
+                    agent_path: Some(
+                        codex_protocol::AgentPath::try_from("/root/idle")
+                            .map_err(color_eyre::eyre::Report::msg)?,
+                    ),
+                    agent_nickname: Some("idle".to_string()),
+                    agent_role: None,
+                },
+            ),
+            root.into(),
+            root,
+        )
+        .map_err(color_eyre::eyre::Report::msg)?,
+    )?;
     // Load it on the server without installing its attachment in this App.
     server
         .resume_thread(
@@ -46,8 +52,8 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         .await?;
     let closed = ThreadId::new();
     let missing = ThreadId::new();
-    let unloaded =
-        ThreadId::from_string(&app_test_support::create_fake_parented_rollout_with_source(
+    let unloaded = ThreadId::from_string(
+        &app_test_support::create_fake_parented_rollout_with_source(
             app.config.codex_home.as_path(),
             "2026-01-01T00-00-00",
             "2026-01-01T00:00:00Z",
@@ -57,7 +63,9 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
             codex_protocol::protocol::SessionSource::Cli,
             root.into(),
             root,
-        )?)?;
+        )
+        .map_err(color_eyre::eyre::Report::msg)?,
+    )?;
     let loaded_thread = server.thread_read(idle, /*include_turns*/ false).await?;
     let unloaded_thread = server
         .thread_read(unloaded, /*include_turns*/ false)

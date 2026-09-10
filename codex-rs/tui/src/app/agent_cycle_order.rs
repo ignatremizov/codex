@@ -7,7 +7,7 @@ use codex_protocol::ThreadId;
 
 impl AgentNavigationState {
     pub(crate) fn is_cycle_member(&self, root: ThreadId, thread_id: ThreadId) -> bool {
-        if !self.get(&thread_id).is_some_and(|entry| !entry.is_closed) {
+        if self.get(&thread_id).is_none_or(|entry| entry.is_closed) {
             return false;
         }
         if let Some(alias) = self.alias(thread_id) {

@@ -578,12 +578,12 @@ impl App {
 
         // A tracked side thread stays loaded until it is explicitly discarded and already has a
         // replay channel, so another liveness read cannot add anything before selection.
-        if !available_only
-            && !(self.side_threads.contains_key(&thread_id)
+        if !(available_only
+            || self.side_threads.contains_key(&thread_id)
                 && self.thread_event_channels.contains_key(&thread_id)
-                || self
-                    .refresh_agent_picker_thread_liveness(app_server, thread_id)
-                    .await)
+            || self
+                .refresh_agent_picker_thread_liveness(app_server, thread_id)
+                .await)
         {
             self.chat_widget
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));

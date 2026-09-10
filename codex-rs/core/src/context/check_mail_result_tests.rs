@@ -306,8 +306,7 @@ async fn claim_lookup_failure_is_not_an_empty_mailbox() {
     let mut input = original.clone();
     let error = project_check_mail_results(&mut input, ThreadId::new(), &store, &HashMap::new())
         .await
-        .err()
-        .expect("unavailable claim store must fail");
+        .expect_err("unavailable claim store must fail");
     assert!(
         error
             .to_string()
