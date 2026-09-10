@@ -15,6 +15,10 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         /*failed_thread_name*/ None,
     )
     .await?;
+    let state_db =
+        crate::init_state_db_for_app_server_target(&app.config, &crate::AppServerTarget::Embedded)
+            .await?
+            .expect("embedded server state database");
     // Both navigation targets need materialized history: display_test_thread only sets
     // local presentation state, and returning to root must attach and hydrate it.
     let root = ThreadId::from_string(
@@ -28,13 +32,20 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         )
         .map_err(color_eyre::eyre::Report::msg)?,
     )?;
+    // Rollout helpers write history, not durable ownership. Seed the same namespace
+    // and alias graph that real spawning persists before publishing its runtimes.
+    state_db
+        .ensure_agent_alias_namespace(root.into())
+        .await
+        .map_err(color_eyre::eyre::Report::msg)?;
     server
         .resume_thread(
             app.config.clone(),
             root,
             crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
         )
-        .await?;
+        .await
+        .wrap_err_with(|| format!("load materialized root fixture {root}"))?;
     let foreign = server.start_thread(&app.config).await?.session.thread_id;
     let idle = ThreadId::from_string(
         &app_test_support::create_fake_parented_rollout_with_source(
@@ -61,6 +72,16 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         )
         .map_err(color_eyre::eyre::Report::msg)?,
     )?;
+    state_db
+        .activate_agent_alias(codex_state::AgentAliasAllocation {
+            session_id: root.into(),
+            parent_thread_id: root,
+            child_thread_id: idle,
+            nickname: Some("idle".to_string()),
+            task_path: Some("/root/idle".to_string()),
+        })
+        .await
+        .map_err(color_eyre::eyre::Report::msg)?;
     // Load it on the server without installing its attachment in this App.
     server
         .resume_thread(
@@ -68,7 +89,8 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
             idle,
             crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
         )
-        .await?;
+        .await
+        .wrap_err_with(|| format!("load owned idle fixture {idle} under root {root}"))?;
     let closed = ThreadId::new();
     let missing = ThreadId::new();
     let unloaded = ThreadId::from_string(
@@ -87,6 +109,7 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
     )?;
     let root_thread = server.thread_read(root, /*include_turns*/ false).await?;
     let loaded_thread = server.thread_read(idle, /*include_turns*/ false).await?;
+    let foreign_thread = server.thread_read(foreign, /*include_turns*/ false).await?;
     let unloaded_thread = server
         .thread_read(unloaded, /*include_turns*/ false)
         .await?;
@@ -94,6 +117,7 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         [
             (root_thread.status, root_thread.session_id),
             (loaded_thread.status, loaded_thread.session_id),
+            (foreign_thread.status, foreign_thread.session_id),
             (unloaded_thread.status, unloaded_thread.session_id),
         ],
         [
@@ -104,6 +128,10 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
             (
                 codex_app_server_protocol::ThreadStatus::Idle,
                 root.to_string()
+            ),
+            (
+                codex_app_server_protocol::ThreadStatus::Idle,
+                foreign.to_string()
             ),
             (
                 codex_app_server_protocol::ThreadStatus::NotLoaded,
