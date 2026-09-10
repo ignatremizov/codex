@@ -4782,7 +4782,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let after_spawn = wait_for_requests(&after_spawn)
         .await?
         .into_iter()
-        .next()
+        .find(|request| request.function_call_output_text(spawn_call_id).is_some())
         .expect("spawn continuation request");
     let spawn_output: Value = serde_json::from_str(
         after_spawn
@@ -4792,17 +4792,20 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     )?;
     assert_eq!(spawn_output["ref"], "2");
     assert_eq!(spawn_output["task_path"], "/root/short-target");
-    let initial_child_request = wait_for_requests(&initial_child)
-        .await?
-        .into_iter()
-        .next()
-        .expect("initial child request");
     let child_thread = test.thread_manager.get_thread(spawned_id).await?;
     let _ = diagnostic_stage(
         "initial child completion",
         wait_for_terminal_status(child_thread.as_ref()),
     )
     .await?;
+    let initial_child_request = initial_child
+        .requests()
+        .into_iter()
+        .find(|request| {
+            request.body_json()["client_metadata"]["thread_id"] == json!(spawned_id)
+                && request.body_contains_text("initial short-target task")
+        })
+        .expect("completed initial child should have issued its request");
 
     let root_thread_id = test.session_configured.thread_id;
     let aliases = test
@@ -4917,8 +4920,22 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         ])]
     );
     let _ = wait_for_requests(&after_send).await?;
-    let _ = wait_for_requests(&ref_child).await?;
-    let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            if ref_child.requests().iter().any(|request| {
+                request.body_json()["client_metadata"]["thread_id"] == json!(spawned_id)
+                    && request.body_contains_text("compact-ref follow-up")
+            }) {
+                break;
+            }
+            sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await?;
+    assert_eq!(
+        wait_for_terminal_status(child_thread.as_ref()).await?,
+        AgentStatus::Completed(Some("compact ref result".to_string()))
+    );
 
     let wait_call_id = "wait-by-agent-nickname";
     let wait_args = serde_json::to_string(&json!({
@@ -4954,7 +4971,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let wait_request = wait_for_requests(&after_wait)
         .await?
         .into_iter()
-        .next()
+        .find(|request| request.function_call_output_text(wait_call_id).is_some())
         .expect("wait continuation request");
     assert!(
         wait_request
@@ -5132,7 +5149,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     let resume_request = wait_for_requests(&after_resume)
         .await?
         .into_iter()
-        .next()
+        .find(|request| request.function_call_output_text(resume_call_id).is_some())
         .expect("resume continuation request");
     let resume_output: Value = serde_json::from_str(
         &resume_request
@@ -5148,7 +5165,55 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             "status": "idle",
         })
     );
-    assert!(!resume_request.body_contains_text("<subagent_notification>"));
+    let notification_payloads = |request: &ResponsesRequest| {
+        request
+            .inputs_of_type("agent_message")
+            .into_iter()
+            .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+            .filter_map(|content| {
+                content["text"]
+                    .as_str()?
+                    .strip_prefix("<subagent_notification>")?
+                    .strip_suffix("</subagent_notification>")
+                    .map(serde_json::from_str::<Value>)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+    };
+    let expected_notifications =
+        vec![json!({"ref": "2", "status": {"completed": "compact ref result"}})];
+    let resume_notifications = notification_payloads(&resume_request)?;
+    // Resume reconstructs the real terminal turn from the rollout. Its passive watcher
+    // delivers asynchronously, so the first continuation may precede that delivery.
+    assert!(
+        resume_notifications.is_empty() || resume_notifications == expected_notifications,
+        "resume may reconcile only the child's genuine final answer: {resume_notifications:?}"
+    );
+    assert_eq!(
+        subagent_notification_count(&resume_request),
+        resume_notifications.len()
+    );
+    // TurnComplete can consume or precede the asynchronous presentation. Synchronize on
+    // durable, model-visible delivery, not on another read of the parent event stream.
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            test.codex.flush_rollout().await?;
+            if read_test_rollout_items(&test)?.iter().any(|item| {
+                let RolloutItem::EventMsg(event) = item else {
+                    return false;
+                };
+                sub_agent_completion_event(event).is_some_and(|(id, status, _, payload)| {
+                    status == SubAgentCompletionStatus::Completed
+                        && payload == "compact ref result"
+                        && sub_agent_completion_model_visibility_from_response_item_id(&id)
+                            == Some(SubAgentCompletionModelVisibility::Visible)
+                })
+            }) {
+                break Ok::<_, anyhow::Error>(());
+            }
+            sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await??;
     assert_eq!(
         test.codex
             .state_db()
@@ -5165,8 +5230,8 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             state: codex_state::AgentAliasState::Active,
         }
     );
-    // This manager API force-removes the runtime and publishes a real NotFound terminal;
-    // it is not the silent residency-unload path. Resume must preserve that notification.
+    // This manager API force-removes the runtime; it is not silent residency unload.
+    // Its NotFound runtime status is distinct from the restored last terminal turn.
     let removed_thread = test
         .thread_manager
         .remove_thread(&spawned_id)
@@ -5175,9 +5240,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     assert_eq!(removed_thread.agent_status().await, AgentStatus::NotFound);
     drop(removed_thread);
     assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
-    // Do not wait for a completion event here: this resumed runtime has not started a
-    // turn. The unloaded resume below can reconcile its NotFound fallback, so requiring
-    // that presentation before issuing the resume would prevent the lifecycle advancing.
+    // No turn was admitted in this runtime, so do not require a NotFound completion event.
     let unloaded_call_id = "resume-unloaded-by-ref";
     mount_sse_once_match(
         &server,
@@ -5222,22 +5285,10 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         )?,
         resume_output
     );
-    let notifications = unloaded_request
-        .inputs_of_type("agent_message")
-        .into_iter()
-        .flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
-        .filter_map(|content| {
-            content["text"]
-                .as_str()?
-                .strip_prefix("<subagent_notification>")?
-                .strip_suffix("</subagent_notification>")
-                .map(serde_json::from_str::<Value>)
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
     assert_eq!(
-        notifications,
-        vec![json!({"ref": "2", "status": "not_found"})],
-        "resume preserves the removal terminal without fabricating another completion"
+        notification_payloads(&unloaded_request)?,
+        expected_notifications,
+        "resume preserves one genuine final answer without fabricating another completion"
     );
     assert_eq!(subagent_notification_count(&unloaded_request), 1);
     assert!(test.thread_manager.get_thread(spawned_id).await.is_ok());
