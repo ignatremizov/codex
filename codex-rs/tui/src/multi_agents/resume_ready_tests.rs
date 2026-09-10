@@ -29,12 +29,14 @@ fn completed_resume_reports_readiness_without_replaying_the_final() {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        insta::assert_snapshot!(
-            text,
-            @r"
-        • Resumed Mill (no commentary · no wake on completion)
-          └ Idle
-        "
-        );
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(
+                text,
+                @r"
+            • Resumed Mill (no commentary · no wake on completion)
+              └ Idle
+            "
+            );
+        }
     }
 }

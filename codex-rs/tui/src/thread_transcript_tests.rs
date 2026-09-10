@@ -5,6 +5,7 @@ use super::refresh_collab_agent_metadata;
 use super::thread_items_to_transcript_cells_with_metadata;
 use super::thread_items_with_sources_to_transcript_cells;
 use super::thread_to_transcript_cells;
+use crate::history_cell::HistoryCell;
 use crate::history_cell::UserHistoryCell;
 use codex_app_server_protocol::CollabAgentRef;
 use codex_app_server_protocol::CollabAgentTool;
@@ -532,17 +533,25 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
         reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
         agents_states: HashMap::new(),
     };
-    let spawn_cells = thread_items_to_transcript_cells(
-        Some(parent_thread_id),
-        &test_path_buf("/tmp").abs(),
-        [metadata_item.clone()],
-        RawReasoningVisibility::Hidden,
-        /*config*/ None,
-    );
-    let spawn_rendered = spawn_cells
+    let collab_agent_metadata = collab_agent_metadata_from_items([&metadata_item]);
+    // The generic transcript fallback does not render rich lifecycle headers.
+    let spawn_cell = crate::multi_agents::tool_call_history_cell(
+        &metadata_item,
+        /*cached_spawn_request*/ None,
+        /*agent_prompt_preview_lines*/ 10,
+        /*agent_response_preview_lines*/ 10,
+        |thread_id| {
+            collab_agent_metadata
+                .get(&thread_id)
+                .cloned()
+                .unwrap_or_default()
+        },
+    )
+    .expect("spawn lifecycle cell");
+    let spawn_rendered = spawn_cell
+        .transcript_lines(/*width*/ 200)
         .iter()
-        .flat_map(|cell| cell.transcript_lines(/*width*/ 200))
-        .map(|line| line.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(
@@ -570,7 +579,6 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
         RawReasoningVisibility::Hidden,
         /*codex_home*/ None,
     );
-    let collab_agent_metadata = collab_agent_metadata_from_items([&metadata_item]);
     assert!(refresh_collab_agent_metadata(
         &mut cells,
         &collab_agent_metadata
