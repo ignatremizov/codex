@@ -1811,6 +1811,18 @@ async fn run_sampling_request(
                 &mut prompt_input,
                 identities,
             );
+            crate::context::project_check_mail_results(
+                &mut prompt_input,
+                sess.thread_id,
+                sess.services.thread_store.as_ref(),
+                &identities.refs,
+            )
+            .await?;
+            crate::context::project_mailbox_inventories(
+                &mut prompt_input,
+                sess.thread_id,
+                &identities.refs,
+            );
         }
         sess.services
             .executed_tool_calls

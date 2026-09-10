@@ -454,15 +454,27 @@ fn adjacent_thread_id_wraps_in_spawn_order() {
     let (state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
 
     assert_eq!(
-        state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Next),
+        state.adjacent_thread_id(
+            Some(second_agent_id),
+            AgentNavigationDirection::Next,
+            |_| true
+        ),
         Some(main_thread_id)
     );
     assert_eq!(
-        state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Previous),
+        state.adjacent_thread_id(
+            Some(second_agent_id),
+            AgentNavigationDirection::Previous,
+            |_| true
+        ),
         Some(first_agent_id)
     );
     assert_eq!(
-        state.adjacent_thread_id(Some(main_thread_id), AgentNavigationDirection::Previous),
+        state.adjacent_thread_id(
+            Some(main_thread_id),
+            AgentNavigationDirection::Previous,
+            |_| true
+        ),
         Some(second_agent_id)
     );
 }

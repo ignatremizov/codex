@@ -46,6 +46,8 @@ use std::time::Duration;
 use test_case::test_case;
 use tokio::sync::oneshot;
 
+#[path = "input_mailbox_inventory_projection.rs"]
+mod inventory_projection;
 #[path = "input_mailbox_permission_tests.rs"]
 mod permission_tests;
 #[path = "input_mailbox_projection_tests.rs"]
@@ -301,7 +303,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
         serde_json::from_str::<serde_json::Value>(
             outputs[0].1["output"].as_str().expect("metadata only")
         )?,
-        json!({"status": "delivery_requested", "from": "user"}),
+        json!({"status": "ok"}),
     );
     let user_content = model_items
         .iter()
@@ -347,6 +349,29 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
             _ => None,
         })
         .collect::<Vec<_>>();
+    let canonical_outputs = history
+        .items
+        .iter()
+        .filter_map(|item| {
+            let RolloutItem::ResponseItem(envelope) = item else {
+                return None;
+            };
+            match &envelope.item {
+                ResponseItem::FunctionCallOutput {
+                    call_id: Some(id),
+                    output,
+                    ..
+                } if id == "check-user-mail" => Some(serde_json::from_str::<serde_json::Value>(
+                    output.text_content().expect("canonical acceptance"),
+                )),
+                _ => None,
+            }
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        canonical_outputs,
+        vec![json!({"status":"delivery_requested", "from":"user"})]
+    );
     assert_eq!(contexts.len(), 1);
     if let Some(prepared) = prepared_before {
         assert_eq!(contexts, vec![prepared]);

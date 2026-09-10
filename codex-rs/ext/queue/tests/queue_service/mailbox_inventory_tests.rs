@@ -302,13 +302,13 @@ async fn queued_user_runs_before_inventory_and_unread_mail_does_not_repeat() -> 
         !requests[0]
             .body_json()
             .to_string()
-            .contains("Mailbox inventory")
+            .contains("Pending mail snapshot (not consumed):")
     );
     assert!(
         requests[1]
             .body_json()
             .to_string()
-            .contains("Mailbox inventory")
+            .contains("Pending mail snapshot (not consumed):")
     );
     for request in &requests {
         assert!(
