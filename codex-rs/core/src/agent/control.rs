@@ -108,6 +108,7 @@ mod restore_metadata;
 mod restore_publication;
 mod restore_v2;
 mod resume;
+mod resume_delivery;
 mod resume_registration;
 pub(crate) use presentation::AgentTerminalPresentation;
 pub(crate) use presentation::CompletionParentAdoption;
