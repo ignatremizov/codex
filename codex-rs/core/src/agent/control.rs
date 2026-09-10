@@ -141,6 +141,7 @@ enum ThreadCreatedPublication {
     Deferred,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct InitialTerminalReconciliation {
     terminal: Option<(String, AgentStatus)>,
     status: AgentStatus,
@@ -429,6 +430,7 @@ mod presentation_ref;
 mod residency;
 mod response_delivery;
 mod response_observer;
+mod resume_delivery;
 #[cfg(test)]
 #[path = "control/resume_observation_tests.rs"]
 mod resume_observation_tests;
@@ -892,6 +894,7 @@ impl AgentControl {
             binding,
             InitialTerminalObservation::FutureTurnsOnly,
             /*task_preview*/ None,
+            &std::collections::HashSet::new(),
         )
         .await?;
         let revoked_message = if is_queued_admission {
