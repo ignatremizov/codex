@@ -186,6 +186,7 @@ async fn final_counts(test: &TestCodex, child: ThreadId) -> Result<(usize, usize
         .expect("canonical parent history");
     let child_reference = child.to_string();
     let committed_finals = history
+        .items
         .iter()
         .filter_map(|item| {
             let RolloutItem::AgentResponseObservation(observation) = item else {
@@ -202,7 +203,7 @@ async fn final_counts(test: &TestCodex, child: ThreadId) -> Result<(usize, usize
         .collect::<HashSet<_>>();
     let mut model = 0;
     let mut visible = 0;
-    for item in history.iter() {
+    for item in &history.items {
         match item {
             RolloutItem::ResponseItem(item) => {
                 if item.id().is_some_and(|id| committed_finals.contains(id))
