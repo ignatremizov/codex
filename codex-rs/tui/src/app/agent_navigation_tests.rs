@@ -145,7 +145,6 @@ fn user_response_observation_tracks_commentary_final_mode_and_turn_binding() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::NextTurn,
             commentary: true,
-            target_messages: false,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Presentation,
         })
@@ -163,7 +162,6 @@ fn user_response_observation_tracks_commentary_final_mode_and_turn_binding() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: true,
-            target_messages: false,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Wake,
         })
@@ -204,7 +202,6 @@ fn reserved_prompt_response_ends_when_target_starts_or_closes() {
         Some(AgentResponseObservationDisplay {
             binding: AgentResponseObservationBinding::Bound,
             commentary: true,
-            target_messages: false,
             queue_delivery: false,
             final_response: AgentFinalResponseDisplay::Wake,
         })
@@ -462,15 +459,27 @@ fn adjacent_thread_id_wraps_in_spawn_order() {
     let (state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
 
     assert_eq!(
-        state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Next),
+        state.adjacent_thread_id(
+            Some(second_agent_id),
+            AgentNavigationDirection::Next,
+            |_| true
+        ),
         Some(main_thread_id)
     );
     assert_eq!(
-        state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Previous),
+        state.adjacent_thread_id(
+            Some(second_agent_id),
+            AgentNavigationDirection::Previous,
+            |_| true
+        ),
         Some(first_agent_id)
     );
     assert_eq!(
-        state.adjacent_thread_id(Some(main_thread_id), AgentNavigationDirection::Previous),
+        state.adjacent_thread_id(
+            Some(main_thread_id),
+            AgentNavigationDirection::Previous,
+            |_| true
+        ),
         Some(second_agent_id)
     );
 }
