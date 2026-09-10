@@ -8,6 +8,10 @@ export type CollabAgentRef = {
  */
 threadId: string,
 /**
+ * Trusted root-scoped numeric reference, when available from the agent alias.
+ */
+agentRef: string | null,
+/**
  * Trusted task assignment path, when available from the agent alias.
  */
 taskPath: string | null,

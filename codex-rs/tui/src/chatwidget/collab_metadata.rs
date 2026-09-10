@@ -43,6 +43,13 @@ impl ChatWidget {
             .task_path = crate::multi_agents::AgentTaskPath::Known(task_path);
     }
 
+    pub(crate) fn set_collab_agent_ref(&mut self, thread_id: ThreadId, agent_ref: String) {
+        self.collab_agent_metadata
+            .entry(thread_id)
+            .or_default()
+            .agent_ref = Some(agent_ref);
+    }
+
     /// Enrich replay/audit hints without clearing newer navigation metadata for missing fields.
     pub(crate) fn merge_collab_agent_metadata(
         &mut self,
@@ -50,6 +57,9 @@ impl ChatWidget {
         metadata: AgentMetadata,
     ) {
         let existing = self.collab_agent_metadata.entry(thread_id).or_default();
+        if metadata.agent_ref.is_some() {
+            existing.agent_ref = metadata.agent_ref;
+        }
         if metadata.agent_nickname.is_some() {
             existing.agent_nickname = metadata.agent_nickname;
         }
@@ -72,6 +82,7 @@ impl ChatWidget {
             target_thread_id: Some(target_thread_id),
             nickname,
             role,
+            agent_ref,
             task_path,
             task_path_mapping,
             status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
@@ -86,6 +97,7 @@ impl ChatWidget {
         self.merge_collab_agent_metadata(
             thread_id,
             AgentMetadata {
+                agent_ref: agent_ref.clone(),
                 task_path: task_path
                     .as_ref()
                     .map(|path| crate::multi_agents::AgentTaskPath::Known(Some(path.clone())))
