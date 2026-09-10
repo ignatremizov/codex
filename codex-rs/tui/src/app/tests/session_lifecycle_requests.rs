@@ -200,6 +200,7 @@ pub(super) enum HistoryCapabilities {
     LegacyDynamicToolsAndHistory,
     ForkHydrationFails,
     ReadAfterResumeFails,
+    ThreadResumeFails,
     ItemsListFails,
     ItemsAndSummaryTurnsFail,
     ThreadListFails,
@@ -518,6 +519,8 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                 .expect("request recorder lock")
                                 .iter()
                                 .any(|recorded| recorded.method == "thread/resume"))
+                        || (history_capabilities == HistoryCapabilities::ThreadResumeFails
+                            && request.method == "thread/resume")
                     {
                         JSONRPCMessage::Error(JSONRPCError {
                             id: request_id,
