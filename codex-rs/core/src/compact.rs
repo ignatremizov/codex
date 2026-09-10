@@ -377,6 +377,18 @@ async fn run_compact_task_inner_impl(
         let completion_source_items = crate::compact::completion_source_items(&turn_input);
         if let Some(identities) = &agent_identities {
             crate::context::world_state::prepare_v1_agent_model_input(&mut turn_input, identities);
+            crate::context::project_check_mail_results(
+                &mut turn_input,
+                sess.thread_id,
+                sess.services.thread_store.as_ref(),
+                &identities.refs,
+            )
+            .await?;
+            crate::context::project_mailbox_inventories(
+                &mut turn_input,
+                sess.thread_id,
+                &identities.refs,
+            );
         }
         let turn_input_len = turn_input.len();
         let prompt = Prompt {

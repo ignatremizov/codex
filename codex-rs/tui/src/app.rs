@@ -200,6 +200,7 @@ mod agent_control_admission;
 mod agent_control_pane;
 mod agent_control_summary;
 mod agent_control_targets;
+mod agent_cycling;
 mod agent_lifecycle_control;
 mod agent_message_consolidation;
 mod agent_messaging;

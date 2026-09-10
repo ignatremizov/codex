@@ -48,6 +48,10 @@ Selection alone does not acknowledge consumption. Tie consumption acknowledgemen
 
 Deliver payloads once through the appropriate structured user/agent input representation, preserving tool-call/result ordering. The tool result reports delivery metadata/status rather than duplicating payloads already inserted as structured input. In particular, user mail must not exist solely as quoted JSON inside a tool result.
 
+Canonical `check_mail` results and tool hooks record acceptance as `{"status":"delivery_requested","from":...}`, with a canonical sender UUID, `"user"`, or `null` for all senders. Disposable model requests project a genuine call/result pair against its existing fixed claim. Successful terminal batches report `{"status":"ok"}`; actual messages appear as structured input, so the receipt does not repeat the sender or delivered count. An empty fixed batch reports `{"status":"empty"}`. A wholly rejected batch reports `{"status":"rejected","rejected_count":N}`, and a mixed consumed/rejected batch reports `{"status":"ok","rejected_count":N}`. Rejection counts are positive and cover the entire fixed invocation, including earlier attempts, not later arrivals. Existing rejection warnings/details remain intact; `ok` with rejections does not mean every selected message was delivered.
+
+Acceptance-only model-visible `from` uses the receiving request's advertised short ref when available, otherwise the canonical UUID; `"user"` and `null` remain unchanged. Projection never creates a claim, grants authority, acknowledges consumption, or rewrites canonical history. Missing claims remain unchanged and nonterminal claims remain `delivery_requested`, never false success; unknown, error, and hook-rewritten result shapes are preserved. Real claim-read errors stop request preparation. The result stays before structured payloads. Normal sampling, local compaction, and remote-V2 disposable requests use this projection; legacy remote compaction keeps canonical results because it directly retains provider-returned history. `wait_agent` results are unaffected.
+
 `check_mail` never consumes ordinary queued prompts or intercepts steer input.
 
 ### Targeted consumption through `wait_agent`
@@ -69,11 +73,16 @@ Resolve mailbox sender selectors independently of lifecycle-controlled target re
 When newly pending mail exists, notify the receiver after its current turn ends, or when it is already idle. The notification starts a turn containing only a compact inventory, allowing the model to select which sender to consume first:
 
 ```text
-Inbox: /root/sepa/schema (2): 3; /root/sepa/settlement (4): 1; user: 1.
-Use check_mail(from: ...) to consume.
+Pending mail snapshot (not consumed):
+{"receiver":"1","pending_senders":[{"from":"2","count":3},{"from":"4","count":1},{"from":"user","count":1}]}
+check_mail: {"from":"<ref>"} or {} for all.
 ```
 
 Payloads remain outside model context until selected. This supersedes the earlier suggestion that an ordinary non-`z` send automatically drains older mail: normal sends must not bypass receiver selection.
+
+Model requests use only short refs advertised by that request's captured receiver-scoped identity mapping, including its descriptive nicknames. Foreign agents and identities omitted from that mapping use their canonical UUID instead; stored sender refs or nicknames are not selector authority. `receiver` follows the same ref-or-UUID rule, and user mail uses `"from":"user"`. Counts describe the frozen inventory snapshot, not a guarantee of the next `check_mail` result: later arrivals can change what that call consumes.
+
+The compact inventory is a disposable request projection, not a new durable format. It has a 768-token approximate byte budget; oversized inventories retain a stable sender prefix with an explicit prose notice that additional senders are omitted and unfiltered `check_mail` still includes their mail. No omission counters or other model JSON metadata are added. Full canonical inventories retain notification IDs, receiver UUIDs, sender keys, and sequence watermarks for recovery. Only exact trusted canonical inventory artifacts are projected; ordinary marker-looking JSON is not rewritten. Sampling, local compaction, and newer remote compaction use this projection; legacy remote compaction retains its existing canonical-input behavior. Projection neither acknowledges mail nor changes unchanged-pending idle/restart suppression.
 
 The sender's `z` does not immediately wake or steer with its payload, but the receiver's idle-boundary inventory notification can wake it. It is therefore not an absolute “never wake” guarantee.
 
