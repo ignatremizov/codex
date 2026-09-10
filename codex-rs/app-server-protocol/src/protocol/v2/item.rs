@@ -57,6 +57,7 @@ use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAutho
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::agent_delivery_receipt_from_response_item_id;
 use codex_protocol::protocol::ordinary_agent_message_response_item_id;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
@@ -1056,7 +1057,9 @@ impl From<CoreTurnItem> for ThreadItem {
                     .collect(),
             },
             CoreTurnItem::AgentMessage(agent) => {
-                let id = if agent.has_sub_agent_completion_identity() {
+                let is_delivery_receipt = agent.phase == Some(MessagePhase::Commentary)
+                    && agent_delivery_receipt_from_response_item_id(&agent.id).is_some();
+                let id = if agent.has_sub_agent_completion_identity() || is_delivery_receipt {
                     agent.id.clone()
                 } else {
                     ordinary_agent_message_response_item_id(&agent.id)
@@ -2082,3 +2085,7 @@ pub struct ToolRequestUserInputAnswer {
 pub struct ToolRequestUserInputResponse {
     pub answers: HashMap<String, ToolRequestUserInputAnswer>,
 }
+
+#[cfg(test)]
+#[path = "receipt_conversion_tests.rs"]
+mod receipt_conversion_tests;

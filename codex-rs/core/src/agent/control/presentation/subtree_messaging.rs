@@ -338,8 +338,8 @@ impl LocalAgentControl {
                         continue;
                     }
                 };
-                self.enqueue_messaging_context(
-                    sender_thread,
+                self.record_messaging_context(
+                    &sender_thread.session,
                     format!("route.{}", recipient.thread_id),
                     item,
                 )
@@ -425,23 +425,23 @@ impl LocalAgentControl {
                 }
                 let key = notice.key.clone();
                 let item = ContextualUserFragment::into(notice);
-                self.enqueue_messaging_context(sender_thread, key, item)
+                self.record_messaging_context(&sender_thread.session, key, item)
                     .await?;
             }
         }
         Ok(())
     }
 
-    async fn enqueue_messaging_context(
+    async fn record_messaging_context(
         &self,
-        sender_thread: &crate::CodexThread,
+        sender_session: &Arc<crate::session::session::Session>,
         key: String,
         mut item: ResponseItem,
-    ) -> CodexResult<ResponseItem> {
-        let sender = sender_thread.session.presentation_id();
-        let turn_id = sender_thread.session.active_agent_response_turn_id();
+    ) -> CodexResult<()> {
+        let sender = sender_session.presentation_id();
+        let turn_id = sender_session.active_agent_response_turn_id();
         {
-            let mut state = self.wait_agent_presentations.state();
+            let state = self.wait_agent_presentations.state();
             if let Some((pending_turn, pending)) =
                 state.pending_messaging_context.get(&(sender, key.clone()))
                 && *pending_turn == turn_id
@@ -449,7 +449,7 @@ impl LocalAgentControl {
                     (ResponseItem::Message { content, .. }, ResponseItem::Message { content: pending_content, .. })
                         if content == pending_content)
             {
-                return Ok(pending.clone());
+                return Ok(());
             }
             item.set_id(Some(codex_protocol::ResponseItemId::new("msg")));
             if let Some(active_turn_id) = &turn_id {
@@ -457,16 +457,24 @@ impl LocalAgentControl {
                     &mut item,
                     active_turn_id,
                 );
-                state
-                    .pending_messaging_context
-                    .insert((sender, key), (turn_id, item.clone()));
             }
         }
-        sender_thread
-            .session
-            .publish_messaging_context(item.clone(), || Ok(()))
-            .await?;
-        Ok(item)
+        let control = self.clone();
+        // The owned recorder publishes policy context without queuing a sampling trigger.
+        // Install the cache only with its canonical ACK, including if this waiter is cancelled.
+        let cached_item = item.clone();
+        sender_session
+            .publish_messaging_context(item, move || {
+                if turn_id.is_some() {
+                    control
+                        .wait_agent_presentations
+                        .state()
+                        .pending_messaging_context
+                        .insert((sender, key), (turn_id, cached_item));
+                }
+                Ok(())
+            })
+            .await
     }
 }
 

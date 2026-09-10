@@ -1,5 +1,112 @@
 use super::*;
+use crate::session::tests::attach_in_memory_thread_store;
+use crate::session::tests::make_session_and_context_with_rx;
+use codex_thread_store::InMemoryThreadStoreFailure;
+use futures::poll;
 use pretty_assertions::assert_eq;
+use std::time::Duration;
+
+#[tokio::test]
+async fn failed_policy_context_does_not_install_turn_cache_or_sampling_input() {
+    for failure in [
+        InMemoryThreadStoreFailure::SubAgentCompletionAppend,
+        InMemoryThreadStoreFailure::SubAgentCompletionPrefix,
+        InMemoryThreadStoreFailure::SubAgentCompletionPresentationFlush,
+    ] {
+        let (mut session, _, _events) = make_session_and_context_with_rx().await;
+        let store = attach_in_memory_thread_store(Arc::get_mut(&mut session).unwrap()).await;
+        let control = session.services.agent_control.clone();
+        assert!(session.begin_agent_response_turn("active-turn"));
+        let key = "policy-cache".to_owned();
+        let item = ContextualUserFragment::into(messaging_context::PermissionNotice {
+            key: key.clone(),
+            text: "User disabled sending".to_owned(),
+        });
+        store.fail_next_operation(failure).await;
+        assert!(
+            control
+                .record_messaging_context(&session, key, item)
+                .await
+                .is_err(),
+        );
+        assert!(
+            control
+                .wait_agent_presentations
+                .state()
+                .pending_messaging_context
+                .is_empty()
+        );
+        assert!(session.clone_history().await.annotated_items().is_empty());
+        assert!(
+            !session
+                .input_queue
+                .has_pending_input(&session.active_turn)
+                .await
+        );
+        assert!(session.submission_admission.requires_reload());
+        assert_eq!(store.calls().await.append_completion_items_and_flush, 1);
+    }
+}
+
+#[tokio::test]
+async fn policy_cache_ack_survives_cancelled_waiter_without_sampling_input() {
+    let (mut session, _, _events) = make_session_and_context_with_rx().await;
+    let store = attach_in_memory_thread_store(Arc::get_mut(&mut session).unwrap()).await;
+    let control = session.services.agent_control.clone();
+    assert!(session.begin_agent_response_turn("active-turn"));
+    let key = "policy-cache".to_owned();
+    let item = ContextualUserFragment::into(messaging_context::PermissionNotice {
+        key: key.clone(),
+        text: "User enabled sending".to_owned(),
+    });
+    let permit = session.reserve_history_publication().await;
+    let mut pending = Box::pin(control.record_messaging_context(&session, key.clone(), item));
+    assert!(poll!(&mut pending).is_pending());
+    assert!(
+        control
+            .wait_agent_presentations
+            .state()
+            .pending_messaging_context
+            .is_empty()
+    );
+    drop(pending);
+    drop(permit);
+    let cached = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            let cached = control
+                .wait_agent_presentations
+                .state()
+                .pending_messaging_context
+                .get(&(session.presentation_id(), key.clone()))
+                .cloned();
+            if let Some(cached) = cached {
+                break cached;
+            }
+            tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+        }
+    })
+    .await
+    .expect("owned publication installs cache after ACK");
+    let recorded = session
+        .clone_history()
+        .await
+        .raw_items()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cached,
+        (Some("active-turn".to_owned()), recorded[0].clone())
+    );
+    assert_eq!(recorded.len(), 1);
+    assert!(
+        !session
+            .input_queue
+            .has_pending_input(&session.active_turn)
+            .await
+    );
+    assert!(!session.submission_admission.requires_reload());
+    assert_eq!(store.calls().await.append_completion_items_and_flush, 1);
+}
 
 #[tokio::test]
 async fn standalone_turn_refresh_does_not_require_a_thread_manager() {
