@@ -1105,6 +1105,7 @@ impl ThreadHistoryBuilder {
                     vec![receiver_id.clone()],
                     vec![CollabAgentRef {
                         thread_id: receiver_id.clone(),
+                        agent_ref: None,
                         task_path: None,
                         agent_nickname: payload.new_agent_nickname.clone(),
                         agent_role: payload.new_agent_role.clone(),
@@ -1316,6 +1317,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids: vec![receiver_id.clone()],
             receiver_agents: vec![CollabAgentRef {
                 thread_id: receiver_id,
+                agent_ref: None,
                 task_path: None,
                 agent_nickname: payload.receiver_agent_nickname.clone(),
                 agent_role: payload.receiver_agent_role.clone(),
@@ -1379,6 +1381,7 @@ impl ThreadHistoryBuilder {
             receiver_thread_ids: vec![receiver_id.clone()],
             receiver_agents: vec![CollabAgentRef {
                 thread_id: receiver_id,
+                agent_ref: None,
                 task_path: None,
                 agent_nickname: payload.receiver_agent_nickname.clone(),
                 agent_role: payload.receiver_agent_role.clone(),
@@ -4815,6 +4818,7 @@ mod tests {
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 receiver_agents: vec![CollabAgentRef {
                     thread_id: "00000000-0000-0000-0000-000000000002".into(),
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Scout".into()),
                     agent_role: Some("explorer".into()),
@@ -4886,6 +4890,7 @@ mod tests {
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 receiver_agents: vec![CollabAgentRef {
                     thread_id: "00000000-0000-0000-0000-000000000002".into(),
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Scout".into()),
                     agent_role: Some("explorer".into()),

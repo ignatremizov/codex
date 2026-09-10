@@ -4772,7 +4772,24 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         config.model_context_window = Some(128_000);
     });
     let test = builder.build_with_auto_env(&server).await?;
-    test.submit_turn("spawn short-target child").await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "spawn short-target child".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let spawn_completed = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ItemCompleted(event) => match &event.item {
+            TurnItem::CollabAgentToolCall(call) if call.id == spawn_call_id => Some(call.clone()),
+            _ => None,
+        },
+        _ => None,
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     let spawn_request = spawn_turn.single_request();
     assert!(
         spawn_request
@@ -4821,6 +4838,16 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         .find(|alias| alias.thread_id == spawned_id)
         .and_then(|alias| alias.nickname.clone())
         .expect("spawned child should retain its nickname");
+    assert_eq!(
+        spawn_completed.receiver_agents,
+        vec![codex_protocol::protocol::CollabAgentRef {
+            thread_id: spawned_id,
+            agent_ref: Some("2".to_string()),
+            task_path: Some("/root/short-target".to_string()),
+            agent_nickname: Some(nickname.clone()),
+            agent_role: None,
+        }],
+    );
     assert!(
         initial_child_request
             .message_input_texts("developer")
@@ -5076,6 +5103,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             codex_protocol::items::CollabAgentToolCallStatus::Failed,
             vec![codex_protocol::protocol::CollabAgentRef {
                 thread_id: spawned_id,
+                agent_ref: Some("2".to_string()),
                 task_path: Some("/root/short-target".to_string()),
                 agent_nickname: Some(nickname.clone()),
                 agent_role: None,
@@ -5139,6 +5167,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         resuming_agents,
         vec![codex_protocol::protocol::CollabAgentRef {
             thread_id: spawned_id,
+            agent_ref: Some("2".to_string()),
             task_path: Some("/root/short-target".to_string()),
             agent_nickname: Some(nickname.clone()),
             agent_role: None,

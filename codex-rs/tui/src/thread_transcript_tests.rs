@@ -5,6 +5,7 @@ use super::refresh_collab_agent_metadata;
 use super::thread_items_to_transcript_cells_with_metadata;
 use super::thread_items_with_sources_to_transcript_cells;
 use super::thread_to_transcript_cells;
+use crate::history_cell::HistoryCell;
 use crate::history_cell::UserHistoryCell;
 use codex_app_server_protocol::CollabAgentRef;
 use codex_app_server_protocol::CollabAgentTool;
@@ -424,6 +425,7 @@ fn full_transcript_renders_collab_messages_with_persisted_agent_metadata_snapsho
                     receiver_thread_ids: vec![child_thread_id.to_string()],
                     receiver_agents: vec![CollabAgentRef {
                         thread_id: child_thread_id.to_string(),
+                        agent_ref: None,
                         task_path: None,
                         agent_nickname: Some("Robie".to_string()),
                         agent_role: Some("explorer".to_string()),
@@ -521,6 +523,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
         receiver_thread_ids: vec![child_thread_id.to_string()],
         receiver_agents: vec![CollabAgentRef {
             thread_id: child_thread_id.to_string(),
+            agent_ref: Some("5".to_string()),
             task_path: Some("/root/mailbox-test".to_string()),
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
@@ -530,6 +533,34 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
         reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
         agents_states: HashMap::new(),
     };
+    let collab_agent_metadata = collab_agent_metadata_from_items([&metadata_item]);
+    // The generic transcript fallback does not render rich lifecycle headers.
+    let spawn_cell = crate::multi_agents::tool_call_history_cell(
+        &metadata_item,
+        /*cached_spawn_request*/ None,
+        /*agent_prompt_preview_lines*/ 10,
+        /*agent_response_preview_lines*/ 10,
+        |thread_id| {
+            collab_agent_metadata
+                .get(&thread_id)
+                .cloned()
+                .unwrap_or_default()
+        },
+    )
+    .expect("spawn lifecycle cell");
+    let spawn_rendered = spawn_cell
+        .transcript_lines(/*width*/ 200)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(
+        spawn_rendered,
+        @r"
+    • Spawned Robie [explorer] /root/mailbox-test (5) (gpt-5.6-sol high) (no commentary · no wake on completion)
+      └ Inspect the change.
+    "
+    );
     let mut cells = thread_items_to_transcript_cells(
         Some(parent_thread_id),
         &test_path_buf("/tmp").abs(),
@@ -548,7 +579,6 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
         RawReasoningVisibility::Hidden,
         /*codex_home*/ None,
     );
-    let collab_agent_metadata = collab_agent_metadata_from_items([&metadata_item]);
     assert!(refresh_collab_agent_metadata(
         &mut cells,
         &collab_agent_metadata
@@ -562,6 +592,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     };
     *receiver_agents = vec![CollabAgentRef {
         thread_id: child_thread_id.to_string(),
+        agent_ref: None,
         task_path: None,
         agent_nickname: Some("Robie II".to_string()),
         agent_role: None,
@@ -581,7 +612,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Robie II [explorer] /root/mailbox-test (gpt-5.6-sol high) completed: (● visible)
+    • Robie II [explorer] /root/mailbox-test (5) (gpt-5.6-sol high) completed: (● visible)
       └ Finished the split-page review.
     "
     );

@@ -27,7 +27,9 @@ fn lifecycle_labels_include_authoritative_task_path() {
             "Darwin"
                 .fg(crate::agent_color::nickname_color("Darwin"))
                 .bold(),
-            " [worker] /root/mailbox-test (5) (gpt-5 high)".dim(),
+            " [worker]".into(),
+            " /root/mailbox-test (5)".dim(),
+            " (gpt-5 high)".magenta(),
         ])
     );
 }

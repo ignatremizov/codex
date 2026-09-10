@@ -4540,6 +4540,10 @@ pub struct CollabAgentSpawnBeginEvent {
 pub struct CollabAgentRef {
     /// Thread ID of the receiver/new agent.
     pub thread_id: ThreadId,
+    /// Trusted root-scoped numeric reference, when available from the agent alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_ref: Option<String>,
     /// Trusted task assignment path, when available from the agent alias.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

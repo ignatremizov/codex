@@ -3749,6 +3749,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     let receiver_thread_id = codex_protocol::ThreadId::default();
     let receiver_agent = codex_protocol::protocol::CollabAgentRef {
         thread_id: receiver_thread_id,
+        agent_ref: None,
         task_path: None,
         agent_nickname: Some("Parfit".to_string()),
         agent_role: Some("reviewer".to_string()),
@@ -3790,6 +3791,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                agent_ref: None,
                 task_path: None,
                 agent_nickname: Some("Parfit".to_string()),
                 agent_role: Some("reviewer".to_string()),

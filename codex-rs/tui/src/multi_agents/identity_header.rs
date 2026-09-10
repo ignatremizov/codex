@@ -26,33 +26,38 @@ impl IdentityHeader<'_> {
         let nickname = self.nickname.map(str::trim).filter(nonempty);
         let name = nickname.unwrap_or(self.fallback);
         let mut metadata = String::new();
-        if let Some(role) = self.role.map(str::trim).filter(nonempty) {
-            metadata.push_str(&format!(" [{}]", role.escape_debug()));
-        }
         if let Some(task_path) = self.task_path.map(str::trim).filter(nonempty) {
             metadata.push_str(&format!(" {}", task_path.escape_debug()));
         }
         if let Some(agent_ref) = self.agent_ref.map(str::trim).filter(nonempty) {
             metadata.push_str(&format!(" ({})", agent_ref.escape_debug()));
         }
-        match (
+        let model_metadata = match (
             self.model.map(str::trim).filter(nonempty),
             self.reasoning_effort,
         ) {
             (Some(model), Some(effort)) => {
-                metadata.push_str(&format!(" ({} {effort})", model.escape_debug()));
+                format!(" ({} {effort})", model.escape_debug())
             }
             (Some(model), None) => {
-                metadata.push_str(&format!(" ({})", model.escape_debug()));
+                format!(" ({})", model.escape_debug())
             }
-            (None, Some(effort)) => metadata.push_str(&format!(" ({effort})")),
-            (None, None) => {}
-        }
+            (None, Some(effort)) => format!(" ({effort})"),
+            (None, None) => String::new(),
+        };
         let mut identity = Span::from(name.escape_debug().to_string())
             .fg(crate::agent_color::nickname_color(name));
         if nickname.is_some() {
             identity = identity.bold();
         }
-        vec![identity, metadata.dim()].into()
+        let mut spans = vec![identity];
+        if let Some(role) = self.role.map(str::trim).filter(nonempty) {
+            spans.push(format!(" [{}]", role.escape_debug()).into());
+        }
+        spans.push(metadata.dim());
+        if !model_metadata.is_empty() {
+            spans.push(model_metadata.magenta());
+        }
+        spans.into()
     }
 }

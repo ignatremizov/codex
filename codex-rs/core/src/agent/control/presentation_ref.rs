@@ -11,6 +11,7 @@ impl AgentControl {
         let alias = self.current_agent_alias(thread_id).await?;
         Ok(CollabAgentRef {
             thread_id,
+            agent_ref: alias.as_ref().map(|alias| alias.agent_ref.to_string()),
             task_path: alias.as_ref().and_then(|alias| alias.task_path.clone()),
             agent_nickname: alias
                 .and_then(|alias| alias.nickname)

@@ -340,6 +340,9 @@ fn extend_collab_agent_metadata<'a>(
                         continue;
                     };
                     let metadata = metadata.entry(thread_id).or_default();
+                    if receiver.agent_ref.is_some() {
+                        metadata.agent_ref = receiver.agent_ref.clone();
+                    }
                     if receiver.agent_nickname.is_some() {
                         metadata.agent_nickname = receiver.agent_nickname.clone();
                     }
