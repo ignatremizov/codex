@@ -15,7 +15,26 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         /*failed_thread_name*/ None,
     )
     .await?;
-    let root = server.start_thread(&app.config).await?.session.thread_id;
+    // Both navigation targets need materialized history: display_test_thread only sets
+    // local presentation state, and returning to root must attach and hydrate it.
+    let root = ThreadId::from_string(
+        &app_test_support::create_fake_rollout(
+            app.config.codex_home.as_path(),
+            "2026-01-01T00-00-02",
+            "2026-01-01T00:00:02Z",
+            "saved root transcript",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .map_err(color_eyre::eyre::Report::msg)?,
+    )?;
+    server
+        .resume_thread(
+            app.config.clone(),
+            root,
+            crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
+        )
+        .await?;
     let foreign = server.start_thread(&app.config).await?.session.thread_id;
     let idle = ThreadId::from_string(
         &app_test_support::create_fake_parented_rollout_with_source(
@@ -66,16 +85,22 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         )
         .map_err(color_eyre::eyre::Report::msg)?,
     )?;
+    let root_thread = server.thread_read(root, /*include_turns*/ false).await?;
     let loaded_thread = server.thread_read(idle, /*include_turns*/ false).await?;
     let unloaded_thread = server
         .thread_read(unloaded, /*include_turns*/ false)
         .await?;
     assert_eq!(
         [
+            (root_thread.status, root_thread.session_id),
             (loaded_thread.status, loaded_thread.session_id),
             (unloaded_thread.status, unloaded_thread.session_id),
         ],
         [
+            (
+                codex_app_server_protocol::ThreadStatus::Idle,
+                root.to_string()
+            ),
             (
                 codex_app_server_protocol::ThreadStatus::Idle,
                 root.to_string()
