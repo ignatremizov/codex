@@ -16,24 +16,44 @@ async fn partial_replayed_spawn_metadata_enriches_labels_without_erasing_navigat
     let (mut chat, _events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
     let thread_id = ThreadId::new();
     let request = crate::multi_agents::SpawnRequestSummary {
-        model: Some("recorded-model".into()), reasoning_effort: None,
+        model: Some("recorded-model".into()),
+        reasoning_effort: None,
     };
-    chat.set_collab_agent_metadata(thread_id, Some("Current name".into()), Some("reviewer".into()));
-    chat.merge_collab_agent_metadata(thread_id, AgentMetadata {
-        spawn_request: Some(request.clone()), ..Default::default()
-    });
-    assert_eq!(chat.collab_agent_metadata(thread_id), AgentMetadata {
-        task_path: crate::multi_agents::AgentTaskPath::Unknown,
-        agent_nickname: Some("Current name".into()), agent_role: Some("reviewer".into()),
-        spawn_request: Some(request.clone()),
-    });
+    chat.set_collab_agent_metadata(
+        thread_id,
+        Some("Current name".into()),
+        Some("reviewer".into()),
+    );
+    chat.set_collab_agent_ref(thread_id, "7".into());
+    chat.merge_collab_agent_metadata(
+        thread_id,
+        AgentMetadata {
+            spawn_request: Some(request.clone()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        chat.collab_agent_metadata(thread_id),
+        AgentMetadata {
+            agent_ref: Some("7".into()),
+            task_path: crate::multi_agents::AgentTaskPath::Unknown,
+            agent_nickname: Some("Current name".into()),
+            agent_role: Some("reviewer".into()),
+            spawn_request: Some(request.clone()),
+        }
+    );
     chat.set_collab_agent_metadata(thread_id, Some("Renamed".into()), Some("reviewer".into()));
     chat.merge_collab_agent_metadata(thread_id, AgentMetadata::default());
-    assert_eq!(chat.collab_agent_metadata(thread_id), AgentMetadata {
-        task_path: crate::multi_agents::AgentTaskPath::Unknown,
-        agent_nickname: Some("Renamed".into()), agent_role: Some("reviewer".into()),
-        spawn_request: Some(request),
-    });
+    assert_eq!(
+        chat.collab_agent_metadata(thread_id),
+        AgentMetadata {
+            agent_ref: Some("7".into()),
+            task_path: crate::multi_agents::AgentTaskPath::Unknown,
+            agent_nickname: Some("Renamed".into()),
+            agent_role: Some("reviewer".into()),
+            spawn_request: Some(request),
+        }
+    );
 }
 
 fn publish(chat: &mut ChatWidget, item: AppServerThreadItem) {
@@ -56,7 +76,7 @@ async fn confirmed_task_path_clear_survives_legacy_updates_in_live_and_cold_labe
         "type": "collabAgentToolCall", "id": "named-task", "tool": "spawnAgent",
         "status": "completed", "senderThreadId": source.to_string(),
         "receiverThreadIds": [target.to_string()],
-        "receiverAgents": [{"threadId": target.to_string(), "agentNickname": "Worker",
+        "receiverAgents": [{"threadId": target.to_string(), "agentNickname": "Worker", "agentRef": "2",
             "taskPath": "/root/confirmed"}], "agentsStates": {}
     })).expect("recorded task identity");
     let legacy: AppServerThreadItem = serde_json::from_value(serde_json::json!({
@@ -64,24 +84,36 @@ async fn confirmed_task_path_clear_survives_legacy_updates_in_live_and_cold_labe
         "status": "completed", "senderThreadId": source.to_string(),
         "receiverThreadIds": [target.to_string()],
         "receiverAgents": [{"threadId": target.to_string()}], "agentsStates": {}
-    })).expect("legacy item without path authority");
+    }))
+    .expect("legacy item without path authority");
     for status in ["failed", "unknown", "succeeded"] {
         let mapping: AppServerThreadItem = serde_json::from_value(serde_json::json!({
             "type": "userAgentControl", "id": "path-clear", "action": "resume",
             "targetThreadId": target.to_string(), "status": status, "resumedTarget": false,
+            "ref": "3",
             "taskPathMapping": [{"threadId": target.to_string(), "taskPath": null}]
-        })).expect("path mapping audit");
+        }))
+        .expect("path mapping audit");
         let items = [established.clone(), mapping, legacy.clone()];
         let cold = crate::thread_transcript::collab_agent_metadata_from_items(items.iter());
         let expected_path = crate::multi_agents::AgentTaskPath::Known(
             (status != "succeeded").then(|| "/root/confirmed".to_string()),
         );
         assert_eq!(cold[&target].task_path, expected_path);
+        assert_eq!(
+            cold[&target].agent_ref.as_deref(),
+            Some(if status == "succeeded" { "3" } else { "2" })
+        );
         for replay in [false, true] {
-            let (mut chat, _events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
+            let (mut chat, _events, _operations) =
+                make_chatwidget_manual(/*model_override*/ None).await;
             for item in items.clone() {
                 if replay {
-                    chat.replay_thread_item(item, "audit-turn".to_string(), ReplayKind::ResumeInitialMessages);
+                    chat.replay_thread_item(
+                        item,
+                        "audit-turn".to_string(),
+                        ReplayKind::ResumeInitialMessages,
+                    );
                 } else {
                     publish(&mut chat, item);
                 }
@@ -270,11 +302,11 @@ async fn background_completion_shows_model_visibility_without_changing_parent_an
     assert_snapshot!(
         cells.iter().map(|lines| lines_to_single_string(lines)).collect::<Vec<_>>().join("\n"),
         @r"
-    • Main [default] completed: (● visible):
+    • Main [default] completed: (● visible)
       └ Finished.
 
 
-    • Main [default] completed: (○ not visible):
+    • Main [default] completed: (○ not visible)
       └ Finished.
     "
     );
@@ -302,7 +334,7 @@ async fn root_background_completion_uses_main_label() {
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
     assert_snapshot!(lines_to_single_string(&cells[0]), @r"
-    • Main [default] completed: (● visible):
+    • Main [default] completed: (● visible)
       └ Parent task finished.
     ");
 }
@@ -451,7 +483,7 @@ async fn background_completion_resolves_thread_id_from_cached_agent_metadata() {
     assert_snapshot!(
         lines_to_single_string(&cells[0]),
         @r"
-    • Herschel [default] completed: (● visible):
+    • Herschel [default] completed: (● visible)
       └ Cinnamon
     "
     );
@@ -483,6 +515,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                agent_ref: Some("5".to_string()),
                 task_path: None,
                 agent_nickname: Some("Herschel".to_string()),
                 agent_role: Some("default".to_string()),
@@ -515,6 +548,7 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
             receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
+                agent_ref: None,
                 task_path: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -547,15 +581,15 @@ async fn replayed_spawn_and_send_input_preserve_metadata_for_background_completi
     assert_snapshot!(
         rendered,
     @r"
-    • Spawned Herschel [default] (gpt-5.6-sol high) (no commentary · no wake on completion)
+    • Spawned Herschel [default] (5) (gpt-5.6-sol high) (no commentary · no wake on completion)
       └ Review the metadata presentation change.
 
 
-    • Sent input to Herschel [default] (gpt-5.6-sol high) (no commentary · no wake on completion)
+    • Sent input to Herschel [default] (5) (gpt-5.6-sol high) (no commentary · no wake on completion)
       └ Give me one random ingredient.
 
 
-    • Herschel [default] (gpt-5.6-sol high) completed: (● visible):
+    • Herschel [default] (5) (gpt-5.6-sol high) completed: (● visible)
       └ Cinnamon
     "
     );

@@ -4921,7 +4921,32 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         config.model_context_window = Some(128_000);
     });
     let test = builder.build_with_auto_env(&server).await?;
-    test.submit_turn("spawn short-target child").await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "spawn short-target child".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let spawn_completed = diagnostic_stage("short-target spawn completion", async {
+        wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::ItemCompleted(event) => match &event.item {
+                TurnItem::CollabAgentToolCall(call) if call.id == spawn_call_id => {
+                    Some(call.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .await
+    })
+    .await;
+    diagnostic_stage("short-target spawn parent completion", async {
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await
+    })
+    .await;
     let spawn_request = spawn_turn.single_request();
     assert!(
         spawn_request
@@ -4970,6 +4995,16 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         .find(|alias| alias.thread_id == spawned_id)
         .and_then(|alias| alias.nickname.clone())
         .expect("spawned child should retain its nickname");
+    assert_eq!(
+        spawn_completed.receiver_agents,
+        vec![codex_protocol::protocol::CollabAgentRef {
+            thread_id: spawned_id,
+            agent_ref: Some("2".to_string()),
+            task_path: Some("/root/short-target".to_string()),
+            agent_nickname: Some(nickname.clone()),
+            agent_role: None,
+        }],
+    );
     assert!(
         initial_child_request
             .message_input_texts("developer")
@@ -5046,7 +5081,11 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     )
     .await;
 
-    test.submit_turn("send by compact ref").await?;
+    diagnostic_stage(
+        "send by compact ref",
+        test.submit_turn("send by compact ref"),
+    )
+    .await?;
     let identity_context = send_turn
         .single_request()
         .message_input_texts("developer")
@@ -5118,7 +5157,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     )
     .await;
 
-    test.submit_turn("wait by nickname").await?;
+    diagnostic_stage("wait by nickname", test.submit_turn("wait by nickname")).await?;
     let wait_request = wait_for_requests(&after_wait)
         .await?
         .into_iter()
@@ -5160,7 +5199,7 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
     )
     .await;
 
-    test.submit_turn("close by nickname").await?;
+    diagnostic_stage("close by nickname", test.submit_turn("close by nickname")).await?;
     let _ = wait_for_requests(&after_close).await?;
     assert_eq!(
         test.codex
@@ -5203,40 +5242,30 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         ]),
     )
     .await;
-    test.codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "send to closed UUID".to_string(),
-            text_elements: Vec::new(),
-        }]))
-        .await?;
-    let failed_send = wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::ItemCompleted(event) => match &event.item {
-            TurnItem::CollabAgentToolCall(call) if call.id == failed_send_call_id => {
-                Some(call.clone())
-            }
-            _ => None,
-        },
-        _ => None,
-    })
-    .await;
-    assert_eq!(
-        (failed_send.status, failed_send.receiver_agents),
-        (
-            codex_protocol::items::CollabAgentToolCallStatus::Failed,
-            vec![codex_protocol::protocol::CollabAgentRef {
-                thread_id: spawned_id,
-                task_path: Some("/root/short-target".to_string()),
-                agent_nickname: Some(nickname.clone()),
-                agent_role: None,
-            }],
-        )
-    );
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    let _ = wait_for_requests(&after_failed_send).await?;
+    // A closed runtime is rejected during receiver preparation, before a
+    // CollabAgentToolCall starts. Assert the model-facing rejection instead.
+    diagnostic_stage(
+        "closed-ref send failure",
+        test.submit_turn("send to closed UUID"),
+    )
+    .await?;
+    let failed_send = wait_for_requests(&after_failed_send)
+        .await?
+        .into_iter()
+        .find_map(|request| request.function_call_output_text(failed_send_call_id))
+        .expect("closed-target tool error");
+    assert_eq!(failed_send, format!("agent with id {spawned_id} not found"));
     assert!(test.thread_manager.get_thread(spawned_id).await.is_err());
+    assert_eq!(
+        test.codex
+            .state_db()
+            .expect("state db should be enabled")
+            .find_agent_alias_by_thread(SessionId::from(root_thread_id), spawned_id)
+            .await?
+            .expect("closed alias should remain reserved")
+            .state,
+        codex_state::AgentAliasState::Closed
+    );
 
     let resume_call_id = "resume-by-agent-ref";
     let resume_args = serde_json::to_string(&json!({
@@ -5274,27 +5303,34 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
             text_elements: Vec::new(),
         }]))
         .await?;
-    let resuming_agents = wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::ItemStarted(event) => match &event.item {
-            TurnItem::CollabAgentToolCall(call) if call.id == resume_call_id => {
-                Some(call.receiver_agents.clone())
-            }
+    let resuming_agents = diagnostic_stage("compact-ref resume start", async {
+        wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::ItemStarted(event) => match &event.item {
+                TurnItem::CollabAgentToolCall(call) if call.id == resume_call_id => {
+                    Some(call.receiver_agents.clone())
+                }
+                _ => None,
+            },
             _ => None,
-        },
-        _ => None,
+        })
+        .await
     })
     .await;
     assert_eq!(
         resuming_agents,
         vec![codex_protocol::protocol::CollabAgentRef {
             thread_id: spawned_id,
+            agent_ref: Some("2".to_string()),
             task_path: Some("/root/short-target".to_string()),
             agent_nickname: Some(nickname.clone()),
             agent_role: None,
         }]
     );
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+    diagnostic_stage("compact-ref resume parent completion", async {
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await
     })
     .await;
     let resume_request = wait_for_requests(&after_resume)
@@ -5418,7 +5454,11 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
         ]),
     )
     .await;
-    test.submit_turn("resume unloaded ref").await?;
+    diagnostic_stage(
+        "resume unloaded ref",
+        test.submit_turn("resume unloaded ref"),
+    )
+    .await?;
     let unloaded_request = wait_for_requests(&after_unloaded_resume)
         .await?
         .into_iter()
@@ -11277,7 +11317,10 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         ]),
     )
     .await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
     let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .with_model("koffing")
         .with_history_mode(history_mode)
         .with_config(|config| {
@@ -11297,7 +11340,12 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         .rollout_path()
         .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
 
-    test.submit_turn(TURN_1_PROMPT).await?;
+    diagnostic_stage(
+        "v2 active-wait initial turn",
+        test.submit_turn(TURN_1_PROMPT),
+    )
+    .await?;
+    ThreadIdle::wait(&test.codex).await;
     let _ = wait_for_requests(&child_request).await?;
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -11307,37 +11355,41 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         .await?;
     let mut turn_id = None;
     let mut wait_started = false;
-    wait_for_event_with_timeout(
-        &test.codex,
-        |event| {
-            if turn_id.is_none()
-                && let EventMsg::TurnStarted(event) = event
-            {
-                turn_id = Some(event.turn_id.clone());
-            }
-            if matches!(
-                event,
-                EventMsg::ItemStarted(event)
-                    if matches!(
-                        &event.item,
-                        TurnItem::CollabAgentToolCall(item)
-                            if item.tool == CollabAgentTool::Wait
-                    )
-            ) {
-                wait_started = true;
-            }
-            matches!(
-                event,
-                EventMsg::TurnComplete(event)
-                    if turn_id.as_deref() == Some(event.turn_id.as_str())
-            )
-        },
-        Duration::from_secs(/*secs*/ 30),
-    )
+    diagnostic_stage("v2 active-wait parent completion", async {
+        wait_for_event_with_timeout(
+            &test.codex,
+            |event| {
+                if turn_id.is_none()
+                    && let EventMsg::TurnStarted(event) = event
+                {
+                    turn_id = Some(event.turn_id.clone());
+                }
+                if matches!(
+                    event,
+                    EventMsg::ItemStarted(event)
+                        if matches!(
+                            &event.item,
+                            TurnItem::CollabAgentToolCall(item)
+                                if item.tool == CollabAgentTool::Wait
+                        )
+                ) {
+                    wait_started = true;
+                }
+                matches!(
+                    event,
+                    EventMsg::TurnComplete(event)
+                        if turn_id.as_deref() == Some(event.turn_id.as_str())
+                )
+            },
+            Duration::from_secs(/*secs*/ 30),
+        )
+        .await
+    })
     .await;
     if !wait_started {
         anyhow::bail!("parent turn completed before wait_agent started");
     }
+    ThreadIdle::wait(&test.codex).await;
     let expected_agent_messages = vec![json!({
         "type": "agent_message",
         "author": "/root/worker",
@@ -11354,7 +11406,7 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
     )
     .await?;
     assert_input_item_ids_are_provider_compatible(&request);
-    test.codex.flush_rollout().await?;
+    diagnostic_stage("v2 active-wait history flush", test.codex.flush_rollout()).await?;
     let history = read_test_rollout_items(&test)?;
     let wait_agent_states = history
         .iter()
@@ -11384,16 +11436,86 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         Some(wait_agent_states.clone())
     );
 
-    test.codex
-        .submit(Op::ThreadRollback { num_turns: 1 })
-        .await?;
-    wait_for_event_match(&test.codex, |event| {
-        matches!(event, EventMsg::ThreadRolledBack(_)).then_some(())
-    })
-    .await;
-    test.codex.flush_rollout().await?;
-    let rollout_items = read_test_rollout_items(&test)?;
+    let revert_before = match history_mode {
+        ThreadHistoryMode::Legacy => {
+            test.codex
+                .submit(Op::ThreadRollback { num_turns: 1 })
+                .await?;
+            wait_for_rollback_or_error(&test.codex, "v2 active-wait rollback").await;
+            None
+        }
+        ThreadHistoryMode::Paginated => {
+            // Paginated revert cuts a turn suffix, unlike Legacy's exact-range
+            // rollback. Remove a later turn so the wait-owned delivery remains
+            // in the retained prefix, and exercise the current store boundary.
+            const DISCARDED_PROMPT: &str = "discard this later paginated turn";
+            mount_sse_once_match(
+                &server,
+                |request: &wiremock::Request| body_contains(request, DISCARDED_PROMPT),
+                sse(vec![ev_completed("resp-discarded-after-wait")]),
+            )
+            .await;
+            test.submit_turn(DISCARDED_PROMPT).await?;
+            ThreadIdle::wait(&test.codex).await;
+            test.codex.flush_rollout().await?;
+            Some(
+                read_test_rollout_items(&test)?
+                    .into_iter()
+                    .rev()
+                    .find_map(|item| match item {
+                        RolloutItem::EventMsg(EventMsg::TurnStarted(event)) => Some(event.turn_id),
+                        _ => None,
+                    })
+                    .context("later turn should have a persisted start")?,
+            )
+        }
+    };
+    diagnostic_stage("v2 active-wait shutdown", test.codex.shutdown_and_wait()).await?;
+    let rollout_path = if let Some(before_turn_id) = &revert_before {
+        let thread_id = test.session_configured.thread_id;
+        test.thread_manager.remove_thread(&thread_id).await;
+        test.thread_store
+            .revert_thread(codex_thread_store::RevertThreadParams {
+                thread_id,
+                before_turn_id: before_turn_id.clone(),
+                multi_agent_version: test.codex.multi_agent_version(),
+            })
+            .await?;
+        let stored = test
+            .thread_store
+            .read_thread(codex_thread_store::ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await?;
+        let replacement_path = stored
+            .rollout_path
+            .context("reverted local thread should have a rollout path")?;
+        assert_ne!(replacement_path, rollout_path);
+        replacement_path
+    } else {
+        rollout_path
+    };
+    let rollout_items = test
+        .thread_store
+        .load_canonical_artifact_segments(LoadThreadHistoryParams {
+            thread_id: test.session_configured.thread_id,
+            include_archived: false,
+        })
+        .await?
+        .segments
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let effective_history = rollout_without_exact_rollback_ranges(&rollout_items);
+    if let Some(before_turn_id) = revert_before {
+        assert!(!effective_history.iter().any(|item| matches!(
+            item,
+            RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                if event.turn_id == before_turn_id
+        )));
+    }
     assert_eq!(
         effective_history.iter().find_map(|item| match item {
             RolloutItem::EventMsg(event) => completed_wait_agent_states(event),
@@ -11408,18 +11530,20 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
         )
     }));
 
-    test.codex.submit(Op::Shutdown).await?;
-    wait_for_event_match(&test.codex, |event| {
-        matches!(event, EventMsg::ShutdownComplete).then_some(())
-    })
-    .await;
-
-    let resumed = builder.resume(&server, home, rollout_path).await?;
-    resumed.submit_turn(TURN_AFTER_RESUME_PROMPT).await?;
+    let resumed = diagnostic_stage(
+        "v2 active-wait cold resume",
+        builder.resume(&server, home, rollout_path),
+    )
+    .await?;
+    diagnostic_stage(
+        "v2 active-wait resumed turn",
+        resumed.submit_turn(TURN_AFTER_RESUME_PROMPT),
+    )
+    .await?;
     let request = wait_for_agent_messages(
         &resumed_request,
         &expected_agent_messages,
-        "expected completion context after wait-owned exact rollback and cold resume",
+        "expected wait-owned completion context after history mutation and cold resume",
     )
     .await?;
     assert_eq!(

@@ -31,6 +31,9 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
                         continue;
                     };
                     let entry = metadata.entry(thread_id).or_default();
+                    if agent.agent_ref.is_some() {
+                        entry.agent_ref.clone_from(&agent.agent_ref);
+                    }
                     if agent.agent_nickname.is_some() {
                         entry.agent_nickname.clone_from(&agent.agent_nickname);
                     }
@@ -57,6 +60,7 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
                 target_thread_id: Some(thread_id),
                 nickname,
                 role,
+                agent_ref,
                 task_path,
                 task_path_mapping,
                 status: UserAgentControlStatus::Succeeded,
@@ -66,6 +70,9 @@ pub(crate) fn collab_agent_metadata_from_items<'a>(
                     continue;
                 };
                 let entry = metadata.entry(thread_id).or_default();
+                if agent_ref.is_some() {
+                    entry.agent_ref.clone_from(agent_ref);
+                }
                 if nickname.is_some() {
                     entry.agent_nickname.clone_from(nickname);
                 }

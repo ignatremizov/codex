@@ -23,7 +23,7 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through fixed-claim mailbox outcome projection, compact receiver-scoped identities, and available-agent navigation, alongside durable receiver-selected input delivery, directional user-selected observation controls, shared-server custom instruction forwarding, model-hidden root conclusion oversight, and root-scoped running-agent activity. It also retains attributed V1 input, task-path discovery, live subtree messaging, acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
+This checkpoint inventories the integrated owners through shared agent identity styling and fresh spawn references, alongside fixed-claim mailbox outcome projection, compact receiver-scoped identities, available-agent navigation, durable receiver-selected input delivery, directional user-selected observation controls, shared-server custom instruction forwarding, model-hidden root conclusion oversight, and root-scoped running-agent activity. It also retains attributed V1 input, task-path discovery, live subtree messaging, acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
@@ -634,6 +634,17 @@ changing runtime status. Explicit user reservations remain distinct from the lat
 status-selection API. The latter's premature references are assigned to its defining owner.
 
 ## Integration boundaries and deferred work
+
+Shared identity presentation is owned by `feat(tui): unify agent identity styling and fresh spawn references`.
+`tui/src/multi_agents/identity_header.rs` renders nicknames, roles, task paths, trusted numeric refs,
+and partial model/reasoning metadata consistently across input, lifecycle, and completion rows.
+`tui/src/agent_color.rs` uses terminal-adapted decorative hues without treating color as identity.
+Core presentation refs and fresh-spawn events carry canonical alias refs when available; absent
+legacy refs are not inferred from labels. `tui/src/chatwidget/collab_metadata.rs` and
+`tui/src/thread_transcript/agent_metadata.rs` preserve confirmed refs across partial history,
+while only successful user-control mappings can replace them or authoritatively clear task paths.
+Canonical UUIDs, raw audit output, and runtime authority remain separate from these labels.
+Source-level and macro-constructor inspections do not replace final schema and executable qualification.
 
 The overview and fixed transcript inspection are owned by
 `feat(tui): expand agent overview and transcript inspection`. The entrypoints are
