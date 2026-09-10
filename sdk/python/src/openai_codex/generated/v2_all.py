@@ -738,6 +738,13 @@ class CollabAgentRef(BaseModel):
             alias="agentNickname", description="Optional nickname assigned to the receiving agent."
         ),
     ] = None
+    agent_ref: Annotated[
+        str | None,
+        Field(
+            alias="agentRef",
+            description="Trusted root-scoped numeric reference, when available from the agent alias.",
+        ),
+    ] = None
     agent_role: Annotated[
         str | None,
         Field(alias="agentRole", description="Optional role assigned to the receiving agent."),
