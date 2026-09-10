@@ -87,9 +87,9 @@ fn wait_response_budgets_are_per_agent_and_leave_status_rows_visible() {
     );
     assert_snapshot!(cell_to_text(&cell), @r"
     • Finished waiting
-      └ Robie [explorer]: Completed
+      └ Robie [explorer] (gpt-5 high): Completed
           … +2 rows hidden
-        Bob [worker]: Error
+        Bob [worker] (gpt-5-mini medium): Error
           … +2 rows hidden
     ");
     assert_eq!(
@@ -99,10 +99,10 @@ fn wait_response_budgets_are_per_agent_and_leave_status_rows_visible() {
             .collect::<Vec<_>>(),
         vec![
             "• Finished waiting",
-            "  └ Robie [explorer]: Completed",
+            "  └ Robie [explorer] (gpt-5 high): Completed",
             "      first",
             "      last",
-            "    Bob [worker]: Error",
+            "    Bob [worker] (gpt-5-mini medium): Error",
             "      first",
             "      last",
         ],
@@ -275,13 +275,13 @@ fn wait_completion_preserves_multiline_agent_response_snapshot() {
         snapshot,
         @r###"
     • Finished waiting
-      └ Robie [explorer]: Completed
+      └ Robie [explorer] (gpt-5 high): Completed
           first line
             indented line
           last line
 
     • Finished waiting
-      └ Robie [explorer]: Completed
+      └ Robie [explorer] (gpt-5 high): Completed
           first line
           … +2 rows hidden
     "###

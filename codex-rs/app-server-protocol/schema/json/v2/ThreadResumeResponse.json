@@ -400,6 +400,14 @@
             "null"
           ]
         },
+        "agentRef": {
+          "default": null,
+          "description": "Trusted root-scoped numeric reference, when available from the agent alias.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "agentRole": {
           "default": null,
           "description": "Optional role assigned to the receiving agent.",

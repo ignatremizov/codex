@@ -1,7 +1,92 @@
 use super::*;
 use codex_app_server_protocol::AgentInputAttribution;
 use codex_app_server_protocol::AgentInputIdentity;
+use codex_app_server_protocol::InterAgentMessageSource;
 use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn background_identity_headers_match_live_and_replayed_presentation() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let receiver = ThreadId::new();
+    let sender = ThreadId::new();
+    chat.thread_id = Some(receiver);
+    chat.set_collab_agent_metadata(
+        sender,
+        Some("Pascal".to_string()),
+        Some("coder".to_string()),
+    );
+    chat.set_collab_agent_task_path(sender, Some("/root/task".to_string()));
+    chat.set_collab_agent_ref(sender, "5".to_string());
+    chat.set_collab_agent_spawn_request(
+        sender,
+        crate::multi_agents::SpawnRequestSummary {
+            model: Some("gpt-6-astra".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::Low),
+        },
+    );
+    let (completion_id, completion_text) =
+        codex_protocol::protocol::sub_agent_completion_transcript(
+            &sender.to_string(),
+            &codex_protocol::protocol::AgentStatus::Completed(Some("Finished.".to_string())),
+        )
+        .expect("completion transcript");
+    for (id, text, inter_agent_source) in [
+        (
+            "commentary-header".to_string(),
+            format!("Agent commentary from `{sender}`:\n\nWorking."),
+            Some(InterAgentMessageSource {
+                author: sender.to_string(),
+                recipient: receiver.to_string(),
+            }),
+        ),
+        (completion_id.to_string(), completion_text, None),
+    ] {
+        let item = AppServerThreadItem::AgentMessage {
+            id,
+            text,
+            inter_agent_source,
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+            attribution: None,
+            input: None,
+            delivery: None,
+            questions: None,
+        };
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: receiver.to_string(),
+                turn_id: "receiver-turn".to_string(),
+                completed_at_ms: 0,
+                item: item.clone(),
+            }),
+            /*replay_kind*/ None,
+        );
+        chat.replay_thread_item(
+            item,
+            "receiver-turn".to_string(),
+            ReplayKind::ResumeInitialMessages,
+        );
+    }
+    let cells = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell.display_lines(/*width*/ 120)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cells.len(), 4);
+    assert_eq!(cells[0], cells[1]);
+    assert_eq!(cells[2], cells[3]);
+    assert_snapshot!(
+        [lines_to_single_string(&cells[0]), lines_to_single_string(&cells[2])].join("\n"),
+        @r"
+    • Pascal [coder] /root/task (5) (gpt-6-astra low) commentary:
+      └ Working.
+
+    • Pascal [coder] /root/task (5) (gpt-6-astra low) completed: (● visible)
+      └ Finished.
+    "
+    );
+}
 
 #[tokio::test]
 async fn trusted_agent_input_uses_same_rich_cell_live_and_on_resume() {
@@ -11,6 +96,7 @@ async fn trusted_agent_input_uses_same_rich_cell_live_and_on_resume() {
     let item = AppServerThreadItem::AgentMessage {
         id: codex_protocol::protocol::new_attributed_agent_message_response_item_id().to_string(),
         text: String::new(),
+        inter_agent_source: None,
         attribution: Some(AgentInputAttribution {
             sender: AgentInputIdentity {
                 thread_id: ThreadId::new().to_string(),

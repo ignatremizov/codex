@@ -237,6 +237,7 @@ async fn handle_spawn_agent(
     let receiver_agents = new_thread_id
         .map(|thread_id| CollabAgentRef {
             thread_id,
+            agent_ref: new_agent_ref.as_ref().map(ToString::to_string),
             task_path: task_path.clone(),
             agent_nickname: new_agent_nickname,
             agent_role: new_agent_role,

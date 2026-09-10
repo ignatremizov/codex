@@ -1,9 +1,10 @@
 use super::*;
 use crate::history_cell::HistoryCell;
-use crate::multi_agents::background_commentary_history_cell_from_agent_message;
 use crate::multi_agents::SpawnRequestSummary;
-use codex_protocol::openai_models::ReasoningEffort;
+use crate::multi_agents::background_commentary_history_cell_from_agent_message;
+use codex_app_server_protocol::ThreadItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::openai_models::ReasoningEffort;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 
@@ -22,34 +23,98 @@ fn canonical_spawn_metadata_keeps_partial_settings_across_later_label_updates() 
         "type": "userAgentControl", "id": "spawn-effort", "action": "spawn",
         "targetThreadId": effort_thread.to_string(), "nickname": "Effort worker",
         "reasoningEffort": "high", "resumedTarget": false, "status": "succeeded",
-    })).expect("canonical effort-only spawn");
+    }))
+    .expect("canonical effort-only spawn");
     let later_wait: ThreadItem = serde_json::from_value(serde_json::json!({
         "type": "collabAgentToolCall", "id": "wait", "tool": "wait",
         "status": "completed", "senderThreadId": ThreadId::new().to_string(),
         "receiverThreadIds": [model_thread.to_string()],
         "receiverAgents": [{"threadId": model_thread.to_string(), "agentNickname": "Current name"}],
         "agentsStates": {},
-    })).expect("later nickname update");
+    }))
+    .expect("later nickname update");
 
     assert_eq!(
         collab_agent_metadata_from_items([&model_spawn, &effort_spawn, &later_wait]),
         HashMap::from([
-            (model_thread, AgentMetadata {
-                task_path: AgentTaskPath::Unknown,
-                agent_nickname: Some("Current name".into()),
-                agent_role: Some("worker".into()),
-                spawn_request: Some(SpawnRequestSummary {
-                    model: Some("recorded-model".into()), reasoning_effort: None,
-                }),
-            }),
-            (effort_thread, AgentMetadata {
-                task_path: AgentTaskPath::Unknown,
-                agent_nickname: Some("Effort worker".into()), agent_role: None,
-                spawn_request: Some(SpawnRequestSummary {
-                    model: None, reasoning_effort: Some(ReasoningEffort::High),
-                }),
-            }),
+            (
+                model_thread,
+                AgentMetadata {
+                    agent_ref: None,
+                    task_path: AgentTaskPath::Unknown,
+                    agent_nickname: Some("Current name".into()),
+                    agent_role: Some("worker".into()),
+                    spawn_request: Some(SpawnRequestSummary {
+                        model: Some("recorded-model".into()),
+                        reasoning_effort: None,
+                    }),
+                }
+            ),
+            (
+                effort_thread,
+                AgentMetadata {
+                    agent_ref: None,
+                    task_path: AgentTaskPath::Unknown,
+                    agent_nickname: Some("Effort worker".into()),
+                    agent_role: None,
+                    spawn_request: Some(SpawnRequestSummary {
+                        model: None,
+                        reasoning_effort: Some(ReasoningEffort::High),
+                    }),
+                }
+            ),
         ]),
+    );
+}
+
+#[test]
+fn lifecycle_mapping_preserves_agent_ref_and_authoritative_task_clear() {
+    let target = codex_protocol::ThreadId::new();
+    let item = ThreadItem::UserAgentControl {
+        id: "resume-1".to_string(),
+        input_outcome: None,
+        action: codex_app_server_protocol::UserAgentControlAction::Resume,
+        authored_selector: None,
+        target_thread_id: Some(target.to_string()),
+        observer_thread_id: None,
+        authored_observer_selector: None,
+        reply_recipient_thread_id: None,
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        agent_ref: Some("5".to_string()),
+        nickname: Some("Darwin".to_string()),
+        role: None,
+        task: None,
+        task_path: Some("/root/previous".to_string()),
+        task_path_mapping: vec![codex_app_server_protocol::AgentTaskPathMapping {
+            thread_id: target.to_string(),
+            previous_task_path: Some("/root/previous".to_string()),
+            task_path: None,
+        }],
+        model: None,
+        reasoning_effort: None,
+        prompt_preview: None,
+        resumed_target: true,
+        fork_mode: None,
+        observe_commentary: None,
+        final_response: None,
+        target_messages: None,
+        queue_input: None,
+        status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
+        error: None,
+    };
+
+    assert_eq!(
+        collab_agent_metadata_from_items([&item]),
+        HashMap::from([(
+            target,
+            AgentMetadata {
+                agent_ref: Some("5".to_string()),
+                agent_nickname: Some("Darwin".to_string()),
+                task_path: AgentTaskPath::Known(None),
+                ..Default::default()
+            }
+        )]),
     );
 }
 
@@ -76,7 +141,7 @@ fn late_agent_metadata_updates_labels_without_losing_preview_or_raw_source() {
             task_path: AgentTaskPath::Unknown,
             agent_nickname: Some("Robie".into()),
             agent_role: Some("explorer".into()),
-            spawn_request: None,
+            ..Default::default()
         },
     )]);
     refresh_collab_agent_labels(&mut cells, &metadata);

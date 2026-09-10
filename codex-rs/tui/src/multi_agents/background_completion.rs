@@ -103,13 +103,17 @@ pub(crate) fn background_completion_history_cell_from_agent_message(
         )
     } else {
         let mut title = if agent_reference == AgentPath::ROOT {
-            vec![
-                Span::from("Main")
-                    .fg(crate::agent_color::nickname_color("Main"))
-                    .bold(),
-                Span::from(" ").dim(),
-                Span::from("[default]").dim(),
-            ]
+            super::IdentityHeader {
+                fallback: "Main",
+                nickname: Some("Main"),
+                role: Some("default"),
+                task_path: None,
+                agent_ref: None,
+                model: None,
+                reasoning_effort: None,
+            }
+            .render()
+            .spans
         } else if agent_reference.is_empty() {
             vec![Span::from("agent").cyan()]
         } else {
