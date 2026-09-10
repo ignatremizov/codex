@@ -34,6 +34,7 @@ pub(super) enum SelectionMode {
 }
 
 pub(super) struct Selection {
+    pub(super) navigation: super::agent_cycling::AgentThreadSelectionMode,
     pub(super) mode: SelectionMode,
     pub(super) cached_session: Option<ThreadSessionState>,
     pub(super) pending_profile_on_unavailable_thread: bool,
@@ -288,6 +289,7 @@ impl App {
             server,
             child,
             Selection {
+                navigation: super::agent_cycling::AgentThreadSelectionMode::Inspect,
                 mode: if live {
                     SelectionMode::Live
                 } else {
@@ -298,5 +300,6 @@ impl App {
             },
         )
         .await
+        .map(|_| ())
     }
 }

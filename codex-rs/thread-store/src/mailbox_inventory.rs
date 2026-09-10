@@ -5,6 +5,7 @@ use codex_protocol::mailbox_inventory_response_item_id;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_rollout::ResponseItemEnvelope;
+use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
@@ -66,15 +67,17 @@ pub struct MailboxInventoryAcknowledgement {
     pub outcome: MailboxInventoryAcknowledgementOutcome,
 }
 
-#[derive(Serialize)]
-struct InventoryContext<'a> {
-    notification_id: &'a str,
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InventoryContext {
+    notification_id: String,
     receiver_thread_id: ThreadId,
     through_sequence: i64,
     pending_senders: Vec<InventoryContextSender>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct InventoryContextSender {
     sender_key: String,
     count: u64,
@@ -90,14 +93,19 @@ const MAX_INVENTORY_CONTEXT_BYTES: usize = 2_048;
 #[path = "mailbox_inventory_context_tests.rs"]
 mod context_tests;
 
-#[derive(Serialize)]
-struct BoundedInventoryContext<'a> {
+#[path = "mailbox_inventory_presentation.rs"]
+mod presentation;
+pub use presentation::MailboxInventoryContextView;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BoundedInventoryContext {
     format_version: u8,
-    notification_id: &'a str,
+    notification_id: String,
     receiver_thread_id: ThreadId,
     through_sequence: i64,
     snapshot_sha256: String,
-    pending_senders: &'a [InventoryContextSender],
+    pending_senders: Vec<InventoryContextSender>,
     omitted_sender_count: usize,
 }
 
@@ -114,11 +122,11 @@ impl MailboxInventoryNotification {
         let json = if snapshot.pending_senders.len() > MAX_INVENTORY_CONTEXT_SENDERS {
             serde_json::to_string(&BoundedInventoryContext {
                 format_version: 2,
-                notification_id: &self.id,
+                notification_id: self.id.clone(),
                 receiver_thread_id: self.receiver_thread_id,
                 through_sequence: self.through_sequence,
                 snapshot_sha256: format!("{:x}", Sha256::digest(json.as_bytes())),
-                pending_senders: &snapshot.pending_senders[..MAX_INVENTORY_CONTEXT_SENDERS],
+                pending_senders: snapshot.pending_senders[..MAX_INVENTORY_CONTEXT_SENDERS].to_vec(),
                 omitted_sender_count: snapshot.pending_senders.len()
                     - MAX_INVENTORY_CONTEXT_SENDERS,
             })
@@ -143,7 +151,7 @@ impl MailboxInventoryNotification {
         self.context_with_text(inventory_context_text(&json))
     }
 
-    fn validated_context_snapshot(&self) -> ThreadStoreResult<InventoryContext<'_>> {
+    fn validated_context_snapshot(&self) -> ThreadStoreResult<InventoryContext> {
         mailbox_inventory_response_item_id(&self.id)
             .ok_or_else(|| invalid_request("invalid mailbox inventory notification ID"))?;
         let pending_senders = self
@@ -176,7 +184,7 @@ impl MailboxInventoryNotification {
             ));
         }
         Ok(InventoryContext {
-            notification_id: &self.id,
+            notification_id: self.id.clone(),
             receiver_thread_id: self.receiver_thread_id,
             through_sequence: self.through_sequence,
             pending_senders,

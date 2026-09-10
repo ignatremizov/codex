@@ -1,8 +1,6 @@
 # TUI user-controlled multi-agent dispatch
 
-This document describes the user-controlled dispatch source port and its remaining qualification gates. This slice implements durable aliases, explicit user lifecycle operations, `c`/`f`/`x` response handling, and TUI-held queued prompts. The later target-owned queue, `m`/`q` policy expansion, and close-response replay are deferred, as marked below; they are not guarantees of this slice. Compilation, executable tests, snapshots, and generated artifacts still require CI validation.
-
-The older permission-toggle examples below record the original proposal. The current TUI no longer offers `sends`; `agent/control` rejects legacy `replyRoute` and `subtreeMessaging` actions before thread lookup. Same-tree messaging does not require those controls.
+This document describes the user-controlled dispatch source port and its remaining qualification gates. This slice implements durable aliases, explicit user lifecycle operations, `c`/`f`/`x` response handling, and TUI-held queued prompts. The later target-owned queue, `q` policy expansion, and close-response replay are deferred, as marked below; they are not guarantees of this slice. The `m` flag is removed. Compilation, executable tests, snapshots, and generated artifacts still require CI validation.
 
 Related work:
 
@@ -30,6 +28,8 @@ The user should be able to:
 - keep every lifecycle action and response visible in durable transcript history.
 
 The displayed source thread authors the operation and is the default observer. An explicit `observe ... from <observer>` selects a different observing thread without changing the issuer. The displayed source becomes the lifecycle parent when spawning a new child or explicitly adopting a stored target outside its current root. Same-root existing targets retain their graph parent. This lets the same command work from Main, from a child coordinating a sibling, or from any other live agent thread.
+
+The next/previous agent shortcuts cycle through available, loaded members of the current root in their stable discovery order. Closed, transferred, foreign-root, replay-only, and failed attachments are skipped without deleting their historical picker entries. Explicit picker selection can still inspect closed transcripts. A failed session or permission-profile refresh leaves the previous transcript, draft, and event receiver in place instead of switching the shortcut to a replay-only view.
 
 When other agents in the current root are running, a compact row above the composer shows `3 agents running · /agent to view`. It stays visible while Main is idle awaiting subscribed responses, coexists with the background-terminal summary, and disappears at zero. The count excludes the displayed thread, Main, closed/unloaded agents, and other roots. It is derived from the existing live agent cache and lifecycle notifications, not a rollout scan or polling loop. It neither marks Main busy nor changes response subscriptions; queued turns are not counted until running.
 
@@ -103,8 +103,6 @@ The TUI must not approximate this by independently chaining `thread/resume` and 
 /agent <target> close [w:<w-mode>]
 /agent resume <target> [task:<path>] [w:<w-mode>] [<prompt>]
 /agent observe <target> [from <observer>] <passive|wake|presentation>
-/agent sends <sender> [to <recipient>] <enable|disable>
-/agent <sender> sends [to <recipient>] <enable|disable>
 ```
 
 Selectors accept compact unprefixed forms and explicit namespaces:
@@ -113,11 +111,11 @@ Selectors accept compact unprefixed forms and explicit namespaces:
 <target> = <uuid> | <decimal-ref> | <nickname> | task:<path>
          | id:<uuid> | ref:<decimal-ref> | nick:<name>
 <role>   = <ordinary-role-name> | role:<name>
-<w-mode> = one or more c/f/m/q/x flags in any order, with repetitions allowed
+<w-mode> = one or more c/f/q/x flags in any order, with repetitions allowed
 <level>  = a reasoning effort advertised by the selected model
 ```
 
-Within one `w` value, `f` and `x` cancel pairwise by count: equal counts mean passive final delivery, more `f` means wake, and more `x` means presentation-only. `c`, `m`, and `q` are independent, idempotent presence flags. Thus `qfx` is equivalent to `q`, `qfxx` to `qx`, and `xqc` to `cqx`. Canonical output may use `cfmqx` order; input does not require it.
+Within one `w` value, `f` and `x` cancel pairwise by count: equal counts mean passive final delivery, more `f` means wake, and more `x` means presentation-only. `c` and `q` are independent, idempotent presence flags. Legacy `m` is accepted but discarded. Thus `qfx` is equivalent to `q`, `qfxx` to `qx`, and `xqc` to `cqx`. Canonical output may use `cfqx` order; input does not require it.
 
 Examples:
 
@@ -135,7 +133,8 @@ Examples:
 /agent role:"2" w:f
 /agent reviewer model:gpt-5.6-sol effort:xhigh fork:3 w:x Review the API contract.
 /agent queue Epicurus w:f After that, check the test coverage.
-/agent Epicurus w:fq After that, check the test coverage. /agent Epicurus w:fm Review the contract and ask Main about ambiguous requirements.
+/agent Epicurus w:fq After that, check the test coverage.
+/agent Epicurus w:f Review the contract and ask Main about ambiguous requirements.
 ```
 
 Bare `/agent` opens the control pane. `/agent <target>` opens it with that existing agent selected without starting or steering a turn.
@@ -157,7 +156,7 @@ The control prefix uses these lexical rules:
 
 Autocomplete inserts the forced form when a nickname or role is numeric, UUID-shaped, action-shaped, option-shaped, contains whitespace, or otherwise collides. A bare generated nickname normally needs no prefix.
 
-Action words such as `new`, `queue`, `interrupt`, `close`, `resume`, `observe`, and `sends` are reserved in command entry. A colliding configured role uses `role:<name>` and a colliding existing agent uses `nick:<name>`, its numeric ref, or its UUID. `Main` is also a reserved nickname in every case variation; a configured role named `main` therefore uses `role:main`.
+Action words such as `new`, `queue`, `interrupt`, `close`, `resume`, and `observe` are reserved in command entry. A colliding configured role uses `role:<name>` and a colliding existing agent uses `nick:<name>`, its numeric ref, or its UUID. `Main` is also a reserved nickname in every case variation; a configured role named `main` therefore uses `role:main`.
 
 ## Target resolution
 
@@ -378,7 +377,7 @@ Existing full-history-fork role restrictions, model/reasoning precedence, and se
 
 `/agent queue <target> [w:<w-mode>] <prompt>` currently retains the full prompt in a process-local TUI queue. The client submits `queuedPrompt` only when the target appears idle; Core rechecks admission atomically, so a racing active turn rejects before consuming input or response policy. The prompt remains queued on that pre-admission result. Once admitted, an audit or post-admission warning consumes the queued item and is reported without retrying the mutation. Switching focus does not change its authoring source. Closing either endpoint or losing the local client does not turn a pending entry into durable model input.
 
-The following shared-queue contract is deferred to the later target-owned queue and `m`/`q` policy implementation, not provided by the current TUI queue:
+The following shared-queue contract belongs to the target-owned queue and `q` policy implementation rather than the TUI-held queue:
 
 `/agent queue <target> [w:<w-mode>] <prompt>` queues a distinct future target turn. `/agent <target> w:q <prompt>` is its compact equivalent. If the target has an active or pending turn, append the complete structured user input and the remaining `w` policy to the shared process-lifetime, target-owned FIFO instead of steering the active turn. Queued follow-ups start one turn at a time in FIFO order.
 
@@ -386,30 +385,27 @@ The target turn's final response uses the source's ordinary next-turn input queu
 
 If the target is idle or closed by the time the queue operation is admitted, dispatch the prompt immediately through the normal start or resume-and-start path. This includes the race where the active turn completes while the command is being resolved. `queue` accepts only an existing target; configured role names continue to use ordinary prompt syntax and spawn immediately.
 
-The optional response-observation and `m` policy belongs to the future turn started by that queued input, not the turn that was active when the user queued it. A queued item remains inspectable through `agentQueue/list` and becomes durable target user input when admitted. Model-authored `send_input(..., w:"q")` and user-authored queue commands share this same target-owned FIFO; `agentQueue/delete` removes an entry that has not begun admission. The existing `turn/started` notification carries the queue entry and source, plus that entry's committed response policy, so the TUI can promote pending queue presentation without a second lifecycle notification. Core publishes the queue entry's handling only after its source-side policy commits. That same source-side transaction consumes and binds any independently reserved next-turn policy before the target publishes `turn/started`, combining it with the queue entry under the normal strongest-delivery rules. A degraded post-admission start retains queue provenance with no entry policy and emits the existing source warning; any previously durable next-turn policy remains bound to that exact turn.
+The optional response-observation policy belongs to the future turn started by that queued input, not the turn that was active when the user queued it. A queued item remains inspectable through `agentQueue/list` and becomes durable target user input when admitted. Model-authored `send_input(..., w:"q")` and user-authored queue commands share this same target-owned FIFO; `agentQueue/delete` removes an entry that has not begun admission. The existing `turn/started` notification carries the queue entry and source, plus that entry's committed response policy, so the TUI can promote pending queue presentation without a second lifecycle notification. Core publishes the queue entry's handling only after its source-side policy commits. That same source-side transaction consumes and binds any independently reserved next-turn policy before the target publishes `turn/started`, combining it with the queue entry under the normal strongest-delivery rules. A degraded post-admission start retains queue provenance with no entry policy and emits the existing source warning; any previously durable next-turn policy remains bound to that exact turn.
 
 `/agent queue <target>` without a prompt opens that target's queued-follow-up view. The user can inspect queued items there, press Enter to dequeue one and restore its complete command/input to the composer for editing, or press Tab to open explicit edit/remove controls. Stable process-local entry IDs keep either action bound to the selected prompt if completion concurrently drains another item. Opening the view does not admit a turn, and no separate `pending` or `start` command exists.
 
 ## Target-turn handling
 
-The current user command reuses `c`/`f`/`x` response handling; omitted handling is passive. The later `m` and `q` extensions are listed separately in this table so their planned effects are not mistaken for implemented options:
+The user command reuses `c`/`f`/`x` response handling; omitted handling is passive. `q` selects the shared target-owned FIFO:
 
 | Flag | Effect |
 | --- | --- |
 | omitted | Steer active work and deliver the final response passively. |
 | `c` | Deliver the first complete commentary item. |
 | `f` | Deliver the final response and wake the source model if it is idle. |
-| `m` (deferred) | Give this target turn an attributed route back to the source, with at most one idle source wake. |
-| `q` (deferred) | Queue supplied input as a distinct server-owned FIFO turn instead of steering active work. |
+| `q` | Queue supplied input as a distinct server-owned FIFO turn instead of steering active work. |
 | `x` | Keep the final response presentation-only; do not add it to source-model context. |
 
 For per-dispatch `w` handling, the displayed source thread is the observer. Explicit `observe` defaults to the same thread but can select another observer with `from`. Switching visual focus after dispatch does not move the observation to another thread.
 
-The control pane labels current modes `passive`, `wake`, and `presentation` while command entry uses compact `w` syntax. Presentation also records requested first commentary and TUI-queued admission. Future reverse-message and server-queued flags require their own visible state when implemented.
+The control pane labels current modes `passive`, `wake`, and `presentation` while command entry uses compact `w` syntax. Presentation also records requested first commentary and TUI-queued admission.
 
 Commentary means the first complete commentary item, not streaming output. The basic pane emphasizes passive, wake, and presentation-only final delivery; commentary remains an advanced toggle because the user can inspect target commentary directly. It is still useful when the source model needs the target's immediate acknowledgement or task interpretation.
-
-The deferred `m` contract is directional, exact-turn authority rather than ambient graph discovery. The target model sees the source identity and compact reply selector only after the grant binds. An accepted message steers an active source; the first message to an idle source may start one wake turn, and later messages may steer only that same wake turn. Completion, close, ownership transfer, process shutdown, cold resume, and fork revoke the live route. TUI and rollout history retain the grant and messages for audit without reactivating authority.
 
 ### Existing stronger observation
 
@@ -428,47 +424,21 @@ Replacement semantics are separate from per-dispatch `w`. The explicit command i
 
 The optional `from <observer>` clause selects whose observation of the target is changed. For example, Main can issue `/agent observe Main from Peirce passive` to change Peirce's observation of Main without switching the displayed thread. Without `from`, the issuing thread remains the observer. Both selectors accept the existing UUID, ref, nickname, and task-path forms, including quoted names. The server resolves and authorizes both identities; autocomplete does not establish authority.
 
-The command does not start a turn, send input, or change send permissions or their defaults. Its audit stays in the issuing thread and displays delivery direction as **target → observer**. Successful records retain the resolved observer; failures retain the authored observer selector when resolution did not succeed. Older records without observer fields do not invent a direction.
+The command does not start a turn, send input, or change which agents belong to the owned tree. Its audit stays in the issuing thread and displays delivery direction as **target → observer**. Successful records retain the resolved observer; failures retain the authored observer selector when resolution did not succeed. Older records without observer fields do not invent a direction.
 
 `observe` applies only to the target's active or pending turn, or to an undelivered completion reservation for that turn. It is not a permanent agent subscription. If the target is idle with no reserved completion, the command reports that there is no observation to replace; use `w` on the next dispatch or resume instead. It replaces final-response handling only and does not add, remove, or replay first-commentary observation.
 
 Promoting a presentation-only user task to passive or wake delivery records its compact hidden task linkage before the replacement becomes deliverable. The source model therefore receives the question as well as the eventual answer; demotion to presentation-only does not attempt to retract context that was already committed.
 
-Reply permission is a separate, user-authored relationship setting:
-
-```text
-/agent sends <target> enable
-/agent sends <target> disable
-/agent sends Banach to Franklin enable
-/agent sends Franklin to Banach enable
-```
-
-Without `to`, the recipient is the thread issuing the command. With `to`, the user selects
-another live recipient in the same owned graph, by ref, nickname, or UUID. A grant is directed:
-Banach → Franklin does not grant Franklin → Banach or Banach → Main. Enable both directions
-explicitly for a pair of collaborating agents. Self-routes, foreign-owned endpoints, and closed
-endpoints are rejected; these commands neither adopt nor resume threads.
-
-For a supervisor coordinating collaborating coders and their reviewers:
-
-```text
-/agent sends all enable
-/agent sends all disable
-```
-
-`all` sets a live default for the issuing thread and its current and future descendants. Both endpoints must belong to that subtree; it grants nothing to ancestors or outside siblings. Explicit directed pair settings take precedence. When subtrees have different defaults, the nearest common supervisor with an explicit subtree setting decides the pair's default. The picker distinguishes inherited and explicit permissions. Membership does not inherit parent history or start another agent's turn merely to announce it.
-
-Subtree settings last across turns, not process shutdown, cold resume, or history fork. Closing a supervisor revokes its setting; changing ownership does not carry it to another supervisor's graph. Existing instructions remain auditable but are not permission authority. Disabling a default does not override explicitly enabled pairs or retract already admitted turns. Pending peer inputs are checked against the effective permission before queue admission. Ordinary supervisor task dispatch to descendants remains available.
-
-The picker's **Messaging permissions** action prepares this command for confirmation. Its detail panel lists inherited and explicit **Send to** and **Receive from** permissions by peer name/ref, independently of the viewed thread's per-turn response observation. Unlisted relationships are not implied grants. Permission confirmations show sender → recipient; canonical UUIDs remain in detailed inspection. **Latest response** is the selected agent's own output, while **Latest received from** separately shows attributed incoming input. Main's peer display copies are neither.
-
-Enabling permission does not assign work or ask agents to start communicating. The user or supervisor supplies that instruction. For a routine peer update, `w:x` avoids subscribing the sender to the recipient's final response; `w:cx` also requests first commentary acknowledgement, and `w:f` requests a completion wake when the sender needs the completed work.
-
-Enabling it acknowledges the source's relationship snapshot before authorizing attributed `send_input` calls from later target turns. It does not add an `<agent_reply_route>` item to the target's model context. Disabling it rejects new reverse admissions. Input already admitted to a target turn runs under its captured response policy; queued reverse and peer input must still pass the current permission check before target-turn admission. An explicit disable wins over a later model-authored `w:m`. The setting lasts for the live control relationship and is revoked by close, ownership transfer, process shutdown, cold resume, or fork. Previously recorded, typed route guidance remains readable through compaction, rollback, and migration, but never restores live permission. V2 targets retain their native inter-agent communication contract and reject this V1 route action.
+Agents in the same owned tree may always message one another. The former `/agent sends`
+controls and picker action are removed. The app-server `replyRoute` and `subtreeMessaging`
+action variants remain wire-compatible for older clients, but the server rejects them as
+obsolete without changing runtime state. Historical control records remain readable and
+renderable; they do not authorize or prevent current sends.
 
 Disposable V1 model requests omit harness-tagged retired reply routes and messaging-policy notices. Canonical history retains that evidence with its full identity; it does not restore live permission. Nicknames and task paths come from the shared receiver-scoped identity context. Untagged legacy or inline scoped-route text remains unchanged; its text does not establish trusted attribution.
 
-Accepted peer input has two presentations: the recipient's attributed input and a live-only copy in Main's transcript, labeled `Banach [role] sends to Franklin [role] (○ not visible)`. That label describes visibility to **Main's model**, not the recipient. The copy never steers or wakes Main, never enters Main's model context or rollout, and retains complete message text in Full transcript mode. Queued messages are copied when admitted to the recipient's turn, not when merely enqueued. Messages sent directly to Main already have a receipt there and are not duplicated. Peer audit copies use the existing live TUI replay buffer, including in-process history refreshes, without restoring reply permissions. A cold resume of Main does not reconstruct these display-only copies; inspect the communicating threads for their durable messages. This avoids storing a third copy of every peer payload in Main. User-authored route-control decisions remain durable in Main.
+Accepted peer input has two presentations: the recipient's attributed input and a live-only copy in Main's transcript, labeled `Banach [role] sends to Franklin [role] (○ not visible)`. That label describes visibility to **Main's model**, not the recipient. The copy never steers or wakes Main, never enters Main's model context or rollout, and retains complete message text in Full transcript mode. Queued messages are copied when admitted to the recipient's turn, not when merely enqueued. Messages sent directly to Main already have a receipt there and are not duplicated. Peer audit copies use the existing live TUI replay buffer, including in-process history refreshes. A cold resume of Main does not reconstruct these display-only copies; inspect the communicating threads for their durable messages. This avoids storing a third copy of every peer payload in Main. Historical route-control decisions remain durable audit records but do not affect current sends.
 
 ## User input and attribution
 
@@ -486,7 +456,7 @@ agent/control {
   authoredSelector?,
   action: {
     type: "spawn" | "prompt" | "reservedPrompt" | "queuedPrompt"
-        | "resume" | "interrupt" | "close" | "observe" | "replyRoute",
+        | "resume" | "interrupt" | "close" | "observe",
     target,
     input?, // spawn, prompt, queued prompt, or interrupt follow-up
     responseHandling?
@@ -613,8 +583,8 @@ evidence that any related runtime was stopped.
 - Recheck source and target writer ownership, rollback quarantine, and ordinary admission at the mutation boundary. Inspection is read-only and must not implicitly select, load, or adopt its target.
 - Do not copy alias mappings into a root fork. A history-bearing fork reserves inherited numeric and nickname space, while a no-history fork starts a fresh namespace.
 - Apply the current source thread's concurrency limit to resume and spawn. Apply its depth limit to model-authored operations that create a new parent edge. Explicit user spawning and adoption may exceed that autonomous depth budget while recording the actual depth; live observation and same-root resume retain the target's existing graph depth.
-- Keep V1 `send_input` available at maximum spawn depth for communication already permitted by the selected runtime; discovery of a UUID does not grant new communication authority.
-- When the deferred `m` route is added, bind it to the exact turn and retain attributed message provenance rather than presenting agent messages as genuine user input.
+- Keep V1 `send_input` available at maximum spawn depth for same-owned-tree communication; discovery of a UUID does not grant cross-tree ownership or lifecycle authority.
+- Retain attributed message provenance rather than presenting agent messages as genuine user input.
 - Keep the displayed source thread usable if target resume, spawn, or prompt admission fails.
 
 ## V1 and V2
@@ -626,7 +596,7 @@ The user-facing grammar should not expose the selected multi-agent implementatio
 | same-root prompt, queue, interrupt, close | Use UUID-resolved `AgentControl` lifecycle operations. | Resolve the durable alias to a UUID, then use the V2-loaded target's shared user-input and lifecycle operations. |
 | source-relative `c`/`f`/`x` handling | Bind the durable exact-turn response observer. | Bind the same durable exact-turn observer so `w` semantics do not change or duplicate native V2 completion delivery. |
 | TUI-held follow-up | Submit through typed idle-only admission and bind policy only after admission. | Use the same admission boundary, not the native mailbox as an implicit second queue. |
-| `m`/`q` extensions (deferred) | Add exact-turn reverse routing and shared target-owned FIFO. | Adapt the same authority and queue contract without changing provenance. |
+| target-owned `q` | Use the shared target-owned FIFO and exact-turn observation. | Adapt the same queue contract without changing provenance. |
 | default or role spawn | Use the V1 child registry and shared role configuration. | Use the V2 task graph and shared role configuration. |
 | model/reasoning precedence | Apply explicit values after role and configured defaults, then validate the final child settings. | Use the same shared resolution path; V2 catalog tags remain descriptive rather than a spawn gate. |
 | `fork:none`, `fork:all`, `fork:N` | Adapt the shared user-dispatch fork mode without changing the model-tool schema. | Adapt the same fork mode to V2 task spawning. |
@@ -655,7 +625,7 @@ Target-first `close` and `resume` are reserved actions and receive action highli
 
 ## Required coverage and remaining qualification
 
-The following inventory includes both current and deferred contracts. Cases involving `m`, `q`, the shared server FIFO, or close-response replay belong to their later implementation, not to claims that this slice has passed validation. All other cases need source coverage and subsequent CI execution; no local builds, tests, snapshot generation, or compile-dependent schema generators ran during this replay.
+The following inventory spans the user-control, shared server FIFO, and close-response replay owners. Source coverage is not a claim that this slice has passed executable validation. No local builds, tests, snapshot generation, or compile-dependent schema generators ran during the send-gating removal.
 
 1. Active target receives structured user input through steer without changing source focus.
 2. Idle target starts with sticky settings and omitted `w` delivers passively.
@@ -666,7 +636,7 @@ The following inventory includes both current and deferred contracts. Cases invo
 7. An exact role name wins over a colliding ordinary nickname, while the existing agent remains addressable by ref, UUID, or `nick:`; the reserved `Main` target wins over an unprefixed role named `main`, which remains available through `role:main`.
 8. `w:f` wakes the displayed source exactly once.
 9. `w:x` produces presentation-only completion on a new turn.
-10. `w:m` exposes an attributed reply route for one target turn, permits one idle source wake, and rejects later wake attempts or UUID-only bypass; `/agent sends` enables the same attributed route across later turns after source acknowledgement, and explicit disable overrides `m`.
+10. Same-owned-tree messaging is always available without a permission flag.
 11. Existing `f` remains authoritative when a later active-turn dispatch requests `x`.
 12. Source switch after dispatch does not move observation ownership.
 13. Child-to-sibling dispatch binds the child as observer.
@@ -708,13 +678,13 @@ The following inventory includes both current and deferred contracts. Cases invo
 49. Concurrent sibling and multi-process spawns allocate unique monotonic refs and never publish an alias before the alias-and-edge transaction commits.
 50. Crashes before and after alias commit leave either no published alias or a recoverable committed alias, never a model-visible uncommitted ref.
 51. Same-root prompt, queue, wait/observe, interrupt, and close succeed subject to lifecycle checks, while equivalent out-of-root UUID operations reject without mutation.
-52. A child cannot close Main, while an exact-turn `m` grant permits attributed child-to-Main input and independent response observation.
+52. A child cannot close Main, while attributed child-to-Main input and independent response observation need no send grant.
 53. Two roots attempting to adopt one target produce one exclusive owner, one auditable transfer, and one actionable conflict without duplicate watchers.
 54. Adoption preserves historical rollout source and parent metadata while its control item records old root, new root, UUID, and authored selector.
 55. Root-scoped app-server alias list, mutation responses or update notifications, replay, and pagination expose the same committed aliases without synchronous render-time metadata reads.
 56. `/agent fork:none`, `fork:all`, and `fork:N` children remain in the source alias namespace; only a separate root-thread fork creates a new namespace.
 57. Canonical lifecycle records remain UUID-authoritative while the user-control audit item preserves authored selector and resolved UUID.
-58. A V1 child at maximum spawn depth still receives `send_input` and can use an explicit same-root `m` route without receiving deeper spawn/resume/wait/close tools.
+58. A V1 child at maximum spawn depth still receives `send_input` and can message same-root agents without receiving deeper spawn/resume/wait/close tools.
 59. Adopting a stored foreign root preserves its UUID and history while assigning a generated destination child nickname instead of importing `Main`.
 60. Parent, child, and sibling resume entry points preserve an existing same-root parent/depth and generic resume cannot reopen a transferred V1 rollout under its historical owner.
 61. Explicit user spawn/adoption succeeds beyond the autonomous model depth budget, records its real depth, and leaves the resulting leaf with communication-only V1 tools.
@@ -736,7 +706,7 @@ Tests should use deterministic lifecycle and response gates rather than sleeps.
 7. Add reusable immediate and idle default or role spawning, unified none/all/last-N fork modes, one-shot first-turn `w` reservations, autocomplete, and stronger-existing-observation guidance.
 8. Add interrupt, close, standalone resume, and user-authoritative observation replacement.
 9. Project pending approval status and transcript inspection into the control pane without duplicating their subsystems.
-10. Replace process-local client-specific prompt queues with one target-owned FIFO, then add model-facing `q` admission and exact-turn `m` reverse-message grants.
+10. Replace process-local client-specific prompt queues with one target-owned FIFO and add model-facing `q` admission.
 11. Validate the complete contract in V1, preserve it through V2, and cover live, replay, non-paginated, and paginated presentation.
 
 ## Open decisions

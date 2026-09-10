@@ -656,18 +656,48 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<()> {
+        // Selection rebuilds the widget and can also attach a saved runtime. Keep
+        // that state machine out of callers such as /side and its cleanup paths.
+        Box::pin(self.select_agent_thread_with_mode(
+            tui,
+            app_server,
+            thread_id,
+            super::agent_cycling::AgentThreadSelectionMode::Inspect,
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    pub(super) async fn select_agent_thread_with_mode(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+        selection_mode: super::agent_cycling::AgentThreadSelectionMode,
+    ) -> Result<bool> {
+        use super::agent_cycling::AgentThreadSelectionMode;
+
+        let available_only = selection_mode == AgentThreadSelectionMode::AvailableOnly;
         if self
             .side_threads
             .get(&thread_id)
             .is_some_and(|side| side.close_request.is_some())
         {
-            self.chat_widget.add_info_message(
-                "Side chat is still closing. Try again in a moment.".to_string(),
-                /*hint*/ None,
-            );
-            return Ok(());
+            if !available_only {
+                self.chat_widget.add_info_message(
+                    "Side chat is still closing. Try again in a moment.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+            return Ok(false);
         }
-
+        if available_only
+            && !self
+                .refresh_available_agent_for_cycle(app_server, thread_id)
+                .await
+        {
+            return Ok(false);
+        }
         let pending_profile_on_unavailable_thread = self.thread_unavailable(thread_id)
             && self.pending_server_profiles.contains_key(&thread_id);
         let cached_session = if self.thread_unavailable(thread_id) {
@@ -681,12 +711,15 @@ impl App {
             None
         };
         if self.active_thread_id == Some(thread_id) && !self.thread_unavailable(thread_id) {
-            return Ok(());
+            return Ok(true);
         }
         if !self.can_select_thread() {
-            return Ok(());
+            return Ok(false);
         }
         if self.active_thread_id == Some(thread_id) {
+            if !self.thread_unavailable(thread_id) {
+                return Ok(true);
+            }
             // Detach the cached receiver before a successful attachment replaces its channel.
             self.store_active_thread_receiver().await;
         }
@@ -699,24 +732,29 @@ impl App {
             && self.primary_thread_id == Some(thread_id)
             && self.active_side_parent_thread_id() == Some(thread_id)
             && !self.should_attach_live_thread_for_selection(thread_id);
-        if !(known_side
+        if !(available_only
+            || known_side
             || live_parent
             || self
                 .refresh_agent_picker_thread_liveness(app_server, thread_id)
                 .await)
         {
-            self.add_agents_overview_error(format!(
-                "Agent thread {thread_id} is no longer available."
-            ));
-            return Ok(());
+            if !available_only {
+                self.add_agents_overview_error(format!(
+                    "Agent thread {thread_id} is no longer available."
+                ));
+            }
+            return Ok(false);
         }
         let mode = if self.should_attach_live_thread_for_selection(thread_id) {
             match self
                 .attach_live_thread_for_selection(app_server, thread_id)
                 .await
             {
+                Ok(false) if available_only => return Ok(false),
                 Ok(true) => SelectionMode::Live,
                 Ok(false) => SelectionMode::ReplayOnly,
+                Err(_) if available_only => return Ok(false),
                 Err(_) if self.thread_event_channels.contains_key(&thread_id) => {
                     SelectionMode::ReplayOnly
                 }
@@ -724,7 +762,7 @@ impl App {
                     self.add_agents_overview_error(format!(
                         "Failed to attach to agent thread {thread_id}: {err}"
                     ));
-                    return Ok(());
+                    return Ok(false);
                 }
             }
         } else if self
@@ -741,6 +779,7 @@ impl App {
             app_server,
             thread_id,
             Selection {
+                navigation: selection_mode,
                 mode,
                 cached_session,
                 pending_profile_on_unavailable_thread,
@@ -769,12 +808,15 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
         selection: Selection,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Selection {
+            navigation,
             mode,
             cached_session,
             pending_profile_on_unavailable_thread,
         } = selection;
+        let available_only =
+            navigation == super::agent_cycling::AgentThreadSelectionMode::AvailableOnly;
         let mut is_replay_only = mode != SelectionMode::Live;
         let mut attached_replay_only = mode == SelectionMode::ReplayOnly;
         let previous_thread_id = self.active_thread_id;
@@ -792,11 +834,15 @@ impl App {
         self.active_thread_id = None;
         let Some((receiver, mut snapshot)) = self.activate_thread_for_replay(thread_id).await
         else {
-            self.add_agents_overview_error(format!("Agent thread {thread_id} is already active."));
+            if !available_only {
+                self.add_agents_overview_error(format!(
+                    "Agent thread {thread_id} is already active."
+                ));
+            }
             if let Some(previous_thread_id) = previous_thread_id {
                 self.activate_thread_channel(previous_thread_id).await;
             }
-            return Ok(());
+            return Ok(false);
         };
 
         let session_verified = self
@@ -820,16 +866,36 @@ impl App {
             is_replay_only = true;
             attached_replay_only = true;
         }
+        if available_only
+            && (!session_verified || is_replay_only || !self.cycle_attachment_available(thread_id))
+        {
+            // The liveness read does not guarantee that subsequent session hydration succeeds.
+            // Return the borrowed receiver before trying the next keyboard candidate, keeping
+            // the previous widget, draft, and active channel rather than opening a replay view.
+            if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+                channel.store.lock().await.active = false;
+                channel.receiver = Some(receiver);
+            }
+            if let Some(previous_thread_id) = previous_thread_id {
+                self.activate_thread_channel(previous_thread_id).await;
+            }
+            return Ok(false);
+        }
         if pending_profile_on_unavailable_thread && !is_replay_only && session_verified {
             self.pending_server_profiles.remove(&thread_id);
         }
         // Refreshing can merge restored turns into the store, so recap progress must be read only
         // after the refresh while the activated thread channel is still retained.
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
-            self.add_agents_overview_error(format!(
-                "Agent thread {thread_id} is no longer available."
-            ));
-            return Ok(());
+            if !available_only {
+                self.add_agents_overview_error(format!(
+                    "Agent thread {thread_id} is no longer available."
+                ));
+            }
+            if let Some(previous_thread_id) = previous_thread_id {
+                self.activate_thread_channel(previous_thread_id).await;
+            }
+            return Ok(false);
         };
         let recap_progress = {
             let mut store = channel.store.lock().await;
@@ -940,7 +1006,7 @@ impl App {
         }
         self.refresh_pending_thread_approvals().await;
 
-        Ok(())
+        Ok(true)
     }
 
     pub(super) fn render_thread_snapshot(
@@ -1782,8 +1848,8 @@ impl App {
         }
     }
 
-    /// Returns the adjacent thread id for keyboard navigation, backfilling from the server if the
-    /// local cache has no neighbor.
+    /// Returns an eligible neighbor for keyboard navigation, backfilling loaded descendants if
+    /// the local cache has no available, unattempted member of the current root.
     ///
     /// Tries the fast path first: ask `AgentNavigationState` directly. If it returns `None` (no
     /// adjacent entry exists, typically because the cache was never populated with remote
@@ -1794,12 +1860,16 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         direction: AgentNavigationDirection,
+        attempted: &HashSet<ThreadId>,
     ) -> Option<ThreadId> {
         let current_thread = self.current_displayed_thread_id();
-        if let Some(thread_id) = self
-            .agent_navigation
-            .adjacent_thread_id(current_thread, direction)
-        {
+        let root = self.agent_root_thread_id()?;
+        if let Some(thread_id) = self.agent_navigation.adjacent_available_thread_id(
+            root,
+            current_thread,
+            direction,
+            |id| !attempted.contains(&id) && self.cycle_attachment_available(id),
+        ) {
             return Some(thread_id);
         }
 
@@ -1815,8 +1885,12 @@ impl App {
         {
             self.last_subagent_backfill_attempt = Some(primary_thread_id);
         }
-        self.agent_navigation
-            .adjacent_thread_id(self.current_displayed_thread_id(), direction)
+        self.agent_navigation.adjacent_available_thread_id(
+            self.agent_root_thread_id()?,
+            self.current_displayed_thread_id(),
+            direction,
+            |id| !attempted.contains(&id) && self.cycle_attachment_available(id),
+        )
     }
 
     pub(super) async fn resume_target_session(

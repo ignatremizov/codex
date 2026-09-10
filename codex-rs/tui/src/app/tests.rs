@@ -21,6 +21,10 @@ mod thread_switch_replay_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/agent_cycling_tests.rs"]
+mod agent_cycling_tests;
+#[path = "tests/agent_picker_refresh_tests.rs"]
+mod agent_picker_refresh_tests;
 #[path = "tests/agents_navigation_tests.rs"]
 mod agents_navigation_tests;
 #[path = "tests/approvals_reviewer_error_tests.rs"]
@@ -4924,6 +4928,11 @@ async fn reopen_saved_side_chat(during: DuringOpen) -> Result<()> {
     assert_eq!(app.current_displayed_thread_id(), Some(parent));
     // The name notification still updates the tab after focus returns to the parent.
     drain_app_events(&mut app, &mut tui, &mut server, &mut events).await?;
+    assert_eq!(
+        app.thread_event_channels[&child].attachment(),
+        ThreadEventAttachment::Live
+    );
+    assert!(app.side_companions.contains_key(&child));
     loop {
         let event = time::timeout(Duration::from_secs(/*secs*/ 5), server.next_event())
             .await?
