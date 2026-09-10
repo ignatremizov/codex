@@ -210,14 +210,9 @@ impl App {
             && self.chat_widget.composer_text_with_pending().is_empty()
             && previous_agent_shortcut_matches(key_event, allow_agent_word_motion_fallback)
         {
-            if let Some(thread_id) = self
-                .adjacent_thread_id_with_backfill(app_server, AgentNavigationDirection::Previous)
-                .await
-            {
-                let _ = self
-                    .select_agent_thread_and_discard_side(tui, app_server, thread_id)
-                    .await;
-            }
+            let _ = self
+                .cycle_available_agent(tui, app_server, AgentNavigationDirection::Previous)
+                .await;
             return;
         }
         if self.overlay.is_none()
@@ -227,14 +222,9 @@ impl App {
             && self.chat_widget.composer_text_with_pending().is_empty()
             && next_agent_shortcut_matches(key_event, allow_agent_word_motion_fallback)
         {
-            if let Some(thread_id) = self
-                .adjacent_thread_id_with_backfill(app_server, AgentNavigationDirection::Next)
-                .await
-            {
-                let _ = self
-                    .select_agent_thread_and_discard_side(tui, app_server, thread_id)
-                    .await;
-            }
+            let _ = self
+                .cycle_available_agent(tui, app_server, AgentNavigationDirection::Next)
+                .await;
             return;
         }
         if matches!(self.app_server_target, AppServerTarget::LocalDaemon { .. })

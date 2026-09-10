@@ -31,7 +31,7 @@ async fn check_mail_resolves_sender_without_loading_or_adopting(
             .expect("disable V2");
     });
     let test = builder.build_with_auto_env(&server).await?;
-    let (sender, selector) = match selector {
+    let (sender, selector, expected_from) = match selector {
         SenderSelector::ClosedRef | SenderSelector::ClosedTask => {
             let child = test
                 .codex
@@ -52,15 +52,19 @@ async fn check_mail_resolves_sender_without_loading_or_adopting(
                 SenderSelector::ClosedTask => child.task_path.expect("durable task path"),
                 SenderSelector::ForeignUuid | SenderSelector::ForeignForcedUuid => unreachable!(),
             };
-            (child.target_thread_id, selected)
+            (
+                child.target_thread_id,
+                selected,
+                child.agent_ref.expect("durable ref").to_string(),
+            )
         }
         SenderSelector::ForeignUuid => {
             let sender = ThreadId::new();
-            (sender, sender.to_string())
+            (sender, sender.to_string(), sender.to_string())
         }
         SenderSelector::ForeignForcedUuid => {
             let sender = ThreadId::new();
-            (sender, format!("id:{sender}"))
+            (sender, format!("id:{sender}"), sender.to_string())
         }
     };
     let mock = mount_sse_sequence(
@@ -77,6 +81,16 @@ async fn check_mail_resolves_sender_without_loading_or_adopting(
                 ev_completed("sender-selection"),
             ]),
             sse(vec![
+                ev_response_created("sender-selection-again"),
+                ev_function_call_with_namespace(
+                    "select-sender-again",
+                    "multi_agent_v1",
+                    "check_mail",
+                    &json!({"from": selector}).to_string(),
+                ),
+                ev_completed("sender-selection-again"),
+            ]),
+            sse(vec![
                 ev_response_created("selected"),
                 ev_assistant_message("selected-done", "No selected mail."),
                 ev_completed("selected"),
@@ -86,13 +100,52 @@ async fn check_mail_resolves_sender_without_loading_or_adopting(
     .await;
     test.submit_turn("Check the selected sender.").await?;
     let requests = mock.requests();
-    assert_eq!(requests.len(), 2);
-    let output = requests[1].function_call_output("select-sender");
+    assert_eq!(requests.len(), 3);
+    for (request, call_id) in [
+        (&requests[1], "select-sender"),
+        (&requests[2], "select-sender"),
+        (&requests[2], "select-sender-again"),
+    ] {
+        let output = request.function_call_output(call_id);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                output["output"].as_str().expect("metadata result")
+            )?,
+            json!({"status": "empty", "from": expected_from, "delivered_count": 0, "rejected_count": 0}),
+        );
+    }
+    test.codex.flush_rollout().await?;
+    let history = test
+        .thread_store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: test.session_configured.thread_id,
+            include_archived: false,
+        })
+        .await?;
+    let canonical = history
+        .items
+        .iter()
+        .filter_map(|item| {
+            let RolloutItem::ResponseItem(envelope) = item else {
+                return None;
+            };
+            match &envelope.item {
+                ResponseItem::FunctionCallOutput {
+                    call_id: Some(id),
+                    output,
+                    ..
+                } if id == "select-sender" || id == "select-sender-again" => {
+                    Some(serde_json::from_str::<serde_json::Value>(
+                        output.text_content().expect("canonical acceptance"),
+                    ))
+                }
+                _ => None,
+            }
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(
-            output["output"].as_str().expect("metadata result")
-        )?,
-        json!({"status": "delivery_requested", "from": sender.to_string()}),
+        canonical,
+        vec![json!({"status":"delivery_requested", "from":sender.to_string()}); 2]
     );
     assert!(
         test.thread_manager.get_thread(sender).await.is_err(),

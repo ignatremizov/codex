@@ -29,6 +29,7 @@ use std::collections::HashSet;
 
 mod background_commentary;
 mod background_completion;
+mod identity_header;
 mod mailbox_send;
 
 #[cfg(test)]
@@ -37,6 +38,7 @@ mod task_path_tests;
 
 pub(crate) use background_commentary::background_commentary_history_cell_from_agent_message;
 pub(crate) use background_completion::background_completion_history_cell_from_agent_message;
+pub(crate) use identity_header::IdentityHeader;
 
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
@@ -107,6 +109,9 @@ impl CollabAgentHistoryCell {
                 }
                 if metadata.agent_role.is_some() {
                     stored.agent_role = metadata.agent_role;
+                }
+                if metadata.agent_ref.is_some() {
+                    stored.agent_ref = metadata.agent_ref;
                 }
                 if metadata.spawn_request.is_some() {
                     stored.spawn_request = metadata.spawn_request;
@@ -313,6 +318,8 @@ pub(crate) struct SubAgentActivityDisplay {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AgentMetadata {
+    /// Trusted compact ref supplied by aliases or lifecycle history.
+    pub(crate) agent_ref: Option<String>,
     /// Canonical task path supplied by durable agent aliases or lifecycle history.
     pub(crate) task_path: AgentTaskPath,
     /// Human-friendly nickname shown in rendered tool-call rows.
@@ -334,6 +341,7 @@ pub(crate) enum AgentTaskPath {
 
 #[derive(Clone, Copy)]
 struct AgentLabel<'a> {
+    agent_ref: Option<&'a str>,
     task_path: Option<&'a str>,
     thread_id: Option<ThreadId>,
     nickname: Option<&'a str>,
@@ -978,6 +986,7 @@ pub(crate) fn parse_thread_id(thread_id: &str) -> Option<ThreadId> {
 
 fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> {
     AgentLabel {
+        agent_ref: metadata.agent_ref.as_deref(),
         task_path: match &metadata.task_path {
             AgentTaskPath::Unknown => None,
             AgentTaskPath::Known(task_path) => task_path.as_deref(),
@@ -994,94 +1003,29 @@ fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
 }
 
 fn agent_label_plain(agent: AgentLabel<'_>) -> String {
-    let nickname = agent
-        .nickname
-        .map(str::trim)
-        .filter(|nickname| !nickname.is_empty());
-    let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
-    let identity = match (nickname, role, agent.thread_id) {
-        (Some(nickname), Some(role), _) => format!("{nickname} [{role}]"),
-        (Some(nickname), None, _) => nickname.to_string(),
-        (None, Some(role), _) => format!("[{role}]"),
-        (None, None, Some(thread_id)) => thread_id.to_string(),
-        (None, None, None) => "agent".to_string(),
-    };
-    let identity = match spawn_request_label(agent.spawn_request) {
-        Some(settings) => format!("{identity} {settings}"),
-        None => identity,
-    };
-    match agent
-        .task_path
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
-        Some(task_path) => format!("{identity} {task_path}"),
-        None => identity,
-    }
+    agent_label_line(agent).to_string()
 }
 
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
-    let mut spans = agent_identity_spans(agent);
-    spans.extend(spawn_request_spans(agent.spawn_request));
-    if let Some(task_path) = agent
-        .task_path
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
-        spans.push(format!(" {task_path}").dim());
+    let fallback = agent
+        .thread_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "agent".to_string());
+    IdentityHeader {
+        fallback: &fallback,
+        nickname: agent.nickname,
+        role: agent.role,
+        task_path: agent.task_path,
+        agent_ref: agent.agent_ref,
+        model: agent
+            .spawn_request
+            .and_then(|settings| settings.model.as_deref()),
+        reasoning_effort: agent
+            .spawn_request
+            .and_then(|settings| settings.reasoning_effort.as_ref()),
     }
-    spans
-}
-
-fn agent_identity_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let nickname = agent
-        .nickname
-        .map(str::trim)
-        .filter(|nickname| !nickname.is_empty());
-    let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
-
-    if let Some(nickname) = nickname {
-        spans.push(
-            Span::from(nickname.to_string())
-                .fg(crate::agent_color::nickname_color(nickname))
-                .bold(),
-        );
-    } else if let Some(thread_id) = agent.thread_id {
-        let identity = thread_id.to_string();
-        let color = crate::agent_color::nickname_color(&identity);
-        spans.push(Span::from(identity).fg(color));
-    } else {
-        spans.push(Span::from("agent").cyan());
-    }
-
-    if let Some(role) = role {
-        spans.push(Span::from(" ").dim());
-        spans.push(format!("[{role}]").dim());
-    }
-
-    spans
-}
-
-fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<'static>> {
-    spawn_request_label(spawn_request)
-        .map(|details| vec![Span::from(" ").dim(), details.dim()])
-        .unwrap_or_default()
-}
-
-fn spawn_request_label(spawn_request: Option<&SpawnRequestSummary>) -> Option<String> {
-    let spawn_request = spawn_request?;
-    let model = spawn_request
-        .model
-        .as_deref()
-        .map(str::trim)
-        .filter(|model| !model.is_empty());
-    match (model, spawn_request.reasoning_effort.as_ref()) {
-        (Some(model), Some(reasoning_effort)) => Some(format!("({model} {reasoning_effort})")),
-        (Some(model), None) => Some(format!("({model})")),
-        (None, Some(reasoning_effort)) => Some(format!("({reasoning_effort})")),
-        (None, None) => None,
-    }
+    .render()
+    .spans
 }
 
 fn prompt_lines(prompt: &str, agent_prompt_preview_lines: usize) -> Vec<CollabDetail> {
@@ -1364,24 +1308,6 @@ mod tests {
                 agent_path: "/root/child".to_string(),
                 is_running_hint: false,
             })
-        );
-    }
-
-    #[test]
-    fn spawn_request_labels_preserve_partial_model_settings() {
-        assert_eq!(
-            spawn_request_label(Some(&SpawnRequestSummary {
-                model: Some("gpt-5.6-luna".to_string()),
-                reasoning_effort: None,
-            })),
-            Some("(gpt-5.6-luna)".to_string())
-        );
-        assert_eq!(
-            spawn_request_label(Some(&SpawnRequestSummary {
-                model: None,
-                reasoning_effort: Some(ReasoningEffortConfig::Max),
-            })),
-            Some("(max)".to_string())
         );
     }
 
@@ -1947,12 +1873,7 @@ mod tests {
             Some(crate::agent_color::nickname_color("Robie"))
         );
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
-        assert_eq!(title.spans[4].style.fg, None);
-        assert!(title.spans[4].style.add_modifier.contains(Modifier::DIM));
-        assert_eq!(title.spans[6].content.as_ref(), "(gpt-5 high)");
-        assert_eq!(title.spans[6].style.fg, None);
-        assert!(title.spans[6].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(title.spans[3], " [explorer] (gpt-5 high)".dim());
     }
 
     #[test]
@@ -2003,6 +1924,7 @@ mod tests {
     fn metadata_for(thread_id: ThreadId, robie_id: ThreadId, bob_id: ThreadId) -> AgentMetadata {
         if thread_id == robie_id {
             AgentMetadata {
+                agent_ref: None,
                 task_path: AgentTaskPath::Unknown,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
@@ -2013,6 +1935,7 @@ mod tests {
             }
         } else if thread_id == bob_id {
             AgentMetadata {
+                agent_ref: None,
                 task_path: AgentTaskPath::Unknown,
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),

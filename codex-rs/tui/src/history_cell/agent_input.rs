@@ -6,10 +6,9 @@ use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
-use ratatui::text::Span;
 
 use super::HistoryCell;
-use crate::agent_color::nickname_color;
+use crate::multi_agents::IdentityHeader;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
@@ -139,32 +138,16 @@ impl HistoryCell for AgentInputHistoryCell {
 }
 
 fn identity_label(identity: &AgentInputIdentity) -> Line<'static> {
-    let nickname = identity.nickname.as_deref().unwrap_or(&identity.thread_id);
-    let mut label = String::new();
-    if let Some(role) = &identity.role {
-        label.push_str(&format!(" [{}]", role.escape_debug()));
+    IdentityHeader {
+        fallback: &identity.thread_id,
+        nickname: identity.nickname.as_deref(),
+        role: identity.role.as_deref(),
+        task_path: identity.task_path.as_deref(),
+        agent_ref: identity.agent_ref.as_deref(),
+        model: identity.model.as_deref(),
+        reasoning_effort: identity.reasoning_effort.as_ref(),
     }
-    if let Some(task_path) = &identity.task_path {
-        label.push_str(&format!(" {}", task_path.escape_debug()));
-    }
-    if let Some(agent_ref) = &identity.agent_ref {
-        label.push_str(&format!(" ({})", agent_ref.escape_debug()));
-    }
-    match (&identity.model, &identity.reasoning_effort) {
-        (Some(model), Some(effort)) => {
-            label.push_str(&format!(" ({} {effort})", model.escape_debug()));
-        }
-        (Some(model), None) => label.push_str(&format!(" ({})", model.escape_debug())),
-        (None, Some(effort)) => label.push_str(&format!(" ({effort})")),
-        (None, None) => {}
-    }
-    vec![
-        Span::from(nickname.escape_debug().to_string())
-            .fg(nickname_color(nickname))
-            .bold(),
-        label.dim(),
-    ]
-    .into()
+    .render()
 }
 
 #[cfg(test)]

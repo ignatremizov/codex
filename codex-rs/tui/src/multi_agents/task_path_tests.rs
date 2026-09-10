@@ -5,6 +5,7 @@ use pretty_assertions::assert_eq;
 fn lifecycle_labels_include_authoritative_task_path() {
     let thread_id = ThreadId::new();
     let metadata = AgentMetadata {
+        agent_ref: Some("5".to_string()),
         agent_nickname: Some("Darwin".to_string()),
         agent_role: Some("worker".to_string()),
         task_path: AgentTaskPath::Known(Some("/root/mailbox-test".to_string())),
@@ -17,20 +18,16 @@ fn lifecycle_labels_include_authoritative_task_path() {
     let plain = agent_label_plain(label);
     let styled = agent_label_line(label);
     assert_eq!(plain, styled.to_string());
-    insta::assert_snapshot!(plain, @"Darwin [worker] (gpt-5 high) /root/mailbox-test");
+    insta::assert_snapshot!(plain, @"Darwin [worker] /root/mailbox-test (5) (gpt-5 high)");
     let title = title_with_agent("Spawned", label, /*spawn_request*/ None).to_string();
-    insta::assert_snapshot!(title, @"• Spawned Darwin [worker] (gpt-5 high) /root/mailbox-test");
+    insta::assert_snapshot!(title, @"• Spawned Darwin [worker] /root/mailbox-test (5) (gpt-5 high)");
     assert_eq!(
         styled,
         Line::from(vec![
             "Darwin"
                 .fg(crate::agent_color::nickname_color("Darwin"))
                 .bold(),
-            " ".dim(),
-            "[worker]".dim(),
-            " ".dim(),
-            "(gpt-5 high)".dim(),
-            " /root/mailbox-test".dim(),
+            " [worker] /root/mailbox-test (5) (gpt-5 high)".dim(),
         ])
     );
 }
@@ -67,6 +64,7 @@ fn metadata_refresh_preserves_unknown_paths_but_applies_authoritative_clears() {
     let cleared = cell
         .with_refreshed_agent_metadata(|_| {
             Some(AgentMetadata {
+                agent_ref: Some("5".to_string()),
                 task_path: AgentTaskPath::Known(None),
                 ..Default::default()
             })
@@ -78,5 +76,10 @@ fn metadata_refresh_preserves_unknown_paths_but_applies_authoritative_clears() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    insta::assert_snapshot!(rendered, @"• Darwin completed");
+    insta::assert_snapshot!(rendered, @"• Darwin (5) completed");
+    assert!(
+        cleared
+            .with_refreshed_agent_metadata(|_| Some(AgentMetadata::default()))
+            .is_none()
+    );
 }

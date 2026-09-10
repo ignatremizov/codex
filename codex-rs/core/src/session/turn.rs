@@ -1632,6 +1632,13 @@ async fn run_sampling_request(
                 &mut prompt_input,
                 identities,
             );
+            crate::context::project_check_mail_results(
+                &mut prompt_input,
+                sess.thread_id,
+                sess.services.thread_store.as_ref(),
+                &identities.refs,
+            )
+            .await?;
         }
         if let Some(executed_tool_calls) = sess.services.executed_tool_calls.as_ref()
             && executed_tool_calls

@@ -48,6 +48,10 @@ Selection alone does not acknowledge consumption. Tie consumption acknowledgemen
 
 Deliver payloads once through the appropriate structured user/agent input representation, preserving tool-call/result ordering. The tool result reports delivery metadata/status rather than duplicating payloads already inserted as structured input. In particular, user mail must not exist solely as quoted JSON inside a tool result.
 
+Canonical `check_mail` results and tool hooks record acceptance as `{"status":"delivery_requested","from":...}`, with a canonical sender UUID, `"user"`, or `null` for all senders. Disposable model requests project a genuine call/result pair against its existing fixed claim. Terminal claims report `empty`, `delivered`, or `rejected`, with `delivered_count` and `rejected_count`. Counts cover the entire fixed invocation, including deliveries completed by an earlier retry; they do not count later arrivals. A mixed consumed/rejected batch reports `delivered` with both counts, and a nonempty entirely rejected batch reports `rejected`, not `empty`.
+
+Model-visible `from` uses the receiving request's advertised short ref when available, otherwise the canonical UUID; `"user"` and `null` remain unchanged. Projection never creates a claim, grants authority, acknowledges consumption, or rewrites canonical history. Missing claims and nonterminal claims remain `delivery_requested`; unknown, error, and hook-rewritten result shapes are preserved. Real claim-read errors stop request preparation. The result stays before structured payloads. Normal sampling, local compaction, and remote-V2 disposable requests use this projection; legacy remote compaction keeps canonical results because it directly retains provider-returned history. `wait_agent` results are unaffected.
+
 `check_mail` never consumes ordinary queued prompts or intercepts steer input.
 
 ### Targeted consumption through `wait_agent`

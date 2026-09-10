@@ -39,7 +39,7 @@ fn lifecycle_task_mapping_preserves_an_authoritative_clear_in_history() {
         reply_recipient_thread_id: None,
         previous_owner_session_id: None,
         new_owner_session_id: None,
-        agent_ref: None,
+        agent_ref: Some("5".to_string()),
         nickname: Some("Darwin".to_string()),
         role: None,
         task: None,
@@ -66,6 +66,7 @@ fn lifecycle_task_mapping_preserves_an_authoritative_clear_in_history() {
         HashMap::from([(
             target,
             crate::multi_agents::AgentMetadata {
+                agent_ref: Some("5".to_string()),
                 agent_nickname: Some("Darwin".to_string()),
                 task_path: crate::multi_agents::AgentTaskPath::Known(None),
                 ..Default::default()
@@ -580,7 +581,7 @@ fn split_page_completion_merges_thread_wide_collab_metadata_snapshot() {
     insta::assert_snapshot!(
         rendered,
         @r"
-    • Robie II [explorer] (gpt-5.6-sol high) /root/mailbox-test completed: (● visible)
+    • Robie II [explorer] /root/mailbox-test (gpt-5.6-sol high) completed: (● visible)
       └ Finished the split-page review.
     "
     );
