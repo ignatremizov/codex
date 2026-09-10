@@ -23,10 +23,11 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through durable receiver-selected input delivery, directional user-selected observation controls, shared-server custom instruction forwarding, model-hidden root conclusion oversight, and root-scoped running-agent activity, including attributed V1 input, task-path discovery, live subtree messaging, acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
+This checkpoint inventories the integrated owners through fixed-claim mailbox outcome projection, compact receiver-scoped identities, and available-agent navigation, alongside durable receiver-selected input delivery, directional user-selected observation controls, shared-server custom instruction forwarding, model-hidden root conclusion oversight, and root-scoped running-agent activity. It also retains attributed V1 input, task-path discovery, live subtree messaging, acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
+| Mailbox outcome projection and available-agent navigation | Observability | Distinguish fixed-claim delivery outcomes from canonical acceptance and project only recognized inventory text through the receiving request's advertised refs. Keyboard cycling skips unavailable members without deleting historical picker rows or taking a replay-only attachment after failed session hydration. | `codex-rs/core/src/context/check_mail_result.rs`<br>`codex-rs/core/src/context/mailbox_inventory_projection.rs`<br>`codex-rs/thread-store/src/mailbox_inventory_presentation.rs`<br>`codex-rs/tui/src/app/agent_cycling.rs`<br>`codex-rs/tui/src/app/agent_cycle_order.rs` | Immutable mailbox claims and notification frontiers, bounded legacy/current inventory representations, disposable sampling/compaction input, root ownership, live attachments, session/profile refresh, and receiver restoration | `feat(agents): clarify mailbox outcomes and navigate available agents` |
 | Receiver-scoped compact agent identities | Efficiency | Hydrate the receiving root's bounded current identity map, including closed addressable members, and project routine V1 request envelopes to those refs without rewriting canonical UUID/send-time evidence. Keep model-facing send receipts admission-only and resume status distinct from a previous final answer. | `codex-rs/core/src/agent/control/identity_snapshot.rs`<br>`codex-rs/core/src/context/agent_envelope_projection.rs`<br>`codex-rs/core/src/context/world_state/agent_identities.rs`<br>`codex-rs/core/src/context/world_state/agent_identity_delta.rs` | Native root identity, request-scoped world state, canonical compaction evidence, rich-input attribution, and V1 tool output schemas | `feat(agents): hydrate compact receiver-scoped identities without losing canonical attribution` |
 | Local home identity and copyable rollout paths | Observability | Show the resolved local TUI home as an optional basename in the status line and a full path in `/status`; print the server-reported rollout path through `/rollout-path` or `/rollout` without guessing storage authority; retire status copy targets after accepted input or a new turn without reviving them on a delayed refresh. | `codex-rs/tui/src/status/storage.rs`<br>`codex-rs/tui/src/chatwidget/status_surfaces.rs`<br>`codex-rs/tui/src/chatwidget/status_controls.rs`<br>`codex-rs/tui/src/chatwidget/slash_dispatch.rs` | Client-local configuration, status preview/style selection, Arc-backed status refresh, accepted input lifecycle, and server-reported current rollout metadata | `feat(tui): expose local Codex home and copyable rollout paths` |
 | Durable receiver-selected input mailbox | Capability | Accept typed user or attributed V1 agent mail without steering or claiming consumption; select fixed batches through direct `check_mail` or targeted waits; recover result/context/presentation receipts from the receiver's own canonical history; persist user-controlled send settings independently of transient subscriptions; and admit bounded, coalesced inventory wakes behind ordinary queued work. | `codex-rs/core/src/agent/control/mailbox_input.rs`<br>`codex-rs/core/src/session/mailbox.rs`<br>`codex-rs/core/src/session/mailbox_publication.rs`<br>`codex-rs/core/src/context/mailbox_inventory.rs`<br>`codex-rs/thread-store/src/mailbox_artifacts.rs`<br>`codex-rs/state/src/runtime/queued_items/mailbox.rs`<br>`codex-rs/tui/src/chatwidget/mailbox.rs` | Native/host control boundary, durable permission transactions, canonical publisher and input ordering, idle admission, raw receiver-owned history, rich TUI draft recovery, and current v2 protocol | `feat(mailbox): add durable receiver-selected input delivery` |
@@ -591,6 +592,27 @@ clears; absent legacy metadata does not erase current paths. `/mail` retains ful
 retry identity without silently becoming a steer or queued prompt. Authored regression scenarios
 and static Rust parsing are not executable qualification. Later cross-root/name-claim proposals
 and final-subscription APIs remain with their separate defining owners.
+
+### Mailbox presentation and available-agent cycling
+
+Ownership anchor: `feat(agents): clarify mailbox outcomes and navigate available agents`.
+`check_mail_result` derives terminal `ok`, `empty`, and `rejected` outcomes from an existing
+receiver/turn/call claim; it never creates or expands a claim. Acceptance, selected payloads,
+durable consumption, and live permissions remain separate. Unknown or hook-rewritten shapes
+stay intact, and a claim-store error is not interpreted as an empty inbox.
+
+Canonical inventory context retains the existing typed fragment and durable serializer.
+The separate presentation view recognizes full legacy records and the bounded version-2 prefix
+without claiming to reconstruct or verify its omitted senders. Only disposable sampling and
+supported compaction inputs receive advertised refs and a bounded omission-aware display;
+canonical IDs, frontier, commitment, response ordering, and replacement history are unchanged.
+
+Keyboard cycling uses stable root membership and server liveness, with bounded candidate attempts.
+Closed or failed attachments remain inspectable through the picker, but are not keyboard targets.
+If a later session/profile refresh fails, the candidate receiver is returned and the previous
+active channel and draft are restored. Ordinary explicit inspection retains its replay behavior.
+Source-authored claim, inventory, compaction, navigation, and channel-recovery regressions still
+require remote execution; static parsing does not qualify their runtime behavior.
 
 ## Integration boundaries and deferred work
 

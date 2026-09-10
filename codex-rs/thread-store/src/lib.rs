@@ -65,6 +65,7 @@ pub use mailbox::StoredMailboxInput;
 pub use mailbox_inventory::MailboxInventory;
 pub use mailbox_inventory::MailboxInventoryAcknowledgement;
 pub use mailbox_inventory::MailboxInventoryAcknowledgementOutcome;
+pub use mailbox_inventory::MailboxInventoryContextView;
 pub use mailbox_inventory::MailboxInventoryNotification;
 pub use mailbox_inventory::MailboxInventoryRecovery;
 pub use mailbox_inventory::MailboxSenderInventory;
