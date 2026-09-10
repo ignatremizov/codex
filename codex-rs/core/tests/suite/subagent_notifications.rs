@@ -150,6 +150,10 @@ const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 
 #[path = "subagent_peer_routes.rs"]
 mod peer_routes;
+#[path = "subagent_resume_delivery.rs"]
+mod resume_delivery;
+#[path = "subagent_rollback_mode_tests.rs"]
+mod rollback_mode_tests;
 #[path = "subagent_root_completion_audit.rs"]
 mod root_completion_audit;
 const TURN_0_FORK_PROMPT: &str = "seed fork context";
@@ -747,6 +751,12 @@ async fn wait_for_completion_after_rollback(
     wait_for_event_with_timeout(
         codex,
         |event| {
+            if let EventMsg::Error(error) = event {
+                panic!(
+                    "rollback failed before completion delivery: {}",
+                    error.message
+                );
+            }
             if matches!(event, EventMsg::ThreadRolledBack(_)) {
                 rollback_completed = true;
             }
@@ -1758,7 +1768,6 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
 }
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
     history_mode: ThreadHistoryMode,
@@ -2494,7 +2503,6 @@ async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Resul
 }
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_accepted_completion_survives_exact_rollback_and_cold_resume(
     history_mode: ThreadHistoryMode,
@@ -2610,7 +2618,6 @@ async fn v1_accepted_completion_survives_exact_rollback_and_cold_resume(
 }
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
     history_mode: ThreadHistoryMode,
@@ -2736,7 +2743,6 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
 }
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forged_completion_provenance_is_removed_by_rollback_and_cold_replay(
     history_mode: ThreadHistoryMode,
@@ -2901,7 +2907,6 @@ async fn forged_completion_provenance_is_removed_by_rollback_and_cold_replay(
 }
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v1_late_wait_completion_survives_exact_rollback_and_cold_resume(
     history_mode: ThreadHistoryMode,
@@ -5632,7 +5637,6 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
 }
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_reply_route_survives_rollback_and_persists_across_turns(
     history_mode: ThreadHistoryMode,
@@ -11005,7 +11009,6 @@ async fn v2_completion_context_survives_shutdown_before_the_next_turn() -> Resul
 }
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
-#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v2_accepted_completion_survives_exact_rollback_and_cold_resume(
     history_mode: ThreadHistoryMode,

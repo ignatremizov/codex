@@ -614,6 +614,25 @@ active channel and draft are restored. Ordinary explicit inspection retains its 
 Source-authored claim, inventory, compaction, navigation, and channel-recovery regressions still
 require remote execution; static parsing does not qualify their runtime behavior.
 
+### Resume-final identity and acknowledged policy-context caching
+
+Ownership anchor: `fix(agents): prevent duplicate finals across delivery, sampling, and resume`.
+`core/src/agent/control/resume_delivery.rs` uses strict receiver-owned canonical history before
+observation transactions. It filters only an existing completed reconciliation candidate with
+the same receiver, child, target turn, and committed response identity. Original rollback
+coordinates and contiguous metadata are retained, conflicting duplicate payloads do not prove
+delivery, and missing or unreadable history never creates a subscription or suppresses a result.
+The current native runtime owns in-flight receipts independently of that historical snapshot.
+
+Messaging-context cache entries install only inside the existing canonical publication
+acknowledgment. Failed or ambiguous writes quarantine the session rather than enabling a cache
+hit; a cancelled caller cannot discard the owned publication. Permission authority remains
+in its existing durable settings owner, and policy context does not request model sampling.
+Typed delivery receipt IDs survive commentary conversion while provider-sanitized ordinary IDs
+remain ordinary. Resume lifecycle presentation omits old final text and renders Idle without
+changing runtime status. Explicit user reservations remain distinct from the later model-only
+status-selection API. The latter's premature references are assigned to its defining owner.
+
 ## Integration boundaries and deferred work
 
 The overview and fixed transcript inspection are owned by
