@@ -7,10 +7,14 @@ use crate::codex_thread::CodexThread;
 use crate::session::AgentResponseEvent;
 use crate::session::AgentResponseSubscription;
 use futures::future::BoxFuture;
+use std::collections::HashSet;
 
 pub(super) enum ResponseObserverStart {
     FutureOnly,
-    CurrentOrNext(AgentStatus),
+    CurrentOrNext {
+        observed_status: AgentStatus,
+        delivered_final_turns: HashSet<String>,
+    },
 }
 
 impl LocalAgentControl {
@@ -64,6 +68,8 @@ impl LocalAgentControl {
             observer.session.presentation_id(),
             policy,
         )?;
+        let delivered_final_turns =
+            super::resume_delivery::delivered_final_turns(&observer, child_thread_id).await;
         let _transaction = self
             .acquire_response_observation_transaction(observer.session.presentation_id())
             .await;
@@ -72,7 +78,10 @@ impl LocalAgentControl {
             &child,
             policy,
             ResponseObservationBinding::NextTurn,
-            ResponseObserverStart::CurrentOrNext(observed_status),
+            ResponseObserverStart::CurrentOrNext {
+                observed_status,
+                delivered_final_turns,
+            },
         )
         .await?;
         Ok(child.agent_status().await)
@@ -144,20 +153,10 @@ impl LocalAgentControl {
                         }
                     },
                     |snapshot| {
-                        let reconciled_terminal = match &start {
-                            ResponseObserverStart::CurrentOrNext(previous)
-                                if !crate::agent::status::is_final(previous)
-                                    && snapshot.active_turn_id.is_none()
-                                    && crate::agent::status::is_final(&snapshot.status) =>
-                            {
-                                snapshot.last_terminal.clone()
-                            }
-                            ResponseObserverStart::FutureOnly
-                            | ResponseObserverStart::CurrentOrNext(_) => None,
-                        };
+                        let reconciled_terminal = start.reconciled_terminal(snapshot);
                         let target_turn = match &start {
                             ResponseObserverStart::FutureOnly => None,
-                            ResponseObserverStart::CurrentOrNext(_) => {
+                            ResponseObserverStart::CurrentOrNext { .. } => {
                                 snapshot.active_turn_id.clone().or_else(|| {
                                     reconciled_terminal.as_ref().map(|(turn, _)| turn.clone())
                                 })

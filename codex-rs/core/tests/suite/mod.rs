@@ -220,6 +220,7 @@ mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_notifications;
 mod subagent_observer_control;
+mod subagent_permission_sampling;
 mod subagent_service_tier;
 mod subagent_sibling_prompt_isolation;
 #[path = "test_codex_submission_tests.rs"]

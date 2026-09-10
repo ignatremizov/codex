@@ -41,6 +41,8 @@ impl LocalAgentControl {
             observer.session.submission_admission.check_ready()?;
             let parent = observer.session.presentation_id();
             control.ensure_target_message_route_allowed(&target, parent, policy)?;
+            let delivered_final_turns =
+                super::resume_delivery::delivered_final_turns(&observer, target_id).await;
             let transaction = control
                 .acquire_response_observation_transaction(parent)
                 .await;
@@ -50,7 +52,10 @@ impl LocalAgentControl {
                     &target,
                     policy,
                     ResponseObservationBinding::NextTurn,
-                    ResponseObserverStart::CurrentOrNext(observed_status),
+                    ResponseObserverStart::CurrentOrNext {
+                        observed_status,
+                        delivered_final_turns,
+                    },
                 )
                 .await?;
             let child = target.session.presentation_id();
