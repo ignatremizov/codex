@@ -1,11 +1,26 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 2682
 expression: "render_bottom_popup(&app.chat_widget, 80)"
 ---
-  Subagents
+  Agents
   Select an agent to watch. ⌥+← previous, ⌥+→ next.
 
+  Filter by ref, name, role, path, or UUID
 
-› 1. • Main [default] (current)  00000000-0000-0000-0000-000000000123
+› • Main [default]  00000000-0000-0000-0000-000000000123 · idle
 
-  enter select · esc back
+
+  Main [default]
+  idle
+  UUID: 00000000-0000-0000-0000-000000000123
+  Model: gpt-test
+
+  Response: none
+  Queued: 0
+  Children: 0
+  Pending mail: loading
+
+  Enter opens this thread
+  ctrl+t inspects transcript · Tab opens controls.
+  Tab opens controls
