@@ -49,27 +49,12 @@ async fn queued_reverse_grant_disabled_before_eligibility_warns_without_queued_i
             UserAgentReplyRouteMode::Disabled,
         )
         .await?;
-    // The distinct permission notice may continue the already-active child turn.
-    // It must not be confused with admission of the queued user input or a source wake.
-    let mut permission_notice = server
-        .mount_response(
-            |request| request.body_contains_text("User disabled send_input"),
-            vec![StreamingSseChunk {
-                gate: None,
-                body: sse(vec![
-                    ev_response_created("queue-permission-notice"),
-                    ev_assistant_message("queue-permission-notice-done", "permission noted"),
-                    ev_completed("queue-permission-notice"),
-                ]),
-            }],
-        )
-        .await;
+    // Neither permission bookkeeping nor the rejected queued input requests
+    // another model response from the child or wakes its source.
     let requests_before = server.requests().await.len();
     child_gate_tx
         .send(())
         .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
-    let request = wait_for_streaming_request(&mut permission_notice).await?;
-    assert!(!request.body_contains_text(QUEUED_PROMPT));
     let warning = wait_for_event_match(test.codex.as_ref(), |event| match event {
         EventMsg::Warning(warning) if warning.message.contains(&queue_id) => Some(warning.clone()),
         _ => None,
@@ -77,7 +62,7 @@ async fn queued_reverse_grant_disabled_before_eligibility_warns_without_queued_i
     .await;
     assert!(warning.message.contains(&child_id));
     assert!(warning.message.contains("disabled by the user"));
-    assert_eq!(server.requests().await.len(), requests_before + 1);
+    assert_eq!(server.requests().await.len(), requests_before);
     assert_eq!(test.codex.agent_status().await, source_status);
     Ok(())
 }
