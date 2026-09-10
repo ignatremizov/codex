@@ -147,10 +147,13 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
     insta::assert_snapshot!(styles, @r#"
     "• ": None, bold=false, dim=true, italic=false
     "Pascal": Some(Magenta), bold=true, dim=false, italic=false
-    " [coder] /root/backend/auth (3) (gpt-6-astra low)": None, bold=false, dim=true, italic=false
+    " [coder]": None, bold=false, dim=false, italic=false
+    " /root/backend/auth (3)": None, bold=false, dim=true, italic=false
+    " (gpt-6-astra low)": Some(Magenta), bold=false, dim=false, italic=false
     " → ": None, bold=false, dim=false, italic=false
     "Curie": Some(Cyan), bold=true, dim=false, italic=false
-    " [coder] /root/frontend (4)": None, bold=false, dim=true, italic=false
+    " [coder]": None, bold=false, dim=false, italic=false
+    " /root/frontend (4)": None, bold=false, dim=true, italic=false
     " (presentation only)": None, bold=false, dim=false, italic=true
     " sends:": None, bold=true, dim=false, italic=false
     "  └ ": None, bold=false, dim=true, italic=false
@@ -196,7 +199,7 @@ fn incoming_header_wraps_with_a_hanging_indent_without_changing_raw_audit() {
             Line::from(vec![
                 "• ".dim(),
                 "Pascal".magenta().bold(),
-                " [coder]".dim(),
+                " [coder]".into(),
             ]),
             Line::from(vec!["  ".into(), "sends:".bold()]),
             Line::from(vec!["  └ ".dim(), "payload".into()]),
@@ -242,17 +245,34 @@ fn nickname_color_survives_metadata_changes_and_sender_recipient_reversal() {
         "payload".to_string(),
         Some(ThreadId::new()),
     );
-    assert_eq!(first.title.spans[0], second.title.spans[3]);
-    assert_eq!(first.title.spans[3], second.title.spans[0]);
+    let nickname_span = |cell: &AgentInputHistoryCell, name: &str| {
+        cell.title
+            .spans
+            .iter()
+            .find(|span| span.content == name)
+            .expect("nickname span")
+            .clone()
+    };
+    assert_eq!(
+        nickname_span(&first, "Pascal"),
+        nickname_span(&second, "Pascal")
+    );
+    assert_eq!(
+        nickname_span(&first, "Curie"),
+        nickname_span(&second, "Curie")
+    );
     // Color survives the actual wrapping path, not just title construction.
     for cell in [first, second] {
         let rendered = cell.display_lines(/*width*/ 32);
-        for nickname in [&cell.title.spans[0], &cell.title.spans[3]] {
+        for nickname in [
+            nickname_span(&cell, "Pascal"),
+            nickname_span(&cell, "Curie"),
+        ] {
             assert!(
                 rendered
                     .iter()
                     .flat_map(|line| &line.spans)
-                    .any(|span| span == nickname)
+                    .any(|span| span == &nickname)
             );
         }
     }

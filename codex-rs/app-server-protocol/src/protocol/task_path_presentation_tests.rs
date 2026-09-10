@@ -17,11 +17,12 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[test]
-fn spawned_task_path_survives_live_wire_and_replay() {
+fn spawned_identity_survives_live_wire_and_replay() {
     let sender = ThreadId::new();
     let receiver = ThreadId::new();
     let agent = CoreCollabAgentRef {
         thread_id: receiver,
+        agent_ref: Some("2".to_string()),
         task_path: Some("/root/backend/auth".to_string()),
         agent_nickname: Some("Pascal".to_string()),
         agent_role: Some("coder".to_string()),
@@ -30,6 +31,7 @@ fn spawned_task_path_survives_live_wire_and_replay() {
         CollabAgentRef::from(agent.clone()),
         CollabAgentRef {
             thread_id: receiver.to_string(),
+            agent_ref: Some("2".to_string()),
             task_path: Some("/root/backend/auth".to_string()),
             agent_nickname: Some("Pascal".to_string()),
             agent_role: Some("coder".to_string()),
@@ -66,8 +68,14 @@ fn spawned_task_path_survives_live_wire_and_replay() {
         item_event_to_server_notification(completed.clone(), &sender.to_string(), "turn");
     let wire = serde_json::to_value(notification).unwrap();
     assert_eq!(
-        wire["params"]["item"]["receiverAgents"][0]["taskPath"],
-        json!("/root/backend/auth"),
+        wire["params"]["item"]["receiverAgents"],
+        json!([{
+            "threadId": receiver.to_string(),
+            "agentRef": "2",
+            "taskPath": "/root/backend/auth",
+            "agentNickname": "Pascal",
+            "agentRole": "coder",
+        }]),
     );
     let ServerNotification::ItemCompleted(notification) =
         serde_json::from_value::<ServerNotification>(wire).unwrap()
@@ -98,12 +106,14 @@ fn legacy_agent_refs_omit_task_path_without_inference() {
     let thread_id = ThreadId::new();
     let core = CoreCollabAgentRef {
         thread_id,
+        agent_ref: None,
         task_path: None,
         agent_nickname: Some("/root/not-a-task".to_string()),
         agent_role: None,
     };
     let wire = serde_json::to_value(&core).unwrap();
     assert!(wire.get("task_path").is_none());
+    assert!(wire.get("agent_ref").is_none());
     assert_eq!(
         serde_json::from_value::<CoreCollabAgentRef>(wire).unwrap(),
         core,
@@ -112,6 +122,10 @@ fn legacy_agent_refs_omit_task_path_without_inference() {
     let mut wire = serde_json::to_value(&api).unwrap();
     assert_eq!(
         wire.as_object_mut().unwrap().remove("taskPath"),
+        Some(serde_json::Value::Null),
+    );
+    assert_eq!(
+        wire.as_object_mut().unwrap().remove("agentRef"),
         Some(serde_json::Value::Null),
     );
     assert_eq!(serde_json::from_value::<CollabAgentRef>(wire).unwrap(), api);

@@ -1536,6 +1536,9 @@ impl App {
                 self.chat_widget
                     .set_collab_agent_task_path(thread_id, Some(task_path));
             }
+            if let Some(agent_ref) = metadata.and_then(|agent| agent.agent_ref.clone()) {
+                self.chat_widget.set_collab_agent_ref(thread_id, agent_ref);
+            }
             if self.agent_navigation.get(&thread_id).is_some() {
                 continue;
             }

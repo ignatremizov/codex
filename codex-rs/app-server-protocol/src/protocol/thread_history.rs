@@ -5640,12 +5640,14 @@ mod tests {
             receiver_agents: vec![
                 codex_protocol::protocol::CollabAgentRef {
                     thread_id: owner,
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Worker".into()),
                     agent_role: None,
                 },
                 codex_protocol::protocol::CollabAgentRef {
                     thread_id: other,
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Other".into()),
                     agent_role: None,

@@ -30,6 +30,7 @@
   background is unknown, supported theme colors are preserved rather than guessed.
   Generic code renderers preserve configured syntax foregrounds; diff rendering resolves
   them against its add/delete fills.
+- Agent nicknames are another scoped exception: `agent_color.rs` supplies 20 decorative hues with light/dark-background variants, using the existing terminal capability adapter. Basic or unknown-color terminals retain the three theme-defined ANSI colors. These hues are not status indicators or unique identifiers; nicknames can share a color.
 - Avoid ANSI `black` & `white` as foreground colors because the default terminal theme color will do a better job. (Use `reset` if you need to in order to get those.) The exception is if you need contrast rendering over a manually colored background.
 - Avoid ANSI `blue` and `yellow` because for now the style guide doesn't use them. Prefer a foreground color mentioned above.
 

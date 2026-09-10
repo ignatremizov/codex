@@ -1546,6 +1546,9 @@ pub struct CollabAgentState {
 pub struct CollabAgentRef {
     /// Thread ID of the receiving agent.
     pub thread_id: String,
+    /// Trusted root-scoped numeric reference, when available from the agent alias.
+    #[serde(default)]
+    pub agent_ref: Option<String>,
     /// Trusted task assignment path, when available from the agent alias.
     #[serde(default)]
     pub task_path: Option<String>,
@@ -1561,6 +1564,7 @@ impl From<CoreCollabAgentRef> for CollabAgentRef {
     fn from(value: CoreCollabAgentRef) -> Self {
         Self {
             thread_id: value.thread_id.to_string(),
+            agent_ref: value.agent_ref,
             task_path: value.task_path,
             agent_nickname: value.agent_nickname,
             agent_role: value.agent_role,

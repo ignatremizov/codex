@@ -1,9 +1,60 @@
 use super::*;
 use crate::history_cell::HistoryCell;
 use crate::multi_agents::background_commentary_history_cell_from_agent_message;
+use codex_app_server_protocol::ThreadItem;
 use codex_protocol::models::MessagePhase;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
+
+#[test]
+fn lifecycle_mapping_preserves_agent_ref_and_authoritative_task_clear() {
+    let target = codex_protocol::ThreadId::new();
+    let item = ThreadItem::UserAgentControl {
+        id: "resume-1".to_string(),
+        action: codex_app_server_protocol::UserAgentControlAction::Resume,
+        authored_selector: None,
+        target_thread_id: Some(target.to_string()),
+        observer_thread_id: None,
+        authored_observer_selector: None,
+        reply_recipient_thread_id: None,
+        previous_owner_session_id: None,
+        new_owner_session_id: None,
+        agent_ref: Some("5".to_string()),
+        nickname: Some("Darwin".to_string()),
+        role: None,
+        task: None,
+        task_path: Some("/root/previous".to_string()),
+        task_path_mapping: vec![codex_app_server_protocol::AgentTaskPathMapping {
+            thread_id: target.to_string(),
+            previous_task_path: Some("/root/previous".to_string()),
+            task_path: None,
+        }],
+        model: None,
+        reasoning_effort: None,
+        prompt_preview: None,
+        resumed_target: true,
+        fork_mode: None,
+        observe_commentary: None,
+        final_response: None,
+        target_messages: None,
+        queue_input: None,
+        status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,
+        error: None,
+    };
+
+    assert_eq!(
+        collab_agent_metadata_from_items([&item]),
+        HashMap::from([(
+            target,
+            AgentMetadata {
+                agent_ref: Some("5".to_string()),
+                agent_nickname: Some("Darwin".to_string()),
+                task_path: AgentTaskPath::Known(None),
+                ..Default::default()
+            }
+        )])
+    );
+}
 
 #[test]
 fn late_agent_metadata_updates_labels_without_losing_preview_or_raw_source() {
