@@ -284,6 +284,7 @@ mod messaging_context_publication;
 mod user_agent_publication;
 pub(crate) use agent_identity::AgentSessionOwnershipOverride;
 pub(crate) use response_observation::AgentResponseEvent;
+pub(crate) use response_observation::AgentResponseSnapshot;
 pub(crate) use response_observation::AgentResponseSubscription;
 pub(crate) use response_observation::InputTurnAdmissionResolution;
 pub(crate) use response_observation::TerminalStatusEvent;
