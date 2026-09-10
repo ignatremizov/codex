@@ -123,6 +123,8 @@ const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 
 #[path = "subagent_peer_routes.rs"]
 mod peer_routes;
+#[path = "subagent_resume_delivery.rs"]
+mod resume_delivery;
 #[path = "subagent_root_completion_audit.rs"]
 mod root_completion_audit;
 const TURN_0_FORK_PROMPT: &str = "seed fork context";

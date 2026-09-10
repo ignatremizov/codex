@@ -243,6 +243,16 @@ only when no short reference is available. An idle resume does not replay a prev
 answer or manufacture a completion notification; genuine undelivered turn completions retain
 their observation and delivery semantics.
 
+Resume reconciliation checks existing canonical delivery evidence for the exact receiving
+thread, target thread, and target turn after applying rollback semantics. A committed final
+delivery must also have its response item in that history; text equality is not evidence.
+Observation cleanup and close do not make an already delivered turn new again. Missing evidence,
+an empty undelivered final, another receiver, and a later turn with identical text remain eligible
+for delivery under the existing observation policy and startup reconciliation rules; absence of
+evidence does not enable historical catch-up for an already terminal snapshot. The completed
+resume lifecycle item omits the historical final text and the TUI
+shows `Idle`; this is presentation-only and does not change the internal terminal status.
+
 `spawn_agent` returns the new agent's UUID, ref, nickname, and task path together. The task path
 is `null` when no assignment was requested; it is the canonical assigned path otherwise.
 

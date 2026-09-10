@@ -223,7 +223,22 @@ async fn handle_resume_agent(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                agents_states: [(receiver_thread_id, status.clone())].into_iter().collect(),
+                // This lifecycle item describes readiness, not a second final-response delivery.
+                // Keep the true status below for runtime handling and the tool result.
+                agents_states: [(
+                    receiver_thread_id,
+                    match &status {
+                        AgentStatus::Completed(_) => AgentStatus::Completed(None),
+                        AgentStatus::PendingInit
+                        | AgentStatus::Running
+                        | AgentStatus::Interrupted
+                        | AgentStatus::Errored(_)
+                        | AgentStatus::Shutdown
+                        | AgentStatus::NotFound => status.clone(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
                 completion_presentation_agent_ids: None,
             }),
         )

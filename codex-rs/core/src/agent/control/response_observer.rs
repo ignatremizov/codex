@@ -614,6 +614,19 @@ impl AgentControl {
         let parent_thread = state
             .get_thread_including_pending(*parent_thread_id)
             .await?;
+        let delivered_final_turns = if matches!(
+            &initial_terminal_observation,
+            InitialTerminalObservation::ReconcileIfAdvancedFrom(_)
+        ) {
+            super::resume_delivery::delivered_final_turns(
+                &state,
+                *parent_thread_id,
+                child_thread_id,
+            )
+            .await
+        } else {
+            HashSet::new()
+        };
         let _transaction_permit = self
             .acquire_mailbox_submission_permit(child_thread_id)
             .await?;
@@ -630,6 +643,7 @@ impl AgentControl {
             ResponseObservationBinding::NextTurn,
             initial_terminal_observation,
             task_preview,
+            &delivered_final_turns,
         )
         .await
     }
@@ -646,6 +660,7 @@ impl AgentControl {
         binding: ResponseObservationBinding,
         initial_terminal_observation: InitialTerminalObservation,
         task_preview: Option<String>,
+        delivered_final_turns: &HashSet<String>,
     ) -> CodexResult<AgentStatus> {
         let child_thread_id = child_thread.session.thread_id();
         let child = child_thread.session.presentation_id();
@@ -728,11 +743,13 @@ impl AgentControl {
                 .target_turn_id(response_snapshot.active_turn_id.clone()),
             ResponseObservationBinding::ExplicitAdmission(_) => None,
         };
-        let initial_reconciliation = initial_terminal_observation.reconcile(
-            response_snapshot.active_turn_id.clone(),
-            response_snapshot.last_terminal.clone(),
-            response_snapshot.status.clone(),
-        );
+        let initial_reconciliation = initial_terminal_observation
+            .reconcile(
+                response_snapshot.active_turn_id.clone(),
+                response_snapshot.last_terminal.clone(),
+                response_snapshot.status.clone(),
+            )
+            .without_delivered_finals(delivered_final_turns);
         if target_turn_id.is_none()
             && !observes_future_turns
             && let Some((turn_id, _)) = initial_reconciliation.terminal.as_ref()

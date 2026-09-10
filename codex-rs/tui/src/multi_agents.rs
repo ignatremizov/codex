@@ -33,6 +33,9 @@ mod identity_header;
 mod mailbox_send;
 
 #[cfg(test)]
+#[path = "multi_agents/resume_ready_tests.rs"]
+mod resume_ready_tests;
+#[cfg(test)]
 #[path = "multi_agents/task_path_tests.rs"]
 mod task_path_tests;
 
@@ -873,7 +876,14 @@ fn resume_end(
             /*spawn_request*/ None,
             response_observation,
         ),
-        fixed_details(vec![status_summary_line(status, fallback_error)]),
+        fixed_details(vec![if status
+            .is_some_and(|status| status.status == CollabAgentStatus::Completed)
+        {
+            // Resuming an idle runtime does not deliver its historical final again.
+            Line::from("Idle")
+        } else {
+            status_summary_line(status, fallback_error)
+        }]),
     )
 }
 
