@@ -82,7 +82,9 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
             ),
             (
                 codex_app_server_protocol::ThreadStatus::NotLoaded,
-                root.to_string()
+                // Stored-only thread/read defaults session_id to the thread's own ID.
+                // Loaded reads above obtain the authoritative session ID from the runtime.
+                unloaded.to_string()
             ),
         ]
     );
