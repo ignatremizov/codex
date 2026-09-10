@@ -354,12 +354,12 @@ impl AgentControl {
                         continue;
                     }
                 };
-                self.enqueue_messaging_context(
+                self.record_messaging_context(
                     sender_thread,
                     format!("route.{}", recipient.thread_id),
                     item,
                 )
-                .await;
+                .await?;
             }
             self.wait_agent_presentations
                 .state()
@@ -441,23 +441,33 @@ impl AgentControl {
                 }
                 let key = notice.key.clone();
                 let item = ContextualUserFragment::into(notice);
-                self.enqueue_messaging_context(sender_thread, key, item)
-                    .await;
+                self.record_messaging_context(sender_thread, key, item)
+                    .await?;
             }
         }
         Ok(())
     }
 
-    async fn enqueue_messaging_context(
+    async fn record_messaging_context(
         &self,
         sender_thread: &crate::CodexThread,
         key: String,
         mut item: ResponseItem,
-    ) -> ResponseItem {
+    ) -> CodexResult<()> {
         let sender = sender_thread.session.presentation_id();
-        let turn_id = sender_thread.session.active_agent_response_turn_id();
+        let active_context = sender_thread
+            .session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|turn| turn.task.as_ref())
+            .map(|task| Arc::clone(&task.turn_context));
+        let turn_id = active_context
+            .as_ref()
+            .map(|context| context.sub_id.clone());
         {
-            let mut state = self.wait_agent_presentations.state();
+            let state = self.wait_agent_presentations.state();
             if let Some((pending_turn, pending)) =
                 state.pending_messaging_context.get(&(sender, key.clone()))
                 && *pending_turn == turn_id
@@ -465,7 +475,7 @@ impl AgentControl {
                     (ResponseItem::Message { content, .. }, ResponseItem::Message { content: pending_content, .. })
                         if content == pending_content)
             {
-                return pending.clone();
+                return Ok(());
             }
             item.set_id(Some(codex_protocol::ResponseItemId::new("msg")));
             if let Some(active_turn_id) = &turn_id {
@@ -473,16 +483,32 @@ impl AgentControl {
                     &mut item,
                     active_turn_id,
                 );
-                state
-                    .pending_messaging_context
-                    .insert((sender, key), (turn_id, item.clone()));
             }
         }
+        let turn_context = match active_context {
+            Some(context) => context,
+            None => sender_thread.session.new_default_turn().await,
+        };
+        // Permission bookkeeping must survive cancellation without becoming input
+        // that requests another model response after an otherwise final answer.
         sender_thread
             .session
-            .inject_no_new_turn(vec![item.clone()], /*current_turn_context*/ None)
-            .await;
-        item
+            .record_durable_context_items(
+                turn_context,
+                vec![item.clone()],
+                /*acknowledgement*/ None,
+            )
+            .await
+            .map_err(|error| {
+                CodexErr::Fatal(format!("failed to record messaging context: {error}"))
+            })?;
+        if turn_id.is_some() {
+            self.wait_agent_presentations
+                .state()
+                .pending_messaging_context
+                .insert((sender, key), (turn_id, item));
+        }
+        Ok(())
     }
 }
 
