@@ -125,6 +125,7 @@ async fn handle_close_agent(
                 receiver_thread_ids: vec![agent_id],
                 receiver_agents: vec![CollabAgentRef {
                     thread_id: agent_id,
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: receiver_agent.agent_nickname,
                     agent_role: receiver_agent.agent_role,

@@ -40,6 +40,7 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
             receiver_agents: if matches!(tool, CollabAgentTool::SpawnAgent) {
                 vec![CollabAgentRef {
                     thread_id: child,
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("child agent".to_string()),
                     agent_role: Some("worker".to_string()),

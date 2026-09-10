@@ -1411,6 +1411,7 @@ impl ThreadHistoryBuilder {
                     vec![receiver_id.clone()],
                     vec![CollabAgentRef {
                         thread_id: receiver_id.clone(),
+                        agent_ref: None,
                         task_path: None,
                         agent_nickname: payload.new_agent_nickname.clone(),
                         agent_role: payload.new_agent_role.clone(),
@@ -5910,6 +5911,7 @@ mod tests {
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
                 receiver_agents: vec![CollabAgentRef {
                     thread_id: spawned_thread_id.to_string(),
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Scout".into()),
                     agent_role: Some("explorer".into()),
@@ -6331,12 +6333,14 @@ mod tests {
             receiver_agents: vec![
                 codex_protocol::protocol::CollabAgentRef {
                     thread_id: owner,
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Worker".into()),
                     agent_role: None,
                 },
                 codex_protocol::protocol::CollabAgentRef {
                     thread_id: other,
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Other".into()),
                     agent_role: None,

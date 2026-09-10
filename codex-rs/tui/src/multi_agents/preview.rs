@@ -109,6 +109,9 @@ impl CollabAgentHistoryCell {
                 if metadata.agent_role.is_some() {
                     stored.agent_role = metadata.agent_role;
                 }
+                if metadata.agent_ref.is_some() {
+                    stored.agent_ref = metadata.agent_ref;
+                }
                 if metadata.spawn_request.is_some() {
                     stored.spawn_request = metadata.spawn_request;
                 }
