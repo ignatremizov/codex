@@ -205,12 +205,11 @@ async fn final_counts(test: &TestCodex, child: ThreadId) -> Result<(usize, usize
     let mut visible = 0;
     for item in &history.items {
         match item {
-            RolloutItem::ResponseItem(item) => {
+            RolloutItem::ResponseItem(item)
                 if item.id().is_some_and(|id| committed_finals.contains(id))
-                    && matches!(&item.item, ResponseItem::AgentMessage { .. })
-                {
-                    model += 1;
-                }
+                    && matches!(&item.item, ResponseItem::AgentMessage { .. }) =>
+            {
+                model += 1;
             }
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
                 if let Some((id, _, reference, _)) = sub_agent_completion_item(&event.item)
