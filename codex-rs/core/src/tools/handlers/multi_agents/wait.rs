@@ -171,6 +171,7 @@ impl Handler {
                 .unwrap_or_default();
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
+                agent_ref: None,
                 task_path: None,
                 agent_nickname: agent_metadata.agent_nickname,
                 agent_role: agent_metadata.agent_role,
@@ -422,6 +423,7 @@ fn wait_receiver_agents(
         .filter(|thread_id| !seen.contains_key(thread_id))
         .map(|thread_id| CollabAgentRef {
             thread_id: *thread_id,
+            agent_ref: None,
             task_path: None,
             agent_nickname: None,
             agent_role: None,

@@ -198,6 +198,7 @@ async fn handle_spawn_agent(
     let receiver_agents = new_thread_id
         .map(|thread_id| CollabAgentRef {
             thread_id,
+            agent_ref: new_agent_ref.map(|agent_ref| agent_ref.to_string()),
             task_path: result
                 .as_ref()
                 .ok()

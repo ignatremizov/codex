@@ -138,6 +138,9 @@ impl ChatWidget {
                 continue;
             };
             let previous = self.collab_agent_metadata(thread_id);
+            if let Some(agent_ref) = &receiver.agent_ref {
+                self.set_collab_agent_ref(thread_id, agent_ref.clone());
+            }
             self.set_collab_agent_metadata(
                 thread_id,
                 receiver.agent_nickname.clone().or(previous.agent_nickname),

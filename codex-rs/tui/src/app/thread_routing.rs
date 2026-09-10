@@ -1400,6 +1400,10 @@ impl App {
                     self.chat_widget
                         .set_collab_agent_task_path(thread_id, Some(task_path.clone()));
                 }
+                if let Some(agent_ref) = &receiver.agent_ref {
+                    self.chat_widget
+                        .set_collab_agent_ref(thread_id, agent_ref.clone());
+                }
             }
         }
 

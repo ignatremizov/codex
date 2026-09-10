@@ -31,8 +31,16 @@ fn optional_metadata_preserves_order_without_empty_delimiters() {
     assert_eq!(
         lines,
         [
-            Line::from(vec!["Pascal".magenta().bold(), " (gpt-6-astra)".dim()]),
-            Line::from(vec!["Pascal".magenta().bold(), " (low)".dim()]),
+            Line::from(vec![
+                "Pascal".magenta().bold(),
+                "".dim(),
+                " (gpt-6-astra)".magenta()
+            ]),
+            Line::from(vec![
+                "Pascal".magenta().bold(),
+                "".dim(),
+                " (low)".magenta()
+            ]),
             Line::from(vec!["Pascal".magenta().bold(), "".dim()]),
         ],
     );

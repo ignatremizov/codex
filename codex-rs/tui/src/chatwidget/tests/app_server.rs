@@ -454,12 +454,6 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id = ThreadId::new();
     let spawned_thread_id = ThreadId::new();
-    chat.set_collab_agent_metadata(
-        spawned_thread_id,
-        Some("Robie".to_string()),
-        Some("explorer".to_string()),
-    );
-    chat.set_collab_agent_ref(spawned_thread_id, "5".to_string());
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -505,8 +499,9 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                     thread_id: spawned_thread_id.to_string(),
-                    agent_nickname: None,
-                    agent_role: None,
+                    agent_ref: Some("5".to_string()),
+                    agent_nickname: Some("Robie".to_string()),
+                    agent_role: Some("explorer".to_string()),
                     task_path: Some("/root/mailbox-test".to_string()),
                 }],
                 prompt: Some("Explore the repo".to_string()),

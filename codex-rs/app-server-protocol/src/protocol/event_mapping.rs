@@ -122,6 +122,7 @@ pub fn item_event_to_server_notification(
                             vec![receiver_id.clone()],
                             vec![CollabAgentRef {
                                 thread_id: receiver_id.clone(),
+                                agent_ref: None,
                                 task_path: None,
                                 agent_nickname: end_event.new_agent_nickname,
                                 agent_role: end_event.new_agent_role,

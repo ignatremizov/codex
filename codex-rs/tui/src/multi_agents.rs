@@ -1883,7 +1883,9 @@ mod tests {
             Some(crate::agent_color::nickname_color("Robie"))
         );
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(title.spans[3], " [explorer] (gpt-5 high)".dim());
+        assert_eq!(title.spans[3], Span::from(" [explorer]"));
+        assert_eq!(title.spans[4], "".dim());
+        assert_eq!(title.spans[5], " (gpt-5 high)".magenta());
     }
 
     #[test]

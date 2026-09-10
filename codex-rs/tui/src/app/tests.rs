@@ -2289,6 +2289,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                     thread_id: receiver_thread_id.to_string(),
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: Some("Parfit".to_string()),
                     agent_role: Some("reviewer".to_string()),
@@ -9169,6 +9170,7 @@ async fn metadata_free_collab_notification_preserves_cached_agent_label() {
                 receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 receiver_agents: vec![codex_app_server_protocol::CollabAgentRef {
                     thread_id: receiver_thread_id.to_string(),
+                    agent_ref: None,
                     task_path: None,
                     agent_nickname: None,
                     agent_role: None,
