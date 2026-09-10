@@ -1,4 +1,5 @@
 use super::*;
+use crate::history_cell::HistoryCell;
 
 #[test]
 fn completed_resume_reports_readiness_without_replaying_the_final() {
