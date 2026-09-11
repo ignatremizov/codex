@@ -163,6 +163,7 @@ impl ChatWidget {
                             text,
                             self.thread_id,
                         )
+                        .with_receipt_id(&id)
                         .with_response_preview_lines(self.config.tui_agent_response_preview_lines),
                     );
                     return;

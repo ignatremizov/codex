@@ -35,6 +35,7 @@ use core_test_support::streaming_sse::StreamingSseRequest;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -434,8 +435,18 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
             UserAgentReplyRouteMode::Enabled,
         )
         .await?;
+    let input = vec![
+        UserInput::Text {
+            text: "immutable accepted message".to_string(),
+            text_elements: Vec::new(),
+        },
+        UserInput::Image {
+            image_url: "data:image/png;base64,original-mailbox-bytes".to_string(),
+            detail: None,
+        },
+    ];
     let arguments = serde_json::to_string(&json!({
-        "target": receiver.to_string(), "message": "immutable accepted message", "w": "z",
+        "target": receiver.to_string(), "items": input, "w": "z",
     }))?;
     server
         .mount_response(
@@ -533,6 +544,24 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
         .lookup_mailbox_input(receiver, &key)
         .await?
         .ok_or_else(|| anyhow::anyhow!("initial accepted row"))?;
+    let receipt_id = codex_protocol::mailbox_acceptance_receipt_id(&first.id)
+        .ok_or_else(|| anyhow::anyhow!("acceptance identity"))?;
+    let receipt = wait_for_event_match(test.codex.as_ref(), |event| match event {
+        EventMsg::ItemCompleted(event) if event.item.id() == receipt_id.as_str() => {
+            Some(event.item.clone())
+        }
+        _ => None,
+    })
+    .await;
+    let MailboxPayload::Agent { attribution, input } = &first.payload else {
+        anyhow::bail!("expected stored agent mail");
+    };
+    let mut expected_receipt = codex_protocol::items::AgentMessageItem::new(&[]);
+    expected_receipt.id = receipt_id.to_string();
+    expected_receipt.phase = Some(codex_protocol::models::MessagePhase::Commentary);
+    expected_receipt.attribution = Some(attribution.as_ref().clone());
+    expected_receipt.input = Some(input.clone());
+    assert_eq!(receipt, TurnItem::AgentMessage(expected_receipt));
     test.codex
         .set_agent_reply_route(
             &sender.to_string(),
@@ -576,6 +605,31 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
         None
     );
     assert!(test.thread_manager.get_thread(receiver).await.is_err());
+    // All acceptance attempts have returned: drain queued Main events to reject retry or
+    // inventory notices without assuming parent completion synchronizes child work.
+    while let Ok(event) = timeout(
+        Duration::from_millis(/*millis*/ 100),
+        test.codex.next_event(),
+    )
+    .await
+    {
+        if let EventMsg::ItemCompleted(event) = event?.msg {
+            assert!(!codex_protocol::is_mailbox_acceptance_receipt_id(
+                &event.item.id()
+            ));
+        }
+    }
+    let root_history = test
+        .thread_store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: test.session_configured.thread_id,
+            include_archived: false,
+        })
+        .await?;
+    assert!(
+        !serde_json::to_string(&root_history.items)?.contains(receipt_id.as_str()),
+        "the live notice must not enter Main's canonical history or model context",
+    );
     assert_eq!(server.requests().await.len(), 5);
     server.shutdown().await;
     Ok(())

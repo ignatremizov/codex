@@ -70,6 +70,8 @@ impl AgentControl {
     }
 
     /// Mirror input when the recipient records it, including queued input only once admitted.
+    /// Mailbox acceptance notices instead carry their reserved ID and immutable accepted payload;
+    /// they acknowledge storage only, before any receiver consumption.
     /// Root-directed input already has its own presentation and must not be copied again.
     #[expect(
         clippy::await_holding_invalid_type,
@@ -83,7 +85,9 @@ impl AgentControl {
         let TurnItem::AgentMessage(item) = item else {
             return Ok(());
         };
-        if !item.is_attributed_agent_input_presentation() {
+        if !item.is_attributed_agent_input_presentation()
+            && !codex_protocol::is_mailbox_acceptance_receipt_id(&item.id)
+        {
             return Ok(());
         }
         let (sender, legacy_message) = if let Some(attribution) = &item.attribution {
@@ -112,7 +116,11 @@ impl AgentControl {
         let state = self.upgrade()?;
         // The recipient owns the durable input. Main receives only a live presentation: no
         // rollout append, cold resume, observer installation, or model turn for this copy.
-        let root = state.get_thread_including_pending(root).await?;
+        let root = match state.get_thread_including_pending(root).await {
+            Ok(root) => root,
+            Err(CodexErr::ThreadNotFound(_)) => return Ok(()),
+            Err(error) => return Err(error),
+        };
         let mut audit = item.clone();
         if let Some(message) = legacy_message {
             audit.content = vec![AgentMessageContent::Text {

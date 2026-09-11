@@ -300,6 +300,7 @@ pub fn ordinary_agent_message_response_item_id(id: &str) -> String {
         || agent_delivery_receipt_from_response_item_id(id).is_some()
         || crate::is_mailbox_delivery_response_item_id(id)
         || crate::is_mailbox_inventory_response_item_id(id)
+        || crate::is_mailbox_acceptance_receipt_id(id)
     {
         format!("agent_{id}")
     } else {

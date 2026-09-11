@@ -917,6 +917,18 @@ subscriptions, or wake a turn. Normal history uses the configured response previ
 transcript retains the complete receipt payload. In-process refresh keeps these live copies,
 but a cold resume does not reconstruct a separate receipt in Main from the child's history.
 
+Sibling `send_input` input also has a live presentation-only copy in Main when the recipient
+records it. The header names the stored sender and actual recipient with `sends to`; the
+recipient's own input header remains `sends`. Fresh durable sibling mailbox acceptance instead
+shows `mails to`, preserving the accepted attribution and typed attachments. This means accepted
+mail, not consumption or model visibility. Inventory activity itself produces no receipt.
+Neither notice adds Main model context, a subscription, or a wake. Missing Main is a no-op;
+recipient persistence and mailbox acceptance remain authoritative even if the live notice is lost.
+Accepted retries return the original row without re-emitting the notice, under the existing
+single-owner acceptance serialization. These nonpersistent notices are best-effort, not an
+exactly-once guarantee across processes; their stable IDs are presentation discriminators, not
+delivery proof. Requested hidden `x` output mirrors and ordinary completion behavior are unchanged.
+
 Non-paginated and paginated rollouts should preserve the same canonical observation and delivery
 information. Raw function-call arguments alone are not sufficient because they contain the
 model-authored target reference and cannot represent the eventual target-turn binding or resolved
@@ -1211,6 +1223,12 @@ Implementation should cover:
   unchanged.
 - A steer accepted after a regular task's final pending-input check continuing and sampling in the
   same turn, with one user-message lifecycle and no repeated turn-start lifecycle.
+
+## Deferred sibling receipt reconstruction
+
+Sibling direct-send and mailbox-acceptance receipts in Main are currently best-effort live presentations retained by the bounded TUI event cache, including across same-process refresh. They are not persisted in Main's canonical rollout or reconstructed from the agent graph on cold resume. Recipient message and mailbox durability are independent of these notices.
+
+Follow-up: design cold-resume reconstruction from authoritative delivery/acceptance evidence, with stable receipt identities and deduplication against retained live notices. Reconstruction must preserve sender/recipient attribution, distinguish mailbox acceptance from consumption, respect historical ownership and rollback boundaries, and never inject sibling traffic into Main's model context or wake it. Do not infer historical deliveries from the current agent graph alone.
 
 ## Decisions from design review
 

@@ -111,7 +111,7 @@ fn rich_agent_input_snapshot_retains_payload_and_send_time_identity() {
 }
 
 #[test]
-fn peer_mirror_snapshot_is_explicitly_presentation_only() {
+fn peer_mirror_snapshot_labels_the_actual_recipient() {
     let cell = AgentInputHistoryCell::new(
         attribution(),
         Vec::new(),
@@ -125,7 +125,7 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) → Curie [coder] /root/frontend (4) (presentation only) sends:
+    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) sends to Curie [coder] /root/frontend (4):
       └ Complete peer payload.
     ");
     let styles = cell
@@ -150,12 +150,11 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
     " [coder]": None, bold=false, dim=false, italic=false
     " /root/backend/auth (3)": None, bold=false, dim=true, italic=false
     " (gpt-6-astra low)": Some(Magenta), bold=false, dim=false, italic=false
-    " → ": None, bold=false, dim=false, italic=false
+    " sends to ": None, bold=true, dim=false, italic=false
     "Curie": Some(Cyan), bold=true, dim=false, italic=false
     " [coder]": None, bold=false, dim=false, italic=false
     " /root/frontend (4)": None, bold=false, dim=true, italic=false
-    " (presentation only)": None, bold=false, dim=false, italic=true
-    " sends:": None, bold=true, dim=false, italic=false
+    ":": None, bold=true, dim=false, italic=false
     "  └ ": None, bold=false, dim=true, italic=false
     "Complete peer payload.": None, bold=false, dim=false, italic=false
     "#);
@@ -165,6 +164,40 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
             assert_eq!(span.style, Style::default());
         }
     }
+}
+
+#[test]
+fn mailbox_acceptance_labels_mail_without_claiming_consumption() {
+    let receipt_id =
+        codex_protocol::mailbox_acceptance_receipt_id("019faa07-aa3d-78d3-9eca-66cd8626adad")
+            .unwrap();
+    let cell = AgentInputHistoryCell::new(
+        attribution(),
+        vec![
+            UserInput::Text {
+                text: "Read this later.".to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Image {
+                url: "data:image/png;base64,original-bytes".to_string(),
+                detail: None,
+            },
+        ],
+        String::new(),
+        Some(ThreadId::new()),
+    )
+    .with_receipt_id(receipt_id.as_str());
+    let rendered = cell
+        .display_lines(/*width*/ 200)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) mails to Curie [coder] /root/frontend (4):
+      └ Read this later.
+        [image]
+    ");
 }
 
 #[test]

@@ -78,8 +78,13 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Notification(notification)
                 if matches!(notification.as_ref(), ServerNotification::ItemCompleted(event)
                     if matches!(&event.item, ThreadItem::AgentMessage {
-                        id, text, attribution, phase: Some(codex_protocol::models::MessagePhase::Commentary), ..
+                        id, text, attribution, input, phase: Some(codex_protocol::models::MessagePhase::Commentary), ..
                     } if codex_protocol::protocol::agent_delivery_receipt_from_response_item_id(id).is_some()
+                        || (codex_protocol::is_mailbox_acceptance_receipt_id(id)
+                        && input.is_some()
+                        && attribution.as_ref().is_some_and(|attribution| {
+                            attribution.recipient.thread_id != event.thread_id
+                        }))
                         || (codex_protocol::protocol::is_attributed_agent_message_response_item_id(id)
                         && (attribution.as_ref().is_some_and(|attribution| {
                             attribution.recipient.thread_id != event.thread_id
@@ -898,37 +903,66 @@ mod tests {
             delivery: None,
             questions: None,
         };
-        let notification = ServerNotification::ItemCompleted(
-            codex_app_server_protocol::ItemCompletedNotification {
-                thread_id: sender.to_string(),
-                turn_id: "turn-receipt".to_string(),
-                item: item.clone(),
-                completed_at_ms: 0,
-            },
-        );
-        let mut store = ThreadEventStore::new(/*capacity*/ 8);
-        store.push_notification_ref(&notification);
-        store.rebase_buffer_after_session_refresh();
-        assert_eq!(store.snapshot().events.len(), 1);
-        store.set_turns(vec![test_turn(
-            "turn-receipt",
-            TurnStatus::Completed,
-            vec![item],
-        )]);
-        assert!(
-            store.snapshot().events.is_empty(),
-            "hydrated receipt is not replayed twice"
-        );
-        store.set_turns(Vec::new());
-        store.rebase_buffer_after_session_refresh();
-        let snapshot = store.snapshot();
-        let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
-            panic!("disk-only refresh must retain the raw receipt");
+        let identity = codex_protocol::AgentInputIdentity {
+            thread_id: ThreadId::new(),
+            nickname: None,
+            agent_ref: None,
+            task_path: None,
+            role: None,
+            model: None,
+            reasoning_effort: None,
         };
-        assert_eq!(
-            serde_json::to_value(actual).expect("serialize receipt"),
-            serde_json::to_value(notification).expect("serialize expected receipt")
-        );
+        let mut recipient_identity = identity.clone();
+        recipient_identity.thread_id = recipient;
+        let mut acceptance = codex_protocol::items::AgentMessageItem::new(&[]);
+        acceptance.id = codex_protocol::mailbox_acceptance_receipt_id(&ThreadId::new().to_string())
+            .expect("acceptance ID")
+            .to_string();
+        acceptance.phase = Some(codex_protocol::models::MessagePhase::Commentary);
+        acceptance.attribution = Some(codex_protocol::AgentInputAttribution {
+            sender: identity,
+            recipient: recipient_identity,
+            sender_turn_id: "mail-source".to_string(),
+        });
+        acceptance.input = Some(vec![codex_protocol::user_input::UserInput::Text {
+            text: "Accepted, not consumed".to_string(),
+            text_elements: Vec::new(),
+        }]);
+        let acceptance =
+            ThreadItem::from(codex_protocol::items::TurnItem::AgentMessage(acceptance));
+        for item in [item, acceptance] {
+            let notification = ServerNotification::ItemCompleted(
+                codex_app_server_protocol::ItemCompletedNotification {
+                    thread_id: sender.to_string(),
+                    turn_id: "turn-receipt".to_string(),
+                    item: item.clone(),
+                    completed_at_ms: 0,
+                },
+            );
+            let mut store = ThreadEventStore::new(/*capacity*/ 8);
+            store.push_notification_ref(&notification);
+            store.rebase_buffer_after_session_refresh();
+            assert_eq!(store.snapshot().events.len(), 1);
+            store.set_turns(vec![test_turn(
+                "turn-receipt",
+                TurnStatus::Completed,
+                vec![item],
+            )]);
+            assert!(
+                store.snapshot().events.is_empty(),
+                "hydrated receipt is not replayed twice"
+            );
+            store.set_turns(Vec::new());
+            store.rebase_buffer_after_session_refresh();
+            let snapshot = store.snapshot();
+            let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
+                panic!("disk-only refresh must retain the raw receipt");
+            };
+            assert_eq!(
+                serde_json::to_value(actual).expect("serialize receipt"),
+                serde_json::to_value(notification).expect("serialize expected receipt")
+            );
+        }
     }
 
     #[test]
