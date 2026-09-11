@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::ImageReference;
 use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use ratatui::style::Modifier;
@@ -111,7 +112,7 @@ fn rich_agent_input_snapshot_retains_payload_and_send_time_identity() {
 }
 
 #[test]
-fn peer_mirror_snapshot_is_explicitly_presentation_only() {
+fn peer_mirror_snapshot_labels_the_actual_recipient() {
     let cell = AgentInputHistoryCell::new(
         attribution(),
         Vec::new(),
@@ -125,7 +126,7 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) → Curie [coder] /root/frontend (4) (presentation only) sends:
+    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) sends to Curie [coder] /root/frontend (4):
       └ Complete peer payload.
     ");
     let styles = cell
@@ -150,12 +151,11 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
     " [coder]": None, bold=false, dim=false, italic=false
     " /root/backend/auth (3)": None, bold=false, dim=true, italic=false
     " (gpt-6-astra low)": Some(Magenta), bold=false, dim=false, italic=false
-    " → ": None, bold=false, dim=false, italic=false
+    " sends to ": None, bold=true, dim=false, italic=false
     "Curie": Some(Cyan), bold=true, dim=false, italic=false
     " [coder]": None, bold=false, dim=false, italic=false
     " /root/frontend (4)": None, bold=false, dim=true, italic=false
-    " (presentation only)": None, bold=false, dim=false, italic=true
-    " sends:": None, bold=true, dim=false, italic=false
+    ":": None, bold=true, dim=false, italic=false
     "  └ ": None, bold=false, dim=true, italic=false
     "Complete peer payload.": None, bold=false, dim=false, italic=false
     "#);
@@ -165,6 +165,42 @@ fn peer_mirror_snapshot_is_explicitly_presentation_only() {
             assert_eq!(span.style, Style::default());
         }
     }
+}
+
+#[test]
+fn mailbox_acceptance_labels_mail_without_claiming_consumption() {
+    let receipt_id =
+        codex_protocol::mailbox_acceptance_receipt_id("019faa07-aa3d-78d3-9eca-66cd8626adad")
+            .unwrap();
+    let cell = AgentInputHistoryCell::new(
+        attribution(),
+        vec![
+            UserInput::Text {
+                text: "Read this later.".to_string(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Image {
+                image: ImageReference::Inline {
+                    url: "data:image/png;base64,original-bytes".to_string(),
+                },
+                detail: None,
+            },
+        ],
+        String::new(),
+        Some(ThreadId::new()),
+    )
+    .with_receipt_id(receipt_id.as_str());
+    let rendered = cell
+        .display_lines(/*width*/ 200)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    • Pascal [coder] /root/backend/auth (3) (gpt-6-astra low) mails to Curie [coder] /root/frontend (4):
+      └ Read this later.
+        [image]
+    ");
 }
 
 #[test]
@@ -310,7 +346,9 @@ fn inline_media_uses_attachment_markers_in_agent_transcripts() {
         attribution(),
         vec![
             UserInput::Image {
-                url: "data:image/png;base64,aW1hZ2U=".to_string(),
+                image: ImageReference::Inline {
+                    url: "data:image/png;base64,aW1hZ2U=".to_string(),
+                },
                 detail: None,
             },
             UserInput::Audio {
@@ -346,43 +384,48 @@ fn transcript_projection_keeps_human_authorship_and_complete_agent_payload() {
         .map(|index| format!("Complete payload line {index}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let cells = crate::thread_transcript::thread_items_with_sources_to_transcript_cells(
+    let sourced_items = [
+        (
+            Some("human-turn".to_string()),
+            ThreadItem::UserMessage {
+                id: "human".to_string(),
+                client_id: None,
+                content: vec![UserInput::Text {
+                    text: "<agent_message>human text, not attribution</agent_message>".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            },
+        ),
+        (
+            Some("agent-turn".to_string()),
+            ThreadItem::AgentMessage {
+                id: "attributed".to_string(),
+                text: String::new(),
+                inter_agent_source: None,
+                attribution: Some(attribution),
+                input: Some(vec![UserInput::Text {
+                    text: payload.clone(),
+                    text_elements: Vec::new(),
+                }]),
+                phase: Some(codex_protocol::models::MessagePhase::Commentary),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+        ),
+    ];
+    let cells = crate::thread_transcript::thread_items_to_transcript_cells(
         Some(recipient),
         &test_path_buf("/workspace").abs(),
-        [
-            (
-                Some("human-turn".to_string()),
-                ThreadItem::UserMessage {
-                    id: "human".to_string(),
-                    client_id: None,
-                    content: vec![UserInput::Text {
-                        text: "<agent_message>human text, not attribution</agent_message>"
-                            .to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                },
-            ),
-            (
-                Some("agent-turn".to_string()),
-                ThreadItem::AgentMessage {
-                    id: "attributed".to_string(),
-                    text: String::new(),
-                    inter_agent_source: None,
-                    attribution: Some(attribution),
-                    input: Some(vec![UserInput::Text {
-                        text: payload.clone(),
-                        text_elements: Vec::new(),
-                    }]),
-                    phase: Some(codex_protocol::models::MessagePhase::Commentary),
-                    memory_citation: None,
-                    delivery: None,
-                    questions: None,
-                },
-            ),
-        ],
+        sourced_items.iter().map(|(_, item)| item.clone()),
         crate::thread_transcript::RawReasoningVisibility::Hidden,
         /*config*/ None,
-        &Default::default(),
+    );
+    crate::thread_transcript::attach_projected_user_identities(
+        &cells,
+        sourced_items
+            .iter()
+            .map(|(turn, item)| (turn.as_deref(), item)),
     );
     assert_eq!(cells.len(), 2);
     assert!(

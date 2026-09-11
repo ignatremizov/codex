@@ -91,22 +91,10 @@ impl ChatWidget {
         true
     }
 
-    /// Flush prior activity before live or replayed assistant text.
+    /// Flush prior activity before assistant text; turn completion owns its trailing label.
     pub(super) fn prepare_assistant_message(&mut self) {
         self.flush_unified_exec_wait_streak();
         self.flush_active_cell();
-        if self.transcript.needs_final_message_separator && self.transcript.had_work_activity {
-            let timing = self
-                .turn_lifecycle
-                .elapsed_seconds(Instant::now())
-                .map(history_cell::FinalMessageSeparatorTiming::ElapsedCheckpoint);
-            self.add_to_history(history_cell::FinalMessageSeparator::new(
-                timing, /*runtime_metrics*/ None,
-            ));
-            self.transcript.needs_final_message_separator = false;
-        } else if self.transcript.needs_final_message_separator {
-            self.transcript.needs_final_message_separator = false;
-        }
     }
 
     /// Replay a subset of initial events into the UI to seed the transcript when
@@ -324,24 +312,30 @@ impl ChatWidget {
             ThreadItem::AgentMessage {
                 id,
                 text,
+                inter_agent_source,
                 attribution,
                 input,
                 phase,
                 memory_citation,
                 delivery,
                 questions,
-                ..
             } => {
                 if let Some(attribution) = attribution {
-                    self.on_collab_event(
-                        history_cell::AgentInputHistoryCell::new(
-                            attribution,
-                            input.unwrap_or_default(),
-                            text,
-                            self.thread_id,
-                        )
-                        .with_response_preview_lines(self.config.tui_agent_response_preview_lines),
+                    let cell = history_cell::AgentInputHistoryCell::new(
+                        attribution,
+                        input.unwrap_or_default(),
+                        text,
+                        self.thread_id,
+                    )
+                    .with_receipt_id(&id)
+                    .with_response_preview_lines(
+                        self.local_settings.tui.agent_response_preview_lines,
                     );
+                    if from_replay {
+                        self.on_collab_event(cell);
+                    } else {
+                        self.on_async_agent_notice(cell);
+                    }
                     return;
                 }
                 let cell = multi_agents::background_completion_history_cell_from_agent_message(
@@ -364,13 +358,19 @@ impl ChatWidget {
                     )
                 });
                 if let Some(cell) = cell {
-                    self.on_collab_event(cell);
+                    if from_replay {
+                        self.on_collab_event(cell);
+                    } else {
+                        self.on_async_agent_notice(cell);
+                    }
                     return;
                 }
                 if self.complete_realtime_delegated_agent_item(
                     &turn_id,
                     &ThreadItem::AgentMessage {
-                        inter_agent_source: None,
+                        inter_agent_source,
+                        attribution: None,
+                        input: input.clone(),
                         id: id.clone(),
                         text: text.clone(),
                         phase: phase.clone(),
@@ -386,6 +386,13 @@ impl ChatWidget {
                     AgentMessageItem {
                         id,
                         content: vec![AgentMessageContent::Text { text }],
+                        attribution: None,
+                        input: input.map(|input| {
+                            input
+                                .into_iter()
+                                .map(codex_app_server_protocol::UserInput::into_core)
+                                .collect()
+                        }),
                         phase,
                         memory_citation: memory_citation.map(|citation| {
                             codex_protocol::memory_citation::MemoryCitation {

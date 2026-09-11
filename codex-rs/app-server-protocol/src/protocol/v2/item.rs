@@ -1060,7 +1060,15 @@ impl From<CoreTurnItem> for ThreadItem {
             CoreTurnItem::AgentMessage(agent) => {
                 let is_delivery_receipt = agent.phase == Some(MessagePhase::Commentary)
                     && agent_delivery_receipt_from_response_item_id(&agent.id).is_some();
-                let id = if agent.has_sub_agent_completion_identity() || is_delivery_receipt {
+                let is_mailbox_acceptance = agent.phase == Some(MessagePhase::Commentary)
+                    && agent.attribution.is_some()
+                    && agent.input.is_some()
+                    && codex_protocol::is_mailbox_acceptance_receipt_id(&agent.id);
+                let id = if agent.has_sub_agent_completion_identity()
+                    || agent.is_attributed_agent_input_presentation()
+                    || is_delivery_receipt
+                    || is_mailbox_acceptance
+                {
                     agent.id.clone()
                 } else {
                     ordinary_agent_message_response_item_id(&agent.id)
