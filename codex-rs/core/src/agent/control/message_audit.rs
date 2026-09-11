@@ -118,7 +118,9 @@ impl AgentControl {
         // rollout append, cold resume, observer installation, or model turn for this copy.
         let root = match state.get_thread_including_pending(root).await {
             Ok(root) => root,
-            Err(CodexErr::ThreadNotFound(_)) => return Ok(()),
+            Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(_)) => {
+                return Ok(());
+            }
             Err(error) => return Err(error),
         };
         let mut audit = item.clone();
