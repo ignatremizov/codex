@@ -16,7 +16,7 @@ impl ChatWidget {
             ServerNotification::ItemCompleted(notification)
                 if inter_agent_transcript::is_inter_agent_message(&notification.item.payload) =>
             {
-                self.on_inter_agent_message(notification.item.payload);
+                self.on_inter_agent_message(notification.item.payload, replay_kind.is_some());
                 return;
             }
             notification => notification,
@@ -682,6 +682,8 @@ impl ChatWidget {
                 id,
                 text,
                 questions,
+                phase,
+                attribution: None,
                 ..
             } => {
                 let delegated = replay_kind.is_none()
@@ -694,8 +696,13 @@ impl ChatWidget {
                         .transcript
                         .has_replayed_cloud_text(&notification.turn_id, &id)
                     || questions.is_some()
-                    || text.is_empty()
                 {
+                    return;
+                }
+                if replay_kind.is_none() {
+                    self.active_streaming_phase = phase;
+                }
+                if text.is_empty() {
                     return;
                 }
                 let key = (notification.turn_id, id);

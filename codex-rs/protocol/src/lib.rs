@@ -25,9 +25,11 @@ pub use context_window_id::ContextWindowId;
 pub use item_id_generator::ItemIdGenerator;
 #[cfg(test)]
 use item_id_generator::uuid_v7_item_id_generator_for_test;
+pub use mailbox_delivery::is_mailbox_acceptance_receipt_id;
 pub use mailbox_delivery::is_mailbox_delivery_completion;
 pub use mailbox_delivery::is_mailbox_delivery_response_item_id;
 pub use mailbox_delivery::is_mailbox_inventory_response_item_id;
+pub use mailbox_delivery::mailbox_acceptance_receipt_id;
 pub use mailbox_delivery::mailbox_delivery_response_item_id;
 pub use mailbox_delivery::mailbox_inventory_response_item_id;
 pub use permission_profile_intersection::PermissionIntersectionError;

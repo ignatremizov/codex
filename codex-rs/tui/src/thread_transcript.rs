@@ -311,6 +311,7 @@ fn item_to_cells(
             cells.push(Arc::new(cell));
         }
         ThreadItemPayload::AgentMessage {
+            id,
             attribution: Some(attribution),
             input,
             text,
@@ -323,6 +324,7 @@ fn item_to_cells(
                     text,
                     /*viewed_thread*/ None,
                 )
+                .with_receipt_id(&id)
                 .with_response_preview_lines(agent_preview_line_limits.response),
             ));
         }
