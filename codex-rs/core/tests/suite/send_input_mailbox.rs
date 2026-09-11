@@ -561,7 +561,10 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
     expected_receipt.phase = Some(codex_protocol::models::MessagePhase::Commentary);
     expected_receipt.attribution = Some(attribution.as_ref().clone());
     expected_receipt.input = Some(input.clone());
-    assert_eq!(receipt, TurnItem::AgentMessage(expected_receipt));
+    assert_eq!(
+        serde_json::to_value(&receipt)?,
+        serde_json::to_value(TurnItem::AgentMessage(expected_receipt))?
+    );
     test.codex
         .set_agent_reply_route(
             &sender.to_string(),

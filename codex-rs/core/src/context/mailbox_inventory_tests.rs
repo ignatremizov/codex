@@ -122,7 +122,6 @@ enum InvalidArtifact {
 #[test_case(InvalidArtifact::UnknownField; "unknown schema")]
 #[test_case(InvalidArtifact::NonCanonicalSender; "noncanonical sender key")]
 #[test_case(InvalidArtifact::InvalidFrontier; "invalid fixed frontier")]
-#[test]
 fn leaves_noncanonical_or_untrusted_messages_unchanged(case: InvalidArtifact) {
     let receiver = ThreadId::new();
     let snapshot = notification(receiver, vec![MailboxSender::Agent(ThreadId::new())]);

@@ -14,6 +14,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::start_mock_server;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use test_case::test_case;
 
 #[test_case(ThreadHistoryMode::Legacy; "legacy")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
