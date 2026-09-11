@@ -110,18 +110,16 @@ impl ThreadEventStore {
             | ThreadBufferedEvent::FeedbackSubmission(_) => true,
             // Peer-message mirrors and delivery receipts have no root rollout record to reload.
             // Keep the live copy through an in-process refresh, like other transient events.
-            ThreadBufferedEvent::Notification(notification)
-                if replay_filter::mirrored_completion_item_id(notification).is_some() =>
-            {
-                true
+            ThreadBufferedEvent::Notification(notification) => {
+                replay_filter::mirrored_completion_item_id(notification).is_some()
+                    || matches!(
+                        notification.as_ref(),
+                        ServerNotification::HookStarted(_)
+                            | ServerNotification::HookCompleted(_)
+                            | ServerNotification::McpServerStatusUpdated(_)
+                            | ServerNotification::McpServerOauthLoginCompleted(_)
+                    )
             }
-            ThreadBufferedEvent::Notification(notification) => matches!(
-                notification.as_ref(),
-                ServerNotification::HookStarted(_)
-                    | ServerNotification::HookCompleted(_)
-                    | ServerNotification::McpServerStatusUpdated(_)
-                    | ServerNotification::McpServerOauthLoginCompleted(_)
-            ),
             ThreadBufferedEvent::HistoryEntryResponse(_) => false,
         }
     }
@@ -1160,36 +1158,128 @@ mod tests {
             delivery: None,
             questions: None,
         };
+        let identity = codex_protocol::AgentInputIdentity {
+            thread_id: ThreadId::new(),
+            nickname: None,
+            agent_ref: None,
+            task_path: None,
+            role: None,
+            model: None,
+            reasoning_effort: None,
+        };
+        let mut recipient_identity = identity.clone();
+        recipient_identity.thread_id = recipient;
+        let mut acceptance = codex_protocol::items::AgentMessageItem::new(&[]);
+        acceptance.id = codex_protocol::mailbox_acceptance_receipt_id(&ThreadId::new().to_string())
+            .expect("acceptance ID")
+            .to_string();
+        acceptance.phase = Some(codex_protocol::models::MessagePhase::Commentary);
+        acceptance.attribution = Some(codex_protocol::AgentInputAttribution {
+            sender: identity,
+            recipient: recipient_identity,
+            sender_turn_id: "mail-source".to_string(),
+        });
+        acceptance.input = Some(vec![codex_protocol::user_input::UserInput::Text {
+            text: "Accepted, not consumed".to_string(),
+            text_elements: Vec::new(),
+        }]);
+        let acceptance =
+            ThreadItemPayload::from(codex_protocol::items::TurnItem::AgentMessage(acceptance));
+        for item in [item, acceptance] {
+            let completed = codex_app_server_protocol::ItemCompletedNotification::new(
+                sender.to_string(),
+                "turn-receipt".to_string(),
+                item,
+                /*started_at_ms*/ None,
+                /*completed_at_ms*/ 0,
+            );
+            let item = completed.item.clone();
+            let notification = ServerNotification::ItemCompleted(completed);
+            let mut store = ThreadEventStore::new(/*capacity*/ 8);
+            store.push_notification_ref(&notification);
+            store.rebase_buffer_after_session_refresh();
+            assert_eq!(store.snapshot().events.len(), 1);
+            let mut hydrated_turn = test_turn("turn-receipt", TurnStatus::Completed, Vec::new());
+            hydrated_turn.items.push(item);
+            store.set_turns(vec![hydrated_turn]);
+            assert!(
+                store.snapshot().events.is_empty(),
+                "hydrated receipt is not replayed twice"
+            );
+            store.set_turns(Vec::new());
+            store.rebase_buffer_after_session_refresh();
+            let snapshot = store.snapshot();
+            let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
+                panic!("disk-only refresh must retain the raw receipt");
+            };
+            assert_eq!(
+                serde_json::to_value(actual).expect("serialize receipt"),
+                serde_json::to_value(notification).expect("serialize expected receipt")
+            );
+        }
+    }
+
+    #[test]
+    fn hydrated_question_message_retains_live_state_without_mutating_snapshot_input() {
+        let thread_id = ThreadId::new();
+        let item = ThreadItemPayload::AgentMessage {
+            id: "question-message".to_string(),
+            text: "Select the environment before continuing.".to_string(),
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            inter_agent_source: None,
+            memory_citation: None,
+            attribution: None,
+            input: None,
+            delivery: None,
+            questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
+                title: "Which environment?".to_string(),
+                options: None,
+            }]),
+        };
         let completed = codex_app_server_protocol::ItemCompletedNotification::new(
-            sender.to_string(),
-            "turn-receipt".to_string(),
+            thread_id.to_string(),
+            "turn-questions".to_string(),
             item,
             /*started_at_ms*/ None,
             /*completed_at_ms*/ 0,
         );
         let item = completed.item.clone();
-        let notification = ServerNotification::ItemCompleted(completed);
+        let mut expected = ServerNotification::ItemCompleted(completed);
         let mut store = ThreadEventStore::new(/*capacity*/ 8);
-        store.push_notification_ref(&notification);
-        store.rebase_buffer_after_session_refresh();
-        assert_eq!(store.snapshot().events.len(), 1);
-        let mut hydrated_turn = test_turn("turn-receipt", TurnStatus::Completed, Vec::new());
+        store.push_notification_ref(&expected);
+        let mut hydrated_turn = test_turn("turn-questions", TurnStatus::Completed, Vec::new());
         hydrated_turn.items.push(item);
         store.set_turns(vec![hydrated_turn]);
-        assert!(
-            store.snapshot().events.is_empty(),
-            "hydrated receipt is not replayed twice"
-        );
-        store.set_turns(Vec::new());
-        store.rebase_buffer_after_session_refresh();
-        let snapshot = store.snapshot();
-        let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
-            panic!("disk-only refresh must retain the raw receipt");
-        };
-        assert_eq!(
-            serde_json::to_value(actual).expect("serialize receipt"),
-            serde_json::to_value(notification).expect("serialize expected receipt")
-        );
+
+        for rebased in [false, true] {
+            if rebased {
+                store.rebase_buffer_after_session_refresh();
+                let ServerNotification::ItemCompleted(completion) = &mut expected else {
+                    panic!("expected completion fixture");
+                };
+                let ThreadItemPayload::AgentMessage { text, .. } = &mut completion.item.payload
+                else {
+                    panic!("expected agent message fixture");
+                };
+                text.clear();
+            }
+            let snapshot = store.snapshot();
+            let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
+                panic!("hydration must retain live question state");
+            };
+            assert_eq!(
+                serde_json::to_value(actual).expect("serialize live questions"),
+                serde_json::to_value(&expected).expect("serialize expected question state"),
+            );
+            let buffered_events = store.buffer.iter().collect::<Vec<_>>();
+            let [ThreadBufferedEvent::Notification(buffered)] = buffered_events.as_slice() else {
+                panic!("snapshot must preserve buffered questions");
+            };
+            assert_eq!(
+                serde_json::to_value(buffered).expect("serialize buffered questions"),
+                serde_json::to_value(&expected).expect("serialize expected buffer"),
+            );
+        }
     }
 
     #[test]
