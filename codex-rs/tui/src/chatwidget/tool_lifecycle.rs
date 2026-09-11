@@ -114,6 +114,24 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(super) fn on_async_agent_notice(
+        &mut self,
+        cell: impl crate::history_cell::HistoryCell + 'static,
+    ) {
+        if self.is_streaming_final_answer() {
+            self.interrupts.push_agent_notice(Box::new(cell));
+        } else {
+            if self.stream_controller.is_some() {
+                self.flush_answer_stream_with_separator();
+            }
+            // Retained prompts must not strand notices after cancellation. Keep notice FIFO
+            // without opening unrelated prompts or deferred tool activity.
+            self.flush_async_agent_notices();
+            self.add_to_history(cell);
+            self.request_redraw();
+        }
+    }
+
     pub(super) fn on_collab_agent_tool_call(
         &mut self,
         item: ThreadItem,
@@ -407,9 +425,6 @@ impl ChatWidget {
 
     pub(crate) fn handle_queued_item_completed_now(&mut self, item: ThreadItem) {
         match item {
-            item if inter_agent_transcript::is_inter_agent_message(&item) => {
-                self.handle_inter_agent_message_now(item);
-            }
             item @ ThreadItem::CommandExecution { .. } => {
                 self.handle_command_execution_completed_now(item);
             }
