@@ -190,12 +190,15 @@ pub(crate) fn thread_items_with_sources_to_transcript_cells(
                 ..
             } => {
                 if let Some(attribution) = attribution {
-                    cells.push(Arc::new(crate::history_cell::AgentInputHistoryCell::new(
-                        attribution,
-                        input.unwrap_or_default(),
-                        text,
-                        thread_id,
-                    )));
+                    cells.push(Arc::new(
+                        crate::history_cell::AgentInputHistoryCell::new(
+                            attribution,
+                            input.unwrap_or_default(),
+                            text,
+                            thread_id,
+                        )
+                        .with_receipt_id(&id),
+                    ));
                     continue;
                 }
                 let collab_cell = background_completion_history_cell_from_agent_message(

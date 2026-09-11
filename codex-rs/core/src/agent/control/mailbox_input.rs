@@ -285,6 +285,26 @@ impl AgentControl {
             .map_err(|error| CodexErr::Fatal(format!("failed to accept mailbox input: {error}")))?;
         drop(_permission);
         drop(_recipient_lifecycle);
+        // Only fresh durable acceptance produces this best-effort live sibling notice.
+        // Retries returned above; neither receipt failure nor a missing Main undoes acceptance.
+        if let MailboxPayload::Agent { attribution, input } = &accepted.payload
+            && let Some(id) = codex_protocol::mailbox_acceptance_receipt_id(&accepted.id)
+        {
+            let mut receipt = codex_protocol::items::AgentMessageItem::new(&[]);
+            receipt.id = id.to_string();
+            receipt.phase = Some(codex_protocol::models::MessagePhase::Commentary);
+            receipt.attribution = Some(attribution.as_ref().clone());
+            receipt.input = Some(input.clone());
+            if let Err(error) = self
+                .mirror_attributed_agent_input(
+                    receiver,
+                    &codex_protocol::items::TurnItem::AgentMessage(receipt),
+                )
+                .await
+            {
+                tracing::warn!(%error, "failed to present mailbox acceptance notice");
+            }
+        }
         // The existing scheduler owns idle inventory admission. A missing or concurrently
         // unloaded runtime cannot undo durable acceptance; the helper never loads a receiver.
         self.notify_mailbox_activity(receiver).await;
