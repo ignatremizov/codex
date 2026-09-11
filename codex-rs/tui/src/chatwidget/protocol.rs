@@ -16,7 +16,7 @@ impl ChatWidget {
             ServerNotification::ItemCompleted(notification)
                 if inter_agent_transcript::is_inter_agent_message(&notification.item) =>
             {
-                self.on_inter_agent_message(notification.item);
+                self.on_inter_agent_message(notification.item, replay_kind.is_some());
                 return;
             }
             notification => notification,
@@ -624,7 +624,13 @@ impl ChatWidget {
             {
                 self.remember_realtime_delegated_reasoning_turn(&notification.turn_id);
             }
-            ThreadItem::AgentMessage { id, .. } if replay_kind.is_none() => {
+            ThreadItem::AgentMessage {
+                id,
+                phase,
+                attribution: None,
+                ..
+            } if replay_kind.is_none() => {
+                self.active_streaming_phase = phase;
                 self.is_realtime_delegated_agent_item(&notification.turn_id, &id);
             }
             ThreadItem::Reasoning { id, .. } => {

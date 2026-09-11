@@ -2,6 +2,20 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn acceptance_notice_is_distinct_from_delivery_and_inventory() {
+    let message_id = uuid::Uuid::now_v7().to_string();
+    let receipt = mailbox_acceptance_receipt_id(&message_id).unwrap();
+    assert!(is_mailbox_acceptance_receipt_id(receipt.as_str()));
+    assert!(!is_mailbox_delivery_response_item_id(receipt.as_str()));
+    assert!(!is_mailbox_inventory_response_item_id(receipt.as_str()));
+    assert_eq!(
+        crate::sub_agent_completion::ordinary_agent_message_response_item_id(receipt.as_str()),
+        format!("agent_{receipt}"),
+    );
+    assert_eq!(mailbox_acceptance_receipt_id("not-a-uuid"), None);
+}
+
+#[test]
 fn inventory_identity_is_distinct_and_cannot_be_used_by_provider_output() {
     let notification = uuid::Uuid::now_v7().to_string();
     let inventory = mailbox_inventory_response_item_id(&notification).unwrap();

@@ -13,19 +13,7 @@ pub(super) fn is_inter_agent_message(item: &ThreadItem) -> bool {
 }
 
 impl ChatWidget {
-    pub(super) fn on_inter_agent_message(&mut self, item: ThreadItem) {
-        if !self.turn_lifecycle.agent_turn_running && self.stream_controller.is_none() {
-            self.handle_inter_agent_message_now(item);
-        } else {
-            self.defer_or_handle(
-                item,
-                InterruptManager::push_item_completed,
-                Self::handle_inter_agent_message_now,
-            );
-        }
-    }
-
-    pub(super) fn handle_inter_agent_message_now(&mut self, item: ThreadItem) {
+    pub(super) fn on_inter_agent_message(&mut self, item: ThreadItem, from_replay: bool) {
         let ThreadItem::AgentMessage {
             id,
             text,
@@ -43,8 +31,11 @@ impl ChatWidget {
             self.local_settings.tui.agent_response_preview_lines,
             |thread_id| self.collab_agent_metadata(thread_id),
         ) {
-            self.add_to_history(cell);
-            self.request_redraw();
+            if from_replay {
+                self.on_collab_event(cell);
+            } else {
+                self.on_async_agent_notice(cell);
+            }
             return;
         }
         let context = self.thread_id.and_then(|thread_id| {
@@ -54,14 +45,16 @@ impl ChatWidget {
             )
         });
         // Do not interpret assistant directives or mutate local-answer/question state.
-        self.add_to_history(
-            history_cell::AgentMarkdownCell::new_with_inline_visualizations_and_phase(
-                text,
-                self.config.cwd.as_path(),
-                context,
-                phase,
-            ),
+        let cell = history_cell::AgentMarkdownCell::new_with_inline_visualizations_and_phase(
+            text,
+            self.config.cwd.as_path(),
+            context,
+            phase,
         );
-        self.request_redraw();
+        if from_replay {
+            self.on_collab_event(cell);
+        } else {
+            self.on_async_agent_notice(cell);
+        }
     }
 }

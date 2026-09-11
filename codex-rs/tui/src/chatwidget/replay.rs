@@ -280,11 +280,11 @@ impl ChatWidget {
         turn_id: String,
         render_source: ThreadItemRenderSource,
     ) {
+        let from_replay = render_source.is_replay();
         if inter_agent_transcript::is_inter_agent_message(&item) {
-            self.on_inter_agent_message(item);
+            self.on_inter_agent_message(item, from_replay);
             return;
         }
-        let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
         match item {
             ThreadItem::UserMessage {
@@ -312,24 +312,30 @@ impl ChatWidget {
             ThreadItem::AgentMessage {
                 id,
                 text,
+                inter_agent_source,
                 attribution,
                 input,
                 phase,
                 memory_citation,
                 delivery,
                 questions,
-                ..
             } => {
                 if let Some(attribution) = attribution {
-                    self.on_collab_event(
-                        history_cell::AgentInputHistoryCell::new(
-                            attribution,
-                            input.unwrap_or_default(),
-                            text,
-                            self.thread_id,
-                        )
-                        .with_response_preview_lines(self.local_settings.tui.agent_response_preview_lines),
+                    let cell = history_cell::AgentInputHistoryCell::new(
+                        attribution,
+                        input.unwrap_or_default(),
+                        text,
+                        self.thread_id,
+                    )
+                    .with_receipt_id(&id)
+                    .with_response_preview_lines(
+                        self.local_settings.tui.agent_response_preview_lines,
                     );
+                    if from_replay {
+                        self.on_collab_event(cell);
+                    } else {
+                        self.on_async_agent_notice(cell);
+                    }
                     return;
                 }
                 let cell = multi_agents::background_completion_history_cell_from_agent_message(
@@ -352,15 +358,19 @@ impl ChatWidget {
                     )
                 });
                 if let Some(cell) = cell {
-                    self.on_collab_event(cell);
+                    if from_replay {
+                        self.on_collab_event(cell);
+                    } else {
+                        self.on_async_agent_notice(cell);
+                    }
                     return;
                 }
                 if self.complete_realtime_delegated_agent_item(
                     &turn_id,
                     &ThreadItem::AgentMessage {
-                        inter_agent_source: None,
+                        inter_agent_source,
                         attribution: None,
-                        input: None,
+                        input: input.clone(),
                         id: id.clone(),
                         text: text.clone(),
                         phase: phase.clone(),
@@ -375,9 +385,14 @@ impl ChatWidget {
                 self.on_agent_message_item_completed(
                     AgentMessageItem {
                         id,
-                        attribution: None,
-                        input: None,
                         content: vec![AgentMessageContent::Text { text }],
+                        attribution: None,
+                        input: input.map(|input| {
+                            input
+                                .into_iter()
+                                .map(codex_app_server_protocol::UserInput::into_core)
+                                .collect()
+                        }),
                         phase,
                         memory_citation: memory_citation.map(|citation| {
                             codex_protocol::memory_citation::MemoryCitation {
