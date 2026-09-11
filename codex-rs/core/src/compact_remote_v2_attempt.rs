@@ -112,6 +112,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             &identities.refs,
         )
         .await?;
+        crate::context::project_mailbox_inventories(&mut input, sess.thread_id, &identities.refs);
     }
     let tool_router = &step_context.tool_router;
     input.push(ResponseItem::CompactionTrigger {});
