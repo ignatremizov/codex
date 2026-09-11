@@ -29,13 +29,14 @@ impl AgentInputHistoryCell {
     ) -> Self {
         let mut title = identity_label(&attribution.sender);
         if viewed_thread.is_some_and(|id| id.to_string() != attribution.recipient.thread_id) {
-            title.spans.push(" → ".into());
+            title.spans.push(" sends to ".bold());
             title
                 .spans
                 .extend(identity_label(&attribution.recipient).spans);
-            title.spans.push(" (presentation only)".italic());
+            title.spans.push(":".bold());
+        } else {
+            title.spans.push(" sends:".bold());
         }
-        title.spans.push(" sends:".bold());
         let payload = if input.is_empty() {
             vec![fallback_text]
         } else {
@@ -64,6 +65,18 @@ impl AgentInputHistoryCell {
 
     pub(crate) fn with_response_preview_lines(mut self, preview_rows: usize) -> Self {
         self.preview_rows = preview_rows;
+        self
+    }
+
+    pub(crate) fn with_receipt_id(mut self, id: &str) -> Self {
+        if codex_protocol::is_mailbox_acceptance_receipt_id(id) {
+            self.title = identity_label(&self.attribution.sender);
+            self.title.spans.push(" mails to ".bold());
+            self.title
+                .spans
+                .extend(identity_label(&self.attribution.recipient).spans);
+            self.title.spans.push(":".bold());
+        }
         self
     }
 
