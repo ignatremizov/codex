@@ -371,6 +371,11 @@ async fn run_compact_task_inner_impl(
                 &identities.refs,
             )
             .await?;
+            crate::context::project_mailbox_inventories(
+                &mut turn_input,
+                sess.thread_id,
+                &identities.refs,
+            );
         }
         let turn_input_len = turn_input.len();
         let prompt = Prompt {

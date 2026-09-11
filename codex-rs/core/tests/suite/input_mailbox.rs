@@ -46,6 +46,8 @@ use std::time::Duration;
 use test_case::test_case;
 use tokio::sync::oneshot;
 
+#[path = "input_mailbox_inventory_projection.rs"]
+mod inventory_projection;
 #[path = "input_mailbox_permission_tests.rs"]
 mod permission_tests;
 #[path = "input_mailbox_projection_tests.rs"]
