@@ -20,6 +20,7 @@ pub(super) fn mirrored_completion_item_id(notification: &ServerNotification) -> 
         id,
         text,
         attribution,
+        input,
         phase: Some(MessagePhase::Commentary),
         questions: None,
         ..
@@ -33,7 +34,12 @@ pub(super) fn mirrored_completion_item_id(notification: &ServerNotification) -> 
             && (attribution
                 .as_ref()
                 .is_some_and(|attribution| attribution.recipient.thread_id != event.thread_id)
-                || codex_protocol::protocol::agent_message_audit_transcript_parts(text).is_some()));
+                || codex_protocol::protocol::agent_message_audit_transcript_parts(text).is_some()))
+        || (codex_protocol::is_mailbox_acceptance_receipt_id(id)
+            && input.is_some()
+            && attribution
+                .as_ref()
+                .is_some_and(|attribution| attribution.recipient.thread_id != event.thread_id));
     mirrored.then_some(id.as_str())
 }
 

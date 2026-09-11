@@ -229,12 +229,16 @@ fn next_goal_draft(
 
 #[path = "tests/agent_input_presentation_tests.rs"]
 mod agent_input_presentation_tests;
+#[path = "tests/agent_spawn_catalog_tests.rs"]
+mod agent_spawn_catalog_tests;
 #[path = "tests/agent_task_dispatch_tests.rs"]
 mod agent_task_dispatch_tests;
 mod app_server;
 mod approval_requests;
 #[path = "tests/approval_timeout_tests.rs"]
 mod approval_timeout_tests;
+#[path = "tests/async_agent_notice_tests.rs"]
+mod async_agent_notice_tests;
 #[path = "tests/backend_banners_tests.rs"]
 mod backend_banners_tests;
 #[path = "tests/background_completion_tests.rs"]
@@ -283,8 +287,6 @@ mod mcp_startup;
 mod misalignment_policy;
 #[path = "tests/model_display_name_tests.rs"]
 mod model_display_name_tests;
-#[path = "tests/agent_spawn_catalog_tests.rs"]
-mod agent_spawn_catalog_tests;
 #[path = "tests/model_picker_tests.rs"]
 mod model_picker_tests;
 #[path = "tests/notification_tests.rs"]
