@@ -19,6 +19,8 @@ mod agent_cycling_tests;
 mod agents_navigation_tests;
 #[path = "tests/approvals_reviewer_error_tests.rs"]
 mod approvals_reviewer_error_tests;
+#[path = "tests/async_agent_notice_consolidation_tests.rs"]
+mod async_agent_notice_consolidation_tests;
 #[path = "tests/backend_banner_fallback_tests.rs"]
 mod backend_banner_fallback_tests;
 #[path = "tests/backend_banner_recovery_tests.rs"]

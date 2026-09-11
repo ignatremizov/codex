@@ -144,6 +144,7 @@ impl ChatWidget {
         self.transcript.saw_copy_source_this_turn = false;
         // If a stream is currently active, finalize it.
         self.flush_answer_and_plan_streams();
+        self.flush_async_agent_notices();
         self.flush_interrupt_activity();
         self.finish_dynamic_activity();
         self.flush_unified_exec_wait_streak();
@@ -318,6 +319,7 @@ impl ChatWidget {
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
         self.flush_answer_and_plan_streams();
+        self.flush_async_agent_notices();
         self.flush_interrupt_activity();
         self.finish_dynamic_activity();
         if self.status_state.reasoning_resume_turn_id.is_some() {
@@ -350,6 +352,7 @@ impl ChatWidget {
         self.adaptive_chunking.reset();
         self.stream_controller = None;
         self.plan_stream_controller = None;
+        self.active_streaming_phase = None;
         self.request_pending_usage_output_insertion_after_stream_shutdown();
         self.status_state.pending_status_indicator_restore = false;
         self.safety_buffering_prompt = None;

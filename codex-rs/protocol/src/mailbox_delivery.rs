@@ -9,6 +9,23 @@ use crate::protocol::ItemCompletedEvent;
 
 const MAILBOX_DELIVERY_PREFIX: &str = "msg_mailbox_";
 
+/// Stable identity for a live, presentation-only notice of durable mailbox acceptance.
+/// This is neither payload delivery proof nor a guarantee that a client received the notice.
+pub fn mailbox_acceptance_receipt_id(message_id: &str) -> Option<ResponseItemId> {
+    mailbox_delivery_response_item_id(message_id)?;
+    Some(ResponseItemId::with_suffix(
+        "msg_mailbox_accepted",
+        message_id,
+    ))
+}
+
+/// Recognizes trusted acceptance notices, distinct from inventory and consumption.
+pub fn is_mailbox_acceptance_receipt_id(id: &str) -> bool {
+    id.strip_prefix("msg_mailbox_accepted_")
+        .and_then(mailbox_acceptance_receipt_id)
+        .is_some()
+}
+
 /// Builds the paired context/presentation ID from a canonical UUIDv7 delivery ID.
 pub fn mailbox_delivery_response_item_id(delivery_id: &str) -> Option<ResponseItemId> {
     let uuid = uuid::Uuid::parse_str(delivery_id).ok()?;

@@ -605,7 +605,8 @@ impl ChatWidget {
             {
                 self.remember_realtime_delegated_reasoning_turn(&notification.turn_id);
             }
-            ThreadItem::AgentMessage { id, .. } if replay_kind.is_none() => {
+            ThreadItem::AgentMessage { id, phase, .. } if replay_kind.is_none() => {
+                self.active_streaming_phase = phase;
                 self.is_realtime_delegated_agent_item(&notification.turn_id, &id);
             }
             ThreadItem::Reasoning { id, .. } => {

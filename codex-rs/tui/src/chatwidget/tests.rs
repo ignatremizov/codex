@@ -238,6 +238,8 @@ mod app_server;
 mod approval_requests;
 #[path = "tests/approval_timeout_tests.rs"]
 mod approval_timeout_tests;
+#[path = "tests/async_agent_notice_tests.rs"]
+mod async_agent_notice_tests;
 #[path = "tests/backend_banners_tests.rs"]
 mod backend_banners_tests;
 #[path = "tests/background_completion_tests.rs"]

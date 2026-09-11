@@ -1,6 +1,4 @@
-//! Defer prompt overlays and tool activity until assistant streams finish.
-//!
-//! Turn termination settles background activity without opening queued prompts.
+//! Queue prompt overlays, tool activity, and asynchronous agent presentation during streaming.
 
 use std::collections::VecDeque;
 
@@ -27,6 +25,8 @@ pub(crate) enum QueuedInterrupt {
     RequestUserInput(ToolRequestUserInputParams),
     ItemStarted(ThreadItem),
     ItemCompleted(ThreadItem),
+    /// A rendered presentation only; authored assistant messages and own tool calls stay separate.
+    AgentNotice(Box<dyn crate::history_cell::HistoryCell>),
 }
 
 #[derive(Default)]
@@ -41,6 +41,7 @@ impl InterruptManager {
         }
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.queue.is_empty()
@@ -58,6 +59,14 @@ impl InterruptManager {
                     | QueuedInterrupt::RequestUserInput(_)
             )
         })
+    }
+
+    /// Excludes agent presentation notices that do not claim interactive input or
+    /// belong to an active execution write cycle.
+    pub(crate) fn has_pending_lifecycle_or_prompt(&self) -> bool {
+        self.queue
+            .iter()
+            .any(|interrupt| !matches!(interrupt, QueuedInterrupt::AgentNotice(_)))
     }
 
     pub(crate) fn push_exec_approval(&mut self, ev: ExecApprovalRequestEvent) {
@@ -95,6 +104,10 @@ impl InterruptManager {
         self.queue.push_back(QueuedInterrupt::ItemCompleted(item));
     }
 
+    pub(crate) fn push_agent_notice(&mut self, cell: Box<dyn crate::history_cell::HistoryCell>) {
+        self.queue.push_back(QueuedInterrupt::AgentNotice(cell));
+    }
+
     /// Settle background activity at turn end without opening queued prompts.
     pub(crate) fn flush_activity(&mut self, chat: &mut ChatWidget) {
         let mut pending_prompts = VecDeque::new();
@@ -108,6 +121,35 @@ impl InterruptManager {
             }
         }
         self.queue = pending_prompts;
+    }
+
+    /// End-of-turn cleanup must publish notices without opening queued prompts or tool activity.
+    pub(crate) fn flush_agent_notices(&mut self, chat: &mut ChatWidget) {
+        if !self
+            .queue
+            .iter()
+            .any(|event| matches!(event, QueuedInterrupt::AgentNotice(_)))
+        {
+            return;
+        }
+        if chat.stream_controller.is_some() {
+            chat.flush_answer_stream_with_separator();
+        }
+        let mut remaining = VecDeque::new();
+        while let Some(event) = self.queue.pop_front() {
+            match event {
+                QueuedInterrupt::AgentNotice(cell) => chat.add_boxed_history(cell),
+                other @ (QueuedInterrupt::ExecApproval(_)
+                | QueuedInterrupt::ApplyPatchApproval(_)
+                | QueuedInterrupt::Elicitation { .. }
+                | QueuedInterrupt::RequestPermissions(_)
+                | QueuedInterrupt::RequestUserInput(_)
+                | QueuedInterrupt::ItemStarted(_)
+                | QueuedInterrupt::ItemCompleted(_)) => remaining.push_back(other),
+            }
+        }
+        self.queue = remaining;
+        chat.request_redraw();
     }
 
     pub(crate) fn remove_resolved_prompt(&mut self, request: &ResolvedAppServerRequest) -> bool {
@@ -134,6 +176,7 @@ impl InterruptManager {
                 QueuedInterrupt::ItemCompleted(item) => {
                     chat.handle_queued_item_completed_now(item);
                 }
+                QueuedInterrupt::AgentNotice(cell) => chat.add_boxed_history(cell),
             }
         }
     }
@@ -164,7 +207,9 @@ impl QueuedInterrupt {
                 matches!(request, ResolvedAppServerRequest::UserInput { call_id }
                     if ev.item_id == call_id.as_str())
             }
-            QueuedInterrupt::ItemStarted(_) | QueuedInterrupt::ItemCompleted(_) => false,
+            QueuedInterrupt::ItemStarted(_)
+            | QueuedInterrupt::ItemCompleted(_)
+            | QueuedInterrupt::AgentNotice(_) => false,
         }
     }
 }
