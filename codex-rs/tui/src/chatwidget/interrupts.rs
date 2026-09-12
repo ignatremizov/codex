@@ -1,4 +1,4 @@
-//! Queue prompt overlays and deferred tool activity while another interrupt is visible.
+//! Queue prompt overlays, tool activity, and asynchronous agent presentation during streaming.
 
 use std::collections::VecDeque;
 
@@ -25,6 +25,8 @@ pub(crate) enum QueuedInterrupt {
     RequestUserInput(ToolRequestUserInputParams),
     ItemStarted(ThreadItem),
     ItemCompleted(ThreadItem),
+    /// A rendered presentation only; authored assistant messages and own tool calls stay separate.
+    AgentNotice(Box<dyn crate::history_cell::HistoryCell>),
 }
 
 #[derive(Default)]
@@ -93,6 +95,39 @@ impl InterruptManager {
         self.queue.push_back(QueuedInterrupt::ItemCompleted(item));
     }
 
+    pub(crate) fn push_agent_notice(&mut self, cell: Box<dyn crate::history_cell::HistoryCell>) {
+        self.queue.push_back(QueuedInterrupt::AgentNotice(cell));
+    }
+
+    /// End-of-turn cleanup must publish notices without opening queued prompts or tool activity.
+    pub(crate) fn flush_agent_notices(&mut self, chat: &mut ChatWidget) {
+        if !self
+            .queue
+            .iter()
+            .any(|event| matches!(event, QueuedInterrupt::AgentNotice(_)))
+        {
+            return;
+        }
+        if chat.stream_controller.is_some() {
+            chat.flush_answer_stream_with_separator();
+        }
+        let mut remaining = VecDeque::new();
+        while let Some(event) = self.queue.pop_front() {
+            match event {
+                QueuedInterrupt::AgentNotice(cell) => chat.add_boxed_history(cell),
+                other @ (QueuedInterrupt::ExecApproval(_)
+                | QueuedInterrupt::ApplyPatchApproval(_)
+                | QueuedInterrupt::Elicitation { .. }
+                | QueuedInterrupt::RequestPermissions(_)
+                | QueuedInterrupt::RequestUserInput(_)
+                | QueuedInterrupt::ItemStarted(_)
+                | QueuedInterrupt::ItemCompleted(_)) => remaining.push_back(other),
+            }
+        }
+        self.queue = remaining;
+        chat.request_redraw();
+    }
+
     pub(crate) fn remove_resolved_prompt(&mut self, request: &ResolvedAppServerRequest) -> bool {
         if !self.has_pending_prompt() {
             return false;
@@ -117,6 +152,7 @@ impl InterruptManager {
                 QueuedInterrupt::ItemCompleted(item) => {
                     chat.handle_queued_item_completed_now(item);
                 }
+                QueuedInterrupt::AgentNotice(cell) => chat.add_boxed_history(cell),
             }
         }
     }
@@ -147,7 +183,9 @@ impl QueuedInterrupt {
                 matches!(request, ResolvedAppServerRequest::UserInput { call_id }
                     if ev.item_id == call_id.as_str())
             }
-            QueuedInterrupt::ItemStarted(_) | QueuedInterrupt::ItemCompleted(_) => false,
+            QueuedInterrupt::ItemStarted(_)
+            | QueuedInterrupt::ItemCompleted(_)
+            | QueuedInterrupt::AgentNotice(_) => false,
         }
     }
 }
