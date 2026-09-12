@@ -73,9 +73,9 @@ Resolve mailbox sender selectors independently of lifecycle-controlled target re
 When newly pending mail exists, notify the receiver after its current turn ends, or when it is already idle. The notification starts a turn containing only a compact inventory, allowing the model to select which sender to consume first:
 
 ```text
-Mailbox inventory (pending mail, not consumed):
+Pending mail snapshot (not consumed):
 {"receiver":"1","pending_senders":[{"from":"2","count":3},{"from":"4","count":1},{"from":"user","count":1}]}
-Mail is not consumed until you call check_mail. Pass a listed from value directly to check_mail(from: ...); omit the filter to consume all pending mail.
+check_mail: {"from":"<ref>"} or {} for all.
 ```
 
 Payloads remain outside model context until selected. This supersedes the earlier suggestion that an ordinary non-`z` send automatically drains older mail: normal sends must not bypass receiver selection.
