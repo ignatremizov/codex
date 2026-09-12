@@ -156,16 +156,19 @@ impl ChatWidget {
                 ..
             } => {
                 if let Some(attribution) = attribution {
-                    self.on_collab_event(
-                        history_cell::AgentInputHistoryCell::new(
-                            attribution,
-                            input.unwrap_or_default(),
-                            text,
-                            self.thread_id,
-                        )
-                        .with_receipt_id(&id)
-                        .with_response_preview_lines(self.config.tui_agent_response_preview_lines),
-                    );
+                    let cell = history_cell::AgentInputHistoryCell::new(
+                        attribution,
+                        input.unwrap_or_default(),
+                        text,
+                        self.thread_id,
+                    )
+                    .with_receipt_id(&id)
+                    .with_response_preview_lines(self.config.tui_agent_response_preview_lines);
+                    if from_replay {
+                        self.on_collab_event(cell);
+                    } else {
+                        self.on_async_agent_notice(cell);
+                    }
                     return;
                 }
                 let cell = multi_agents::background_completion_history_cell_from_agent_message(
@@ -185,7 +188,11 @@ impl ChatWidget {
                     )
                 });
                 if let Some(cell) = cell {
-                    self.on_collab_event(cell);
+                    if from_replay {
+                        self.on_collab_event(cell);
+                    } else {
+                        self.on_async_agent_notice(cell);
+                    }
                 } else {
                     self.on_agent_message_item_completed(
                         AgentMessageItem {

@@ -929,6 +929,13 @@ single-owner acceptance serialization. These nonpersistent notices are best-effo
 exactly-once guarantee across processes; their stable IDs are presentation discriminators, not
 delivery proof. Requested hidden `x` output mirrors and ordinary completion behavior are unchanged.
 
+During an authored answer stream, the TUI queues asynchronous agent presentation rows
+(commentary, visible or hidden completions, and peer/mail receipts) until that message finishes.
+The answer is consolidated before the queued notices are displayed. Interruption or terminal
+error consolidates available partial text and drains notices without opening queued approvals or
+tool activity. Replay remains immediate, and the model's own tool lifecycle is not deferred by
+this presentation rule. Core delivery, subscriptions, and persistence are unchanged.
+
 Non-paginated and paginated rollouts should preserve the same canonical observation and delivery
 information. Raw function-call arguments alone are not sufficient because they contain the
 model-authored target reference and cannot represent the eventual target-turn binding or resolved

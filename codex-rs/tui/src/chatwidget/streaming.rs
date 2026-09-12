@@ -410,25 +410,28 @@ impl ChatWidget {
         from_replay: bool,
     ) {
         if let Some(attribution) = item.attribution {
-            self.on_collab_event(
-                history_cell::AgentInputHistoryCell::new(
-                    attribution.into(),
-                    item.input
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
-                    item.content
-                        .into_iter()
-                        .map(|content| match content {
-                            AgentMessageContent::Text { text } => text,
-                        })
-                        .collect(),
-                    self.thread_id,
-                )
-                .with_receipt_id(&item.id)
-                .with_response_preview_lines(self.config.tui_agent_response_preview_lines),
-            );
+            let cell = history_cell::AgentInputHistoryCell::new(
+                attribution.into(),
+                item.input
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                item.content
+                    .into_iter()
+                    .map(|content| match content {
+                        AgentMessageContent::Text { text } => text,
+                    })
+                    .collect(),
+                self.thread_id,
+            )
+            .with_receipt_id(&item.id)
+            .with_response_preview_lines(self.config.tui_agent_response_preview_lines);
+            if from_replay {
+                self.on_collab_event(cell);
+            } else {
+                self.on_async_agent_notice(cell);
+            }
             return;
         }
         self.transcript.last_completed_agent_message = Some((turn_id.to_string(), item.id.clone()));
@@ -551,6 +554,12 @@ impl ChatWidget {
     pub(super) fn flush_interrupt_queue(&mut self) {
         let mut mgr = std::mem::take(&mut self.interrupts);
         mgr.flush_all(self);
+        self.interrupts = mgr;
+    }
+
+    pub(super) fn flush_async_agent_notices(&mut self) {
+        let mut mgr = std::mem::take(&mut self.interrupts);
+        mgr.flush_agent_notices(self);
         self.interrupts = mgr;
     }
 

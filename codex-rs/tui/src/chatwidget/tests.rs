@@ -247,6 +247,8 @@ mod agent_input_presentation_tests;
 mod agent_task_dispatch_tests;
 mod app_server;
 mod approval_requests;
+#[path = "tests/async_agent_notice_tests.rs"]
+mod async_agent_notice_tests;
 #[path = "tests/backend_banners_tests.rs"]
 mod backend_banners_tests;
 #[path = "tests/background_completion_tests.rs"]

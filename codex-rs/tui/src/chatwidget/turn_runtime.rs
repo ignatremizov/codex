@@ -129,6 +129,7 @@ impl ChatWidget {
         self.transcript.saw_copy_source_this_turn = false;
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
+        self.flush_async_agent_notices();
         if let Some(mut controller) = self.plan_stream_controller.take() {
             let had_live_tail = controller.has_live_tail();
             self.clear_active_stream_tail();
@@ -311,6 +312,7 @@ impl ChatWidget {
     /// This does not clear MCP startup tracking, because MCP startup can overlap with turn cleanup
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
+        self.flush_async_agent_notices();
         self.clear_safety_buffering();
         // Drop preview-only stream tail content on any termination path before
         // failed-cell finalization, so transient tail cells are never persisted.
