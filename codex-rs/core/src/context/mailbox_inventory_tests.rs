@@ -169,7 +169,7 @@ fn leaves_noncanonical_or_untrusted_messages_unchanged(case: InvalidArtifact) {
                         panic!("text");
                     };
                     let (body, suffix) = text
-                        .strip_prefix(HEADING)
+                        .strip_prefix(CANONICAL_HEADING)
                         .unwrap()
                         .split_once('\n')
                         .unwrap();
@@ -187,7 +187,7 @@ fn leaves_noncanonical_or_untrusted_messages_unchanged(case: InvalidArtifact) {
                         | InvalidArtifact::ExtraContent
                         | InvalidArtifact::ChangedGuidance => unreachable!(),
                     }
-                    *text = format!("{HEADING}{body}\n{suffix}");
+                    *text = format!("{CANONICAL_HEADING}{body}\n{suffix}");
                 }
                 InvalidArtifact::ProviderId
                 | InvalidArtifact::DifferentTurn

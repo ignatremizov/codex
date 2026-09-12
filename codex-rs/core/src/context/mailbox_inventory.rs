@@ -17,12 +17,9 @@ use serde_json::json;
 use std::collections::HashMap;
 
 const INVENTORY_TOKENS: usize = 768;
-const HEADING: &str = "Mailbox inventory (pending mail, not consumed):\n";
-const GUIDANCE: &str = "\nMail is not consumed until you call check_mail. Pass a listed from value directly to check_mail(from: ...): \
-    \"user\" for user mail, an advertised agent ref or a UUID for agent mail. \
-    Refs use the accompanying identity mapping; nicknames are descriptive only. \
-    Counts are a frozen inventory snapshot, not a guarantee for the next check_mail; later arrivals may change its result. \
-    Call check_mail with no filter to consume all pending mail.";
+const CANONICAL_HEADING: &str = "Mailbox inventory (pending mail, not consumed):\n";
+const HEADING: &str = "Pending mail snapshot (not consumed):\n";
+const GUIDANCE: &str = "\ncheck_mail: {\"from\":\"<ref>\"} or {} for all.";
 const OMITTED: &str =
     " Additional pending senders are omitted; check_mail with no filter includes their mail.";
 
@@ -112,7 +109,7 @@ pub(crate) fn project_mailbox_inventories(
             continue;
         }
         let Some((body, _)) = text
-            .strip_prefix(HEADING)
+            .strip_prefix(CANONICAL_HEADING)
             .and_then(|text| text.split_once('\n'))
         else {
             continue;

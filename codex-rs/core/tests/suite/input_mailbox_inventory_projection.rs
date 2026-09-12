@@ -22,7 +22,7 @@ use test_case::test_case;
 async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
-    const HEADING: &str = "Mailbox inventory (pending mail, not consumed):\n";
+    const HEADING: &str = "Pending mail snapshot (not consumed):\n";
     let server = start_mock_server().await;
     let configure = |config: &mut codex_core::config::Config| {
         config.features.enable(Feature::Collab).expect("enable V1");
@@ -148,11 +148,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
         serde_json::from_str::<serde_json::Value>(body)?,
         json!({"receiver": "1", "pending_senders": rows}),
     );
-    assert!(guidance.contains("not consumed until you call check_mail"));
-    assert!(guidance.contains("Pass a listed from value directly"));
-    assert!(guidance.contains("frozen inventory snapshot"));
-    assert!(guidance.contains("later arrivals may change its result"));
-    assert!(guidance.contains("no filter to consume all pending mail"));
+    assert_eq!(guidance, "check_mail: {\"from\":\"<ref>\"} or {} for all.");
     let hydration = request
         .message_input_texts("developer")
         .into_iter()
@@ -399,7 +395,7 @@ async fn compaction_projects_inventory_except_legacy_remote(
     let projected = initial
         .message_input_texts("developer")
         .into_iter()
-        .find(|text| text.starts_with("Mailbox inventory (pending mail, not consumed):\n"))
+        .find(|text| text.starts_with("Pending mail snapshot (not consumed):\n"))
         .expect("projected inventory");
     let json_line = projected.lines().nth(1).expect("inventory JSON");
     assert_eq!(
@@ -448,7 +444,10 @@ async fn compaction_projects_inventory_except_legacy_remote(
     let actual = request
         .message_input_texts("developer")
         .into_iter()
-        .filter(|text| text.starts_with("Mailbox inventory (pending mail, not consumed):\n"))
+        .filter(|text| {
+            text.starts_with("Pending mail snapshot (not consumed):\n")
+                || text.starts_with("Mailbox inventory (pending mail, not consumed):\n")
+        })
         .collect::<Vec<_>>();
     let expected = match boundary {
         CompactionPath::Local | CompactionPath::Remote => projected,
