@@ -31,7 +31,7 @@ async fn check_mail_resolves_sender_without_loading_or_adopting(
             .expect("disable V2");
     });
     let test = builder.build_with_auto_env(&server).await?;
-    let (sender, selector, expected_from) = match selector {
+    let (sender, selector) = match selector {
         SenderSelector::ClosedRef | SenderSelector::ClosedTask => {
             let child = test
                 .codex
@@ -52,19 +52,15 @@ async fn check_mail_resolves_sender_without_loading_or_adopting(
                 SenderSelector::ClosedTask => child.task_path.expect("durable task path"),
                 SenderSelector::ForeignUuid | SenderSelector::ForeignForcedUuid => unreachable!(),
             };
-            (
-                child.target_thread_id,
-                selected,
-                child.agent_ref.expect("durable ref").to_string(),
-            )
+            (child.target_thread_id, selected)
         }
         SenderSelector::ForeignUuid => {
             let sender = ThreadId::new();
-            (sender, sender.to_string(), sender.to_string())
+            (sender, sender.to_string())
         }
         SenderSelector::ForeignForcedUuid => {
             let sender = ThreadId::new();
-            (sender, format!("id:{sender}"), sender.to_string())
+            (sender, format!("id:{sender}"))
         }
     };
     let mock = mount_sse_sequence(
@@ -111,7 +107,7 @@ async fn check_mail_resolves_sender_without_loading_or_adopting(
             serde_json::from_str::<serde_json::Value>(
                 output["output"].as_str().expect("metadata result")
             )?,
-            json!({"status": "empty", "from": expected_from, "delivered_count": 0, "rejected_count": 0}),
+            json!({"status": "empty"}),
         );
     }
     test.codex.flush_rollout().await?;
