@@ -39,9 +39,11 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     Omit from to consume all pending mail, or select one sender by agent ref, nickname, task path, \
                     full UUID, or user. The selected batch is fixed; later arrivals and unselected senders remain pending. \
                     This does not consume queued prompts or start another turn. Output contains metadata, not message bodies. \
-                    Completed fixed batches report empty, delivered, or rejected with delivered_count and rejected_count; \
-                    counts include earlier attempts of the same invocation. Delivery_requested means acceptance only. \
-                    From uses a hydrated receiver ref when available, otherwise UUID; user and null retain their meanings. \
+                    Completed fixed batches report ok when any messages were delivered, empty when none were selected, \
+                    or rejected when all selected messages were rejected. A positive rejected_count is included only \
+                    when some messages were rejected, including mixed ok batches. Rejection warnings go to loaded senders. \
+                    Results cover earlier attempts of the same invocation. Delivery_requested means acceptance only; \
+                    its from uses a hydrated receiver ref when available, otherwise UUID, user, or null for all senders. \
                     Direct calls only; unavailable inside code-mode or nested tool execution.".to_string(),
                 strict: false,
                 defer_loading: None,
@@ -66,12 +68,27 @@ impl ToolExecutor<ToolInvocation> for Handler {
                         {
                             "type": "object",
                             "properties": {
-                                "status": {"type": "string", "enum": ["empty", "delivered", "rejected"]},
-                                "from": {"type": ["string", "null"]},
-                                "delivered_count": {"type": "integer", "minimum": 0},
-                                "rejected_count": {"type": "integer", "minimum": 0}
+                                "status": {"type": "string", "enum": ["ok"]},
+                                "rejected_count": {"type": "integer", "minimum": 1}
                             },
-                            "required": ["status", "from", "delivered_count", "rejected_count"],
+                            "required": ["status"],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string", "enum": ["empty"]}
+                            },
+                            "required": ["status"],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string", "enum": ["rejected"]},
+                                "rejected_count": {"type": "integer", "minimum": 1}
+                            },
+                            "required": ["status", "rejected_count"],
                             "additionalProperties": false
                         }
                     ]

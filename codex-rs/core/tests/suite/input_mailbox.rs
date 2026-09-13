@@ -303,7 +303,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
         serde_json::from_str::<serde_json::Value>(
             outputs[0].1["output"].as_str().expect("metadata only")
         )?,
-        json!({"status": "delivered", "from": "user", "delivered_count": 1, "rejected_count": 0}),
+        json!({"status": "ok"}),
     );
     let user_content = model_items
         .iter()

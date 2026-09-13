@@ -32,29 +32,22 @@ struct Acceptance {
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
-enum DeliveryStatus {
+enum ReceiptStatus {
     Empty,
-    Delivered,
+    Ok,
     Rejected,
 }
 
 #[derive(Serialize)]
-struct DeliveryCounts {
-    status: DeliveryStatus,
-    delivered_count: usize,
-    rejected_count: usize,
-}
-
-#[derive(Serialize)]
-struct Receipt<'a> {
-    from: Option<String>,
-    #[serde(flatten)]
-    counts: &'a DeliveryCounts,
+struct Receipt {
+    status: ReceiptStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rejected_count: Option<usize>,
 }
 
 struct ClaimSummary {
     from: Option<String>,
-    counts: Option<DeliveryCounts>,
+    receipt: Option<Receipt>,
 }
 
 impl ClaimSummary {
@@ -77,18 +70,17 @@ impl ClaimSummary {
                 MailboxMessageState::Pending | MailboxMessageState::Claimed => terminal = false,
             }
         }
-        let counts = terminal.then_some(DeliveryCounts {
+        let receipt = terminal.then_some(Receipt {
             status: if delivered_count > 0 {
-                DeliveryStatus::Delivered
+                ReceiptStatus::Ok
             } else if rejected_count > 0 {
-                DeliveryStatus::Rejected
+                ReceiptStatus::Rejected
             } else {
-                DeliveryStatus::Empty
+                ReceiptStatus::Empty
             },
-            delivered_count,
-            rejected_count,
+            rejected_count: (rejected_count > 0).then_some(rejected_count),
         });
-        Some(Self { from, counts })
+        Some(Self { from, receipt })
     }
 }
 
@@ -163,16 +155,16 @@ pub(crate) async fn project_check_mail_results(
         if acceptance.from != summary.from {
             continue;
         }
-        let from = summary.from.as_ref().map(|sender| {
-            ThreadId::from_string(sender)
-                .ok()
-                .and_then(|id| refs.get(&id))
-                .map(u64::to_string)
-                .unwrap_or_else(|| sender.clone())
-        });
-        let projected = if let Some(counts) = &summary.counts {
-            serde_json::to_value(Receipt { from, counts })
+        let projected = if let Some(receipt) = &summary.receipt {
+            serde_json::to_value(receipt)
         } else {
+            let from = summary.from.as_ref().map(|sender| {
+                ThreadId::from_string(sender)
+                    .ok()
+                    .and_then(|id| refs.get(&id))
+                    .map(u64::to_string)
+                    .unwrap_or_else(|| sender.clone())
+            });
             serde_json::to_value(Acceptance { from, ..acceptance })
         };
         *text = projected

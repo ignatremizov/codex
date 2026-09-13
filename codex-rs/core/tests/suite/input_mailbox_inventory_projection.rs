@@ -275,14 +275,23 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
             .contains(&inventory_text)
     );
     let receipt = &requests[1];
-    for (call, from, count) in [
-        ("select-agent", sender_ref.as_str(), 1),
-        ("select-user", "user", 2),
-    ] {
+    for call in ["select-agent", "select-user"] {
         let output = receipt.function_call_output(call);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(output["output"].as_str().expect("receipt"))?,
-            json!({"from": from, "status": "delivered", "delivered_count": count, "rejected_count": 0}),
+            json!({"status": "ok"}),
+        );
+    }
+    for payload in [
+        "Original private user mail.",
+        "Later private user mail.",
+        &format!("Private mail from {sender}."),
+    ] {
+        assert!(
+            receipt
+                .message_input_texts("user")
+                .iter()
+                .any(|text| text.contains(payload))
         );
     }
     let ResponseItem::Message { content, .. } = &canonical.item else {

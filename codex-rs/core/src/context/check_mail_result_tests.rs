@@ -33,20 +33,25 @@ fn structured(items: &[ResponseItem]) -> Value {
 }
 
 #[test]
-fn terminal_counts_describe_the_fixed_batch_and_nonterminal_is_not_delivery() {
+fn terminal_receipts_describe_the_fixed_batch_and_nonterminal_is_not_delivery() {
     let receiver = ThreadId::new();
     for (states, expected) in [
+        (vec![], Some(json!({"status":"empty"}))),
         (
-            vec![],
-            Some(json!({"status":"empty", "delivered_count":0, "rejected_count":0})),
+            vec![MailboxMessageState::Consumed, MailboxMessageState::Consumed],
+            Some(json!({"status":"ok"})),
         ),
         (
             vec![MailboxMessageState::Consumed, MailboxMessageState::Rejected],
-            Some(json!({"status":"delivered", "delivered_count":1, "rejected_count":1})),
+            Some(json!({"status":"ok", "rejected_count":1})),
         ),
         (
             vec![MailboxMessageState::Rejected],
-            Some(json!({"status":"rejected", "delivered_count":0, "rejected_count":1})),
+            Some(json!({"status":"rejected", "rejected_count":1})),
+        ),
+        (
+            vec![MailboxMessageState::Rejected, MailboxMessageState::Rejected],
+            Some(json!({"status":"rejected", "rejected_count":2})),
         ),
         (
             vec![MailboxMessageState::Consumed, MailboxMessageState::Claimed],
@@ -86,8 +91,8 @@ fn terminal_counts_describe_the_fixed_batch_and_nonterminal_is_not_delivery() {
         assert_eq!(summary.from, None);
         assert_eq!(
             summary
-                .counts
-                .map(|counts| serde_json::to_value(counts).unwrap()),
+                .receipt
+                .map(|receipt| serde_json::to_value(receipt).unwrap()),
             expected
         );
     }
@@ -144,7 +149,7 @@ async fn projection_requires_canonical_acceptance_and_never_creates_or_expands_a
     let mut expected = pair(
         "check",
         json!({
-            "status":"empty", "from":null, "delivered_count":0, "rejected_count":0,
+            "status":"empty",
         }),
     );
     expected.push(expected[1].clone());
@@ -190,6 +195,8 @@ async fn projection_requires_canonical_acceptance_and_never_creates_or_expands_a
         json!({"status":"delivery_requested","from":null,"hook":"changed"}),
         json!({"status":"custom","from":null}),
         json!({"status":"delivery_requested","from":"user"}),
+        json!({"status":"ok"}),
+        json!({"status":"ok","rejected_count":1}),
         json!({"status":"delivered","from":"2","delivered_count":9,"rejected_count":0}),
     ] {
         let original = pair("check", custom);
@@ -240,7 +247,7 @@ async fn projection_requires_canonical_acceptance_and_never_creates_or_expands_a
 }
 
 #[tokio::test]
-async fn refs_come_from_current_receiver_mapping_not_a_prior_model_result() {
+async fn terminal_receipts_omit_sender_but_still_require_canonical_acceptance() {
     let store = InMemoryThreadStore::default();
     let receiver = ThreadId::new();
     let sender = ThreadId::new();
@@ -259,10 +266,10 @@ async fn refs_come_from_current_receiver_mapping_not_a_prior_model_result() {
         "check",
         json!({"status":"delivery_requested","from":sender.to_string()}),
     );
-    for (refs, from) in [
-        (HashMap::from([(sender, 2)]), "2".to_string()),
-        (HashMap::from([(sender, 7)]), "7".to_string()),
-        (HashMap::new(), sender.to_string()),
+    for refs in [
+        HashMap::from([(sender, 2)]),
+        HashMap::from([(sender, 7)]),
+        HashMap::new(),
     ] {
         let mut input = raw.clone();
         project_check_mail_results(&mut input, receiver, &store, &refs)
@@ -273,7 +280,7 @@ async fn refs_come_from_current_receiver_mapping_not_a_prior_model_result() {
             structured(&pair(
                 "check",
                 json!({
-                    "status":"empty", "from":from, "delivered_count":0, "rejected_count":0,
+                    "status":"empty",
                 })
             ))
         );
@@ -286,6 +293,80 @@ async fn refs_come_from_current_receiver_mapping_not_a_prior_model_result() {
     assert_eq!(
         input, original,
         "ref-only input cannot establish canonical sender identity"
+    );
+}
+
+#[tokio::test]
+async fn nonterminal_acceptance_keeps_current_receiver_refs_and_never_reports_ok() {
+    let store = InMemoryThreadStore::default();
+    let receiver = ThreadId::new();
+    let sender = ThreadId::new();
+    let identity = |thread_id| codex_protocol::AgentInputIdentity {
+        thread_id,
+        nickname: None,
+        agent_ref: None,
+        task_path: None,
+        role: None,
+        model: None,
+        reasoning_effort: None,
+    };
+    store
+        .accept_mailbox_input(AcceptMailboxInputParams {
+            receiver_thread_id: receiver,
+            submission_key: "pending-agent".to_string(),
+            payload: MailboxPayload::Agent {
+                input: vec![codex_protocol::user_input::UserInput::Text {
+                    text: "Unconsumed mail.".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                attribution: Box::new(codex_protocol::AgentInputAttribution {
+                    sender: identity(sender),
+                    recipient: identity(receiver),
+                    sender_turn_id: "sender-turn".to_string(),
+                }),
+            },
+        })
+        .await
+        .unwrap();
+    let claim = store
+        .claim_mailbox_input(ClaimMailboxInputParams {
+            invocation: MailboxInvocation {
+                receiver_thread_id: receiver,
+                turn_id: "turn".to_string(),
+                tool_call_id: "check".to_string(),
+            },
+            selection: MailboxSelection::Senders(vec![MailboxSender::Agent(sender)]),
+        })
+        .await
+        .unwrap();
+    assert_eq!(claim.messages.len(), 1);
+    let canonical = pair(
+        "check",
+        json!({"status": "delivery_requested", "from": sender.to_string()}),
+    );
+    for (refs, from) in [
+        (HashMap::from([(sender, 2)]), "2".to_string()),
+        (HashMap::from([(sender, 7)]), "7".to_string()),
+        (HashMap::new(), sender.to_string()),
+    ] {
+        let mut input = canonical.clone();
+        project_check_mail_results(&mut input, receiver, &store, &refs)
+            .await
+            .unwrap();
+        assert_eq!(
+            structured(&input),
+            structured(&pair(
+                "check",
+                json!({"status": "delivery_requested", "from": from})
+            )),
+        );
+    }
+    assert_eq!(
+        store
+            .lookup_mailbox_claim(claim.invocation.clone())
+            .await
+            .unwrap(),
+        Some(claim),
     );
 }
 

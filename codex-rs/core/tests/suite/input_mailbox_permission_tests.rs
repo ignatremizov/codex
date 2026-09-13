@@ -4,7 +4,190 @@ use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::MessagePhase;
+use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::start_mock_server;
 use pretty_assertions::assert_eq;
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_receipt_is_lean_without_hiding_rejection_or_reordering_delivery(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config.features.enable(Feature::Collab).expect("enable V1");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("disable V2");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let receiver = test.session_configured.thread_id;
+    let sender = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions {
+            response_handling: UserAgentResponseHandling::Presentation,
+            ..Default::default()
+        })
+        .await?
+        .target_thread_id;
+    test.codex
+        .set_agent_reply_route(
+            &sender.to_string(),
+            /*recipient*/ None,
+            UserAgentReplyRouteMode::Disabled,
+        )
+        .await?;
+    let identity = |thread_id| AgentInputIdentity {
+        thread_id,
+        nickname: None,
+        agent_ref: None,
+        task_path: None,
+        role: None,
+        model: None,
+        reasoning_effort: None,
+    };
+    let rejected = test
+        .thread_store
+        .accept_mailbox_input(AcceptMailboxInputParams {
+            receiver_thread_id: receiver,
+            submission_key: "mixed-rejected".to_string(),
+            payload: MailboxPayload::Agent {
+                input: vec![UserInput::Text {
+                    text: "Rejected private payload.".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                attribution: Box::new(AgentInputAttribution {
+                    sender: identity(sender),
+                    recipient: identity(receiver),
+                    sender_turn_id: "sender-turn".to_string(),
+                }),
+            },
+        })
+        .await?;
+    let accepted = test
+        .thread_store
+        .accept_mailbox_input(AcceptMailboxInputParams {
+            receiver_thread_id: receiver,
+            submission_key: "mixed-delivered".to_string(),
+            payload: MailboxPayload::User {
+                input: vec![UserInput::Text {
+                    text: "Delivered user payload.".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                client_id: None,
+            },
+        })
+        .await?;
+    let requests = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("consume-mixed"),
+                ev_function_call_with_namespace("mixed-call", "multi_agent_v1", "check_mail", "{}"),
+                ev_completed("consume-mixed"),
+            ]),
+            sse(vec![
+                ev_response_created("mixed-done"),
+                ev_assistant_message("done", "Delivered mail received; rejection noted."),
+                ev_completed("mixed-done"),
+            ]),
+        ],
+    )
+    .await;
+    test.submit_turn("Check all pending mail.").await?;
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 2);
+    let output = requests[1].function_call_output("mixed-call");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(output["output"].as_str().expect("receipt"))?,
+        json!({"status": "ok", "rejected_count": 1}),
+    );
+    let input = requests[1].input();
+    let result_index = input
+        .iter()
+        .position(|item| item["type"] == "function_call_output" && item["call_id"] == "mixed-call")
+        .expect("tool result");
+    let payload_index = input
+        .iter()
+        .position(|item| item.to_string().contains("Delivered user payload."))
+        .expect("delivered input");
+    assert!(result_index < payload_index);
+    assert!(
+        !requests[1]
+            .body_json()
+            .to_string()
+            .contains("Rejected private payload.")
+    );
+    let stored_rejection = test
+        .thread_store
+        .lookup_mailbox_input(receiver, &rejected.submission_key)
+        .await?
+        .expect("rejected mail");
+    let stored_delivery = test
+        .thread_store
+        .lookup_mailbox_input(receiver, &accepted.submission_key)
+        .await?
+        .expect("delivered mail");
+    assert_eq!(
+        (stored_rejection.state, stored_delivery.state),
+        (MailboxMessageState::Rejected, MailboxMessageState::Consumed),
+    );
+    let reason = stored_rejection
+        .rejection_reason
+        .expect("durable rejection details");
+    let sender_thread = test.thread_manager.get_thread(sender).await?;
+    let warning = wait_for_event(&sender_thread, |event| matches!(event, EventMsg::Warning(warning) if warning.message.contains(&rejected.id))).await;
+    assert_eq!(
+        serde_json::to_value(warning)?,
+        json!({
+            "type": "warning",
+            "message": format!(
+                "Mailbox message {} to {receiver} was rejected: {reason}",
+                rejected.id
+            ),
+        }),
+    );
+    let history = test
+        .thread_store
+        .load_rollback_history(LoadThreadHistoryParams {
+            thread_id: receiver,
+            include_archived: false,
+        })
+        .await?;
+    let canonical = history
+        .items
+        .iter()
+        .filter_map(|item| {
+            let RolloutItem::ResponseItem(item) = item else {
+                return None;
+            };
+            match &item.item {
+                ResponseItem::FunctionCallOutput {
+                    call_id: Some(id),
+                    output,
+                    ..
+                } if id == "mixed-call" => Some(
+                    serde_json::from_str::<serde_json::Value>(
+                        output.text_content().expect("canonical acceptance"),
+                    )
+                    .expect("JSON"),
+                ),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        canonical,
+        vec![json!({"status": "delivery_requested", "from": null})]
+    );
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mail() -> Result<()> {
@@ -225,24 +408,21 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
             &repaired_request,
             "recover-admitted",
             json!({
-                "status":"delivered", "from":child.agent_ref.expect("ref").to_string(),
-                "delivered_count":1, "rejected_count":0
+                "status":"ok"
             }),
         ),
         (
             &final_request,
             "recover-admitted",
             json!({
-                "status":"delivered", "from":child.agent_ref.expect("ref").to_string(),
-                "delivered_count":1, "rejected_count":0
+                "status":"ok"
             }),
         ),
         (
             &final_request,
             "consume-new",
             json!({
-                "status":"rejected", "from":child.agent_ref.expect("ref").to_string(),
-                "delivered_count":0, "rejected_count":1
+                "status":"rejected", "rejected_count":1
             }),
         ),
     ] {
