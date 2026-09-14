@@ -1,22 +1,21 @@
 use super::*;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
-use codex_protocol::error::CodexErr;
-use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::AgentResponseCommentaryAdmission;
 use codex_protocol::protocol::AgentResponseCommentaryDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
 
 mod delivery;
+mod mailbox_subscription;
 mod runtime;
 mod snapshot;
 mod user_policy;
-mod user_reply_route;
 pub(in crate::agent) use user_policy::ReplacedFinalResponseObservationBinding;
-pub(crate) use user_reply_route::TargetMessageRouteMode;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ResponseTurnObservation {
+    pub(super) response_observation_selection_id: Option<Uuid>,
+    pub(super) mailbox_final_subscription_message_id: Option<String>,
     pub(super) task_preview: Option<String>,
     pub(super) promoted_task_context:
         Option<codex_protocol::protocol::AgentResponsePromotedTaskContext>,
@@ -24,10 +23,7 @@ pub(super) struct ResponseTurnObservation {
     pub(super) commentary_delivery: Option<AgentResponseCommentaryDelivery>,
     pub(super) commentary_delivery_route: CommentaryDeliveryRoute,
     pub(super) final_response: FinalResponseObservation,
-    pub(super) target_messages: bool,
     pub(super) queue_delivery: bool,
-    pub(super) message_wake_reservation_id: Option<Uuid>,
-    pub(super) message_wake_turn_id: Option<String>,
     pub(super) final_delivery_response_item_id: Option<ResponseItemId>,
     pub(super) committed_delivery_response_item_ids: Vec<ResponseItemId>,
 }
@@ -35,16 +31,15 @@ pub(super) struct ResponseTurnObservation {
 impl Default for ResponseTurnObservation {
     fn default() -> Self {
         Self {
+            response_observation_selection_id: None,
+            mailbox_final_subscription_message_id: None,
             task_preview: None,
             promoted_task_context: None,
             commentary_admissions: Vec::new(),
             commentary_delivery: None,
             commentary_delivery_route: CommentaryDeliveryRoute::Undecided,
             final_response: FinalResponseObservation::None,
-            target_messages: false,
             queue_delivery: false,
-            message_wake_reservation_id: None,
-            message_wake_turn_id: None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
         }
@@ -88,21 +83,17 @@ impl ResponseTurnObservation {
                 });
         }
         self.final_response = self.final_response.max(policy.final_response());
-        if policy.target_messages() && !self.target_messages {
-            self.message_wake_reservation_id = None;
-            self.message_wake_turn_id = None;
-        }
-        self.target_messages |= policy.target_messages();
         self.queue_delivery |= policy.queue_input();
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::agent::control) struct ResponseObserverRelationship {
+    pub(super) mailbox_final_subscription_message_id: Option<String>,
+    pub(super) mailbox_final_subscription_suppressed_message_id: Option<String>,
     pub(super) revoked: bool,
     pub(super) persistence: ResponseObservationPersistence,
     pub(super) baseline_final_response: FinalResponseObservation,
-    pub(super) reply_route: Option<TargetMessageRouteMode>,
     pub(super) pending_next_turn: Option<ResponseTurnObservation>,
     pub(super) pending_admissions: HashMap<Uuid, ResponseTurnObservation>,
     pub(super) turns: HashMap<String, ResponseTurnObservation>,
@@ -111,15 +102,21 @@ pub(in crate::agent::control) struct ResponseObserverRelationship {
 impl Default for ResponseObserverRelationship {
     fn default() -> Self {
         Self {
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
             revoked: false,
             persistence: ResponseObservationPersistence::RuntimeOnly,
             baseline_final_response: FinalResponseObservation::None,
-            reply_route: None,
             pending_next_turn: None,
             pending_admissions: HashMap::new(),
             turns: HashMap::new(),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ResponseObservationSelection {
+    pub(crate) selection_id: Uuid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +160,7 @@ pub(crate) struct ResponseObservationDeliveryCommit {
     pub(crate) turn_id: String,
     pub(crate) response_item_id: ResponseItemId,
     pub(crate) kind: ResponseObservationDeliveryKind,
+    pub(crate) mailbox_final_subscription_message_id: Option<String>,
     /// Captured at delivery admission, before live policy can be retired or replaced.
     pub(crate) model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility,
 }
@@ -205,6 +203,7 @@ impl LocalAgentControl {
         persistence: ResponseObservationPersistence,
         minimum_event_sequence: u64,
         after_item_id: Option<String>,
+        selection_id: Option<Uuid>,
     ) -> Option<ResponseWatcherRegistration> {
         let parent = observer.session.presentation_id();
         if parent.instance_id.is_nil() || child.instance_id.is_nil() {
@@ -229,6 +228,7 @@ impl LocalAgentControl {
             // a wake policy on the current turn.
             relationship.baseline_final_response = FinalResponseObservation::Passive;
         }
+        let selected_turn = target_turn_id.clone();
         match target_turn_id {
             Some(target_turn_id) => {
                 relationship
@@ -260,6 +260,27 @@ impl LocalAgentControl {
                     .or_default()
                     .merge(response_observation, minimum_event_sequence, after_item_id),
             },
+        }
+        let selected = match selected_turn {
+            Some(turn) => relationship.turns.get_mut(&turn),
+            None => match pending_binding {
+                ResponseObservationBinding::NextTurn => relationship.pending_next_turn.as_mut(),
+                ResponseObservationBinding::ExplicitAdmission(id) => {
+                    relationship.pending_admissions.get_mut(&id)
+                }
+            },
+        };
+        if let Some(selected) = selected {
+            // An explicit replacement supersedes an unclaimed mailbox wake, including
+            // downgrades to passive or presentation-only. Ordinary policy merges and
+            // already claimed receipt identities remain unchanged.
+            if selection_id.is_some()
+                && selected.mailbox_final_subscription_message_id.is_some()
+                && selected.final_delivery_response_item_id.is_none()
+            {
+                selected.final_response = response_observation.final_response();
+            }
+            selected.response_observation_selection_id = selection_id;
         }
 
         state
@@ -294,254 +315,6 @@ impl LocalAgentControl {
         }
         self.publish_response_observation_binding();
     }
-
-    pub(crate) fn target_message_admission(
-        &self,
-        observer: SessionPresentationId,
-        target: SessionPresentationId,
-        target_turn_id: &str,
-        observer_active_turn_id: Option<&str>,
-        observer_last_terminal_turn_id: Option<&str>,
-        mode: TargetMessageAdmissionMode,
-    ) -> CodexResult<TargetMessageAdmission> {
-        let may_steer = mode == TargetMessageAdmissionMode::SteerOrWake;
-        let mut state = self.runtime.wait_agent_presentations.state();
-        let inherited = state
-            .inherited_message_routes
-            .get(&(observer, target))
-            .copied();
-        if inherited.is_some() {
-            state
-                .response_observation_by_observer_child
-                .entry((observer, target))
-                .or_default();
-        }
-        let relationship = state
-            .response_observation_by_observer_child
-            .get_mut(&(observer, target))
-            .filter(|relationship| !relationship.revoked)
-            .ok_or_else(|| {
-                CodexErr::InvalidRequest(format!(
-                    "agent {} has no message route to {} for turn {target_turn_id}",
-                    target.thread_id, observer.thread_id
-                ))
-            })?;
-        let effective = relationship.reply_route.or(inherited);
-        if effective == Some(TargetMessageRouteMode::Disabled) {
-            return Err(CodexErr::InvalidRequest(
-                "agent replies are disabled by the user".into(),
-            ));
-        }
-        let persistent = effective == Some(TargetMessageRouteMode::Enabled);
-        if persistent && may_steer && observer_active_turn_id.is_some() {
-            return Ok(TargetMessageAdmission::Steer);
-        }
-        let observation = if persistent {
-            relationship
-                .turns
-                .entry(target_turn_id.to_string())
-                .or_default()
-        } else {
-            relationship
-                .turns
-                .get_mut(target_turn_id)
-                .filter(|observation| observation.target_messages)
-                .ok_or_else(|| {
-                    CodexErr::InvalidRequest("no reply route for this target turn".into())
-                })?
-        };
-        if observation.message_wake_reservation_id.is_some() {
-            return if observer_active_turn_id.is_some() && may_steer {
-                Ok(TargetMessageAdmission::Steer)
-            } else {
-                Ok(TargetMessageAdmission::PendingWake)
-            };
-        }
-        match observation.message_wake_turn_id.as_deref() {
-            None if observer_active_turn_id.is_some() && may_steer => {
-                Ok(TargetMessageAdmission::Steer)
-            }
-            None => {
-                let reservation_id = Uuid::now_v7();
-                observation.message_wake_reservation_id = Some(reservation_id);
-                Ok(TargetMessageAdmission::Wake(reservation_id))
-            }
-            Some(wake_turn_id) if observer_active_turn_id == Some(wake_turn_id) && may_steer => {
-                Ok(TargetMessageAdmission::Steer)
-            }
-            Some(wake_turn_id) if observer_last_terminal_turn_id == Some(wake_turn_id) => {
-                Err(CodexErr::InvalidRequest(format!(
-                    "agent message route to {} already used its idle wake",
-                    observer.thread_id
-                )))
-            }
-            Some(_) if observer_active_turn_id.is_none() && may_steer => {
-                Ok(TargetMessageAdmission::PendingWake)
-            }
-            Some(_) => Err(CodexErr::InvalidRequest(format!(
-                "agent message route to {} belongs to another source turn",
-                observer.thread_id
-            ))),
-        }
-    }
-
-    pub(crate) fn target_message_binding_pending(
-        &self,
-        observer: SessionPresentationId,
-        target: SessionPresentationId,
-    ) -> bool {
-        self.runtime
-            .wait_agent_presentations
-            .state()
-            .response_observation_by_observer_child
-            .get(&(observer, target))
-            .filter(|relationship| !relationship.revoked)
-            .is_some_and(|relationship| {
-                // Only input already being admitted can bind a route for a running sender.
-                // A next-turn reservation cannot authorize that sender's current turn.
-                relationship.reply_route != Some(TargetMessageRouteMode::Disabled)
-                    && relationship
-                        .pending_admissions
-                        .values()
-                        .any(|observation| observation.target_messages)
-            })
-    }
-
-    pub(crate) fn commit_target_message_wake(
-        &self,
-        observer: SessionPresentationId,
-        target: SessionPresentationId,
-        target_turn_id: &str,
-        reservation_id: Uuid,
-        wake_turn_id: &str,
-    ) -> bool {
-        let mut state = self.runtime.wait_agent_presentations.state();
-        let Some(observation) = state
-            .response_observation_by_observer_child
-            .get_mut(&(observer, target))
-            .filter(|relationship| !relationship.revoked)
-            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
-        // An accepted queued wake retains its exact reservation through disable.
-        else {
-            return false;
-        };
-        if observation.message_wake_reservation_id != Some(reservation_id) {
-            return false;
-        }
-        observation.message_wake_reservation_id = None;
-        let committed = match observation.message_wake_turn_id.as_deref() {
-            None => {
-                observation.message_wake_turn_id = Some(wake_turn_id.to_string());
-                true
-            }
-            Some(existing) => existing == wake_turn_id,
-        };
-        drop(state);
-        if committed {
-            self.runtime
-                .wait_agent_presentations
-                .response_observation_changed
-                .notify_waiters();
-        }
-        committed
-    }
-
-    pub(crate) fn rollback_target_message_wake(
-        &self,
-        observer: SessionPresentationId,
-        target: SessionPresentationId,
-        target_turn_id: &str,
-        reservation_id: Uuid,
-    ) {
-        let mut state = self.runtime.wait_agent_presentations.state();
-        if let Some(observation) = state
-            .response_observation_by_observer_child
-            .get_mut(&(observer, target))
-            .and_then(|relationship| relationship.turns.get_mut(target_turn_id))
-            && observation.message_wake_reservation_id == Some(reservation_id)
-        {
-            observation.message_wake_reservation_id = None;
-        }
-        drop(state);
-        self.runtime
-            .wait_agent_presentations
-            .response_observation_changed
-            .notify_waiters();
-    }
-
-    /// Retires only the grant that consumed this exact source turn's idle wake.
-    pub(crate) fn finish_target_message_wake(
-        &self,
-        observer: SessionPresentationId,
-        wake_turn_id: &str,
-    ) {
-        let mut changed_children = Vec::new();
-        let mut state = self.runtime.wait_agent_presentations.state();
-        for ((parent, child), relationship) in &mut state.response_observation_by_observer_child {
-            if *parent != observer || relationship.revoked {
-                continue;
-            }
-            let mut changed = false;
-            for observation in relationship.turns.values_mut() {
-                if observation.message_wake_turn_id.as_deref() == Some(wake_turn_id) {
-                    observation.target_messages = false;
-                    observation.message_wake_reservation_id = None;
-                    if relationship.reply_route.is_some() {
-                        observation.message_wake_turn_id = None;
-                    }
-                    changed = true;
-                }
-            }
-            if relationship.reply_route.is_some() {
-                relationship
-                    .turns
-                    .retain(|_, observation| observation != &ResponseTurnObservation::default());
-            }
-            if changed {
-                changed_children.push(*child);
-            }
-        }
-        drop(state);
-        if changed_children.is_empty() {
-            return;
-        }
-        self.runtime
-            .wait_agent_presentations
-            .response_observation_changed
-            .notify_waiters();
-        let (Ok(runtime), Ok(membership)) = (
-            tokio::runtime::Handle::try_current(),
-            self.runtime.admit_start(),
-        ) else {
-            for child in changed_children {
-                self.abandon_response_observer(
-                    observer,
-                    child,
-                    "completed agent-message wake publication could not be admitted",
-                );
-            }
-            return;
-        };
-        let control = self.clone();
-        runtime.spawn(async move {
-            let _membership = membership;
-            let _transaction = control
-                .acquire_response_observation_transaction(observer)
-                .await;
-            for child in changed_children {
-                if let Err(error) = control
-                    .persist_response_observation_snapshot(observer, child)
-                    .await
-                {
-                    control.abandon_response_observer(
-                        observer,
-                        child,
-                        &format!("completed agent-message wake publication failed: {error}"),
-                    );
-                }
-            }
-        });
-    }
 }
 
 fn relationship_has_bound_final_response_wake(relationship: &ResponseObserverRelationship) -> bool {
@@ -569,7 +342,7 @@ impl ResponseWatcherRegistration {
             .get(&(self.parent, self.child))
             .is_some_and(|relationship| {
                 relationship.baseline_final_response != FinalResponseObservation::None
-                    || relationship.reply_route.is_some()
+                    || relationship.mailbox_final_subscription_message_id.is_some()
                     || relationship.pending_next_turn.is_some()
                     || !relationship.pending_admissions.is_empty()
                     || relationship.turns.values().any(|turn| {

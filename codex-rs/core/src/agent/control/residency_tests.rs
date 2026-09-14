@@ -90,7 +90,6 @@ async fn exact_eviction_waits_for_queue_admission_and_pending_work(pin: QueuePin
                 response_observation: ResponseObservationPolicy::default(),
                 task_preview: None,
                 authored_selector: None,
-                target_message_wake: None,
             });
             None
         }

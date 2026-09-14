@@ -13,6 +13,10 @@ use serde::Serialize;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
+pub use codex_state::MailboxFinalSubscription;
+pub use codex_state::MailboxFinalSubscriptionAuthority;
+pub use codex_state::MailboxFinalSubscriptionRequest;
+pub use codex_state::MailboxFinalSubscriptionState;
 pub use codex_state::MailboxInvocation;
 pub use codex_state::MailboxMessageState;
 
@@ -75,6 +79,7 @@ pub struct AcceptMailboxInputParams {
     pub receiver_thread_id: ThreadId,
     pub submission_key: String,
     pub payload: MailboxPayload,
+    pub final_subscription: MailboxFinalSubscriptionRequest,
 }
 
 /// Sender filters are canonicalized as sets, including an explicitly empty set.
@@ -116,6 +121,7 @@ pub struct StoredMailboxInput {
     pub acceptance_sequence: i64,
     pub state: MailboxMessageState,
     pub rejection_reason: Option<String>,
+    pub final_subscription: Option<MailboxFinalSubscription>,
 }
 
 /// A fixed batch member with a stable identity reserved for receiver history.
@@ -258,7 +264,19 @@ pub(crate) fn decode_message(
             message: "stored mailbox authorship does not match envelope".to_string(),
         });
     }
+    if let Some(subscription) = &message.final_subscription
+        && (sender != MailboxSender::Agent(subscription.sender_thread_id)
+            || subscription.message_id != message.id
+            || subscription.receiver_thread_id != message.receiver_thread_id
+            || subscription.acceptance_sequence != message.acceptance_sequence)
+    {
+        return Err(ThreadStoreError::Internal {
+            message: "stored mailbox final subscription does not match its accepted message"
+                .to_string(),
+        });
+    }
     Ok(StoredMailboxInput {
+        final_subscription: message.final_subscription,
         id: message.id,
         receiver_thread_id: message.receiver_thread_id,
         submission_key: message.submission_key,

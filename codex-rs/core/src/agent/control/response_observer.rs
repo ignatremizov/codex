@@ -6,14 +6,27 @@ use super::*;
 use crate::codex_thread::CodexThread;
 use crate::session::AgentResponseEvent;
 use crate::session::AgentResponseSubscription;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
+use codex_protocol::protocol::AgentResponseObservation;
 use futures::future::BoxFuture;
 use std::collections::HashSet;
 
+/// User resume reserves even presentation-only delivery; model resume with bare
+/// `x` only reports idle status and must not subscribe to a future turn.
+pub(super) enum IdlePresentationObservation {
+    StatusOnly,
+    ReserveNextTurn,
+}
+
 pub(super) enum ResponseObserverStart {
     FutureOnly,
+    MailboxFinalTurn {
+        turn_id: String,
+    },
     CurrentOrNext {
         observed_status: AgentStatus,
         delivered_final_turns: HashSet<String>,
+        idle_presentation: IdlePresentationObservation,
     },
 }
 
@@ -65,11 +78,6 @@ impl LocalAgentControl {
         let _lifecycle = state.acquire_live_agent_lifecycle(child_thread_id).await?;
         let child = state.get_thread(child_thread_id).await?;
         let observer = state.get_thread(parent_id).await?;
-        self.ensure_target_message_route_allowed(
-            &child,
-            observer.session.presentation_id(),
-            policy,
-        )?;
         let delivered_final_turns =
             super::resume_delivery::delivered_final_turns(&observer, child_thread_id).await;
         let _transaction = self
@@ -83,6 +91,7 @@ impl LocalAgentControl {
             ResponseObserverStart::CurrentOrNext {
                 observed_status,
                 delivered_final_turns,
+                idle_presentation: IdlePresentationObservation::StatusOnly,
             },
         )
         .await?;
@@ -98,7 +107,6 @@ impl LocalAgentControl {
         start: ResponseObserverStart,
     ) -> BoxFuture<'a, CodexResult<()>> {
         Box::pin(async move {
-            self.ensure_scoped_reply_route_supported(target, policy)?;
             let parent = observer.session.presentation_id();
             let child = target.session.presentation_id();
             if parent == child {
@@ -123,9 +131,20 @@ impl LocalAgentControl {
                 .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".to_string()))?;
             let state = self.runtime.upgrade()?;
             let generation = state.agent_lifecycle_generation(child.thread_id);
+            let retired = if matches!(&start, ResponseObserverStart::CurrentOrNext { .. }) {
+                self.active_mailbox_subscription_for_policy(observer, child)
+                    .await?
+            } else {
+                None
+            };
+            let selection = retired
+                .as_ref()
+                .map(|_| presentation::ResponseObservationSelection {
+                    selection_id: Uuid::now_v7(),
+                });
             let started_control = self.clone();
             let terminal_control = self.clone();
-            let (_, responses, (registration, reconciled_terminal)) =
+            let (_, responses, (registration, reconciled_terminal, status_only)) =
                 target.session.subscribe_agent_responses_observing_turns(
                     move |turn_id, sequence| {
                         if let Ok(state) = started_control.runtime.upgrade() {
@@ -154,52 +173,110 @@ impl LocalAgentControl {
                             );
                         }
                     },
-                    |snapshot| {
-                        let reconciled_terminal = start.reconciled_terminal(snapshot);
+                    |snapshot, terminal_outcomes| {
+                        let reconciled_terminal =
+                            start.reconciled_terminal(snapshot, terminal_outcomes);
                         let target_turn = match &start {
                             ResponseObserverStart::FutureOnly => None,
+                            ResponseObserverStart::MailboxFinalTurn { turn_id } => {
+                                Some(turn_id.clone())
+                            }
                             ResponseObserverStart::CurrentOrNext { .. } => {
                                 snapshot.active_turn_id.clone().or_else(|| {
                                     reconciled_terminal.as_ref().map(|(turn, _)| turn.clone())
                                 })
                             }
                         };
-                        // An idle resume has no selected response to present. A bare `x`
-                        // must not subscribe this caller to unrelated future work.
+                        // Resolve status-only requests under the same turn snapshot lock as
+                        // ordinary binding. A later turn must not inherit a model tool's
+                        // idle bare `x`; explicit user resume reserves that presentation.
+                        // A no-policy idle spawn also needs only an audit; an existing future
+                        // observation being moved to a replacement runtime still needs a worker.
                         let status_only = target_turn.is_none()
-                            && matches!(&start, ResponseObserverStart::CurrentOrNext { .. })
-                            && !policy.commentary()
-                            && policy.final_response()
-                                == FinalResponseObservation::PresentationOnly;
-                        let registration = if status_only {
-                            None
-                        } else {
-                            self.register_response_watcher_with_parent_at_sequence(
-                                child,
-                                observer,
-                                policy,
-                                /*retain_passive_completion_relationship*/ false,
-                                target_turn,
-                                binding,
-                                ResponseObservationPersistence::Durable,
-                                snapshot.next_event_sequence,
-                                snapshot.last_commentary_item_id.clone(),
-                            )
-                        };
-                        (registration, reconciled_terminal)
+                            && !policy.exposes_source_model_context()
+                            && match &start {
+                                ResponseObserverStart::CurrentOrNext {
+                                    idle_presentation, ..
+                                } => matches!(
+                                    idle_presentation,
+                                    IdlePresentationObservation::StatusOnly
+                                ),
+                                ResponseObserverStart::FutureOnly => {
+                                    policy.final_response() == FinalResponseObservation::None
+                                        && binding == ResponseObservationBinding::NextTurn
+                                        && self
+                                            .response_observation_snapshots(parent, child)
+                                            .is_empty()
+                                }
+                                ResponseObserverStart::MailboxFinalTurn { .. } => false,
+                            };
+                        if status_only {
+                            return (None, reconciled_terminal, true);
+                        }
+                        let registration = self.register_response_watcher_with_parent_at_sequence(
+                            child,
+                            observer,
+                            policy,
+                            /*retain_passive_completion_relationship*/ false,
+                            target_turn,
+                            binding,
+                            ResponseObservationPersistence::Durable,
+                            snapshot.next_event_sequence,
+                            snapshot.last_commentary_item_id.clone(),
+                            selection.map(|selection| selection.selection_id),
+                        );
+                        (registration, reconciled_terminal, false)
                     },
                 );
-            if binding == ResponseObservationBinding::NextTurn
-                && let Err(error) = self
-                    .persist_response_observation_snapshot(parent, child)
+            if let (Some(message_id), Some(selection)) = (retired.as_ref(), selection) {
+                self.retire_mailbox_final_subscription_preserving_observation(
+                    parent, child, message_id, &selection,
+                );
+            }
+            if binding == ResponseObservationBinding::NextTurn {
+                let mut snapshots = self.response_observation_snapshots(parent, child);
+                if status_only && snapshots.is_empty() {
+                    // Persist an inert audit without creating runtime authority. Existing
+                    // observations and mailbox suppression tombstones take precedence.
+                    snapshots.push(AgentResponseObservation {
+                        observer_thread_id: parent.thread_id,
+                        target_thread_id: child.thread_id,
+                        target_turn_id: None,
+                        task_preview: None,
+                        promoted_task_context: None,
+                        pending_commentary: false,
+                        commentary_after_sequences: Vec::new(),
+                        commentary_admissions: Vec::new(),
+                        commentary_delivery: None,
+                        target_messages: false,
+                        reply_route_enabled: None,
+                        reply_route_context_installed: false,
+                        queue_delivery: false,
+                        message_wake_turn_id: None,
+                        baseline_final_delivery: AgentResponseFinalDelivery::None,
+                        final_delivery: AgentResponseFinalDelivery::None,
+                        final_delivery_response_item_id: None,
+                        committed_delivery_response_item_ids: Vec::new(),
+                        mailbox_final_subscription_message_id: None,
+                        mailbox_final_subscription_suppressed_message_id: None,
+                    });
+                }
+                if let Err(error) = observer
+                    .session
+                    .persist_agent_response_observations(&snapshots)
                     .await
-            {
-                self.abandon_response_observer(parent, child, &error.to_string());
-                return Err(error);
+                {
+                    self.abandon_response_observer(parent, child, &error.to_string());
+                    return Err(error);
+                }
             }
             if let Some((turn_id, status)) = reconciled_terminal {
                 self.finish_response_observation_commentary(parent, child, &turn_id);
                 self.record_response_observation_terminal(parent, child, &turn_id, status);
+            }
+            if let Some(message_id) = retired {
+                self.retire_mailbox_subscription_token(observer, child, &message_id)
+                    .await?;
             }
             if let Some(registration) = registration {
                 let membership = match self.runtime.admit_start() {
