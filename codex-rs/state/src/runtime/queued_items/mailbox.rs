@@ -845,7 +845,7 @@ impl SqliteQueueStore {
         turn_id: &str,
     ) -> anyhow::Result<Vec<MailboxFinalSubscription>> {
         let mut connection = self.pool.acquire().await?;
-        read_bound_final_subscriptions(&mut *connection, receiver_thread_id, turn_id).await
+        read_bound_final_subscriptions(&mut connection, receiver_thread_id, turn_id).await
     }
 
     /// Reads an accepted message without claiming it or granting delivery authority.

@@ -1375,8 +1375,10 @@ pub struct MailboxReadItem {
     pub id: String,
     pub selector: MailboxReadSelector,
     /// Number of messages terminally acknowledged as consumed.
+    #[ts(type = "number")]
     pub consumed_count: u64,
     /// Number of selected messages terminally rejected before consumption.
+    #[ts(type = "number")]
     pub rejected_count: u64,
 }
 
@@ -1871,7 +1873,6 @@ pub struct TerminalInteractionNotification {
     pub deadline_at_ms: Option<i64>,
     /// Lifecycle metadata for a `write_stdin` wait. Null for legacy events.
     #[serde(default)]
-    #[ts(type = "TerminalWait | null")]
     pub wait: Option<TerminalWait>,
 }
 

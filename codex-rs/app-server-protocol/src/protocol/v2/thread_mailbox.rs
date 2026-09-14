@@ -50,12 +50,14 @@ pub struct ThreadMailboxReadParams {
 #[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
 pub enum ThreadMailboxPendingSender {
     User {
+        #[ts(type = "number")]
         count: u64,
     },
     Agent {
         #[serde(rename = "threadId")]
         #[ts(rename = "threadId")]
         thread_id: String,
+        #[ts(type = "number")]
         count: u64,
     },
 }
@@ -65,6 +67,7 @@ pub enum ThreadMailboxPendingSender {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadMailboxReadResponse {
+    #[ts(type = "number")]
     pub pending_total: u64,
     pub pending_senders: Vec<ThreadMailboxPendingSender>,
 }
