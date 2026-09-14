@@ -244,6 +244,7 @@ fn persisted_item_completed_event<'a>(
                     TurnItem::FunctionCallOutput(_)
                         | TurnItem::Plan(_)
                         | TurnItem::Extension(ExtensionItem::Sleep(_))
+                        | TurnItem::MailboxRead(_)
                         | TurnItem::CollabAgentToolCall(_)
                         | TurnItem::UserAgentControl(_)
                 )

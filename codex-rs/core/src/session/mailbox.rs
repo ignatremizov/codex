@@ -2,7 +2,7 @@
 //!
 //! Claims reserve membership, canonical history proves delivery, and the live
 //! history is only a projection. Neither selection nor a successful handler
-//! result grants permission or acknowledges a message.
+//! result acknowledges a message.
 
 use super::mailbox_publication::MailboxPublicationOutcome;
 use super::session::Session;
@@ -30,9 +30,7 @@ use codex_thread_store::MailboxInvocation;
 use codex_thread_store::MailboxMessageState;
 use codex_thread_store::MailboxPayload;
 use codex_thread_store::MailboxSelection;
-use codex_thread_store::MailboxSender;
 use codex_thread_store::ReconcileMailboxDeliveryParams;
-use codex_thread_store::RejectMailboxInputParams;
 use codex_thread_store::ThreadStoreError;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -42,12 +40,19 @@ use std::sync::Arc;
 pub(crate) struct MailboxConsumption {
     pub(crate) tool_call_id: String,
     pub(crate) selection: MailboxSelection,
+    pub(crate) presentation: MailboxConsumptionPresentation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MailboxConsumptionPresentation {
+    None,
+    CheckMail,
 }
 
 impl Session {
     /// Commit result first, then structured mail, before allowing another sample.
     ///
-    /// The detached task retains both arbitration locks across ambiguous writes,
+    /// The detached task retains the publication barrier across ambiguous writes,
     /// live insertion and checked acknowledgement even if the caller is cancelled.
     pub(crate) async fn commit_mailbox_consumption(
         self: &Arc<Self>,
@@ -81,14 +86,8 @@ impl Session {
             // Capture before scheduling: dropping an unpolled accepted worker must
             // fence its publication outcome just like cancellation after its first poll.
             let mut publication = publication;
-            let mut warnings = Vec::new();
             let mut input_audits = Vec::new();
-            #[expect(
-                clippy::await_holding_invalid_type,
-                reason = "the messaging admission transaction must span permission checks, canonical delivery, and acknowledgement so permission changes cannot interleave"
-            )]
             let outcome = async {
-                let _messaging = control.acquire_messaging_permission_transaction().await;
                 let _durable = session
                     .acquire_history_publication_barrier()
                     .await
@@ -233,45 +232,6 @@ impl Session {
                         &delivery.artifacts,
                         MailboxDeliveryArtifacts::Complete { .. }
                     );
-                    // Permission governs the first canonical model-context write.
-                    // ContextOnly is already admitted input: repair presentation
-                    // from its exact envelope without reauthorizing or rejecting it.
-                    let context_was_recorded = matches!(
-                        &delivery.artifacts,
-                        MailboxDeliveryArtifacts::ContextOnly { .. }
-                            | MailboxDeliveryArtifacts::Complete { .. }
-                    );
-                    let denied_sender = if context_was_recorded {
-                        None
-                    } else {
-                        match &member.message.sender {
-                            MailboxSender::User => None,
-                            MailboxSender::Agent(sender) => {
-                                let allowed = control
-                                    .mailbox_send_permission_locked(*sender, session.thread_id)
-                                    .await
-                                    .map_err(|error| ThreadStoreError::Internal {
-                                        message: format!(
-                                            "failed to revalidate mailbox permission: {error}"
-                                        ),
-                                    })?;
-                                (!allowed).then_some(*sender)
-                            }
-                        }
-                    };
-                    if let Some(sender) = denied_sender {
-                        let reason =
-                            "mailbox send permission was revoked before consumption".to_string();
-                        store
-                            .reject_mailbox_input(RejectMailboxInputParams {
-                                receiver_thread_id: session.thread_id,
-                                message_id: member.message.id.clone(),
-                                reason: reason.clone(),
-                            })
-                            .await?;
-                        warnings.push((sender, member.message.id.clone(), reason));
-                        continue;
-                    }
                     let response_id =
                         codex_protocol::mailbox_delivery_response_item_id(&member.delivery_id)
                             .ok_or_else(|| ThreadStoreError::Internal {
@@ -447,7 +407,7 @@ impl Session {
                         input_audits.push(audit);
                     }
                     if complete {
-                        // Canonical complete proof bypasses current permission.
+                        // Canonical complete proof permits idempotent recovery.
                         // Finish live projection/publication before terminal ack so
                         // a lost SQL receipt cannot strand an incomplete projection.
                         let complete_evidence = vec![member_evidence];
@@ -466,19 +426,27 @@ impl Session {
                         deliveries: evidence.clone(),
                     })
                     .await?;
-                let result = ensure_acknowledged(&reconciled, &evidence);
-                durable_outcome.finished = result.is_ok();
-                result
+                ensure_acknowledged(&reconciled, &evidence)?;
+                if operation.presentation == MailboxConsumptionPresentation::CheckMail {
+                    session
+                        .publish_mailbox_read(&turn.sub_id, &operation.tool_call_id, &reconciled)
+                        .await?;
+                }
+                let subscriptions = reconciled
+                    .messages
+                    .into_iter()
+                    .filter_map(|member| member.message.final_subscription)
+                    .filter(|subscription| {
+                        subscription.state
+                            == codex_thread_store::MailboxFinalSubscriptionState::Bound
+                            && subscription.bound_turn_id.as_deref() == Some(turn.sub_id.as_str())
+                    })
+                    .collect::<Vec<_>>();
+                durable_outcome.finished = true;
+                Ok(subscriptions)
             };
             let outcome = outcome.await;
             publication.finished = outcome.is_ok();
-            // Warning delivery is presentation-only and best effort, outside
-            // both receiver arbitration locks. It cannot undo durable rejection.
-            for (sender, message_id, reason) in warnings {
-                control
-                    .publish_mailbox_rejection(sender, session.thread_id, &message_id, &reason)
-                    .await;
-            }
             // The receiver owns durable delivery. Root copies stay live-only and never create
             // a model input, subscription, or another canonical mailbox artifact.
             if !input_audits.is_empty() {
@@ -494,7 +462,11 @@ impl Session {
                     }
                 });
             }
-            outcome
+            let subscriptions = outcome?;
+            control
+                .bind_mailbox_final_subscriptions(session.presentation_id(), subscriptions)
+                .await;
+            Ok(())
         };
         tokio::spawn(commit)
             .await

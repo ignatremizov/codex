@@ -36,6 +36,7 @@ async fn revert_reconciles_inventory_without_blocking_unrecorded_preparations() 
                     input: Vec::new(),
                     client_id: None,
                 },
+                final_subscription: Default::default(),
             })
             .await
             .unwrap();

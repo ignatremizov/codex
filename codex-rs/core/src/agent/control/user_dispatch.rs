@@ -18,7 +18,7 @@ pub(super) enum ObservedInputResult {
         input_persisted: Option<tokio::sync::oneshot::Receiver<CodexResult<()>>>,
     },
     NotSubmitted(NotSubmittedReason),
-    PermissionRejected(String),
+    OriginRejected(String),
 }
 
 impl ObservedInputResult {
@@ -34,7 +34,7 @@ impl ObservedInputResult {
             Self::NotSubmitted(reason) => Err(CodexErr::InvalidRequest(format!(
                 "agent input was not submitted: {reason:?}"
             ))),
-            Self::PermissionRejected(reason) => Err(CodexErr::InvalidRequest(reason)),
+            Self::OriginRejected(reason) => Err(CodexErr::InvalidRequest(reason)),
         }
     }
 }
@@ -104,7 +104,6 @@ pub(super) struct ObservedUserInputRequest {
     pub(super) observation: UserObservation,
     pub(super) dispatch: UserDispatch,
     pub(super) task_preview: Option<String>,
-    pub(super) target_message_wake: Option<crate::agent::turn_queue::QueuedTargetMessageWake>,
 }
 
 impl LocalAgentControl {
@@ -119,7 +118,6 @@ impl LocalAgentControl {
         self.dispatch_user_input(
             agent_id,
             ObservedUserInputRequest {
-                target_message_wake: None,
                 input,
                 start_options,
                 observer,
@@ -139,7 +137,6 @@ impl LocalAgentControl {
         self.dispatch_user_input_locked(
             thread,
             ObservedUserInputRequest {
-                target_message_wake: None,
                 input: AgentControlInput::User(admission.input),
                 start_options: TurnStartOptions::default(),
                 observer: admission.observer,
@@ -164,7 +161,6 @@ impl LocalAgentControl {
         self.dispatch_user_input(
             agent_id,
             ObservedUserInputRequest {
-                target_message_wake: None,
                 input: AgentControlInput::User(input),
                 start_options,
                 observer,
@@ -187,7 +183,6 @@ impl LocalAgentControl {
         self.dispatch_user_input(
             agent_id,
             ObservedUserInputRequest {
-                target_message_wake: None,
                 input: AgentControlInput::User(input),
                 start_options: TurnStartOptions {
                     parent_turn_id,
@@ -213,7 +208,6 @@ impl LocalAgentControl {
         self.dispatch_user_input(
             agent_id,
             ObservedUserInputRequest {
-                target_message_wake: None,
                 input: AgentControlInput::User(input),
                 start_options: TurnStartOptions::default(),
                 observer,
@@ -272,13 +266,6 @@ impl LocalAgentControl {
             return Err(CodexErr::ThreadNotFound(request.observer.thread_id));
         }
         observer.session.submission_admission.check_ready()?;
-        let accepted_queue = matches!(&request.dispatch, UserDispatch::Queued(_));
-        if let UserObservation::Install(policy) = &request.observation {
-            self.ensure_scoped_reply_route_supported(thread, *policy)?;
-            if !accepted_queue {
-                self.ensure_target_message_route_allowed(thread, request.observer, *policy)?;
-            }
-        }
         thread
             .ensure_execution_capacity_for_turn_start(
                 thread.session.services.agent_control.as_ref(),
@@ -308,25 +295,6 @@ impl LocalAgentControl {
             .submission_admission
             .try_accept_completion_delivery()
             .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".into()))?;
-        #[cfg(test)]
-        {
-            let gate = self
-                .runtime
-                .wait_agent_presentations
-                .scoped_permission_check_gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some((reached, proceed)) = gate {
-                let _ = reached.send(());
-                let _ = proceed.await;
-            }
-        }
-        let _permission = self.acquire_messaging_permission_transaction().await;
-        self.restore_agent_send_pair_locked(child, request.observer)
-            .await?;
-        self.restore_agent_send_pair_locked(request.observer, child)
-            .await?;
         if let AgentControlInput::AttributedAgentInput { attribution, .. } = &request.input {
             if attribution.sender.thread_id != request.observer.thread_id
                 || attribution.recipient.thread_id != agent_id
@@ -336,24 +304,14 @@ impl LocalAgentControl {
                 ));
             }
             if let Err(error) = self
-                .ensure_model_input_authorized(request.observer, child, &attribution.sender_turn_id)
+                .ensure_model_input_authorized(request.observer, child)
                 .await
             {
-                return Ok(ObservedInputResult::PermissionRejected(
-                    match error.details() {
-                        CodexErrorDetails::InvalidRequest(reason) => reason.clone(),
-                        _ => error.to_string(),
-                    },
-                ));
+                return Ok(ObservedInputResult::OriginRejected(match error.details() {
+                    CodexErrorDetails::InvalidRequest(reason) => reason.clone(),
+                    _ => error.to_string(),
+                }));
             }
-        }
-        if let Some(wake) = &request.target_message_wake
-            && !self.target_message_wake_is_current(wake)
-        {
-            return Ok(ObservedInputResult::PermissionRejected(
-                "scoped wake permission ended before target-turn admission; input not submitted"
-                    .into(),
-            ));
         }
         let transaction = self
             .acquire_response_observation_transaction(request.observer)
@@ -387,47 +345,16 @@ impl LocalAgentControl {
                 (policy, ResponseObservationBinding::NextTurn)
             }
         };
+        let mailbox_subscription_to_retire =
+            if policy.final_response() != FinalResponseObservation::None {
+                self.active_mailbox_subscription_for_policy(&observer, child)
+                    .await?
+            } else {
+                None
+            };
         let last_task_message =
             non_empty_task_message(render_input_preview(request.input.presentation()));
-        // Accepted forward prompts keep their captured policy after a reverse-route disable.
-        // Other admissions recheck permission under the transaction, without adding notices.
-        if !accepted_queue
-            || self.target_message_route_mode(request.observer, child)
-                != Some(TargetMessageRouteMode::Disabled)
-        {
-            self.ensure_target_message_route_allowed(thread, request.observer, policy)?;
-            // Scoped permission must still belong to the original live observer after waits.
-            if policy.target_messages()
-                && self
-                    .target_message_route_mode(request.observer, child)
-                    .is_none()
-                && state
-                    .get_thread(request.observer.thread_id)
-                    .await?
-                    .session
-                    .presentation_id()
-                    != request.observer
-            {
-                return Err(CodexErr::InvalidRequest(
-                    "agent response observer is no longer current".to_string(),
-                ));
-            }
-        }
         let input = request.input.into_request().on_start(request.start_options);
-        #[cfg(test)]
-        if matches!(&mode, TurnInputMode::Steer { .. }) {
-            let gate = self
-                .runtime
-                .wait_agent_presentations
-                .scoped_steer_submission_gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some((reached, proceed)) = gate {
-                let _ = reached.send(());
-                let _ = proceed.await;
-            }
-        }
         #[cfg(test)]
         if let codex_protocol::turn_input::TurnInput::AgentInput { presentation, .. } = &input.input
         {
@@ -480,6 +407,17 @@ impl LocalAgentControl {
                 target_turn_id,
                 warning,
             }) => {
+                if let Some(message_id) = mailbox_subscription_to_retire.as_ref() {
+                    let _ = self
+                        .retire_mailbox_subscription_token(&observer, child, message_id)
+                        .await;
+                    self.clear_mailbox_final_subscription(
+                        request.observer,
+                        child,
+                        message_id,
+                        Some(&target_turn_id),
+                    );
+                }
                 self.abandon_response_observer(request.observer, child, &warning);
                 return Ok(ObservedInputResult::Submitted {
                     input_persisted: None,
@@ -536,6 +474,17 @@ impl LocalAgentControl {
             Some((resolution.minimum_event_sequence, resolution.after_item_id)),
             ResponseObservationBindingPublication::Deferred,
         );
+        if let Some(message_id) = mailbox_subscription_to_retire {
+            let _ = self
+                .retire_mailbox_subscription_token(&observer, child, &message_id)
+                .await;
+            self.clear_mailbox_final_subscription(
+                request.observer,
+                child,
+                &message_id,
+                Some(&resolution.target_turn_id),
+            );
+        }
         let result = self
             .publish_user_task_observation(
                 &observer,

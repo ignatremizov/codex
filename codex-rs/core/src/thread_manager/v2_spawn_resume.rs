@@ -414,6 +414,7 @@ impl ThreadManagerState {
                 .services
                 .local_agent_runtime
                 .control(thread.session.session_id());
+            control.schedule_mailbox_final_subscription_recovery(thread.session.presentation_id());
             tokio::spawn(async move {
                 if let Err(error) = control.refresh_subtree_messaging(thread_id).await {
                     tracing::warn!(%error, "failed to refresh published messaging context");

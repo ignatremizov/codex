@@ -1,3 +1,6 @@
+use super::super::output_collection::collect_output_until_deadline;
+use super::super::output_collection::extend_deadline;
+use super::super::output_collection::wait_for_interrupt_while_paused;
 use super::*;
 use crate::shell::Shell;
 use crate::shell::ShellInvocation;
@@ -382,10 +385,11 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         drain_policy: OutputDrainPolicy::BoundedAfterExit,
     };
 
-    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+    let collect = collect_output_until_deadline(
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(5)),
+        None,
     );
     let produce = async {
         for chunk in chunks {
@@ -414,7 +418,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
     for chunk in chunks {
         expected.push_chunk(chunk);
     }
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
     assert_eq!(output_buffer.lock().await.transcript, expected);
 }
 
@@ -442,12 +446,14 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
         drain_policy: OutputDrainPolicy::BoundedAfterExit,
     };
 
-    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+    let collected = collect_output_until_deadline(
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(1)),
+        None,
     )
-    .await;
+    .await
+    .collected;
 
     assert_eq!(collected, expected);
 }
@@ -488,6 +494,8 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
         output_closed: Arc::clone(&output_closed),
         output_closed_notify: Arc::clone(&output_closed_notify),
         cancellation_token: cancellation_token.clone(),
+        drain_policy: OutputDrainPolicy::BoundedAfterExit,
+        collection_finished: CancellationToken::new(),
     };
 
     {
@@ -506,10 +514,11 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
 
     let collected = tokio::time::timeout(
         Duration::from_secs(2),
-        UnifiedExecProcessManager::collect_output_until_deadline(
+        collect_output_until_deadline(
             &output,
             /*pause_state*/ None,
             Some(Instant::now()),
+            /*interrupts*/ None,
         ),
     )
     .await
@@ -517,7 +526,7 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
 
     let mut expected = HeadTailBuffer::default();
     expected.push_chunk(b"late output");
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
     assert_eq!(output_buffer.lock().await.transcript, expected);
 }
 
@@ -534,6 +543,8 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
         output_closed: Arc::clone(&output_closed),
         output_closed_notify: Arc::clone(&output_closed_notify),
         cancellation_token: cancellation_token.clone(),
+        drain_policy: OutputDrainPolicy::BoundedAfterExit,
+        collection_finished: CancellationToken::new(),
     };
 
     {
@@ -554,8 +565,8 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
 
     let collected = tokio::time::timeout(
         Duration::from_secs(2),
-        UnifiedExecProcessManager::collect_output_until_deadline(
-            &output, /*pause_state*/ None, /*deadline*/ None,
+        collect_output_until_deadline(
+            &output, /*pause_state*/ None, /*deadline*/ None, /*interrupts*/ None,
         ),
     )
     .await
@@ -563,7 +574,7 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
 
     let mut expected = HeadTailBuffer::default();
     expected.push_chunk(b"unbounded output");
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
     assert_eq!(output_buffer.lock().await.transcript, expected);
 }
 
@@ -619,11 +630,13 @@ async fn paused_polling_extends_only_finite_deadlines() {
         let mut pause_state = Some(receiver);
         let mut deadline = initial;
         let mut post_exit_deadline = Some(start);
+        let mut interrupts = None;
         {
-            let paused = UnifiedExecProcessManager::extend_deadlines_while_paused(
+            let paused = wait_for_interrupt_while_paused(
                 &mut pause_state,
                 &mut deadline,
                 &mut post_exit_deadline,
+                &mut interrupts,
             );
             tokio::pin!(paused);
             assert!(futures::poll!(&mut paused).is_pending());
@@ -632,9 +645,10 @@ async fn paused_polling_extends_only_finite_deadlines() {
             sender
                 .send(/*value*/ false)
                 .expect("pause receiver remains alive");
-            tokio::time::timeout(Duration::from_secs(1), paused)
+            let interrupted = tokio::time::timeout(Duration::from_secs(1), paused)
                 .await
                 .expect("resuming should release the paused collector");
+            assert_eq!(interrupted, None);
         }
         let extended = post_exit_deadline.expect("post-exit deadline stays finite");
         assert!(extended > start);
@@ -652,9 +666,11 @@ async fn unbounded_poll_still_caps_the_post_exit_drain() {
         output_closed: Arc::new(AtomicBool::new(false)),
         output_closed_notify: Arc::new(Notify::new()),
         cancellation_token,
+        drain_policy: OutputDrainPolicy::BoundedAfterExit,
+        collection_finished: CancellationToken::new(),
     };
-    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
-        &output, /*pause_state*/ None, /*deadline*/ None,
+    let collect = collect_output_until_deadline(
+        &output, /*pause_state*/ None, /*deadline*/ None, /*interrupts*/ None,
     );
     tokio::pin!(collect);
     assert!(futures::poll!(&mut collect).is_pending());
@@ -665,7 +681,7 @@ async fn unbounded_poll_still_caps_the_post_exit_drain() {
         .expect("exit must bound collection even when the output stream never closes");
     let mut expected = HeadTailBuffer::<10>::default();
     expected.push_chunk(b"late bytes");
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
 }
 
 #[tokio::test]

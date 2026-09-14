@@ -135,6 +135,8 @@ mod interrupt_hooks;
 mod items;
 mod json_result;
 mod live_cli;
+#[path = "mailbox_final_binding_tests.rs"]
+mod mailbox_final_binding;
 #[path = "managed_threads_tests.rs"]
 mod managed_threads;
 mod mcp_auth_elicitation;
@@ -217,6 +219,7 @@ mod safety_check_downgrade;
 mod scenarios;
 mod search_tool;
 mod send_input_mailbox;
+mod send_input_mailbox_final_subscription;
 mod send_user_message_async;
 mod settings_commits;
 mod settings_constraints;
@@ -261,6 +264,7 @@ mod unified_exec_mxc_powershell;
 mod unified_exec_process_events;
 mod unified_exec_stdin_approval;
 mod unified_exec_stdin_review_size;
+mod unified_exec_wait_until_exit;
 mod unstable_features_warning;
 mod user_notification;
 mod user_shell_cmd;

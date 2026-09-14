@@ -1,4 +1,4 @@
-//! Model-only mailbox receipts derived from existing fixed claims, never inventory.
+//! Model-only check_mail outcomes derived from existing fixed claims, never inventory.
 
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -30,24 +30,18 @@ struct Acceptance {
     from: Option<String>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ReceiptStatus {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClaimOutcome {
+    Nonterminal,
     Empty,
-    Ok,
-    Rejected,
+    Success { rejected_count: usize },
+    Rejected { rejected_count: usize },
 }
 
-#[derive(Serialize)]
-struct Receipt {
-    status: ReceiptStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rejected_count: Option<usize>,
-}
-
+#[derive(Debug, Eq, PartialEq)]
 struct ClaimSummary {
     from: Option<String>,
-    receipt: Option<Receipt>,
+    outcome: ClaimOutcome,
 }
 
 impl ClaimSummary {
@@ -70,17 +64,16 @@ impl ClaimSummary {
                 MailboxMessageState::Pending | MailboxMessageState::Claimed => terminal = false,
             }
         }
-        let receipt = terminal.then_some(Receipt {
-            status: if delivered_count > 0 {
-                ReceiptStatus::Ok
-            } else if rejected_count > 0 {
-                ReceiptStatus::Rejected
-            } else {
-                ReceiptStatus::Empty
-            },
-            rejected_count: (rejected_count > 0).then_some(rejected_count),
-        });
-        Some(Self { from, receipt })
+        let outcome = if !terminal {
+            ClaimOutcome::Nonterminal
+        } else if delivered_count > 0 {
+            ClaimOutcome::Success { rejected_count }
+        } else if rejected_count > 0 {
+            ClaimOutcome::Rejected { rejected_count }
+        } else {
+            ClaimOutcome::Empty
+        };
+        Some(Self { from, outcome })
     }
 }
 
@@ -155,25 +148,32 @@ pub(crate) async fn project_check_mail_results(
         if acceptance.from != summary.from {
             continue;
         }
-        let projected = if let Some(receipt) = &summary.receipt {
-            serde_json::to_value(receipt)
-        } else {
-            let from = summary.from.as_ref().map(|sender| {
-                ThreadId::from_string(sender)
-                    .ok()
-                    .and_then(|id| refs.get(&id))
-                    .map(u64::to_string)
-                    .unwrap_or_else(|| sender.clone())
-            });
-            serde_json::to_value(Acceptance { from, ..acceptance })
+        *text = match summary.outcome {
+            ClaimOutcome::Success { rejected_count: 0 } => String::new(),
+            ClaimOutcome::Success { rejected_count } => {
+                serde_json::json!({"rejected_count": rejected_count}).to_string()
+            }
+            ClaimOutcome::Empty => serde_json::json!({"status":"empty"}).to_string(),
+            ClaimOutcome::Rejected { rejected_count } => serde_json::json!({
+                "status": "rejected",
+                "rejected_count": rejected_count
+            })
+            .to_string(),
+            ClaimOutcome::Nonterminal => {
+                let from = summary.from.as_ref().map(|sender| {
+                    ThreadId::from_string(sender)
+                        .ok()
+                        .and_then(|id| refs.get(&id))
+                        .map(u64::to_string)
+                        .unwrap_or_else(|| sender.clone())
+                });
+                serde_json::to_string(&Acceptance { from, ..acceptance }).map_err(|error| {
+                    CodexErr::Fatal(format!(
+                        "failed to serialize check_mail model acceptance: {error}"
+                    ))
+                })?
+            }
         };
-        *text = projected
-            .map_err(|error| {
-                CodexErr::Fatal(format!(
-                    "failed to serialize check_mail model receipt: {error}"
-                ))
-            })?
-            .to_string();
     }
     Ok(())
 }

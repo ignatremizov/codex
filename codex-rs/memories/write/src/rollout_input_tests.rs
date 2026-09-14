@@ -39,6 +39,8 @@ fn observation_control_records_do_not_become_memory_evidence() -> anyhow::Result
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
         committed_delivery_response_item_ids: Vec::new(),
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     });
 
     assert_eq!(

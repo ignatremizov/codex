@@ -1,5 +1,7 @@
 use super::*;
 use crate::session::tests::make_session_and_context;
+use codex_protocol::items::MailboxReadItem;
+use codex_protocol::items::MailboxReadSelector;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
@@ -36,6 +38,7 @@ async fn unknown_mailbox_result_write_quarantines_without_reappend() -> anyhow::
     let operation = MailboxConsumption {
         tool_call_id: "unknown-mailbox".to_string(),
         selection: MailboxSelection::All,
+        presentation: MailboxConsumptionPresentation::None,
     };
     assert!(
         session
@@ -79,6 +82,7 @@ async fn fresh_mailbox_consumption_binds_prepared_context_to_the_claim_identity(
         .accept_mailbox_input(AcceptMailboxInputParams {
             receiver_thread_id: session.thread_id,
             submission_key: "fresh-proof-identity".to_string(),
+            final_subscription: Default::default(),
             payload: MailboxPayload::User {
                 input: input.clone(),
                 client_id: Some("original-client".to_string()),
@@ -88,6 +92,7 @@ async fn fresh_mailbox_consumption_binds_prepared_context_to_the_claim_identity(
     let operation = MailboxConsumption {
         tool_call_id: "fresh-proof-result".to_string(),
         selection: MailboxSelection::All,
+        presentation: MailboxConsumptionPresentation::None,
     };
     let result =
         ResponseItemEnvelope::new(ResponseItem::from(ResponseInputItem::FunctionCallOutput {
@@ -190,6 +195,7 @@ async fn selected_mail_worker_survives_result_waiter_cancellation() -> anyhow::R
         .accept_mailbox_input(AcceptMailboxInputParams {
             receiver_thread_id: session.thread_id,
             submission_key: "cancelled-waiter".to_string(),
+            final_subscription: Default::default(),
             payload: MailboxPayload::User {
                 input: vec![UserInput::Text {
                     text: "durable selection".into(),
@@ -212,6 +218,7 @@ async fn selected_mail_worker_survives_result_waiter_cancellation() -> anyhow::R
         MailboxConsumption {
             tool_call_id: "selected-mail".into(),
             selection: MailboxSelection::All,
+            presentation: MailboxConsumptionPresentation::None,
         },
     ));
     assert!(futures::poll!(&mut waiter).is_pending());
@@ -287,6 +294,7 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
                 input: input.clone(),
                 client_id: Some("original-client".to_string()),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let params = ClaimMailboxInputParams {
@@ -338,6 +346,7 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
     let operation = MailboxConsumption {
         tool_call_id: params.invocation.tool_call_id.clone(),
         selection: MailboxSelection::All,
+        presentation: MailboxConsumptionPresentation::CheckMail,
     };
     session
         .commit_mailbox_consumption(
@@ -355,17 +364,25 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
     }
     assert_eq!(
         serde_json::to_value(presentations)?,
-        serde_json::to_value(vec![TurnItem::UserMessage(UserMessageItem {
-            id: id.to_string(),
-            client_id: Some("original-client".to_string()),
-            content: input,
-        })])?,
+        serde_json::to_value(vec![
+            TurnItem::UserMessage(UserMessageItem {
+                id: id.to_string(),
+                client_id: Some("original-client".to_string()),
+                content: input,
+            }),
+            TurnItem::MailboxRead(MailboxReadItem {
+                id: params.invocation.tool_call_id.clone(),
+                selector: MailboxReadSelector::All,
+                consumed_count: 1,
+                rejected_count: 0,
+            }),
+        ])?,
     );
     assert_eq!(
         session.clone_history().await.into_annotated_items(),
         vec![result.clone(), context.clone()],
     );
-    let reconciled = store.claim_mailbox_input(params).await?;
+    let reconciled = store.claim_mailbox_input(params.clone()).await?;
     assert_eq!(
         reconciled
             .messages
@@ -398,5 +415,19 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
     assert_eq!(history.iter().filter(|item| {
         matches!(item, RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) if event.item.id() == id.as_str())
     }).count(), 1);
+    assert_eq!(
+        history
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                        if matches!(&event.item, TurnItem::MailboxRead(item)
+                            if item.id == params.invocation.tool_call_id)
+                )
+            })
+            .count(),
+        1,
+    );
     Ok(())
 }
