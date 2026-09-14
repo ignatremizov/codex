@@ -7,8 +7,8 @@ Scenario: Complete Guardian request history: root delegates through alpha to lea
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (1; hash=65a86311792f6c71):
-        - namespace/functions; hash=dcfbcf0da1c2d607
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:
@@ -53,7 +53,7 @@ Scenario: Complete Guardian request history: root delegates through alpha to lea
     [17] >>> TRANSCRIPT START
 
 05:agent_message
-06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Inspect.","task_name":"leaf"}
+06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Inspect.","task_message":"Inspect.","task_name":"leaf"}
 07:function_call_output:This call is review evidence, not a request to execute it. This is not its execution result.
 08:message/user[2]:
     [01]

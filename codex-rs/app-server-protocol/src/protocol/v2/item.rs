@@ -7,6 +7,7 @@ use super::NetworkApprovalContext;
 use super::NetworkApprovalProtocol;
 use super::NetworkPolicyAmendment;
 use super::RequestPermissionProfile;
+use super::TerminalWait;
 use super::ThreadShellCommandResponseHandling;
 use super::UserInput;
 use super::shared::v2_enum_from_core;
@@ -35,6 +36,8 @@ use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
+use codex_protocol::items::MailboxReadItem as CoreMailboxReadItem;
+use codex_protocol::items::MailboxReadSelector as CoreMailboxReadSelector;
 pub use codex_protocol::items::McpAppDisplayMode;
 pub use codex_protocol::items::McpAppUi;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
@@ -520,6 +523,8 @@ pub enum ThreadItemPayload {
         #[ts(type = "number | null")]
         duration_ms: Option<i64>,
     },
+    /// Terminal, payload-free result of a direct `check_mail` invocation.
+    MailboxRead(MailboxReadItem),
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     CollabAgentToolCall {
@@ -710,6 +715,7 @@ impl ThreadItemPayload {
             | Self::ContextCompaction { id, .. } => id,
             Self::WebSearch(item) => &item.id,
             Self::Sleep(item) => &item.id,
+            Self::MailboxRead(item) => &item.id,
             Self::ImageGeneration(item) => &item.id,
         }
     }
@@ -1223,6 +1229,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
             },
+            CoreTurnItem::MailboxRead(item) => Self::MailboxRead(MailboxReadItem::from(item)),
             CoreTurnItem::CollabAgentToolCall(call) => Self::CollabAgentToolCall {
                 id: call.id,
                 tool: call.tool.into(),
@@ -1391,6 +1398,48 @@ impl From<codex_protocol::items::HookPromptFragment> for HookPromptFragment {
         Self {
             text: value.text,
             hook_run_id: value.hook_run_id,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
+pub enum MailboxReadSelector {
+    All,
+    User,
+    Agent {
+        #[serde(rename = "threadId")]
+        #[ts(rename = "threadId")]
+        thread_id: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct MailboxReadItem {
+    pub id: String,
+    pub selector: MailboxReadSelector,
+    #[ts(type = "number")]
+    pub consumed_count: u64,
+    #[ts(type = "number")]
+    pub rejected_count: u64,
+}
+
+impl From<CoreMailboxReadItem> for MailboxReadItem {
+    fn from(value: CoreMailboxReadItem) -> Self {
+        Self {
+            id: value.id,
+            selector: match value.selector {
+                CoreMailboxReadSelector::All => MailboxReadSelector::All,
+                CoreMailboxReadSelector::User => MailboxReadSelector::User,
+                CoreMailboxReadSelector::Agent { thread_id } => MailboxReadSelector::Agent {
+                    thread_id: thread_id.to_string(),
+                },
+            },
+            consumed_count: value.consumed_count,
+            rejected_count: value.rejected_count,
         }
     }
 }
@@ -1896,6 +1945,7 @@ pub struct TerminalInteractionNotification {
     /// Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.
     #[ts(type = "number | null")]
     pub deadline_at_ms: Option<i64>,
+    pub wait: Option<TerminalWait>,
 }
 
 #[serde_as]

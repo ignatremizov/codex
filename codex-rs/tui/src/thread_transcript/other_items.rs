@@ -192,6 +192,7 @@ pub(super) fn cells(
         | ThreadItemPayload::Reasoning { .. }
         | ThreadItemPayload::CommandExecution { .. }
         | ThreadItemPayload::McpToolCall { .. }
+        | ThreadItemPayload::MailboxRead(_)
         | ThreadItemPayload::Sleep(_) => {}
     }
     cells

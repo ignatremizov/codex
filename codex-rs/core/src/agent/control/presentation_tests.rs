@@ -10,44 +10,6 @@ fn identity() -> SessionPresentationId {
     SessionPresentationId::new(ThreadId::new(), Uuid::now_v7())
 }
 
-#[tokio::test]
-async fn completed_message_wake_publication_keeps_tree_shutdown_pending() {
-    let control = LocalAgentControl::default();
-    let observer = identity();
-    let target = identity();
-    control
-        .runtime
-        .wait_agent_presentations
-        .state()
-        .response_observation_by_observer_child
-        .insert(
-            (observer, target),
-            ResponseObserverRelationship {
-                turns: HashMap::from([(
-                    "target-turn".to_owned(),
-                    ResponseTurnObservation {
-                        target_messages: true,
-                        message_wake_turn_id: Some("observer-wake".to_owned()),
-                        ..Default::default()
-                    },
-                )]),
-                ..Default::default()
-            },
-        );
-    let transaction = control
-        .acquire_response_observation_transaction(observer)
-        .await;
-    control.finish_target_message_wake(observer, "observer-wake");
-    let shutdown = control.runtime.request_shutdown();
-    let mut drained = Box::pin(shutdown.wait());
-    assert!(futures::poll!(drained.as_mut()).is_pending());
-    drop(transaction);
-    tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), drained)
-        .await
-        .expect("wake retirement publisher must release membership")
-        .expect("tree shutdown must drain the publisher");
-}
-
 #[test]
 fn next_turn_policy_does_not_block_a_delayed_historical_terminal() {
     let control = LocalAgentControl::default();
@@ -82,101 +44,7 @@ fn next_turn_policy_does_not_block_a_delayed_historical_terminal() {
 }
 
 #[test]
-fn target_message_admission_reserves_one_idle_wake() {
-    let control = LocalAgentControl::default();
-    let parent = identity();
-    let child = identity();
-    control
-        .runtime
-        .wait_agent_presentations
-        .state()
-        .response_observation_by_observer_child
-        .insert(
-            (parent, child),
-            ResponseObserverRelationship {
-                turns: HashMap::from([(
-                    "child-turn".to_owned(),
-                    ResponseTurnObservation {
-                        target_messages: true,
-                        ..Default::default()
-                    },
-                )]),
-                ..Default::default()
-            },
-        );
-
-    let TargetMessageAdmission::Wake(reservation_id) = control
-        .target_message_admission(
-            parent,
-            child,
-            "child-turn",
-            None,
-            None,
-            TargetMessageAdmissionMode::SteerOrWake,
-        )
-        .expect("message route should reserve an idle wake")
-    else {
-        panic!("expected idle wake reservation");
-    };
-    assert_eq!(
-        control
-            .target_message_admission(
-                parent,
-                child,
-                "child-turn",
-                None,
-                None,
-                TargetMessageAdmissionMode::SteerOrWake,
-            )
-            .expect("pending wake should remain visible"),
-        TargetMessageAdmission::PendingWake
-    );
-    assert!(control.commit_target_message_wake(
-        parent,
-        child,
-        "child-turn",
-        reservation_id,
-        "source-turn",
-    ));
-    assert_eq!(
-        control
-            .target_message_admission(
-                parent,
-                child,
-                "child-turn",
-                Some("source-turn"),
-                None,
-                TargetMessageAdmissionMode::SteerOrWake,
-            )
-            .expect("active source turn should be steerable"),
-        TargetMessageAdmission::Steer
-    );
-
-    control
-        .runtime
-        .wait_agent_presentations
-        .state()
-        .response_observation_by_observer_child
-        .get_mut(&(parent, child))
-        .expect("the exact relationship should still exist")
-        .revoked = true;
-    assert!(
-        control
-            .target_message_admission(
-                parent,
-                child,
-                "child-turn",
-                Some("source-turn"),
-                /*observer_last_terminal_turn_id*/ None,
-                TargetMessageAdmissionMode::SteerOrWake,
-            )
-            .is_err(),
-        "retained turn data must not authorize input through a revoked relationship"
-    );
-}
-
-#[test]
-fn future_policy_replacement_retains_pending_message_and_queue_axes() {
+fn future_policy_replacement_retains_pending_final_and_queue_axes() {
     let control = LocalAgentControl::default();
     let parent = identity();
     let child = identity();
@@ -184,7 +52,6 @@ fn future_policy_replacement_retains_pending_message_and_queue_axes() {
     let expected_policy = ResponseObservationPolicy::from_turn_parts(
         /*commentary*/ false,
         FinalResponseObservation::Wake,
-        /*target_messages*/ true,
         /*queue_input*/ true,
     );
     control
@@ -197,7 +64,6 @@ fn future_policy_replacement_retains_pending_message_and_queue_axes() {
             ResponseObserverRelationship {
                 pending_next_turn: Some(ResponseTurnObservation {
                     final_response: FinalResponseObservation::Wake,
-                    target_messages: true,
                     queue_delivery: true,
                     ..Default::default()
                 }),
@@ -216,26 +82,6 @@ fn future_policy_replacement_retains_pending_message_and_queue_axes() {
         ),
         (None, Some(expected_policy))
     );
-    assert!(
-        !control.target_message_binding_pending(parent, replacement),
-        "a future-turn policy must not block a current sender waiting for new authority"
-    );
-    control
-        .runtime
-        .wait_agent_presentations
-        .state()
-        .response_observation_by_observer_child
-        .get_mut(&(parent, replacement))
-        .expect("the replacement relationship should exist")
-        .pending_admissions
-        .insert(
-            Uuid::now_v7(),
-            ResponseTurnObservation {
-                target_messages: true,
-                ..Default::default()
-            },
-        );
-    assert!(control.target_message_binding_pending(parent, replacement));
     control
         .runtime
         .wait_agent_presentations
@@ -244,124 +90,9 @@ fn future_policy_replacement_retains_pending_message_and_queue_axes() {
         .get_mut(&(parent, replacement))
         .expect("the replacement relationship should exist")
         .revoked = true;
-    assert!(!control.target_message_binding_pending(parent, replacement));
     assert_eq!(
         control.reserved_response_observation_policy(parent, replacement),
         None
-    );
-}
-
-#[derive(Clone, Copy)]
-enum QueueCancellation {
-    Delete,
-    CloseSource,
-    CloseTarget,
-}
-
-#[test_case(QueueCancellation::Delete, false; "delete_pending")]
-#[test_case(QueueCancellation::Delete, true; "delete_in_flight")]
-#[test_case(QueueCancellation::CloseSource, false; "close_source_pending")]
-#[test_case(QueueCancellation::CloseSource, true; "close_source_in_flight")]
-#[test_case(QueueCancellation::CloseTarget, false; "close_target_pending")]
-#[test_case(QueueCancellation::CloseTarget, true; "close_target_in_flight")]
-fn cancelling_queued_reverse_input_releases_only_its_reserved_wake(
-    cancellation: QueueCancellation,
-    in_flight: bool,
-) {
-    use crate::agent::control::AgentControlInput;
-    use crate::agent::turn_queue::AgentTurnQueue;
-    use crate::agent::turn_queue::QueuedAgentTurn;
-    use crate::agent::turn_queue::QueuedTargetMessageWake;
-
-    let parent = identity();
-    let child = identity();
-    let root = codex_protocol::SessionId::from(parent.thread_id);
-    let control = LocalAgentControl::default().with_session_id(root, /*max_threads*/ 20);
-    control
-        .runtime
-        .wait_agent_presentations
-        .state()
-        .response_observation_by_observer_child
-        .insert(
-            (parent, child),
-            ResponseObserverRelationship {
-                turns: HashMap::from([(
-                    "child-turn".to_owned(),
-                    ResponseTurnObservation {
-                        target_messages: true,
-                        ..Default::default()
-                    },
-                )]),
-                ..Default::default()
-            },
-        );
-    let TargetMessageAdmission::Wake(reservation_id) = control
-        .target_message_admission(
-            parent,
-            child,
-            "child-turn",
-            /*observer_active_turn_id*/ None,
-            /*observer_last_terminal_turn_id*/ None,
-            TargetMessageAdmissionMode::SeparateTurn,
-        )
-        .expect("reserve the reverse message wake")
-    else {
-        panic!("expected an idle wake reservation");
-    };
-    let entry = QueuedAgentTurn {
-        id: Uuid::now_v7(),
-        control: control.clone(),
-        source: child,
-        target_thread_id: parent.thread_id,
-        input: AgentControlInput::User(Vec::new()),
-        start_options: Default::default(),
-        response_observation: ResponseObservationPolicy::default(),
-        task_preview: None,
-        authored_selector: None,
-        target_message_wake: Some(QueuedTargetMessageWake {
-            observer: parent,
-            target: child,
-            target_turn_id: "child-turn".to_owned(),
-            reservation_id,
-        }),
-    };
-    let queue = AgentTurnQueue::default();
-    queue.enqueue(entry.clone());
-    if in_flight {
-        assert!(queue.take_front(parent.thread_id).is_some());
-    }
-    match cancellation {
-        QueueCancellation::Delete => assert!(queue.cancel(root, entry.id)),
-        QueueCancellation::CloseSource => queue.cancel_for_threads([child.thread_id]),
-        QueueCancellation::CloseTarget => queue.cancel_for_threads([parent.thread_id]),
-    }
-    assert!(queue.list_for_root(root).is_empty());
-    assert!(matches!(
-        control
-            .target_message_admission(
-                parent,
-                child,
-                "child-turn",
-                /*observer_active_turn_id*/ None,
-                /*observer_last_terminal_turn_id*/ None,
-                TargetMessageAdmissionMode::SeparateTurn,
-            )
-            .expect("cancellation releases the old reservation"),
-        TargetMessageAdmission::Wake(_)
-    ));
-    entry.rollback_target_message_wake();
-    assert_eq!(
-        control
-            .target_message_admission(
-                parent,
-                child,
-                "child-turn",
-                /*observer_active_turn_id*/ None,
-                /*observer_last_terminal_turn_id*/ None,
-                TargetMessageAdmissionMode::SeparateTurn,
-            )
-            .expect("a stale rollback preserves the newer reservation"),
-        TargetMessageAdmission::PendingWake
     );
 }
 
@@ -423,11 +154,17 @@ fn admitted_policy_binds_actual_turn_and_cannot_downgrade_an_accepted_final() {
                 ..Default::default()
             },
         );
-    let before = control
-        .response_observation_snapshots(parent, child)
-        .into_iter()
-        .find(|observation| observation.target_turn_id.as_deref() == Some("actual-turn"))
-        .expect("bound turn observation");
+    let mut expected = control.response_observation_snapshots(parent, child);
+    let pending = expected
+        .iter_mut()
+        .find(|observation| observation.target_turn_id.is_none())
+        .expect("pending admission snapshot");
+    assert_eq!(
+        pending.final_delivery,
+        codex_protocol::protocol::AgentResponseFinalDelivery::PresentationOnly,
+    );
+    // Binding consumes the pending admission, but cannot downgrade the already accepted final.
+    pending.final_delivery = codex_protocol::protocol::AgentResponseFinalDelivery::None;
     control.bind_response_observation_turn_at_sequence(
         parent,
         child,
@@ -437,11 +174,8 @@ fn admitted_policy_binds_actual_turn_and_cannot_downgrade_an_accepted_final() {
         ResponseObservationBindingPublication::Immediate,
     );
     assert_eq!(
-        control
-            .response_observation_snapshots(parent, child)
-            .into_iter()
-            .find(|observation| observation.target_turn_id.as_deref() == Some("actual-turn")),
-        Some(before),
+        control.response_observation_snapshots(parent, child),
+        expected
     );
     assert_eq!(
         control.response_observation_event_match(parent, child, &admission.to_string()),
@@ -499,8 +233,9 @@ fn commentary_boundary_delivers_once_and_retains_committed_evidence() {
         parent,
         child,
         turn_id: "turn".to_owned(),
-        response_item_id: delivery.response_item_id.clone(),
+        response_item_id: delivery.response_item_id,
         kind: ResponseObservationDeliveryKind::Commentary,
+        mailbox_final_subscription_message_id: None,
         model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
     };
     let committed = control.deferred_response_observation_commit_snapshots(&commit);
@@ -566,6 +301,7 @@ fn every_final_disposition_commits_one_identity_including_presentation_only() {
             turn_id: "turn".to_owned(),
             response_item_id: context.clone(),
             kind: ResponseObservationDeliveryKind::Final,
+            mailbox_final_subscription_message_id: None,
             model_visibility: if disposition == FinalResponseObservation::PresentationOnly {
                 codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible
             } else {
@@ -673,6 +409,7 @@ fn close_after_claim_yields_inert_exact_turn_committed_tombstone() {
         turn_id: "accepted-turn".to_owned(),
         response_item_id: new_sub_agent_completion_context_response_item_id(),
         kind: ResponseObservationDeliveryKind::Final,
+        mailbox_final_subscription_message_id: None,
         model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
     };
     control
@@ -730,6 +467,8 @@ fn close_after_claim_yields_inert_exact_turn_committed_tombstone() {
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: Some(commit.response_item_id.clone()),
             committed_delivery_response_item_ids: vec![commit.response_item_id.clone()],
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         })
     );
     control.commit_response_observation_delivery(&commit);

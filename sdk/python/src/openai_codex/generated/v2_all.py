@@ -2557,6 +2557,37 @@ class LogoutAccountResponse(BaseModel):
     )
 
 
+class AllMailboxReadSelector(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["all"], Field(title="AllMailboxReadSelectorType")]
+
+
+class UserMailboxReadSelector(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["user"], Field(title="UserMailboxReadSelectorType")]
+
+
+class AgentMailboxReadSelector(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+    type: Annotated[Literal["agent"], Field(title="AgentMailboxReadSelectorType")]
+
+
+class MailboxReadSelector(
+    RootModel[AllMailboxReadSelector | UserMailboxReadSelector | AgentMailboxReadSelector]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: AllMailboxReadSelector | UserMailboxReadSelector | AgentMailboxReadSelector
+
+
 class ManagedHooksRequirements(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5275,22 +5306,17 @@ class SubagentMigration(BaseModel):
     name: str
 
 
-class TerminalInteractionNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    deadline_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="deadlineAtMs",
-            description="Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.",
-        ),
-    ] = None
-    item_id: Annotated[str, Field(alias="itemId")]
-    process_id: Annotated[str, Field(alias="processId")]
-    stdin: str
-    thread_id: Annotated[str, Field(alias="threadId")]
-    turn_id: Annotated[str, Field(alias="turnId")]
+class TerminalWaitCompletionReason(Enum):
+    exited = "exited"
+    timeout = "timeout"
+    input = "input"
+    cancelled = "cancelled"
+    failed = "failed"
+
+
+class TerminalWaitMode(Enum):
+    timed = "timed"
+    until_exit = "untilExit"
 
 
 class TextElement(BaseModel):
@@ -5765,6 +5791,31 @@ class DynamicToolCallThreadItem(BaseModel):
     type: Annotated[Literal["dynamicToolCall"], Field(title="DynamicToolCallThreadItemType")]
 
 
+class MailboxReadThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    completed_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="completedAtMs",
+            description="Unix timestamp in milliseconds when the item completed, if recorded.",
+        ),
+    ] = None
+    consumed_count: Annotated[int, Field(alias="consumedCount", ge=0)]
+    id: str
+    rejected_count: Annotated[int, Field(alias="rejectedCount", ge=0)]
+    selector: MailboxReadSelector
+    started_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="startedAtMs",
+            description="Unix timestamp in milliseconds when the item started, if recorded.",
+        ),
+    ] = None
+    type: Annotated[Literal["mailboxRead"], Field(title="MailboxReadThreadItemType")]
+
+
 class SubAgentActivityThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6102,6 +6153,35 @@ class ThreadMailboxMessageState(Enum):
     claimed = "claimed"
     consumed = "consumed"
     rejected = "rejected"
+
+
+class UserThreadMailboxPendingSender(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    count: Annotated[int, Field(ge=0)]
+    type: Annotated[Literal["user"], Field(title="UserThreadMailboxPendingSenderType")]
+
+
+class AgentThreadMailboxPendingSender(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    count: Annotated[int, Field(ge=0)]
+    thread_id: Annotated[str, Field(alias="threadId")]
+    type: Annotated[Literal["agent"], Field(title="AgentThreadMailboxPendingSenderType")]
+
+
+class ThreadMailboxPendingSender(
+    RootModel[UserThreadMailboxPendingSender | AgentThreadMailboxPendingSender]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        UserThreadMailboxPendingSender | AgentThreadMailboxPendingSender,
+        Field(description="Pending counts grouped by the canonical mailbox sender identity."),
+    ]
 
 
 class ThreadMcpServerActivateOutcome(Enum):
@@ -10670,24 +10750,6 @@ class ProcessOutputDeltaServerNotification(BaseModel):
     params: ProcessOutputDeltaNotification
 
 
-class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    emitted_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="emittedAtMs",
-            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
-        ),
-    ] = None
-    method: Annotated[
-        Literal["item/commandExecution/terminalInteraction"],
-        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
-    ]
-    params: TerminalInteractionNotification
-
-
 class ServerRequestResolvedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11053,6 +11115,58 @@ class SubAgentSource(
     root: SubAgentSourceValue | ThreadSpawnSubAgentSource | OtherSubAgentSource
 
 
+class TerminalWait1(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    interaction_id: Annotated[
+        str,
+        Field(
+            alias="interactionId",
+            description="The `write_stdin` function-call ID, distinct from the command item ID.",
+        ),
+    ]
+    mode: Annotated[
+        TerminalWaitMode,
+        Field(description="Whether this wait has a deadline or continues until process exit."),
+    ]
+    phase: Literal["started"]
+    started_at_ms: Annotated[
+        int,
+        Field(
+            alias="startedAtMs", description="Unix timestamp in milliseconds when the wait began."
+        ),
+    ]
+
+
+class TerminalWait2(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    elapsed_ms: Annotated[
+        int, Field(alias="elapsedMs", description="Actual elapsed wait time in milliseconds.", ge=0)
+    ]
+    interaction_id: Annotated[
+        str,
+        Field(
+            alias="interactionId",
+            description="The `write_stdin` function-call ID matching the start event.",
+        ),
+    ]
+    phase: Literal["finished"]
+    reason: Annotated[TerminalWaitCompletionReason, Field(description="Why the wait finished.")]
+
+
+class TerminalWait(RootModel[TerminalWait1 | TerminalWait2]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: Annotated[
+        TerminalWait1 | TerminalWait2,
+        Field(description="Start or completion metadata for one `write_stdin` wait."),
+    ]
+
+
 class ThreadForkParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11261,6 +11375,7 @@ class CommandExecutionThreadItem(BaseModel):
             description="Completion delivery policy for a user-authored shell command. `None` for model-authored and unified-exec commands.",
         ),
     ] = None
+
 
 class FileChangeThreadItem(BaseModel):
     model_config = ConfigDict(
@@ -12974,6 +13089,25 @@ class SessionSource(RootModel[SessionSourceValue | CustomSessionSource | SubAgen
     root: SessionSourceValue | CustomSessionSource | SubAgentSessionSource
 
 
+class TerminalInteractionNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    deadline_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="deadlineAtMs",
+            description="Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.",
+        ),
+    ] = None
+    item_id: Annotated[str, Field(alias="itemId")]
+    process_id: Annotated[str, Field(alias="processId")]
+    stdin: str
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+    wait: TerminalWait | None = None
+
+
 class AgentMessageThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -13043,6 +13177,7 @@ class ThreadItem(
         | FileChangeThreadItem
         | McpToolCallThreadItem
         | DynamicToolCallThreadItem
+        | MailboxReadThreadItem
         | CollabAgentToolCallThreadItem
         | SubAgentActivityThreadItem
         | UserAgentControlThreadItem
@@ -13067,6 +13202,7 @@ class ThreadItem(
         | FileChangeThreadItem
         | McpToolCallThreadItem
         | DynamicToolCallThreadItem
+        | MailboxReadThreadItem
         | CollabAgentToolCallThreadItem
         | SubAgentActivityThreadItem
         | UserAgentControlThreadItem
@@ -13658,6 +13794,24 @@ class ItemCompletedServerNotification(BaseModel):
     ] = None
     method: Annotated[Literal["item/completed"], Field(title="Item/completedNotificationMethod")]
     params: ItemCompletedNotification
+
+
+class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/commandExecution/terminalInteraction"],
+        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
+    ]
+    params: TerminalInteractionNotification
 
 
 class Thread(BaseModel):

@@ -21,13 +21,8 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 mod input_permission;
-mod live_revert_messaging;
 mod response_observation;
 mod root_completion_audit;
-mod send_settings;
-mod subtree_messaging;
-use live_revert_messaging::LiveRevertMessagingContinuity;
-pub use live_revert_messaging::LiveRevertMessagingSnapshot;
 pub(in crate::agent) use response_observation::ReplacedFinalResponseObservationBinding;
 pub(crate) use root_completion_audit::PreparedRootCompletionAudit;
 pub(crate) use root_completion_audit::RootCompletionAuditClaim;
@@ -39,9 +34,9 @@ pub(crate) use response_observation::ResponseObservationDeliveryCommit;
 pub(crate) use response_observation::ResponseObservationDeliveryKind;
 pub(crate) use response_observation::ResponseObservationEventMatch;
 pub(crate) use response_observation::ResponseObservationPersistence;
+pub(crate) use response_observation::ResponseObservationSelection;
 use response_observation::ResponseObserverRelationship;
 pub(crate) use response_observation::ResponseWatcherRegistration;
-pub(crate) use response_observation::TargetMessageRouteMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SessionPresentationId {
@@ -80,33 +75,12 @@ impl From<AgentStatus> for TerminalPresentationOutcome {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TargetMessageAdmission {
-    Steer,
-    Wake(Uuid),
-    PendingWake,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TargetMessageAdmissionMode {
-    SteerOrWake,
-    SeparateTurn,
-}
-
 #[derive(Default)]
 pub(super) struct WaitAgentPresentations {
     state: Mutex<PresentationState>,
     pub(super) response_observation_changed: Notify,
     pub(super) watcher_terminal_changed: Notify,
     observation_transactions: Mutex<HashMap<SessionPresentationId, Arc<tokio::sync::Mutex<()>>>>,
-    messaging_refresh: tokio::sync::Mutex<()>,
-    #[cfg(test)]
-    pub(in crate::agent::control) scoped_permission_check_gate: Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
     #[cfg(test)]
     pub(in crate::agent::control) mailbox_acceptance_gate: Mutex<
         Option<(
@@ -114,36 +88,11 @@ pub(super) struct WaitAgentPresentations {
             tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
-    #[cfg(test)]
-    pub(in crate::agent::control) scoped_steer_submission_gate: Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
-    #[cfg(test)]
-    pub(crate) messaging_refresh_capture_gate: Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
-    #[cfg(test)]
-    pub(crate) messaging_permission_attempted:
-        Mutex<Option<tokio::sync::mpsc::UnboundedSender<Vec<SessionPresentationId>>>>,
 }
 
 #[derive(Default)]
 struct PresentationState {
     root_audit_turns: HashSet<(SessionPresentationId, SessionPresentationId, String)>,
-    live_revert_messaging: HashMap<SessionPresentationId, LiveRevertMessagingContinuity>,
-    pending_messaging_context: HashMap<
-        (SessionPresentationId, String),
-        (Option<String>, codex_protocol::models::ResponseItem),
-    >,
-    subtree_messaging: HashMap<SessionPresentationId, (u64, TargetMessageRouteMode)>,
-    inherited_message_routes:
-        HashMap<(SessionPresentationId, SessionPresentationId), TargetMessageRouteMode>,
     next_wait: u64,
     next_terminal: u64,
     waits: HashMap<u64, WaitRegistration>,

@@ -46,6 +46,7 @@ mod backfill;
 mod external_agent_config_imports;
 mod goals;
 mod guardian_feedback;
+mod lifecycle_authority;
 mod logs;
 mod logs_maintenance;
 mod memories;
@@ -78,10 +79,17 @@ pub use guardian_feedback::GuardianReviewRecord;
 pub use guardian_feedback::MAX_GUARDIAN_REVIEW_BYTES;
 pub use guardian_feedback::MAX_GUARDIAN_REVIEW_RECORDS;
 pub use guardian_feedback::MAX_GUARDIAN_REVIEW_RECORDS_PER_THREAD;
+pub use lifecycle_authority::AgentLifecycleAuthorityUpdate;
+pub use lifecycle_authority::ThreadSpawnEdgeAuthority;
 pub use memories::MemoryStore;
 pub use queued_items::MailboxClaim;
 pub use queued_items::MailboxClaimedMessage;
+pub use queued_items::MailboxFinalSubscription;
+pub use queued_items::MailboxFinalSubscriptionAuthority;
+pub use queued_items::MailboxFinalSubscriptionRequest;
+pub use queued_items::MailboxFinalSubscriptionState;
 pub use queued_items::MailboxInventory;
+pub use queued_items::MailboxInventoryAcknowledgement;
 pub use queued_items::MailboxInventoryNotification;
 pub use queued_items::MailboxInvocation;
 pub use queued_items::MailboxMessage;
@@ -473,6 +481,10 @@ pub async fn sqlite_integrity_check(
         Err(error) => Err(error.into()),
     }
 }
+
+#[cfg(test)]
+#[path = "runtime/attachment_upgrade_tests.rs"]
+mod attachment_upgrade_tests;
 
 #[cfg(test)]
 mod tests {

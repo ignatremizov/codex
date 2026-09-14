@@ -200,6 +200,7 @@ impl GoalAccountingState {
             | TurnItem::Plan(_)
             | TurnItem::CommandExecution(_)
             | TurnItem::DynamicToolCall(_)
+            | TurnItem::MailboxRead(_)
             | TurnItem::CollabAgentToolCall(_)
             | TurnItem::SubAgentActivity(_)
             | TurnItem::WebSearch(_)

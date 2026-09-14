@@ -7,8 +7,8 @@ Scenario: Direct Guardian review of an injected exec call; an allow assessment d
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (1; hash=65a86311792f6c71):
-        - namespace/functions; hash=dcfbcf0da1c2d607
+00:additional_tools/developer (1; hash=97900a8586a4ab51):
+        - namespace/functions; hash=f7d5ae88686e5a71
           - custom/exec
           - function/wait
 01:message/developer:

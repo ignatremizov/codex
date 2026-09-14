@@ -219,6 +219,7 @@ fn without_thread_item_media(mut item: ThreadItemPayload) -> ThreadItemPayload {
         | ThreadItemPayload::WebSearch(_)
         | ThreadItemPayload::ImageView { .. }
         | ThreadItemPayload::Sleep(_)
+        | ThreadItemPayload::MailboxRead(_)
         | ThreadItemPayload::EnteredReviewMode { .. }
         | ThreadItemPayload::ExitedReviewMode { .. }
         | ThreadItemPayload::ContextCompaction { .. } => {}
