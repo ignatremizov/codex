@@ -265,6 +265,8 @@ pub(crate) mod mailbox;
 mod mailbox_activity;
 mod mailbox_inventory;
 mod mailbox_publication;
+mod mailbox_read;
+mod mailbox_subscription;
 mod prepared_history_items;
 pub use mailbox_inventory::MailboxInventoryAdmission;
 mod reasoning_effort;

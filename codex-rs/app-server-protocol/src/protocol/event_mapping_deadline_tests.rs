@@ -124,7 +124,7 @@ fn terminal_poll_begin_and_clear_keep_original_exec_identity_and_nullable_wire_f
             json!({
                 "threadId": "thread-1", "turnId": "turn-2",
                 "itemId": "original-exec", "processId": "1000",
-                "stdin": "", "deadlineAtMs": deadline_at_ms,
+                "stdin": "", "deadlineAtMs": deadline_at_ms, "wait": null,
             })
         );
     }

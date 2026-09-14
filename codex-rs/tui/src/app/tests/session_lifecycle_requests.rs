@@ -7423,6 +7423,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                       Response: none
                       Queued: 0
                       Children: 1
+                      Pending mail: loading
 
                       Enter opens this thread
                       ⌃t inspects transcript · Tab opens controls.

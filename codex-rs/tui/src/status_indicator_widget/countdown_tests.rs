@@ -3,6 +3,44 @@ use pretty_assertions::assert_eq;
 use tokio::sync::mpsc::unbounded_channel;
 
 #[test]
+fn hiding_aggregate_timer_preserves_its_deadline_and_remapped_interrupt() {
+    let now = Instant::now();
+    let (tx, _rx) = unbounded_channel();
+    let mut row = StatusIndicatorWidget::new(
+        AppEventSender::new(tx),
+        FrameRequester::test_dummy(),
+        /*animations_enabled*/ false,
+        Default::default(),
+    );
+    row.update_header("Waiting on 2 processes".into());
+    row.set_interrupt_binding(Some(key_hint::plain(KeyCode::F(2)).into()));
+    let timer = StatusTimer {
+        countdown_deadline: Some(now + Duration::from_secs(/*secs*/ 1)),
+        ..StatusTimer::default()
+    };
+    row.set_global_timer_visible(false);
+    let hidden = StatusIndicator {
+        row: &row,
+        timer: &timer,
+    }
+    .lines_at(/*width*/ 100, now)[0]
+        .to_string();
+    insta::assert_snapshot!(hidden, @"Waiting on 2 processes (f2 to interrupt)");
+    row.set_global_timer_visible(true);
+    let restored = StatusIndicator {
+        row: &row,
+        timer: &timer,
+    }
+    .lines_at(/*width*/ 100, now + Duration::from_secs(/*secs*/ 2))[0]
+        .to_string();
+    insta::assert_snapshot!(restored, @"Waiting on 2 processes (0s left • f2 to interrupt)");
+    assert_eq!(
+        timer.countdown_deadline,
+        Some(now + Duration::from_secs(/*secs*/ 1))
+    );
+}
+
+#[test]
 fn countdown_rounds_up_stays_at_zero_and_preserves_phase_elapsed_until_cleared() {
     let now = Instant::now();
     let (tx, _rx) = unbounded_channel();

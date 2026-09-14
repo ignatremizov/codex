@@ -29,28 +29,6 @@ pub(crate) struct QueuedAgentTurn {
     pub(crate) response_observation: ResponseObservationPolicy,
     pub(crate) task_preview: Option<String>,
     pub(crate) authored_selector: Option<String>,
-    pub(crate) target_message_wake: Option<QueuedTargetMessageWake>,
-}
-
-#[derive(Clone)]
-pub(crate) struct QueuedTargetMessageWake {
-    pub(crate) observer: SessionPresentationId,
-    pub(crate) target: SessionPresentationId,
-    pub(crate) target_turn_id: String,
-    pub(crate) reservation_id: Uuid,
-}
-
-impl QueuedAgentTurn {
-    pub(crate) fn rollback_target_message_wake(&self) {
-        if let Some(wake) = &self.target_message_wake {
-            self.control.rollback_target_message_wake(
-                wake.observer,
-                wake.target,
-                &wake.target_turn_id,
-                wake.reservation_id,
-            );
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -278,23 +256,6 @@ impl AgentTurnQueue {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cancelled = state
-            .queues
-            .values()
-            .flatten()
-            .chain(
-                state
-                    .in_flight
-                    .values()
-                    .filter(|entry| !entry.admission_started)
-                    .map(|entry| &entry.turn),
-            )
-            .filter(|turn| {
-                thread_ids.contains(&turn.target_thread_id)
-                    || thread_ids.contains(&turn.source.thread_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
         for thread_id in &thread_ids {
             state.queues.remove(thread_id);
         }
@@ -316,9 +277,6 @@ impl AgentTurnQueue {
             state.in_flight.remove(&target_thread_id);
         }
         drop(state);
-        for turn in cancelled {
-            turn.rollback_target_message_wake();
-        }
         self.changed.notify_waiters();
     }
 
@@ -383,10 +341,9 @@ impl AgentTurnQueue {
             }
         }
         drop(state);
-        let Some(removed) = removed else {
+        if removed.is_none() {
             return false;
-        };
-        removed.rollback_target_message_wake();
+        }
         self.changed.notify_waiters();
         true
     }
