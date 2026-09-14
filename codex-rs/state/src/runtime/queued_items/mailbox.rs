@@ -13,6 +13,21 @@ use sqlx::SqliteConnection;
 use sqlx::sqlite::SqliteRow;
 use uuid::Uuid;
 
+mod acceptance;
+mod final_subscriptions;
+
+pub(super) use final_subscriptions::bind_mailbox_final_subscriptions_for_inventory;
+
+const MAILBOX_MESSAGE_WITH_SUBSCRIPTION: &str = "SELECT m.*,
+    s.sender_thread_id AS final_subscription_sender_thread_id,
+    s.state AS final_subscription_state,
+    s.bound_turn_id AS final_subscription_bound_turn_id,
+    s.receiver_lifecycle_epoch AS final_subscription_receiver_lifecycle_epoch,
+    s.sender_lifecycle_epoch AS final_subscription_sender_lifecycle_epoch
+    FROM mailbox_messages m
+    LEFT JOIN mailbox_final_subscriptions s
+      ON s.receiver_thread_id = m.receiver_thread_id AND s.message_id = m.id";
+
 /// A tool invocation scoped to the receiver and its originating turn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MailboxInvocation {
@@ -48,6 +63,55 @@ pub struct MailboxMessage {
     pub acceptance_sequence: i64,
     pub state: MailboxMessageState,
     pub rejection_reason: Option<String>,
+    pub final_subscription: Option<MailboxFinalSubscription>,
+}
+
+/// Whether acceptance requests a final response observation after a qualifying
+/// mailbox opportunity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MailboxFinalSubscriptionRequest {
+    #[default]
+    None,
+    Wake,
+}
+
+/// Current durable state of the final-response opportunity for one accepted message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailboxFinalSubscriptionState {
+    Pending,
+    Bound,
+    Delivered,
+    Superseded,
+    Rejected,
+}
+
+/// Graph authority captured for both endpoints when a final subscription is accepted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MailboxFinalSubscriptionAuthority {
+    pub receiver_lifecycle_epoch: i64,
+    pub sender_lifecycle_epoch: i64,
+}
+
+/// A subscription is identified by the accepted message, and its bound turn is
+/// retained after delivery or supersession for exact recovery/audit evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailboxFinalSubscription {
+    pub message_id: String,
+    pub receiver_thread_id: ThreadId,
+    pub sender_thread_id: ThreadId,
+    pub acceptance_sequence: i64,
+    pub state: MailboxFinalSubscriptionState,
+    pub bound_turn_id: Option<String>,
+    pub receiver_lifecycle_epoch: i64,
+    pub sender_lifecycle_epoch: i64,
+}
+
+/// The state committed with the inventory acknowledgement, including exact
+/// subscriptions whose accepted mail was covered by that inventory frontier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailboxInventoryAcknowledgement {
+    pub notified_through: i64,
+    pub bound_subscriptions: Vec<MailboxFinalSubscription>,
 }
 
 /// One fixed claim member and its reserved receiver-history delivery identity.
@@ -78,6 +142,52 @@ fn message_from_row(row: &SqliteRow) -> anyhow::Result<MailboxMessage> {
         "rejected" => MailboxMessageState::Rejected,
         _ => anyhow::bail!("invalid stored mailbox state"),
     };
+    let final_subscription = row
+        .try_get::<Option<String>, _>("final_subscription_state")?
+        .map(|state| {
+            let state = match state.as_str() {
+                "pending" => MailboxFinalSubscriptionState::Pending,
+                "bound" => MailboxFinalSubscriptionState::Bound,
+                "delivered" => MailboxFinalSubscriptionState::Delivered,
+                "superseded" => MailboxFinalSubscriptionState::Superseded,
+                "rejected" => MailboxFinalSubscriptionState::Rejected,
+                _ => anyhow::bail!("invalid stored mailbox final subscription state"),
+            };
+            let bound_turn_id: Option<String> = row.try_get("final_subscription_bound_turn_id")?;
+            let sender_thread_id = ThreadId::try_from(
+                row.try_get::<String, _>("final_subscription_sender_thread_id")?,
+            )?;
+            let message_id = row.try_get("id")?;
+            let receiver_thread_id =
+                ThreadId::try_from(row.try_get::<String, _>("receiver_thread_id")?)?;
+            let acceptance_sequence = row.try_get("acceptance_sequence")?;
+            let receiver_lifecycle_epoch =
+                row.try_get("final_subscription_receiver_lifecycle_epoch")?;
+            let sender_lifecycle_epoch =
+                row.try_get("final_subscription_sender_lifecycle_epoch")?;
+            if receiver_lifecycle_epoch < 0 || sender_lifecycle_epoch < 0 {
+                anyhow::bail!("invalid stored mailbox final subscription authority epoch");
+            }
+            match (state, bound_turn_id.as_ref()) {
+                (MailboxFinalSubscriptionState::Pending, None)
+                | (MailboxFinalSubscriptionState::Bound, Some(_))
+                | (MailboxFinalSubscriptionState::Delivered, Some(_))
+                | (MailboxFinalSubscriptionState::Superseded, _)
+                | (MailboxFinalSubscriptionState::Rejected, _) => {}
+                _ => anyhow::bail!("invalid stored mailbox final subscription turn binding"),
+            }
+            Ok(MailboxFinalSubscription {
+                message_id,
+                receiver_thread_id,
+                sender_thread_id,
+                acceptance_sequence,
+                state,
+                bound_turn_id,
+                receiver_lifecycle_epoch,
+                sender_lifecycle_epoch,
+            })
+        })
+        .transpose()?;
     Ok(MailboxMessage {
         id: row.try_get("id")?,
         receiver_thread_id: ThreadId::try_from(row.try_get::<String, _>("receiver_thread_id")?)?,
@@ -87,6 +197,7 @@ fn message_from_row(row: &SqliteRow) -> anyhow::Result<MailboxMessage> {
         acceptance_sequence: row.try_get("acceptance_sequence")?,
         state,
         rejection_reason: row.try_get("rejection_reason")?,
+        final_subscription,
     })
 }
 
@@ -95,9 +206,14 @@ async fn read_message(
     receiver_thread_id: ThreadId,
     message_id: &str,
 ) -> anyhow::Result<MailboxMessage> {
-    let row = sqlx::query("SELECT * FROM mailbox_messages WHERE receiver_thread_id = ? AND id = ?")
-        .bind(receiver_thread_id.to_string())
-        .bind(message_id)
+    let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+    query
+        .push(" WHERE m.receiver_thread_id = ")
+        .push_bind(receiver_thread_id.to_string())
+        .push(" AND m.id = ")
+        .push_bind(message_id);
+    let row = query
+        .build()
         .fetch_optional(connection)
         .await?
         .ok_or_else(|| invalid_request("mailbox message does not exist for this receiver"))?;
@@ -105,53 +221,6 @@ async fn read_message(
 }
 
 impl SqliteQueueStore {
-    /// Accepts immutable content, idempotently scoped by receiver and submission key.
-    ///
-    /// Sender keys are canonical identities supplied by the caller, not grants. Payloads are
-    /// opaque JSON strings compared byte-for-byte; no size limit or normalization is applied.
-    pub async fn accept_mail(
-        &self,
-        receiver_thread_id: ThreadId,
-        submission_key: &str,
-        sender_key: &str,
-        payload_json: &str,
-    ) -> anyhow::Result<MailboxMessage> {
-        if submission_key.is_empty() || sender_key.is_empty() {
-            return Err(invalid_request(
-                "mailbox submission and sender keys must be nonempty",
-            ));
-        }
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        sqlx::query(
-            "INSERT INTO mailbox_messages
-             (id, receiver_thread_id, submission_key, sender_key, payload_json)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT (receiver_thread_id, submission_key) DO NOTHING",
-        )
-        .bind(Uuid::now_v7().to_string())
-        .bind(receiver_thread_id.to_string())
-        .bind(submission_key)
-        .bind(sender_key)
-        .bind(payload_json)
-        .execute(&mut *tx)
-        .await?;
-        let row = sqlx::query(
-            "SELECT * FROM mailbox_messages WHERE receiver_thread_id = ? AND submission_key = ?",
-        )
-        .bind(receiver_thread_id.to_string())
-        .bind(submission_key)
-        .fetch_one(&mut *tx)
-        .await?;
-        let message = message_from_row(&row)?;
-        if message.sender_key != sender_key || message.payload_json != payload_json {
-            return Err(invalid_request(
-                "mailbox submission key already has different content",
-            ));
-        }
-        tx.commit().await?;
-        Ok(message)
-    }
-
     /// Claims pending matching messages in one write-serialized transaction.
     ///
     /// Retrying an invocation returns its original members and delivery IDs, even when empty.
@@ -168,12 +237,15 @@ impl SqliteQueueStore {
             ));
         }
         let mut selection = selection.clone();
-        if let MailboxSelection::Senders(senders) = &mut selection {
-            if senders.iter().any(String::is_empty) {
-                return Err(invalid_request("mailbox sender keys must be nonempty"));
+        match &mut selection {
+            MailboxSelection::All => {}
+            MailboxSelection::Senders(senders) => {
+                if senders.iter().any(String::is_empty) {
+                    return Err(invalid_request("mailbox sender keys must be nonempty"));
+                }
+                senders.sort();
+                senders.dedup();
             }
-            senders.sort();
-            senders.dedup();
         }
         let selection_json = serde_json::to_string(&selection)?;
         let receiver = invocation.receiver_thread_id.to_string();
@@ -288,13 +360,20 @@ impl SqliteQueueStore {
                 GROUP BY c.receiver_thread_id, c.turn_id, c.tool_call_id
                 HAVING MAX(m.state = 'claimed') = 1
              )
-             SELECT m.*, c.delivery_id, c.turn_id, c.tool_call_id, claims.selection_json
+             SELECT m.*, c.delivery_id, c.turn_id, c.tool_call_id, claims.selection_json,
+                    s.sender_thread_id AS final_subscription_sender_thread_id,
+                    s.state AS final_subscription_state,
+                    s.bound_turn_id AS final_subscription_bound_turn_id,
+                    s.receiver_lifecycle_epoch AS final_subscription_receiver_lifecycle_epoch,
+                    s.sender_lifecycle_epoch AS final_subscription_sender_lifecycle_epoch
              FROM outstanding o
              JOIN mailbox_claims claims
                USING (receiver_thread_id, turn_id, tool_call_id)
              JOIN mailbox_claim_members c
                USING (receiver_thread_id, turn_id, tool_call_id)
              JOIN mailbox_messages m ON m.id = c.message_id
+             LEFT JOIN mailbox_final_subscriptions s
+               ON s.receiver_thread_id = m.receiver_thread_id AND s.message_id = m.id
              ORDER BY o.first_sequence, m.acceptance_sequence",
         )
         .bind(receiver_thread_id.to_string())
@@ -355,14 +434,23 @@ impl SqliteQueueStore {
                 "mailbox acknowledgement does not match a claimed delivery",
             ));
         }
-        let mut message = read_message(&mut tx, invocation.receiver_thread_id, message_id).await?;
+        let message = read_message(&mut tx, invocation.receiver_thread_id, message_id).await?;
         match message.state {
             MailboxMessageState::Claimed => {
                 sqlx::query("UPDATE mailbox_messages SET state = 'consumed' WHERE id = ?")
                     .bind(message_id)
                     .execute(&mut *tx)
                     .await?;
-                message.state = MailboxMessageState::Consumed;
+                sqlx::query(
+                    "UPDATE mailbox_final_subscriptions
+                     SET state = 'bound', bound_turn_id = ?
+                     WHERE receiver_thread_id = ? AND message_id = ? AND state = 'pending'",
+                )
+                .bind(&invocation.turn_id)
+                .bind(invocation.receiver_thread_id.to_string())
+                .bind(message_id)
+                .execute(&mut *tx)
+                .await?;
             }
             MailboxMessageState::Consumed => {}
             MailboxMessageState::Pending | MailboxMessageState::Rejected => {
@@ -371,6 +459,7 @@ impl SqliteQueueStore {
                 ));
             }
         }
+        let message = read_message(&mut tx, invocation.receiver_thread_id, message_id).await?;
         tx.commit().await?;
         Ok(message)
     }
@@ -389,7 +478,7 @@ impl SqliteQueueStore {
             return Err(invalid_request("mailbox rejection reason must be nonempty"));
         }
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let mut message = read_message(&mut tx, receiver_thread_id, message_id).await?;
+        let message = read_message(&mut tx, receiver_thread_id, message_id).await?;
         match message.state {
             MailboxMessageState::Pending | MailboxMessageState::Claimed => {
                 sqlx::query(
@@ -399,8 +488,14 @@ impl SqliteQueueStore {
                 .bind(message_id)
                 .execute(&mut *tx)
                 .await?;
-                message.state = MailboxMessageState::Rejected;
-                message.rejection_reason = Some(reason.to_string());
+                sqlx::query(
+                    "UPDATE mailbox_final_subscriptions SET state = 'rejected'
+                     WHERE receiver_thread_id = ? AND message_id = ? AND state = 'pending'",
+                )
+                .bind(receiver_thread_id.to_string())
+                .bind(message_id)
+                .execute(&mut *tx)
+                .await?;
             }
             MailboxMessageState::Rejected
                 if message.rejection_reason.as_deref() == Some(reason) => {}
@@ -410,6 +505,7 @@ impl SqliteQueueStore {
                 ));
             }
         }
+        let message = read_message(&mut tx, receiver_thread_id, message_id).await?;
         tx.commit().await?;
         Ok(message)
     }
@@ -420,16 +516,19 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         submission_key: &str,
     ) -> anyhow::Result<Option<MailboxMessage>> {
-        sqlx::query(
-            "SELECT * FROM mailbox_messages WHERE receiver_thread_id = ? AND submission_key = ?",
-        )
-        .bind(receiver_thread_id.to_string())
-        .bind(submission_key)
-        .fetch_optional(self.pool.as_ref())
-        .await?
-        .as_ref()
-        .map(message_from_row)
-        .transpose()
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE m.receiver_thread_id = ")
+            .push_bind(receiver_thread_id.to_string())
+            .push(" AND m.submission_key = ")
+            .push_bind(submission_key);
+        query
+            .build()
+            .fetch_optional(self.pool.as_ref())
+            .await?
+            .as_ref()
+            .map(message_from_row)
+            .transpose()
     }
 
     /// Reads an accepted message without claiming it or granting delivery authority.
@@ -438,9 +537,14 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         message_id: &str,
     ) -> anyhow::Result<Option<MailboxMessage>> {
-        sqlx::query("SELECT * FROM mailbox_messages WHERE receiver_thread_id = ? AND id = ?")
-            .bind(receiver_thread_id.to_string())
-            .bind(message_id)
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE m.receiver_thread_id = ")
+            .push_bind(receiver_thread_id.to_string())
+            .push(" AND m.id = ")
+            .push_bind(message_id);
+        query
+            .build()
             .fetch_optional(self.pool.as_ref())
             .await?
             .as_ref()
@@ -467,8 +571,16 @@ async fn read_claim(
         return Ok(None);
     };
     let rows = sqlx::query(
-        "SELECT m.*, c.delivery_id FROM mailbox_claim_members c
+        "SELECT m.*, c.delivery_id,
+                s.sender_thread_id AS final_subscription_sender_thread_id,
+                s.state AS final_subscription_state,
+                s.bound_turn_id AS final_subscription_bound_turn_id,
+                s.receiver_lifecycle_epoch AS final_subscription_receiver_lifecycle_epoch,
+                s.sender_lifecycle_epoch AS final_subscription_sender_lifecycle_epoch
+         FROM mailbox_claim_members c
          JOIN mailbox_messages m ON m.id = c.message_id
+         LEFT JOIN mailbox_final_subscriptions s
+           ON s.receiver_thread_id = m.receiver_thread_id AND s.message_id = m.id
          WHERE c.receiver_thread_id = ? AND c.turn_id = ? AND c.tool_call_id = ?
          ORDER BY m.acceptance_sequence",
     )

@@ -30,6 +30,7 @@ import type { DynamicToolCallStatus } from "./DynamicToolCallStatus";
 import type { FileUpdateChange } from "./FileUpdateChange";
 import type { HookPromptFragment } from "./HookPromptFragment";
 import type { InterAgentMessageSource } from "./InterAgentMessageSource";
+import type { MailboxReadItem } from "./MailboxReadItem";
 import type { McpAppUi } from "./McpAppUi";
 import type { McpToolCallAppContext } from "./McpToolCallAppContext";
 import type { McpToolCallError } from "./McpToolCallError";
@@ -100,7 +101,7 @@ durationMs: number | null, } | { "type": "dynamicToolCall", id: string, namespac
 /**
  * The duration of the dynamic tool call in milliseconds.
  */
-durationMs: number | null, } | { "type": "collabAgentToolCall",
+durationMs: number | null, } | { "type": "mailboxRead" } & MailboxReadItem | { "type": "collabAgentToolCall",
 /**
  * Unique identifier for this collab tool call.
  */

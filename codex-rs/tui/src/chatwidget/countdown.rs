@@ -1,8 +1,8 @@
 //! Advisory wait estimates scoped to the lifecycle that owns the visible status.
 //!
 //! The server may extend its actual wait while paused. This estimate is not a scheduler:
-//! expiry restores the existing elapsed display. A dropped individual poll without a subsequent
-//! notification can retain its estimate until expiry; turn finalization always clears it.
+//! expiry remains at zero until the owning lifecycle clears it. A dropped individual poll without
+//! a subsequent notification can retain that estimate; turn finalization always clears it.
 
 use super::*;
 
@@ -14,7 +14,8 @@ impl ChatWidget {
     ) {
         let turn_id = match &owner {
             StatusCountdownOwner::CollabWait { turn_id, .. }
-            | StatusCountdownOwner::UnifiedExec { turn_id, .. } => turn_id,
+            | StatusCountdownOwner::UnifiedExec { turn_id, .. }
+            | StatusCountdownOwner::UnifiedExecWaitInvocation { turn_id, .. } => turn_id,
         };
         if self
             .turn_lifecycle
