@@ -2,6 +2,10 @@
 
 use codex_protocol::ThreadId;
 use codex_state::MailboxClaimedMessage;
+use codex_state::MailboxFinalSubscription;
+use codex_state::MailboxFinalSubscriptionAuthority;
+use codex_state::MailboxFinalSubscriptionRequest;
+use codex_state::MailboxFinalSubscriptionState;
 use codex_state::MailboxMessage;
 use codex_state::MailboxMessageState;
 use codex_state::MailboxSelection;
@@ -44,6 +48,147 @@ impl InMemoryMailbox {
             .cloned()
             .map(decode_message)
             .transpose()
+    }
+
+    pub(crate) fn lookup_active_final_subscription(
+        &self,
+        receiver: ThreadId,
+        sender: ThreadId,
+    ) -> Option<MailboxFinalSubscription> {
+        self.messages
+            .iter()
+            .filter(|message| message.receiver_thread_id == receiver)
+            .filter_map(|message| message.final_subscription.as_ref())
+            .find(|subscription| {
+                subscription.sender_thread_id == sender
+                    && matches!(
+                        subscription.state,
+                        MailboxFinalSubscriptionState::Pending
+                            | MailboxFinalSubscriptionState::Bound
+                    )
+            })
+            .cloned()
+    }
+
+    pub(crate) fn lookup_final_subscription(
+        &self,
+        receiver: ThreadId,
+        message_id: &str,
+    ) -> Option<MailboxFinalSubscription> {
+        self.messages
+            .iter()
+            .find(|message| message.receiver_thread_id == receiver && message.id == message_id)
+            .and_then(|message| message.final_subscription.clone())
+    }
+
+    pub(crate) fn active_final_subscriptions_for_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<MailboxFinalSubscription> {
+        self.messages
+            .iter()
+            .filter_map(|message| message.final_subscription.as_ref())
+            .filter(|subscription| {
+                (subscription.receiver_thread_id == thread_id
+                    || subscription.sender_thread_id == thread_id)
+                    && matches!(
+                        subscription.state,
+                        MailboxFinalSubscriptionState::Pending
+                            | MailboxFinalSubscriptionState::Bound
+                    )
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn supersede_final_subscription(&mut self, receiver: ThreadId, sender: ThreadId) {
+        for message in &mut self.messages {
+            if message.receiver_thread_id == receiver
+                && let Some(subscription) = message.final_subscription.as_mut()
+                && subscription.sender_thread_id == sender
+                && matches!(
+                    subscription.state,
+                    MailboxFinalSubscriptionState::Pending | MailboxFinalSubscriptionState::Bound
+                )
+            {
+                subscription.state = MailboxFinalSubscriptionState::Superseded;
+            }
+        }
+    }
+
+    pub(crate) fn supersede_final_subscription_message(
+        &mut self,
+        receiver: ThreadId,
+        message_id: &str,
+    ) {
+        if let Some(subscription) = self
+            .messages
+            .iter_mut()
+            .find(|message| message.receiver_thread_id == receiver && message.id == message_id)
+            .and_then(|message| message.final_subscription.as_mut())
+            && matches!(
+                subscription.state,
+                MailboxFinalSubscriptionState::Pending | MailboxFinalSubscriptionState::Bound
+            )
+        {
+            subscription.state = MailboxFinalSubscriptionState::Superseded;
+        }
+    }
+
+    pub(crate) fn supersede_final_subscriptions_for_threads(&mut self, thread_ids: &[ThreadId]) {
+        for thread_id in thread_ids {
+            for message in &mut self.messages {
+                if (message.receiver_thread_id == *thread_id
+                    || message
+                        .final_subscription
+                        .as_ref()
+                        .is_some_and(|subscription| subscription.sender_thread_id == *thread_id))
+                    && let Some(subscription) = message.final_subscription.as_mut()
+                    && matches!(
+                        subscription.state,
+                        MailboxFinalSubscriptionState::Pending
+                            | MailboxFinalSubscriptionState::Bound
+                    )
+                {
+                    subscription.state = MailboxFinalSubscriptionState::Superseded;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn acknowledge_final_subscription_delivery(
+        &mut self,
+        receiver: ThreadId,
+        message_id: &str,
+        turn_id: &str,
+    ) -> ThreadStoreResult<()> {
+        let subscription = self
+            .messages
+            .iter_mut()
+            .find(|message| message.receiver_thread_id == receiver && message.id == message_id)
+            .and_then(|message| message.final_subscription.as_mut())
+            .ok_or_else(|| invalid_request("mailbox final subscription does not exist"))?;
+        match subscription.state {
+            MailboxFinalSubscriptionState::Bound
+                if subscription.bound_turn_id.as_deref() == Some(turn_id) =>
+            {
+                subscription.state = MailboxFinalSubscriptionState::Delivered;
+                Ok(())
+            }
+            MailboxFinalSubscriptionState::Delivered
+                if subscription.bound_turn_id.as_deref() == Some(turn_id) =>
+            {
+                Ok(())
+            }
+            MailboxFinalSubscriptionState::Superseded
+                if subscription.bound_turn_id.as_deref() == Some(turn_id) =>
+            {
+                Ok(())
+            }
+            _ => Err(invalid_request(
+                "mailbox final subscription delivery does not match its bound turn",
+            )),
+        }
     }
 
     pub(crate) fn recover(
@@ -89,6 +234,11 @@ impl InMemoryMailbox {
             MailboxMessageState::Pending | MailboxMessageState::Claimed => {
                 message.state = MailboxMessageState::Rejected;
                 message.rejection_reason = Some(params.reason);
+                if let Some(subscription) = message.final_subscription.as_mut()
+                    && subscription.state == MailboxFinalSubscriptionState::Pending
+                {
+                    subscription.state = MailboxFinalSubscriptionState::Rejected;
+                }
             }
             MailboxMessageState::Rejected
                 if message.rejection_reason.as_deref() == Some(params.reason.as_str()) => {}
@@ -132,6 +282,12 @@ impl InMemoryMailbox {
                     message: "mailbox claim member is missing".to_string(),
                 })?;
             message.state = MailboxMessageState::Consumed;
+            if let Some(subscription) = message.final_subscription.as_mut()
+                && subscription.state == MailboxFinalSubscriptionState::Pending
+            {
+                subscription.state = MailboxFinalSubscriptionState::Bound;
+                subscription.bound_turn_id = Some(params.claim.invocation.turn_id.clone());
+            }
         }
         self.claim(params.claim)
     }
@@ -140,15 +296,60 @@ impl InMemoryMailbox {
         &mut self,
         params: AcceptMailboxInputParams,
     ) -> ThreadStoreResult<StoredMailboxInput> {
+        let authority = (params.final_subscription == MailboxFinalSubscriptionRequest::Wake)
+            .then_some(MailboxFinalSubscriptionAuthority {
+                receiver_lifecycle_epoch: 0,
+                sender_lifecycle_epoch: 0,
+            });
+        self.accept_with_authority(params, authority)
+    }
+
+    pub(crate) fn accept_with_authority(
+        &mut self,
+        params: AcceptMailboxInputParams,
+        authority: Option<MailboxFinalSubscriptionAuthority>,
+    ) -> ThreadStoreResult<StoredMailboxInput> {
         let payload_json = encode_payload(&params)?;
         let sender_key = params.payload.sender().key();
+        let wants_final_subscription =
+            params.final_subscription == MailboxFinalSubscriptionRequest::Wake;
+        let sender_thread_id = match params.final_subscription {
+            MailboxFinalSubscriptionRequest::None => None,
+            MailboxFinalSubscriptionRequest::Wake => match &params.payload {
+                crate::MailboxPayload::Agent { attribution, .. } => {
+                    Some(attribution.sender.thread_id)
+                }
+                crate::MailboxPayload::User { .. } => {
+                    return Err(invalid_request(
+                        "mailbox final subscriptions require a canonical agent sender",
+                    ));
+                }
+            },
+        };
+        let final_subscription_authority = match (params.final_subscription, authority) {
+            (MailboxFinalSubscriptionRequest::None, None) => None,
+            (MailboxFinalSubscriptionRequest::Wake, Some(authority))
+                if authority.receiver_lifecycle_epoch >= 0
+                    && authority.sender_lifecycle_epoch >= 0 =>
+            {
+                Some(authority)
+            }
+            _ => {
+                return Err(invalid_request(
+                    "mailbox final subscriptions require nonnegative endpoint authority epochs",
+                ));
+            }
+        };
         if let Some(existing) = self.messages.iter().find(|message| {
             message.receiver_thread_id == params.receiver_thread_id
                 && message.submission_key == params.submission_key
         }) {
-            if existing.sender_key != sender_key || existing.payload_json != payload_json {
+            if existing.sender_key != sender_key
+                || existing.payload_json != payload_json
+                || existing.final_subscription.is_some() != wants_final_subscription
+            {
                 return Err(invalid_request(
-                    "mailbox submission key already has different content",
+                    "mailbox submission key already has different content or final subscription intent",
                 ));
             }
             return decode_message(existing.clone());
@@ -159,17 +360,49 @@ impl InMemoryMailbox {
             .ok_or_else(|| ThreadStoreError::Internal {
                 message: "mailbox acceptance sequence exhausted".to_string(),
             })?;
+        let id = ThreadId::new().to_string();
+        let final_subscription =
+            sender_thread_id.map(|sender_thread_id| MailboxFinalSubscription {
+                message_id: id.clone(),
+                receiver_thread_id: params.receiver_thread_id,
+                sender_thread_id,
+                acceptance_sequence,
+                state: MailboxFinalSubscriptionState::Pending,
+                bound_turn_id: None,
+                receiver_lifecycle_epoch: final_subscription_authority
+                    .map(|authority| authority.receiver_lifecycle_epoch)
+                    .unwrap_or_default(),
+                sender_lifecycle_epoch: final_subscription_authority
+                    .map(|authority| authority.sender_lifecycle_epoch)
+                    .unwrap_or_default(),
+            });
         let message = MailboxMessage {
-            id: ThreadId::new().to_string(),
+            id,
             receiver_thread_id: params.receiver_thread_id,
             submission_key: params.submission_key,
-            sender_key,
+            sender_key: sender_key.clone(),
             payload_json,
             acceptance_sequence,
             state: MailboxMessageState::Pending,
             rejection_reason: None,
+            final_subscription,
         };
         let result = decode_message(message.clone())?;
+        if sender_thread_id.is_some() {
+            for previous in &mut self.messages {
+                if previous.receiver_thread_id == params.receiver_thread_id
+                    && previous.sender_key == sender_key
+                    && let Some(subscription) = previous.final_subscription.as_mut()
+                    && matches!(
+                        subscription.state,
+                        MailboxFinalSubscriptionState::Pending
+                            | MailboxFinalSubscriptionState::Bound
+                    )
+                {
+                    subscription.state = MailboxFinalSubscriptionState::Superseded;
+                }
+            }
+        }
         self.messages.push(message);
         Ok(result)
     }

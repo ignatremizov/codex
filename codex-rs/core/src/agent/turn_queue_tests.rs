@@ -26,7 +26,6 @@ fn queued_turn(
         ),
         task_preview: None,
         authored_selector: Some("2".to_string()),
-        target_message_wake: None,
     }
 }
 

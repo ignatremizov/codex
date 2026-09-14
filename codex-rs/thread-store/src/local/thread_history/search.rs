@@ -442,6 +442,7 @@ fn searchable_text(item: &ThreadItemPayload) -> Option<Cow<'_, str>> {
         | ThreadItemPayload::WebSearch(_)
         | ThreadItemPayload::ImageView { .. }
         | ThreadItemPayload::Sleep(_)
+        | ThreadItemPayload::MailboxRead(_)
         | ThreadItemPayload::ImageGeneration(_)
         | ThreadItemPayload::EnteredReviewMode { .. }
         | ThreadItemPayload::ExitedReviewMode { .. }

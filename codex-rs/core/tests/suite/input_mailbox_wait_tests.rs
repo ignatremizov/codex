@@ -41,6 +41,7 @@ async fn direct_wait_selects_foreign_mail_without_observing_status_or_consuming_
                     sender_turn_id: "foreign-turn".to_string(),
                 }),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     test.thread_store
@@ -54,6 +55,7 @@ async fn direct_wait_selects_foreign_mail_without_observing_status_or_consuming_
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let mock = mount_sse_sequence(

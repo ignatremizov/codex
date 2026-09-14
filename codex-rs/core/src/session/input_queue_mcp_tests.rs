@@ -210,3 +210,62 @@ async fn queued_passive_injected_mail_does_not_become_a_followup_trigger() {
     );
     assert!(!queue.has_queued_turn_trigger().await);
 }
+
+#[test_case::test_case(false; "human_prompt")]
+#[test_case::test_case(true; "attributed_prompt")]
+#[tokio::test]
+async fn prompt_wait_generation_preserves_deferred_mail_and_never_consumes_input(agent: bool) {
+    let queue = InputQueue::new();
+    let state = Mutex::new(TurnState::default());
+    state
+        .lock()
+        .await
+        .set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
+    let (mut prompt_activity, pending) = queue.subscribe_steer_activity(Some(&state)).await;
+    assert!(!pending);
+    let mail = response_injection(InputQueueActivity::Mailbox);
+    queue
+        .extend_pending_input_and_notify_for_turn_state(&state, vec![mail.clone()])
+        .await;
+    assert!(matches!(prompt_activity.has_changed(), Ok(false)));
+    assert!(
+        !state
+            .lock()
+            .await
+            .accepts_mailbox_delivery_for_current_turn()
+    );
+    let content = vec![UserInput::Text {
+        text: "release the exact wait".into(),
+        text_elements: Vec::new(),
+    }];
+    let prompt = if agent {
+        TurnInput::AgentInput {
+            content,
+            presentation: AgentInputPresentation::Attributed("receiver-bound task".into()),
+            metadata: Default::default(),
+        }
+    } else {
+        TurnInput::UserInput {
+            content,
+            client_id: Some("wait-input".into()),
+            metadata: Default::default(),
+        }
+    };
+    queue
+        .extend_pending_input_and_notify_for_turn_state(&state, vec![prompt.clone()])
+        .await;
+    assert!(matches!(prompt_activity.has_changed(), Ok(true)));
+    assert_eq!(*prompt_activity.borrow_and_update(), 1);
+    assert!(
+        state
+            .lock()
+            .await
+            .accepts_mailbox_delivery_for_current_turn()
+    );
+    assert!(queue.subscribe_steer_activity(Some(&state)).await.1);
+    assert_eq!(
+        queue.take_pending_input_for_turn_state(&state).await,
+        vec![mail, prompt]
+    );
+    assert!(!queue.subscribe_steer_activity(Some(&state)).await.1);
+}

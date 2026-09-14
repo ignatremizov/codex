@@ -8,7 +8,7 @@ use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-async fn runtime() -> Arc<StateRuntime> {
+pub(super) async fn runtime() -> Arc<StateRuntime> {
     let home = unique_temp_dir();
     StateRuntime::init(
         crate::SqliteConfig::new_for_testing(home.as_path().abs()),
@@ -18,7 +18,7 @@ async fn runtime() -> Arc<StateRuntime> {
     .unwrap()
 }
 
-fn invocation(receiver_thread_id: ThreadId, tool_call_id: &str) -> MailboxInvocation {
+pub(super) fn invocation(receiver_thread_id: ThreadId, tool_call_id: &str) -> MailboxInvocation {
     MailboxInvocation {
         receiver_thread_id,
         turn_id: "receiver-turn".to_string(),
@@ -31,7 +31,7 @@ fn claimed(mut message: MailboxMessage) -> MailboxMessage {
     message
 }
 
-fn assert_invalid_input(error: anyhow::Error) {
+pub(super) fn assert_invalid_input(error: anyhow::Error) {
     assert_eq!(
         error.downcast_ref::<std::io::Error>().unwrap().kind(),
         std::io::ErrorKind::InvalidInput

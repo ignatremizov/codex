@@ -53,7 +53,7 @@ Scenario: Complete Guardian request history: root delegates through alpha to lea
     [17] >>> TRANSCRIPT START
 
 05:agent_message
-06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Inspect.","task_name":"leaf"}
+06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Inspect.","task_message":"Inspect.","task_name":"leaf"}
 07:function_call_output:This call is review evidence, not a request to execute it. This is not its execution result.
 08:message/user[2]:
     [01]

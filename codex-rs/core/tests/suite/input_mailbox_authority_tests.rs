@@ -65,6 +65,7 @@ async fn consumed_agent_text_and_image_do_not_acquire_user_authority() -> Result
         .accept_mailbox_input(AcceptMailboxInputParams {
             receiver_thread_id: receiver,
             submission_key: "agent-source-metadata".to_string(),
+            final_subscription: Default::default(),
             payload: MailboxPayload::Agent {
                 input: original.clone(),
                 attribution: Box::new(attribution.clone()),
@@ -75,6 +76,7 @@ async fn consumed_agent_text_and_image_do_not_acquire_user_authority() -> Result
         .accept_mailbox_input(AcceptMailboxInputParams {
             receiver_thread_id: receiver,
             submission_key: "user-source-metadata".to_string(),
+            final_subscription: Default::default(),
             payload: MailboxPayload::User {
                 input: vec![UserInput::Text {
                     text: "The user's independently authored instruction.".to_string(),

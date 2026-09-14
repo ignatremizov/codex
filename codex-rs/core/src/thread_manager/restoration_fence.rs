@@ -11,6 +11,7 @@ use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 pub(crate) struct RestorationFence {
     pub(crate) runtime: SessionPresentationId,
     pub(crate) parent_thread_id: ThreadId,
+    pub(crate) owner_session_id: Option<codex_protocol::SessionId>,
     pub(crate) previous_edge: ThreadSpawnEdgeStatus,
     pub(crate) reason: String,
 }
@@ -41,37 +42,40 @@ impl ThreadManagerState {
         Ok(())
     }
 
-    /// Called only by explicit close while holding the shared child lifecycle gate.
+    /// Called by explicit close under child lifecycle and messaging admission gates.
     pub(crate) async fn close_fenced_restoration_edge(
         &self,
         fence: &RestorationFence,
-    ) -> CodexResult<()> {
+        revoked_thread_ids: &[ThreadId],
+    ) -> CodexResult<bool> {
+        if let Ok(thread) = self.get_thread(fence.runtime.thread_id).await
+            && thread.session.presentation_id() != fence.runtime
+        {
+            return Err(CodexErr::InvalidRequest(
+                "quarantined restoration runtime was replaced".to_string(),
+            ));
+        }
         let graph = self.agent_graph_store().ok_or_else(|| {
             CodexErr::InvalidRequest(
                 "cannot close a quarantined restoration without its captured agent graph"
                     .to_string(),
             )
         })?;
+        // Parent and owner comparison must precede mutation in the same graph transaction.
+        // A stale fence must never close an edge that a later adoption has reparented.
         graph
-            .set_thread_spawn_edge_status(fence.runtime.thread_id, ThreadSpawnEdgeStatus::Closed)
+            .close_thread_spawn_edge_if_current(
+                codex_agent_graph_store::ThreadSpawnEdgeAuthority {
+                    thread_id: fence.runtime.thread_id,
+                    parent_thread_id: fence.parent_thread_id,
+                    owner_session_id: fence.owner_session_id,
+                },
+                revoked_thread_ids.to_vec(),
+            )
             .await
             .map_err(|error| {
                 CodexErr::Fatal(format!("quarantined restoration close failed: {error}"))
-            })?;
-        let closed = graph
-            .list_thread_spawn_children(fence.parent_thread_id, Some(ThreadSpawnEdgeStatus::Closed))
-            .await
-            .map_err(|error| {
-                CodexErr::Fatal(format!(
-                    "quarantined restoration close verification failed: {error}"
-                ))
-            })?;
-        if !closed.contains(&fence.runtime.thread_id) {
-            return Err(CodexErr::InvalidRequest(
-                "quarantined restoration's captured spawn edge was not closed".to_string(),
-            ));
-        }
-        Ok(())
+            })
     }
 
     /// Clear only the attempt whose acknowledged close and exact cleanup just completed.

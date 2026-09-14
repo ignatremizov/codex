@@ -48,7 +48,7 @@ Selection alone does not acknowledge consumption. Tie consumption acknowledgemen
 
 Deliver payloads once through the appropriate structured user/agent input representation, preserving tool-call/result ordering. The tool result reports delivery metadata/status rather than duplicating payloads already inserted as structured input. In particular, user mail must not exist solely as quoted JSON inside a tool result.
 
-Canonical `check_mail` results and tool hooks record acceptance as `{"status":"delivery_requested","from":...}`, with a canonical sender UUID, `"user"`, or `null` for all senders. Disposable model requests project a genuine call/result pair against its existing fixed claim. Successful terminal batches report `{"status":"ok"}`; actual messages appear as structured input, so the receipt does not repeat the sender or delivered count. An empty fixed batch reports `{"status":"empty"}`. A wholly rejected batch reports `{"status":"rejected","rejected_count":N}`, and a mixed consumed/rejected batch reports `{"status":"ok","rejected_count":N}`. Rejection counts are positive and cover the entire fixed invocation, including earlier attempts, not later arrivals. Existing rejection warnings/details remain intact; `ok` with rejections does not mean every selected message was delivered.
+Canonical `check_mail` results and tool hooks record acceptance as `{"status":"delivery_requested","from":...}`, with a canonical sender UUID, `"user"`, or `null` for all senders. Disposable model requests project a genuine call/result pair against its existing fixed claim. A terminal batch with consumed messages keeps the tool-result pairing but omits the redundant success status from its model-visible textual result; actual messages appear as structured input, so the result does not repeat the sender or delivered count. A mixed consumed/rejected batch reports `{"rejected_count":N}` to retain its partial-failure information. An empty fixed batch reports `{"status":"empty"}`. A wholly rejected batch reports `{"status":"rejected","rejected_count":N}`. Rejection counts are positive and cover the entire fixed invocation, including earlier attempts, not later arrivals. Existing rejection warnings/details remain intact; consumed messages with rejections do not mean every selected message was delivered.
 
 Acceptance-only model-visible `from` uses the receiving request's advertised short ref when available, otherwise the canonical UUID; `"user"` and `null` remain unchanged. Projection never creates a claim, grants authority, acknowledges consumption, or rewrites canonical history. Missing claims remain unchanged and nonterminal claims remain `delivery_requested`, never false success; unknown, error, and hook-rewritten result shapes are preserved. Real claim-read errors stop request preparation. The result stays before structured payloads. Normal sampling, local compaction, and foreground/background remote-V2 disposable requests use this projection. `wait_agent` results are unaffected.
 
@@ -66,7 +66,7 @@ Direct calls add `return_reason` (`mail`, `completion`, `timeout`, or `recovery`
 
 Receiving mailbox content through a wait does not create a commentary/final subscription or consume unrelated queued/steer input. Existing completion-delivery arbitration must continue to prevent duplicate final responses independently of mailbox consumption.
 
-Resolve mailbox sender selectors independently of lifecycle-controlled target resolution. Legitimately pending foreign-root mail can be selected without adoption; do not relax a shared lifecycle resolver to achieve this. Revalidate the applicable mail permission before consumption. Access to foreign execution status or final-response observation requires separately authorized observation, not merely a mail grant; finalize how a mail-only target is represented in the wait result without leaking unrelated output.
+Resolve mailbox sender selectors independently of lifecycle-controlled target resolution. Selection reads receiver-owned accepted mail and does not adopt or load its sender. Current new agent submissions require same-root ownership. Access to execution status or final-response observation still requires the existing lifecycle/observation boundary; selecting an accepted message does not grant that access.
 
 ## Inventory wake
 
@@ -74,7 +74,7 @@ When newly pending mail exists, notify the receiver after its current turn ends,
 
 ```text
 Pending mail snapshot (not consumed):
-{"receiver":"1","pending_senders":[{"from":"2","count":3},{"from":"4","count":1},{"from":"user","count":1}]}
+{"pending":[{"from":"2","count":3},{"from":"4","count":1},{"from":"user","count":1}]}
 check_mail: {"from":"<ref>"} or {} for all.
 ```
 
@@ -82,7 +82,7 @@ Payloads remain outside model context until selected. This supersedes the earlie
 
 Fresh inventory context is capped at 2,048 bytes. It lists at most eight sender groups; larger snapshots use a versioned projection with an omitted-sender count and a SHA-256 commitment to the complete immutable snapshot. The store keeps every sender and the original frontier, and unfiltered `check_mail` still selects all pending mail. This is a presentation bound, not a payload, claim, or notification-watermark limit. Existing full inventory records remain recognized verbatim during recovery; they are neither rewritten nor published again under a different representation.
 
-Model requests use only short refs advertised by that request's captured receiver-scoped identity mapping, including its descriptive nicknames. Foreign agents and identities omitted from that mapping use their canonical UUID instead; stored sender refs or nicknames are not selector authority. `receiver` follows the same ref-or-UUID rule, and user mail uses `"from":"user"`. Counts describe the frozen inventory snapshot, not a guarantee of the next `check_mail` result: later arrivals can change what that call consumes.
+Model requests use only short refs advertised by that request's captured receiver-scoped identity mapping, including its descriptive nicknames. Foreign agents and identities omitted from that mapping use their canonical UUID instead; stored sender refs or nicknames are not selector authority. User mail uses `"from":"user"`. Counts describe the frozen inventory snapshot, not a guarantee of the next `check_mail` result: later arrivals can change what that call consumes.
 
 The compact inventory is a disposable request projection, not a new durable format. It has a 768-token approximate byte budget; oversized inventories retain a stable sender prefix with an explicit prose notice that additional senders are omitted and unfiltered `check_mail` still includes their mail. No omission counters or other model JSON metadata are added. Canonical inventory records retain notification identity and frontier; bounded version-2 records retain a sender prefix and a commitment to the full snapshot. The request projection preserves any canonical omission and never invents omitted counts or senders. Legacy full records remain recognizable for projection and recovery. Only exact trusted canonical inventory artifacts are projected; ordinary marker-looking JSON is not rewritten. Sampling, local compaction, and foreground/background remote-V2 requests use this projection. Projection neither acknowledges mail nor changes unchanged-pending idle/restart suppression.
 
@@ -102,9 +102,9 @@ TUI inspection should expose pending counts and senders without consuming mail f
 
 Do not reject an outgoing `send_input` merely because the caller has unread mail, and do not consume mail as a side effect of sending. A compact pending-mail advisory in an ordinary tool result may be useful, but is optional and must not replace successful send semantics.
 
-Mailbox submission creates no automatic commentary/final subscription: there is no specific target turn to bind yet. The receiver replies explicitly through `send_input` when appropriate. Main can independently establish normal `c/f` subscriptions for subsequent task turns.
+`z`-only mailbox submission creates no automatic commentary/final subscription because no receiver turn is selected at acceptance. The receiver replies explicitly through `send_input` when appropriate. Main can independently establish normal `c/f` subscriptions for subsequent task turns.
 
-Normalize order-independent flags before checking mailbox compatibility: cancel `f` and `x` pairwise, then reject `z` combined with `c`, `m`, `q`, or a remaining effective wake. Thus `z`, `zx`, `zfx`, and `zfxx` select the same mailbox admission, while `zffx` is invalid. Extra `x` has no response-subscription meaning for mail. Repeated `z` is idempotent. Never silently turn mail into steer or queued-turn input.
+Normalize order-independent flags before checking mailbox compatibility: cancel `f` and `x` pairwise, then reject `z` combined with `c` or `q`. A remaining effective `f` with `z` (`zf` or `fz`) requests a final-response subscription tied to the exact receiver turn that consumes that accepted message or first receives its idle inventory. A busy turn without consumption is not an opportunity. Thus `z`, `zx`, `zfx`, and `zfxx` select ordinary mailbox admission, while `zf`, `fz`, and `zffx` select mailbox admission with a conditional final subscription. Repeated `z` is idempotent. Never silently turn mail into steer or queued-turn input.
 
 Initially only payload-bearing `send_input` opts into the mailbox parser surface. Spawn, resume, close, and user-shell flags retain their existing alphabet; sharing the parser does not enable mailbox semantics on those operations. User composer mailbox admission will use its own explicit input mode. Preserve all existing non-`z` normalization.
 
@@ -120,23 +120,21 @@ Inventory acknowledgement uses a separate accepted-message watermark and stable 
 
 ## Authority and visibility
 
-Apply existing directed/subtree send permissions at submission and before the first canonical insertion of a mailbox member's model input. Revocation before that insertion rejects delivery, with an auditable rejection and non-waking sender warning, consistent with queued-input rejection. User mail is not governed by child-to-parent messaging grants.
+New agent submissions validate the exact sender runtime and durable same-root receiver identity, without directed/subtree grants. Recipient lifecycle ownership serializes acceptance with close and adoption, including unloaded recipients. User mail retains user authorship. A `zf` request records a conditional exact-turn final subscription, not additional lifecycle authority.
 
-The first canonical context write, serialized with permission changes under the existing messaging transaction, is the admission boundary. If context was committed but its typed presentation or acknowledgement was interrupted, recovery finishes that previously admitted delivery without requiring a new grant. Reuse the exact receiver-owned, claim-bound prepared envelope and append only missing artifacts; do not re-render attachments or insert the context twice. A subsequent disable remains effective for new input and is never undone by recovery. A presentation without canonical context does not establish admission and still requires current permission before writing context. Terminal consumed or rejected members are not reintroduced after rollback or compaction. This uses the trusted canonical writer and reserved delivery identities, not payload text or a new approval ledger.
+Consumption preserves the fixed claim, receiver-owned canonical publication boundary, and idempotent recovery. It no longer consults retired send settings. If context was committed but typed presentation or acknowledgement was interrupted, recovery finishes that delivery using the exact prepared envelope and reserved identity. Do not re-render attachments, insert context twice, or treat presentation alone as canonical admission. Terminal consumed and rejected members remain terminal after rollback, compaction, or restart; removing permission checks does not revive them.
 
-Runtime permission state, user authorship, canonical sender identity, and payload text remain separate. Reading mailbox history or an inventory does not grant send authority. Mail itself does not create lifecycle ownership, response subscriptions, or permission to resume/adopt another thread.
+User authorship, canonical sender identity, and payload text remain separate. Mail itself does not create lifecycle ownership or permission to resume/adopt another thread. Only an effective `f` paired with `z` requests the conditional final subscription described above.
 
-Restart must preserve configured messaging state rather than require routine reauthorization. Persist user-controlled send permissions as authoritative settings, bound to canonical thread identities, and restore those settings on resume. Do not derive permission from accepted mail, transcript text, or historical audit events. Restore permission separately from transient turn-specific commentary/final subscriptions and consumed wake reservations.
-
-Pending mail remains pending across restart; restart alone neither rejects it nor grants additional access. Explicit permission changes still govern consumption and produce auditable rejection where specified. Apply explicit lifecycle rules to close, delete, and adoption, retaining rejection audit information when a sender is unloaded rather than relying only on a live warning.
+Pending mail remains pending across restart. Legacy stored send settings remain readable but inert; resume does not restore permission gates or spent wake allowances. Conditional-final recovery still validates stored subscription identity and current lifecycle epochs. Close, delete, and adoption retain their existing mailbox lifecycle rules.
 
 Accepted, pending, consumed, and rejected states should be distinguishable in presentation. Do not label merely accepted mail as already visible to the receiver model. Preserve full payloads in durable records; configured TUI previews remain presentation-only.
 
-Agent mailbox-send tool rows use explicit structured mailbox metadata and display “Saved to mailbox for …” on successful acceptance, with distinct failed/interrupted wording. They do not show commentary/final subscription labels: mailbox acceptance creates no such subscription and does not establish consumption. Legacy tool-call records without this metadata retain their existing presentation. Incoming agent messages use the standard bullet and hanging indentation; nickname colors are deterministic and shared with lifecycle headers, whose task paths come from known agent metadata.
+Agent mailbox-send tool rows use explicit structured mailbox metadata and display “Saved to mailbox for …” on successful acceptance, with distinct failed/interrupted wording. They do not show commentary/final subscription labels; a `zf` subscription remains an internal conditional watcher and does not establish consumption. Legacy tool-call records without this metadata retain their existing presentation. Incoming agent messages use the standard bullet and hanging indentation; nickname colors are deterministic and shared with lifecycle headers, whose task paths come from known agent metadata.
 
-## Shared app-server and cross-root communication
+## Proposed cross-root extension (not implemented)
 
-Use the existing thread store and a shared host app-server rather than introducing a separate filesystem mailbox service. The thread store owns durable mail and consumption state. The app-server hosts and exposes the control plane; model tools and client requests share the existing Core/runtime recipient resolution, permission transactions, session queues, input admission, and inventory scheduling. Do not duplicate enforcement in an app-server-only path or relocate the whole runtime into app-server. `/agents` provides discovery and user communication controls. The agent graph continues to represent orchestration ownership, not every communication relationship.
+The current implementation accepts only same-owned-root agent mail. A future cross-root extension would need a separate explicit access contract; always-on same-tree sends do not authorize it. Reuse the existing thread store, runtime ownership, input admission, and inventory scheduling rather than adding an app-server-only enforcement path or another filesystem mailbox service. The ideas below are proposals, not current APIs.
 
 Extend the same `send_input` interface across roots. Immediate and queued delivery retain their existing semantics; `w:z` deposits mailbox input. Cross-root communication requires an explicit user grant, independent of response subscriptions and graph membership. Sending does not adopt the recipient or grant interrupt, close, or other lifecycle authority. Pending mail for an unloaded thread remains durable until it is loaded.
 
@@ -172,20 +170,20 @@ The September 8 read-only audit is available locally at `/tmp/codex-name-conflic
 - Active and idle recipients, new arrivals during consumption, empty checks, and unselected mail retention.
 - Unchanged unread mail does not cause a notification loop; already-consumed mail does not cause an obsolete wake.
 - User mail preserves text, attachments, authorship, and styling; agent mail preserves trusted attribution.
-- Normal sends, steer, queue, and existing `c/f/m/x` subscriptions retain their behavior and do not implicitly drain mail.
+- Normal sends, steer, queue, and existing `c/f/x` subscriptions retain their behavior and do not implicitly drain mail.
 - `wait_agent` consumes only targeted senders' mail addressed to the caller, returns on pending/new mail without claiming completion, and preserves existing completion/timeout behavior.
 - Concurrent `check_mail` and targeted waits share consumption acknowledgement, preventing duplicate injection while leaving unrelated sender/user mail pending.
-- Foreign sender selection consumes authorized incoming mail without granting lifecycle control or exposing unrelated execution/final-response data.
+- Selection consumes receiver-owned accepted mail without granting lifecycle control or exposing unrelated execution/final-response data.
 - Ordinary queued work precedes inventory-only wakes; consumption during that work cancels obsolete inventory eligibility.
 - Interrupted/retried consumption and inventory delivery recover at their separate durable acknowledgement boundaries without losing mail or creating repeat wakes.
-- Permission revocation before consumption rejects delivery visibly without an unintended wake.
-- Durable pending/consumed state survives supported cold resume and history reconstruction without silently restoring messaging grants.
+- Accepted pending input remains consumable without send grants; previously rejected or consumed input remains terminal.
+- Durable pending/consumed state survives supported cold resume and history reconstruction without restoring retired messaging controls.
 - Rollback, paginated revert, compaction, and fork paths preserve auditability without replaying consumed mail or copying a source thread's live inbox into another thread.
-- Cross-root resume defaults to loading with original ownership/settings; explicit adoption alone transfers ownership and applies task-path remapping.
-- Cross-root communication grants do not imply lifecycle control, and loading a recipient does not grant permission to send.
+- Proposed cross-root coverage, if implemented: resume defaults to loading with original ownership/settings; explicit adoption alone transfers ownership and applies task-path remapping.
+- Current cross-root mailbox submissions remain rejected; loading a recipient alone does not transfer it into the sender’s owned tree.
 - Concurrent global-name claims have one atomic winner; displaced roots become nameless with visible notification. Resume/activity cannot reclaim a name.
 - Renaming after input acceptance cannot redirect delivery or transfer UUID-bound grants; global selectors do not collide with local refs/task paths.
 - Duplicate-name migration keeps the most recent name assignment and clears older owners across authoritative and compatibility projections.
 - Full user forks allocate unique `-N` names atomically within or across homes, preserve the source name/home, and leave unnamed sources unnamed.
 
-Before implementation, finalize the concrete persistence/admission acknowledgement boundary and retry identity, structured delivery/result shape, pending-mail treatment when grants disappear, inventory acknowledgement recovery, normalized `z` compatibility and eligible operations, cross-root load/status authorization, and global-name comparison plus legacy timestamp fallback rules. These decisions must fit existing thread-store and control-plane ownership rather than infer authority from historical messages.
+Before implementing the cross-root/global-name proposals, finalize access and load/status authorization, global-name comparison, migration, and legacy timestamp fallback rules. Do not infer authority from historical messages or reactivate the retired same-tree permission gates.

@@ -523,6 +523,8 @@ fn exact_projection_preserves_only_adjacent_committed_observations() {
                 .into(),
             );
             let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+                mailbox_final_subscription_message_id: None,
+                mailbox_final_subscription_suppressed_message_id: None,
                 reply_route_enabled: None,
                 reply_route_context_installed: false,
                 observer_thread_id: ThreadId::new(),
@@ -626,6 +628,8 @@ fn exact_projection_checks_promoted_task_proofs_and_conflicting_checkpoints() {
         let promoted = AgentResponsePromotedTaskContext::from_response_item(&task.item)
             .expect("task DTO shape");
         let observation = RolloutItem::AgentResponseObservation(AgentResponseObservation {
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
             reply_route_enabled: None,
             reply_route_context_installed: false,
             observer_thread_id: ThreadId::new(),

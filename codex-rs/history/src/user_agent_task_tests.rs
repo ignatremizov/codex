@@ -23,6 +23,8 @@ fn task() -> ResponseItemEnvelope {
 
 fn snapshot(item: &ResponseItemEnvelope) -> RolloutItem {
     RolloutItem::AgentResponseObservation(AgentResponseObservation {
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
         observer_thread_id: ThreadId::new(),
         target_thread_id: ThreadId::new(),
         target_turn_id: Some("actual-turn".to_string()),

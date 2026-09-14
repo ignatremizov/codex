@@ -55,6 +55,7 @@ impl LocalAgentControl {
                 turn_id: commentary.turn_id.clone(),
                 response_item_id: commentary.delivery.response_item_id.clone(),
                 kind: ResponseObservationDeliveryKind::Commentary,
+                mailbox_final_subscription_message_id: None,
                 model_visibility:
                     codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
             };

@@ -81,6 +81,21 @@ impl AgentGraphStore for FaultingGraphStore {
         self.inner.set_thread_spawn_edge_status(child, status)
     }
 
+    fn set_thread_spawn_edge_status_with_authority_revocations(
+        &self,
+        child: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        self.close_attempted.cancel();
+        self.inner
+            .set_thread_spawn_edge_status_with_authority_revocations(
+                child,
+                status,
+                revoked_thread_ids,
+            )
+    }
+
     fn list_thread_spawn_children(
         &self,
         parent: ThreadId,

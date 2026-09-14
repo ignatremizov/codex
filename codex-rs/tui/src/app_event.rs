@@ -14,6 +14,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use crate::app::AgentControlPanePreview;
 use crate::chatwidget::agent_command::AgentSelector;
 use crate::inline_visualization::InlineVisualizationContext;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
@@ -39,6 +40,7 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadItemsListResponse;
+use codex_app_server_protocol::ThreadMailboxReadResponse;
 use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
 use codex_message_history::HistoryBatchCursor;
@@ -463,6 +465,19 @@ pub(crate) enum AppEvent {
         primary_thread_id: ThreadId,
         request_id: Uuid,
         result: Result<AgentPickerRefresh, String>,
+    },
+    /// Read pending mailbox counts for the selected agent without loading or consuming mail.
+    LoadAgentMailboxInventory {
+        receiver_thread_id: ThreadId,
+        request_id: Uuid,
+        preview: AgentControlPanePreview,
+    },
+    /// Apply a selected agent's mailbox snapshot only if its preview selection is still current.
+    AgentMailboxInventoryLoaded {
+        receiver_thread_id: ThreadId,
+        request_id: Uuid,
+        preview: AgentControlPanePreview,
+        result: Result<ThreadMailboxReadResponse, String>,
     },
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),

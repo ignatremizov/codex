@@ -63,6 +63,7 @@ async fn recovery_requires_materialized_and_complete_canonical_history() {
                 input: Vec::new(),
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await
         .unwrap();
@@ -158,6 +159,7 @@ async fn revert_reconciles_only_proven_delivery_and_preserves_ambiguous_recovery
                     input: input.clone(),
                     client_id: Some("client".to_string()),
                 },
+                final_subscription: Default::default(),
             })
             .await
             .unwrap();

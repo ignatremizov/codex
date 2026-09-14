@@ -565,6 +565,7 @@ impl TurnToolCounts {
             | ThreadItemPayload::UserAgentControl { .. }
             | ThreadItemPayload::ImageView { .. }
             | ThreadItemPayload::Sleep(_)
+            | ThreadItemPayload::MailboxRead(_)
             | ThreadItemPayload::EnteredReviewMode { .. }
             | ThreadItemPayload::ExitedReviewMode { .. }
             | ThreadItemPayload::ContextCompaction { .. } => return,
@@ -2954,6 +2955,7 @@ pub(crate) fn tracked_tool_item_id(item: &ThreadItemPayload) -> Option<&str> {
         | ThreadItemPayload::UserAgentControl { .. }
         | ThreadItemPayload::ImageView { .. }
         | ThreadItemPayload::Sleep(_)
+        | ThreadItemPayload::MailboxRead(_)
         | ThreadItemPayload::EnteredReviewMode { .. }
         | ThreadItemPayload::ExitedReviewMode { .. }
         | ThreadItemPayload::ContextCompaction { .. } => None,

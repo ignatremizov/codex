@@ -80,7 +80,7 @@ impl SubmissionAdmission {
         self.writer_closed.load(Ordering::Acquire)
     }
 
-    pub(super) fn completion_is_closing(&self) -> bool {
+    pub(crate) fn completion_is_closing(&self) -> bool {
         self.completion_closed.load(Ordering::Acquire)
             || self.completion_sealed.load(Ordering::Acquire)
     }

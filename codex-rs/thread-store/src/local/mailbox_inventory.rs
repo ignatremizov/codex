@@ -84,37 +84,60 @@ pub(super) async fn reconcile(
     store: &LocalThreadStore,
     notification: MailboxInventoryNotification,
 ) -> ThreadStoreResult<MailboxInventoryAcknowledgement> {
-    let (notified_through, outcome) = match recover(store, notification.clone()).await? {
-        MailboxInventoryRecovery::NotRecorded => return Err(recovery_error(&notification)),
-        MailboxInventoryRecovery::Recorded { .. } => {
-            let state = store
-                .state_db
-                .as_ref()
-                .ok_or(ThreadStoreError::Unsupported {
-                    operation: "reconcile_mailbox_inventory",
-                })?;
-            let watermark = state
-                .thread_queue()
-                .acknowledge_mail_inventory(notification.receiver_thread_id, &notification.id)
-                .await
-                .map_err(|error| storage_error(error.as_ref()))?;
-            // Return the committed result directly: no fallible read after ack.
-            (
-                watermark,
-                MailboxInventoryAcknowledgementOutcome::Acknowledged,
-            )
-        }
-        MailboxInventoryRecovery::AlreadyCovered {
-            notified_through, ..
-        } => (
-            notified_through,
-            MailboxInventoryAcknowledgementOutcome::AlreadyCovered,
-        ),
-    };
+    let (notified_through, outcome, bound_subscriptions) =
+        match recover(store, notification.clone()).await? {
+            MailboxInventoryRecovery::NotRecorded => return Err(recovery_error(&notification)),
+            MailboxInventoryRecovery::Recorded { .. } => {
+                let state = store
+                    .state_db
+                    .as_ref()
+                    .ok_or(ThreadStoreError::Unsupported {
+                        operation: "reconcile_mailbox_inventory",
+                    })?;
+                let acknowledgement = state
+                    .thread_queue()
+                    .acknowledge_mail_inventory_with_final_subscriptions(
+                        notification.receiver_thread_id,
+                        &notification.id,
+                    )
+                    .await
+                    .map_err(|error| storage_error(error.as_ref()))?;
+                // Return the committed result directly: no fallible read after ack.
+                (
+                    acknowledgement.notified_through,
+                    MailboxInventoryAcknowledgementOutcome::Acknowledged,
+                    acknowledgement.bound_subscriptions,
+                )
+            }
+            MailboxInventoryRecovery::AlreadyCovered {
+                notified_through, ..
+            } => {
+                let state = store
+                    .state_db
+                    .as_ref()
+                    .ok_or(ThreadStoreError::Unsupported {
+                        operation: "reconcile_mailbox_inventory",
+                    })?;
+                let bound_subscriptions = state
+                    .thread_queue()
+                    .read_bound_mailbox_final_subscriptions(
+                        notification.receiver_thread_id,
+                        &notification.id,
+                    )
+                    .await
+                    .map_err(|error| storage_error(error.as_ref()))?;
+                (
+                    notified_through,
+                    MailboxInventoryAcknowledgementOutcome::AlreadyCovered,
+                    bound_subscriptions,
+                )
+            }
+        };
     Ok(MailboxInventoryAcknowledgement {
         notification_id: notification.id,
         notified_through,
         outcome,
+        bound_subscriptions,
     })
 }
 

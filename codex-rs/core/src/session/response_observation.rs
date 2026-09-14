@@ -248,16 +248,21 @@ impl Session {
         let (snapshot, subscription, ()) = self.subscribe_agent_responses_inner(
             /*start_observer*/ None,
             /*terminal_observer*/ None,
-            |_| {},
+            |_, _| {},
         );
         (snapshot, subscription)
     }
 
+    /// Register live observers and inspect retained outcomes under one publication boundary.
+    /// The borrowed outcomes identify exact turns; they do not grant observation authority.
     pub(crate) fn subscribe_agent_responses_observing_turns<R>(
         &self,
         start_observer: impl Fn(&str, u64) + Send + Sync + 'static,
         terminal_observer: impl Fn(&str, TerminalPresentationOutcome) + Send + Sync + 'static,
-        on_snapshot: impl FnOnce(&AgentResponseSnapshot) -> R,
+        on_snapshot: impl FnOnce(
+            &AgentResponseSnapshot,
+            &HashMap<String, TerminalPresentationOutcome>,
+        ) -> R,
     ) -> (AgentResponseSnapshot, AgentResponseSubscription, R) {
         self.subscribe_agent_responses_inner(
             Some(Arc::new(start_observer)),
@@ -270,7 +275,10 @@ impl Session {
         &self,
         start_observer: Option<AgentResponseStartObserver>,
         terminal_observer: Option<AgentResponseTerminalObserver>,
-        on_snapshot: impl FnOnce(&AgentResponseSnapshot) -> R,
+        on_snapshot: impl FnOnce(
+            &AgentResponseSnapshot,
+            &HashMap<String, TerminalPresentationOutcome>,
+        ) -> R,
     ) -> (AgentResponseSnapshot, AgentResponseSubscription, R) {
         // Register the callback and snapshot status on the same side of the final-outcome
         // publication boundary. Otherwise publication can enumerate callbacks, an observer can
@@ -308,7 +316,7 @@ impl Session {
             last_commentary_item_id: state.last_commentary_item_id.clone(),
             status: self.agent_status.borrow().clone(),
         };
-        let registration = on_snapshot(&snapshot);
+        let registration = on_snapshot(&snapshot, &state.terminal_outcomes);
         (
             snapshot,
             AgentResponseSubscription {
@@ -537,19 +545,8 @@ impl Session {
                 }
             }
         }
-        let finished_turn = match &response_event {
-            AgentResponseEvent::Terminal { turn_id, .. }
-            | AgentResponseEvent::TurnAborted { turn_id } => Some(turn_id.clone()),
-            AgentResponseEvent::TurnStarted { .. } | AgentResponseEvent::Commentary { .. } => None,
-        };
         publish_agent_response_event_locked(&mut state, response_event);
         drop(state);
-        if let Some(turn_id) = finished_turn {
-            self.services
-                .local_agent_runtime
-                .control(self.session_id())
-                .finish_target_message_wake(self.presentation_id(), &turn_id);
-        }
     }
 
     pub(super) fn publish_agent_response_terminal(&self, turn_id: String, status: AgentStatus) {
@@ -567,16 +564,9 @@ impl Session {
             .unwrap_or(status);
         publish_agent_response_event_locked(
             &mut state,
-            AgentResponseEvent::Terminal {
-                turn_id: turn_id.clone(),
-                status,
-            },
+            AgentResponseEvent::Terminal { turn_id, status },
         );
         drop(state);
-        self.services
-            .local_agent_runtime
-            .control(self.session_id())
-            .finish_target_message_wake(self.presentation_id(), &turn_id);
     }
 
     /// Returns whether `turn_id` still owns the session-wide status slot.

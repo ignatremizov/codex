@@ -49,7 +49,7 @@ impl ChatWidget {
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
-        self.unified_exec_wait_streak = None;
+        self.clear_unified_exec_wait_tracking();
         self.clear_status_countdown();
         self.clear_background_terminals();
         self.update_task_running_state();

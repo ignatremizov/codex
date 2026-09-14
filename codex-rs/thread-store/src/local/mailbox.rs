@@ -97,6 +97,19 @@ pub(super) async fn accept(
     store: &LocalThreadStore,
     params: AcceptMailboxInputParams,
 ) -> ThreadStoreResult<StoredMailboxInput> {
+    let authority = (params.final_subscription == crate::MailboxFinalSubscriptionRequest::Wake)
+        .then_some(crate::MailboxFinalSubscriptionAuthority {
+            receiver_lifecycle_epoch: 0,
+            sender_lifecycle_epoch: 0,
+        });
+    accept_with_authority(store, params, authority).await
+}
+
+pub(super) async fn accept_with_authority(
+    store: &LocalThreadStore,
+    params: AcceptMailboxInputParams,
+    authority: Option<crate::MailboxFinalSubscriptionAuthority>,
+) -> ThreadStoreResult<StoredMailboxInput> {
     let state_db = store
         .state_db
         .as_ref()
@@ -106,15 +119,142 @@ pub(super) async fn accept(
     let payload = encode_payload(&params)?;
     let message = state_db
         .thread_queue()
-        .accept_mail(
+        .accept_mail_with_final_subscription_and_authority(
             params.receiver_thread_id,
             &params.submission_key,
             &params.payload.sender().key(),
             &payload,
+            params.final_subscription,
+            authority,
         )
         .await
         .map_err(|error| storage_error(error.as_ref()))?;
     decode_message(message)
+}
+
+pub(super) async fn lookup_active_final_subscription(
+    store: &LocalThreadStore,
+    receiver: codex_protocol::ThreadId,
+    sender: codex_protocol::ThreadId,
+) -> ThreadStoreResult<Option<crate::MailboxFinalSubscription>> {
+    let state_db = store
+        .state_db
+        .as_ref()
+        .ok_or(ThreadStoreError::Unsupported {
+            operation: "lookup_active_mailbox_final_subscription",
+        })?;
+    state_db
+        .thread_queue()
+        .read_active_mailbox_final_subscription(receiver, sender)
+        .await
+        .map_err(|error| storage_error(error.as_ref()))
+}
+
+pub(super) async fn lookup_final_subscription(
+    store: &LocalThreadStore,
+    receiver: codex_protocol::ThreadId,
+    message_id: &str,
+) -> ThreadStoreResult<Option<crate::MailboxFinalSubscription>> {
+    let state_db = store
+        .state_db
+        .as_ref()
+        .ok_or(ThreadStoreError::Unsupported {
+            operation: "lookup_mailbox_final_subscription",
+        })?;
+    state_db
+        .thread_queue()
+        .read_mailbox_final_subscription(receiver, message_id)
+        .await
+        .map_err(|error| storage_error(error.as_ref()))
+}
+
+pub(super) async fn active_final_subscriptions_for_thread(
+    store: &LocalThreadStore,
+    thread_id: codex_protocol::ThreadId,
+) -> ThreadStoreResult<Vec<crate::MailboxFinalSubscription>> {
+    let state_db = store
+        .state_db
+        .as_ref()
+        .ok_or(ThreadStoreError::Unsupported {
+            operation: "read_active_mailbox_final_subscriptions_for_thread",
+        })?;
+    state_db
+        .thread_queue()
+        .read_active_mailbox_final_subscriptions_for_thread(thread_id)
+        .await
+        .map_err(|error| storage_error(error.as_ref()))
+}
+
+pub(super) async fn supersede_final_subscription(
+    store: &LocalThreadStore,
+    receiver: codex_protocol::ThreadId,
+    sender: codex_protocol::ThreadId,
+) -> ThreadStoreResult<()> {
+    let state_db = store
+        .state_db
+        .as_ref()
+        .ok_or(ThreadStoreError::Unsupported {
+            operation: "supersede_mailbox_final_subscription",
+        })?;
+    state_db
+        .thread_queue()
+        .supersede_mailbox_final_subscription(receiver, sender)
+        .await
+        .map_err(|error| storage_error(error.as_ref()))
+}
+
+pub(super) async fn supersede_final_subscription_message(
+    store: &LocalThreadStore,
+    receiver: codex_protocol::ThreadId,
+    message_id: &str,
+) -> ThreadStoreResult<()> {
+    let state_db = store
+        .state_db
+        .as_ref()
+        .ok_or(ThreadStoreError::Unsupported {
+            operation: "supersede_mailbox_final_subscription_message",
+        })?;
+    state_db
+        .thread_queue()
+        .supersede_mailbox_final_subscription_message(receiver, message_id)
+        .await
+        .map_err(|error| storage_error(error.as_ref()))
+}
+
+pub(super) async fn supersede_final_subscriptions_for_threads(
+    store: &LocalThreadStore,
+    thread_ids: &[codex_protocol::ThreadId],
+) -> ThreadStoreResult<()> {
+    let state_db = store
+        .state_db
+        .as_ref()
+        .ok_or(ThreadStoreError::Unsupported {
+            operation: "supersede_mailbox_final_subscriptions_for_threads",
+        })?;
+    state_db
+        .thread_queue()
+        .supersede_mailbox_final_subscriptions_for_threads(thread_ids)
+        .await
+        .map_err(|error| storage_error(error.as_ref()))
+}
+
+pub(super) async fn acknowledge_final_subscription_delivery(
+    store: &LocalThreadStore,
+    receiver: codex_protocol::ThreadId,
+    message_id: String,
+    turn_id: String,
+) -> ThreadStoreResult<()> {
+    let state_db = store
+        .state_db
+        .as_ref()
+        .ok_or(ThreadStoreError::Unsupported {
+            operation: "acknowledge_mailbox_final_subscription_delivery",
+        })?;
+    state_db
+        .thread_queue()
+        .acknowledge_mailbox_final_subscription_delivery(receiver, &message_id, &turn_id)
+        .await
+        .map_err(|error| storage_error(error.as_ref()))
 }
 
 pub(super) async fn claim(
