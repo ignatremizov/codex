@@ -148,7 +148,7 @@ fn message_from_row(row: &SqliteRow) -> anyhow::Result<MailboxMessage> {
                 "rejected" => MailboxFinalSubscriptionState::Rejected,
                 _ => anyhow::bail!("invalid stored mailbox final subscription state"),
             };
-            let bound_turn_id = row.try_get("final_subscription_bound_turn_id")?;
+            let bound_turn_id: Option<String> = row.try_get("final_subscription_bound_turn_id")?;
             let sender_thread_id = ThreadId::try_from(
                 row.try_get::<String, _>("final_subscription_sender_thread_id")?,
             )?;
@@ -201,14 +201,17 @@ async fn read_message(
     receiver_thread_id: ThreadId,
     message_id: &str,
 ) -> anyhow::Result<MailboxMessage> {
-    let row = sqlx::query(&format!(
-        "{MAILBOX_MESSAGE_WITH_SUBSCRIPTION} WHERE m.receiver_thread_id = ? AND m.id = ?"
-    ))
-    .bind(receiver_thread_id.to_string())
-    .bind(message_id)
-    .fetch_optional(connection)
-    .await?
-    .ok_or_else(|| invalid_request("mailbox message does not exist for this receiver"))?;
+    let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+    query
+        .push(" WHERE m.receiver_thread_id = ")
+        .push_bind(receiver_thread_id.to_string())
+        .push(" AND m.id = ")
+        .push_bind(message_id);
+    let row = query
+        .build()
+        .fetch_optional(connection)
+        .await?
+        .ok_or_else(|| invalid_request("mailbox message does not exist for this receiver"))?;
     message_from_row(&row)
 }
 
@@ -345,13 +348,13 @@ impl SqliteQueueStore {
             .execute(&mut *tx)
             .await?;
         }
-        let row = sqlx::query(&format!(
-            "{MAILBOX_MESSAGE_WITH_SUBSCRIPTION} WHERE m.receiver_thread_id = ? AND m.submission_key = ?"
-        ))
-            .bind(receiver_thread_id.to_string())
-            .bind(submission_key)
-            .fetch_one(&mut *tx)
-            .await?;
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE m.receiver_thread_id = ")
+            .push_bind(receiver_thread_id.to_string())
+            .push(" AND m.submission_key = ")
+            .push_bind(submission_key);
+        let row = query.build().fetch_one(&mut *tx).await?;
         let message = message_from_row(&row)?;
         let requested_wake = final_subscription_request == MailboxFinalSubscriptionRequest::Wake;
         if message.sender_key != sender_key
@@ -664,15 +667,14 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         sender_thread_id: ThreadId,
     ) -> anyhow::Result<Option<MailboxFinalSubscription>> {
-        let row = sqlx::query(&format!(
-            "{MAILBOX_MESSAGE_WITH_SUBSCRIPTION}
-             WHERE s.receiver_thread_id = ? AND s.sender_thread_id = ?
-               AND s.state IN ('pending', 'bound')"
-        ))
-        .bind(receiver_thread_id.to_string())
-        .bind(sender_thread_id.to_string())
-        .fetch_optional(self.pool.as_ref())
-        .await?;
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE s.receiver_thread_id = ")
+            .push_bind(receiver_thread_id.to_string())
+            .push(" AND s.sender_thread_id = ")
+            .push_bind(sender_thread_id.to_string())
+            .push(" AND s.state IN ('pending', 'bound')");
+        let row = query.build().fetch_optional(self.pool.as_ref()).await?;
         row.as_ref()
             .map(message_from_row)
             .transpose()
@@ -685,14 +687,13 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         message_id: &str,
     ) -> anyhow::Result<Option<MailboxFinalSubscription>> {
-        let row = sqlx::query(&format!(
-            "{MAILBOX_MESSAGE_WITH_SUBSCRIPTION}
-             WHERE s.receiver_thread_id = ? AND s.message_id = ?"
-        ))
-        .bind(receiver_thread_id.to_string())
-        .bind(message_id)
-        .fetch_optional(self.pool.as_ref())
-        .await?;
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE s.receiver_thread_id = ")
+            .push_bind(receiver_thread_id.to_string())
+            .push(" AND s.message_id = ")
+            .push_bind(message_id);
+        let row = query.build().fetch_optional(self.pool.as_ref()).await?;
         row.as_ref()
             .map(message_from_row)
             .transpose()
@@ -704,16 +705,15 @@ impl SqliteQueueStore {
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<Vec<MailboxFinalSubscription>> {
-        let rows = sqlx::query(&format!(
-            "{MAILBOX_MESSAGE_WITH_SUBSCRIPTION}
-             WHERE s.state IN ('pending', 'bound')
-               AND (s.receiver_thread_id = ? OR s.sender_thread_id = ?)
-             ORDER BY m.acceptance_sequence"
-        ))
-        .bind(thread_id.to_string())
-        .bind(thread_id.to_string())
-        .fetch_all(self.pool.as_ref())
-        .await?;
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE s.state IN ('pending', 'bound')")
+            .push(" AND (s.receiver_thread_id = ")
+            .push_bind(thread_id.to_string())
+            .push(" OR s.sender_thread_id = ")
+            .push_bind(thread_id.to_string())
+            .push(") ORDER BY m.acceptance_sequence");
+        let rows = query.build().fetch_all(self.pool.as_ref()).await?;
         rows.iter()
             .map(message_from_row)
             .map(|message| {
@@ -844,7 +844,8 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         turn_id: &str,
     ) -> anyhow::Result<Vec<MailboxFinalSubscription>> {
-        read_bound_final_subscriptions(self.pool.as_ref(), receiver_thread_id, turn_id).await
+        let mut connection = self.pool.acquire().await?;
+        read_bound_final_subscriptions(&mut *connection, receiver_thread_id, turn_id).await
     }
 
     /// Reads an accepted message without claiming it or granting delivery authority.
@@ -853,17 +854,19 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         submission_key: &str,
     ) -> anyhow::Result<Option<MailboxMessage>> {
-        sqlx::query(&format!(
-            "{MAILBOX_MESSAGE_WITH_SUBSCRIPTION}
-             WHERE m.receiver_thread_id = ? AND m.submission_key = ?"
-        ))
-        .bind(receiver_thread_id.to_string())
-        .bind(submission_key)
-        .fetch_optional(self.pool.as_ref())
-        .await?
-        .as_ref()
-        .map(message_from_row)
-        .transpose()
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE m.receiver_thread_id = ")
+            .push_bind(receiver_thread_id.to_string())
+            .push(" AND m.submission_key = ")
+            .push_bind(submission_key);
+        query
+            .build()
+            .fetch_optional(self.pool.as_ref())
+            .await?
+            .as_ref()
+            .map(message_from_row)
+            .transpose()
     }
 
     /// Reads an accepted message without claiming it or granting delivery authority.
@@ -872,16 +875,19 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         message_id: &str,
     ) -> anyhow::Result<Option<MailboxMessage>> {
-        sqlx::query(&format!(
-            "{MAILBOX_MESSAGE_WITH_SUBSCRIPTION} WHERE m.receiver_thread_id = ? AND m.id = ?"
-        ))
-        .bind(receiver_thread_id.to_string())
-        .bind(message_id)
-        .fetch_optional(self.pool.as_ref())
-        .await?
-        .as_ref()
-        .map(message_from_row)
-        .transpose()
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(MAILBOX_MESSAGE_WITH_SUBSCRIPTION);
+        query
+            .push(" WHERE m.receiver_thread_id = ")
+            .push_bind(receiver_thread_id.to_string())
+            .push(" AND m.id = ")
+            .push_bind(message_id);
+        query
+            .build()
+            .fetch_optional(self.pool.as_ref())
+            .await?
+            .as_ref()
+            .map(message_from_row)
+            .transpose()
     }
 }
 

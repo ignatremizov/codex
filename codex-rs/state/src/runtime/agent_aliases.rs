@@ -1,6 +1,7 @@
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use sqlx::QueryBuilder;
+use sqlx::Row;
 use sqlx::Sqlite;
 use strum::AsRefStr;
 use strum::EnumString;

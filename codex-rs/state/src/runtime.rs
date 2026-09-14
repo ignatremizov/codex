@@ -69,6 +69,7 @@ pub use memories::MemoryStore;
 pub use queued_items::MailboxClaim;
 pub use queued_items::MailboxClaimedMessage;
 pub use queued_items::MailboxFinalSubscription;
+pub use queued_items::MailboxFinalSubscriptionAuthority;
 pub use queued_items::MailboxFinalSubscriptionRequest;
 pub use queued_items::MailboxFinalSubscriptionState;
 pub use queued_items::MailboxInventory;

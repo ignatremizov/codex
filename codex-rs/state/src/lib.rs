@@ -89,6 +89,7 @@ pub use runtime::GoalUpdate;
 pub use runtime::MailboxClaim;
 pub use runtime::MailboxClaimedMessage;
 pub use runtime::MailboxFinalSubscription;
+pub use runtime::MailboxFinalSubscriptionAuthority;
 pub use runtime::MailboxFinalSubscriptionRequest;
 pub use runtime::MailboxFinalSubscriptionState;
 pub use runtime::MailboxInventory;
