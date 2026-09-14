@@ -46,12 +46,7 @@ impl AgentControl {
                 .await
             {
                 Ok(subscriptions) => break subscriptions,
-                Err(error)
-                    if matches!(
-                        error,
-                        codex_thread_store::ThreadStoreError::Unsupported { .. }
-                    ) =>
-                {
+                Err(codex_thread_store::ThreadStoreError::Unsupported { .. }) => {
                     return;
                 }
                 Err(error) => {

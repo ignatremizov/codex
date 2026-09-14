@@ -31,10 +31,6 @@ impl AgentControl {
             .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "subtree mutation and derived-route reconciliation form one permission transaction"
-    )]
     pub(crate) async fn set_subtree_messaging(
         &self,
         root: SessionPresentationId,
@@ -53,6 +49,7 @@ impl AgentControl {
                 "subtree messaging permissions apply to V1; V2 uses native messaging".into(),
             ));
         }
+        // Persist the subtree setting and reconcile derived routes against concurrent admission.
         let _permission = self.acquire_messaging_permission_transaction().await;
         self.restore_agent_send_pair_locked(root, root).await?;
         self.persist_agent_send_setting_locked(

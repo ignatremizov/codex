@@ -800,10 +800,6 @@ impl AgentControl {
         .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "permission validation and exact input admission must serialize with revocation"
-    )]
     async fn send_input_observing_response_to_retained_thread_locked(
         &self,
         agent_id: ThreadId,
@@ -850,6 +846,7 @@ impl AgentControl {
                 let _ = proceed.await;
             }
         }
+        // Authorization validation, route restoration, and admission serialize with revocation.
         let permission = self.acquire_messaging_permission_transaction().await;
         self.restore_agent_send_pair_locked(thread.session.presentation_id(), observer)
             .await?;
@@ -1220,10 +1217,6 @@ impl AgentControl {
     /// visible. Re-registering the policy at first input could duplicate commentary admission or
     /// promote presentation-only delivery back to passive delivery, so this path binds that exact
     /// reservation to the admitted turn instead.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "reserved input admission must serialize with messaging permission replacement"
-    )]
     pub(crate) async fn send_input_using_reserved_response_observation(
         &self,
         agent_id: ThreadId,
@@ -1238,6 +1231,7 @@ impl AgentControl {
         self.ensure_execution_capacity_for_thread_start(agent_id, /*starts_turn*/ true)
             .await?;
         let _submission_permit = self.acquire_mailbox_submission_permit(agent_id).await?;
+        // Bind the exact reserved policy under the same permission epoch as admission.
         let permission = self.acquire_messaging_permission_transaction().await;
         let thread = state.get_thread_including_pending(agent_id).await?;
         let child = thread.session.presentation_id();
@@ -2739,18 +2733,21 @@ impl AgentControl {
         }
         if !effective_response_observation.commentary()
             && effective_response_observation.final_response() == FinalResponseObservation::None
+            && durable_v1
+            && active_mailbox_final_subscription
+                .as_ref()
+                .is_some_and(Option::is_some)
+            && !self
+                .persist_response_observation_snapshot(parent, child)
+                .await
         {
-            if durable_v1 && active_mailbox_final_subscription.flatten().is_some() {
-                if !self
-                    .persist_response_observation_snapshot(parent, child)
-                    .await
-                {
-                    return Err(CodexErr::Fatal(
-                        "failed to persist pending mailbox final subscription suppression"
-                            .to_string(),
-                    ));
-                }
-            }
+            return Err(CodexErr::Fatal(
+                "failed to persist pending mailbox final subscription suppression".to_string(),
+            ));
+        }
+        if !effective_response_observation.commentary()
+            && effective_response_observation.final_response() == FinalResponseObservation::None
+        {
             drop(observation_transaction);
             drop(messaging_permission);
             drop(sender_submission_permit);

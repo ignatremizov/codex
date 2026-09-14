@@ -66,28 +66,28 @@ impl AgentControl {
             }
             return Ok(existing);
         }
-        match manager.get_thread(receiver).await {
-            Ok(target) => {
-                if target.config_snapshot().await.ephemeral {
+        let target = manager.get_thread(receiver).await.ok();
+        if let Some(target) = target.as_ref()
+            && target.config_snapshot().await.ephemeral
+        {
+            return Err(CodexErr::UnsupportedOperation(
+                "ephemeral receivers do not support durable user mailbox input".to_string(),
+            ));
+        }
+        if let Some(target) = target {
+            match target.effective_mailbox_multi_agent_version().await {
+                MultiAgentVersion::V1 => {}
+                MultiAgentVersion::V2 | MultiAgentVersion::Disabled => {
                     return Err(CodexErr::UnsupportedOperation(
-                        "ephemeral receivers do not support durable user mailbox input".to_string(),
+                        "the loaded receiver's backend does not support mailbox consumption"
+                            .to_string(),
                     ));
                 }
-                match target.effective_mailbox_multi_agent_version().await {
-                    MultiAgentVersion::V1 => {}
-                    MultiAgentVersion::V2 | MultiAgentVersion::Disabled => {
-                        return Err(CodexErr::UnsupportedOperation(
-                            "the loaded receiver's backend does not support mailbox consumption"
-                                .to_string(),
-                        ));
-                    }
-                }
-                // As with explicit thread placement, first input may precede materialization.
-                // Persist the existing durable thread without starting a turn or pinning a backend.
-                target.ensure_rollout_materialized().await;
-                target.flush_rollout().await?;
             }
-            Err(_) => {}
+            // As with explicit thread placement, first input may precede materialization.
+            // Persist the existing durable thread without starting a turn or pinning a backend.
+            target.ensure_rollout_materialized().await;
+            target.flush_rollout().await?;
         }
         // Archiving and unloading do not revoke the user's ability to leave durable notes.
         manager
@@ -125,10 +125,6 @@ impl AgentControl {
     /// After persistence, a loaded receiver receives an activity hint for later inventory
     /// scheduling, not a payload-bearing turn or a delivery receipt. Retried invocations recover
     /// the original attribution even when aliases, runtime metadata, or send settings changed.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "mailbox acceptance and configured permission changes share one transaction"
-    )]
     pub(crate) async fn accept_mailbox_agent_input(
         &self,
         sender: SessionPresentationId,
@@ -177,6 +173,7 @@ impl AgentControl {
             } else {
                 None
             };
+        // Keep permission validation and durable acceptance ordered with settings replacement.
         let permission = self.acquire_messaging_permission_transaction().await;
         let source = manager
             .get_thread_including_pending(sender.thread_id)

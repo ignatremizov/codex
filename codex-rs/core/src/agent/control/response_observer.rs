@@ -397,10 +397,6 @@ impl AgentControl {
         })
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "route replacement and reservation revocation must serialize with input admission"
-    )]
     pub(crate) async fn replace_durable_target_message_route(
         &self,
         target_thread_id: ThreadId,
@@ -421,6 +417,7 @@ impl AgentControl {
         let _submission_permit = self
             .acquire_mailbox_submission_permit(target_thread_id)
             .await?;
+        // Route replacement and reservation revocation serialize with input admission.
         let permission = self.acquire_messaging_permission_transaction().await;
         let _transaction_permit = self.acquire_response_observation_transaction(parent).await;
         let child_thread = state.get_thread_including_pending(target_thread_id).await?;

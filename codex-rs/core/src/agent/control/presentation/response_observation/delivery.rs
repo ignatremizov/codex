@@ -618,29 +618,6 @@ impl AgentControl {
             .notify_waiters();
     }
 
-    pub(crate) fn commit_final_response_observation_delivery(
-        &self,
-        parent: SessionPresentationId,
-        child: SessionPresentationId,
-        turn_id: &str,
-    ) {
-        if let Some(observation) = self
-            .wait_agent_presentations
-            .state()
-            .response_observation_by_observer_child
-            .get_mut(&(parent, child))
-            .and_then(|relationship| relationship.turns.get_mut(turn_id))
-            && let Some(response_item_id) = observation.final_delivery_response_item_id.as_ref()
-            && !observation
-                .committed_delivery_response_item_ids
-                .contains(response_item_id)
-        {
-            observation
-                .committed_delivery_response_item_ids
-                .push(response_item_id.clone());
-        }
-    }
-
     pub(crate) fn commit_response_observation_delivery(
         &self,
         commit: &ResponseObservationDeliveryCommit,

@@ -361,7 +361,7 @@ async fn wait_for_user_input(user_input_wait: Option<&mut UserInputWait>) {
     }
 
     if user_input_wait.steer_activity_rx.changed().await.is_err() {
-        return std::future::pending().await;
+        std::future::pending::<()>().await;
     }
 }
 

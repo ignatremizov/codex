@@ -1163,7 +1163,7 @@ impl UnifiedExecProcessManager {
         )
         .await;
         let mut completion_reason = collected_output.completion_reason;
-        let mut collected_output = collected_output.collected;
+        let collected_output = collected_output.collected;
         let mut collected_output = Self::finish_output_collection_after_exit(
             process.as_ref(),
             &output.output_buffer,

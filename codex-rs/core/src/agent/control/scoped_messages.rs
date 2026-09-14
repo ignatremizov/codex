@@ -265,10 +265,6 @@ impl AgentControl {
         .await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "pair settings restore must serialize with permission replacement"
-    )]
     pub(super) async fn acquire_target_message_admission_after_binding(
         &self,
         observer_thread: &CodexThread,
@@ -279,6 +275,8 @@ impl AgentControl {
         mode: TargetMessageAdmissionMode,
     ) -> CodexResult<TargetMessageAdmission> {
         {
+            // Refresh pair settings before the observer transaction, serialized with permission
+            // replacement and input admission.
             let _permission = self.acquire_messaging_permission_transaction().await;
             self.restore_agent_send_pair_locked(target, observer)
                 .await?;

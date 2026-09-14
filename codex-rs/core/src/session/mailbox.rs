@@ -70,11 +70,9 @@ impl Session {
         let commit = async move {
             let control = &session.services.agent_control;
             let mut warnings = Vec::new();
-            #[expect(
-                clippy::await_holding_invalid_type,
-                reason = "the messaging admission transaction must span permission checks, canonical delivery, and acknowledgement so permission changes cannot interleave"
-            )]
             let outcome = async {
+                // Hold messaging admission through permission checks, canonical delivery, and
+                // acknowledgement so permission changes cannot interleave.
                 let _messaging = control.acquire_messaging_permission_transaction().await;
                 let _durable = session
                     .durable_context_lock
