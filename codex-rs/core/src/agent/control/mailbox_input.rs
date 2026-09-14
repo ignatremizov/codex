@@ -119,301 +119,310 @@ impl AgentControl {
     }
 }
 
-/// Accept immutable mail without loading, steering, or subscribing to its receiver.
-///
-/// After persistence, a loaded receiver receives an activity hint for later inventory
-/// scheduling, not a payload-bearing turn or a delivery receipt. Retried invocations recover
-/// the original attribution even when aliases, runtime metadata, or send settings changed.
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "mailbox acceptance and configured permission changes share one transaction"
-)]
-pub(crate) async fn accept_mailbox_agent_input(
-    &self,
-    sender: SessionPresentationId,
-    sender_turn_id: &str,
-    call_id: &str,
-    receiver: ThreadId,
-    input: Vec<UserInput>,
-    final_subscription: MailboxFinalSubscriptionRequest,
-) -> CodexResult<StoredMailboxInput> {
-    if sender.thread_id == receiver {
-        return Err(CodexErr::InvalidRequest(
-            "an agent cannot send mailbox input to itself".to_string(),
-        ));
-    }
-    if sender_turn_id.is_empty() || call_id.is_empty() || input.is_empty() {
-        return Err(CodexErr::InvalidRequest(
-            "mailbox acceptance requires a sender turn, tool call identity, and input".to_string(),
-        ));
-    }
-    // JSON tuple encoding avoids delimiter collisions in opaque turn/call IDs. Receiver
-    // scoping is owned by the store's (receiver_thread_id, submission_key) unique key.
-    let submission_key = serde_json::to_string(&(
-        "v1-send-input-mailbox",
-        sender.thread_id,
-        sender_turn_id,
-        call_id,
-    ))
-    .map_err(|error| CodexErr::Fatal(format!("failed to encode mailbox invocation: {error}")))?;
-    let manager = self.upgrade()?;
-    // Adoption and close serialize on this UUID even when no recipient runtime is loaded.
-    // Take lifecycle first. Conditional final subscriptions also serialize with all final
-    // deliveries to this sender, using the established destination-mailbox → permission →
-    // observer suffix. Plain z mail keeps the original lifecycle → permission order.
-    // Unlike live-lifecycle admission, this lock neither loads nor validates a receiver:
-    // accepted retries still return their stored outcome without requiring a fresh grant.
-    let recipient_lifecycle = manager.agent_lifecycle_lock(receiver).lock_owned().await;
-    let sender_submission_permit = if final_subscription == MailboxFinalSubscriptionRequest::Wake {
-        Some(
-            self.acquire_mailbox_submission_permit(sender.thread_id)
-                .await?,
-        )
-    } else {
-        None
-    };
-    let permission = self.acquire_messaging_permission_transaction().await;
-    let source = manager
-        .get_thread_including_pending(sender.thread_id)
-        .await?;
-    if source.session.presentation_id() != sender
-        || source.session.active_agent_response_turn_id().as_deref() != Some(sender_turn_id)
-    {
-        return Err(CodexErr::InvalidRequest(
-            "mailbox sender runtime or originating turn is no longer current".to_string(),
-        ));
-    }
-    if source.multi_agent_version() != Some(MultiAgentVersion::V1) {
-        return Err(CodexErr::UnsupportedOperation(
-            "mailbox acceptance is only supported for V1 senders".to_string(),
-        ));
-    }
-    let observation_transaction = if final_subscription == MailboxFinalSubscriptionRequest::Wake {
-        Some(self.acquire_response_observation_transaction(sender).await)
-    } else {
-        None
-    };
-    let store = Arc::clone(&source.session.services.thread_store);
-    let existing = store
-        .lookup_mailbox_input(receiver, &submission_key)
-        .await
-        .map_err(|error| {
-            CodexErr::Fatal(format!("failed to look up mailbox acceptance: {error}"))
-        })?;
-    if let Some(existing) = existing {
-        let matches = existing.receiver_thread_id == receiver
-            && existing.submission_key == submission_key
-            && existing.sender == MailboxSender::Agent(sender.thread_id)
-            && existing.final_subscription.is_some()
-                == (final_subscription == MailboxFinalSubscriptionRequest::Wake)
-            && matches!(
-                &existing.payload,
-                MailboxPayload::Agent { input: stored_input, attribution }
-                    if stored_input == &input
-                        && attribution.sender.thread_id == sender.thread_id
-                        && attribution.recipient.thread_id == receiver
-                        && attribution.sender_turn_id == sender_turn_id
-            );
-        if !matches {
+impl AgentControl {
+    /// Accept immutable mail without loading, steering, or subscribing to its receiver.
+    ///
+    /// After persistence, a loaded receiver receives an activity hint for later inventory
+    /// scheduling, not a payload-bearing turn or a delivery receipt. Retried invocations recover
+    /// the original attribution even when aliases, runtime metadata, or send settings changed.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "mailbox acceptance and configured permission changes share one transaction"
+    )]
+    pub(crate) async fn accept_mailbox_agent_input(
+        &self,
+        sender: SessionPresentationId,
+        sender_turn_id: &str,
+        call_id: &str,
+        receiver: ThreadId,
+        input: Vec<UserInput>,
+        final_subscription: MailboxFinalSubscriptionRequest,
+    ) -> CodexResult<StoredMailboxInput> {
+        if sender.thread_id == receiver {
             return Err(CodexErr::InvalidRequest(
-                "mailbox invocation already accepted different input or authorship".to_string(),
+                "an agent cannot send mailbox input to itself".to_string(),
             ));
         }
-        // An accepted retry is not a new send. Do not recapture mutable attribution,
-        // demand a new grant, or reset a consumed/rejected message to pending.
-        if final_subscription == MailboxFinalSubscriptionRequest::None {
-            return Ok(existing);
+        if sender_turn_id.is_empty() || call_id.is_empty() || input.is_empty() {
+            return Err(CodexErr::InvalidRequest(
+                "mailbox acceptance requires a sender turn, tool call identity, and input"
+                    .to_string(),
+            ));
         }
-        let Some(sender_submission_permit) = sender_submission_permit else {
-            return Err(CodexErr::Fatal(
-                "mailbox final subscription lost its destination permit".to_string(),
-            ));
-        };
-        let Some(observation_transaction) = observation_transaction else {
-            return Err(CodexErr::Fatal(
-                "mailbox final subscription lost its observer transaction".to_string(),
-            ));
-        };
-        let source = Arc::clone(&source);
-        let target_thread = manager.get_thread_including_pending(receiver).await.ok();
-        let control = self.clone();
-        let manager = Arc::clone(&manager);
-        let submission_key = submission_key.clone();
-        let task = tokio::spawn(async move {
-            super::mailbox_final_subscription::complete_mailbox_final_subscription_acceptance(
-                control,
-                manager,
-                source,
-                target_thread,
-                receiver,
-                sender,
-                submission_key,
-                None,
-                Some(existing),
-                false,
-                recipient_lifecycle,
-                sender_submission_permit,
-                permission,
-                observation_transaction,
-            )
-            .await
-        });
-        return task.await.map_err(|error| {
-            CodexErr::Fatal(format!(
-                "mailbox final subscription recovery task failed: {error}"
-            ))
+        // JSON tuple encoding avoids delimiter collisions in opaque turn/call IDs. Receiver
+        // scoping is owned by the store's (receiver_thread_id, submission_key) unique key.
+        let submission_key = serde_json::to_string(&(
+            "v1-send-input-mailbox",
+            sender.thread_id,
+            sender_turn_id,
+            call_id,
+        ))
+        .map_err(|error| {
+            CodexErr::Fatal(format!("failed to encode mailbox invocation: {error}"))
         })?;
-    }
-
-    let root = self.bound_session_id().ok_or_else(|| {
-        CodexErr::UnsupportedOperation(
-            "mailbox acceptance requires a configured same-root V1 identity".to_string(),
-        )
-    })?;
-    let graph = manager
-        .agent_graph_store()
-        .filter(|graph| graph.supports_agent_aliases())
-        .ok_or_else(|| {
-            CodexErr::UnsupportedOperation(
-                "mailbox acceptance requires durable agent identities".to_string(),
-            )
-        })?;
-    for endpoint in [sender.thread_id, receiver] {
-        let alias = graph
-            .find_current_agent_alias_by_thread(endpoint)
+        let manager = self.upgrade()?;
+        // Adoption and close serialize on this UUID even when no recipient runtime is loaded.
+        // Take lifecycle first. Conditional final subscriptions also serialize with all final
+        // deliveries to this sender, using the established destination-mailbox → permission →
+        // observer suffix. Plain z mail keeps the original lifecycle → permission order.
+        // Unlike live-lifecycle admission, this lock neither loads nor validates a receiver:
+        // accepted retries still return their stored outcome without requiring a fresh grant.
+        let recipient_lifecycle = manager.agent_lifecycle_lock(receiver).lock_owned().await;
+        let sender_submission_permit =
+            if final_subscription == MailboxFinalSubscriptionRequest::Wake {
+                Some(
+                    self.acquire_mailbox_submission_permit(sender.thread_id)
+                        .await?,
+                )
+            } else {
+                None
+            };
+        let permission = self.acquire_messaging_permission_transaction().await;
+        let source = manager
+            .get_thread_including_pending(sender.thread_id)
+            .await?;
+        if source.session.presentation_id() != sender
+            || source.session.active_agent_response_turn_id().as_deref() != Some(sender_turn_id)
+        {
+            return Err(CodexErr::InvalidRequest(
+                "mailbox sender runtime or originating turn is no longer current".to_string(),
+            ));
+        }
+        if source.multi_agent_version() != Some(MultiAgentVersion::V1) {
+            return Err(CodexErr::UnsupportedOperation(
+                "mailbox acceptance is only supported for V1 senders".to_string(),
+            ));
+        }
+        let observation_transaction = if final_subscription == MailboxFinalSubscriptionRequest::Wake
+        {
+            Some(self.acquire_response_observation_transaction(sender).await)
+        } else {
+            None
+        };
+        let store = Arc::clone(&source.session.services.thread_store);
+        let existing = store
+            .lookup_mailbox_input(receiver, &submission_key)
             .await
             .map_err(|error| {
-                CodexErr::Fatal(format!("failed to read mailbox endpoint identity: {error}"))
+                CodexErr::Fatal(format!("failed to look up mailbox acceptance: {error}"))
             })?;
-        if !alias.is_some_and(|alias| alias.session_id == root) {
-            return Err(CodexErr::UnsupportedOperation(
+        if let Some(existing) = existing {
+            let matches = existing.receiver_thread_id == receiver
+                && existing.submission_key == submission_key
+                && existing.sender == MailboxSender::Agent(sender.thread_id)
+                && existing.final_subscription.is_some()
+                    == (final_subscription == MailboxFinalSubscriptionRequest::Wake)
+                && matches!(
+                    &existing.payload,
+                    MailboxPayload::Agent { input: stored_input, attribution }
+                        if stored_input.as_slice() == input.as_slice()
+                            && attribution.sender.thread_id == sender.thread_id
+                            && attribution.recipient.thread_id == receiver
+                            && attribution.sender_turn_id == sender_turn_id
+                );
+            if !matches {
+                return Err(CodexErr::InvalidRequest(
+                    "mailbox invocation already accepted different input or authorship".to_string(),
+                ));
+            }
+            // An accepted retry is not a new send. Do not recapture mutable attribution,
+            // demand a new grant, or reset a consumed/rejected message to pending.
+            if final_subscription == MailboxFinalSubscriptionRequest::None {
+                return Ok(existing);
+            }
+            let Some(sender_submission_permit) = sender_submission_permit else {
+                return Err(CodexErr::Fatal(
+                    "mailbox final subscription lost its destination permit".to_string(),
+                ));
+            };
+            let Some(observation_transaction) = observation_transaction else {
+                return Err(CodexErr::Fatal(
+                    "mailbox final subscription lost its observer transaction".to_string(),
+                ));
+            };
+            let source = Arc::clone(&source);
+            let target_thread = manager.get_thread_including_pending(receiver).await.ok();
+            let control = self.clone();
+            let manager = Arc::clone(&manager);
+            let submission_key = submission_key.clone();
+            let task = tokio::spawn(async move {
+                super::mailbox_final_subscription::complete_mailbox_final_subscription_acceptance(
+                    control,
+                    manager,
+                    source,
+                    target_thread,
+                    receiver,
+                    sender,
+                    submission_key,
+                    None,
+                    Some(existing),
+                    false,
+                    recipient_lifecycle,
+                    sender_submission_permit,
+                    permission,
+                    observation_transaction,
+                )
+                .await
+            });
+            return task.await.map_err(|error| {
+                CodexErr::Fatal(format!(
+                    "mailbox final subscription recovery task failed: {error}"
+                ))
+            })?;
+        }
+
+        let root = self.bound_session_id().ok_or_else(|| {
+            CodexErr::UnsupportedOperation(
+                "mailbox acceptance requires a configured same-root V1 identity".to_string(),
+            )
+        })?;
+        let graph = manager
+            .agent_graph_store()
+            .filter(|graph| graph.supports_agent_aliases())
+            .ok_or_else(|| {
+                CodexErr::UnsupportedOperation(
+                    "mailbox acceptance requires durable agent identities".to_string(),
+                )
+            })?;
+        for endpoint in [sender.thread_id, receiver] {
+            let alias = graph
+                .find_current_agent_alias_by_thread(endpoint)
+                .await
+                .map_err(|error| {
+                    CodexErr::Fatal(format!("failed to read mailbox endpoint identity: {error}"))
+                })?;
+            if !alias.is_some_and(|alias| alias.session_id == root) {
+                return Err(CodexErr::UnsupportedOperation(
                     "mailbox acceptance currently supports only same-root agents; cross-root mail and implicit adoption are unsupported".to_string(),
                 ));
+            }
         }
-    }
-    if !self
-        .mailbox_send_permission_locked(sender.thread_id, receiver)
-        .await?
-    {
-        return Err(CodexErr::UnsupportedOperation(
+        if !self
+            .mailbox_send_permission_locked(sender.thread_id, receiver)
+            .await?
+        {
+            return Err(CodexErr::UnsupportedOperation(
                 "mailbox send requires configured directed/subtree permission or downward ancestry; transient m grants do not authorize mail".to_string(),
             ));
-    }
-    // Existence is a storage read, not a request to load or resume the receiver.
-    store
-        .read_thread(ReadThreadParams {
-            thread_id: receiver,
-            include_archived: false,
-            include_history: false,
-        })
-        .await
-        .map_err(|error| CodexErr::Fatal(format!("mailbox receiver is unavailable: {error}")))?;
-    let AgentControlInput::AttributedAgentInput {
-        attribution,
-        presentation,
-        ..
-    } = self
-        .attribute_model_input(sender, receiver, sender_turn_id, input)
-        .await?
-    else {
-        return Err(CodexErr::Fatal(
-            "trusted mailbox attribution was not produced".to_string(),
-        ));
-    };
-    #[cfg(test)]
-    {
-        let gate = self
-            .wait_agent_presentations
-            .mailbox_acceptance_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some((reached, proceed)) = gate {
-            let _ = reached.send(());
-            let _ = proceed.await;
         }
-    }
+        // Existence is a storage read, not a request to load or resume the receiver.
+        store
+            .read_thread(ReadThreadParams {
+                thread_id: receiver,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .map_err(|error| {
+                CodexErr::Fatal(format!("mailbox receiver is unavailable: {error}"))
+            })?;
+        let AgentControlInput::AttributedAgentInput {
+            attribution,
+            presentation,
+            ..
+        } = self
+            .attribute_model_input(sender, receiver, sender_turn_id, input)
+            .await?
+        else {
+            return Err(CodexErr::Fatal(
+                "trusted mailbox attribution was not produced".to_string(),
+            ));
+        };
+        #[cfg(test)]
+        {
+            let gate = self
+                .wait_agent_presentations
+                .mailbox_acceptance_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some((reached, proceed)) = gate {
+                let _ = reached.send(());
+                let _ = proceed.await;
+            }
+        }
 
-    if final_subscription == MailboxFinalSubscriptionRequest::Wake {
-        let Some(sender_submission_permit) = sender_submission_permit else {
-            return Err(CodexErr::Fatal(
-                "mailbox final subscription lost its destination permit".to_string(),
-            ));
-        };
-        let Some(observation_transaction) = observation_transaction else {
-            return Err(CodexErr::Fatal(
-                "mailbox final subscription lost its observer transaction".to_string(),
-            ));
-        };
-        let source = Arc::clone(&source);
-        let target_thread = manager.get_thread_including_pending(receiver).await.ok();
-        let control = self.clone();
-        let manager = Arc::clone(&manager);
-        let task = tokio::spawn(async move {
-            super::mailbox_final_subscription::complete_mailbox_final_subscription_acceptance(
-                control,
-                manager,
-                source,
-                target_thread,
-                receiver,
-                sender,
+        if final_subscription == MailboxFinalSubscriptionRequest::Wake {
+            let Some(sender_submission_permit) = sender_submission_permit else {
+                return Err(CodexErr::Fatal(
+                    "mailbox final subscription lost its destination permit".to_string(),
+                ));
+            };
+            let Some(observation_transaction) = observation_transaction else {
+                return Err(CodexErr::Fatal(
+                    "mailbox final subscription lost its observer transaction".to_string(),
+                ));
+            };
+            let source = Arc::clone(&source);
+            let target_thread = manager.get_thread_including_pending(receiver).await.ok();
+            let control = self.clone();
+            let manager = Arc::clone(&manager);
+            let task = tokio::spawn(async move {
+                super::mailbox_final_subscription::complete_mailbox_final_subscription_acceptance(
+                    control,
+                    manager,
+                    source,
+                    target_thread,
+                    receiver,
+                    sender,
+                    submission_key,
+                    Some(MailboxPayload::Agent {
+                        input: presentation,
+                        attribution,
+                    }),
+                    None,
+                    true,
+                    recipient_lifecycle,
+                    sender_submission_permit,
+                    permission,
+                    observation_transaction,
+                )
+                .await
+            });
+            return task.await.map_err(|error| {
+                CodexErr::Fatal(format!(
+                    "mailbox final subscription acceptance task failed: {error}"
+                ))
+            })?;
+        }
+
+        let accepted = store
+            .accept_mailbox_input(AcceptMailboxInputParams {
+                receiver_thread_id: receiver,
                 submission_key,
-                Some(MailboxPayload::Agent {
+                payload: MailboxPayload::Agent {
                     input: presentation,
                     attribution,
-                }),
-                None,
-                true,
-                recipient_lifecycle,
-                sender_submission_permit,
-                permission,
-                observation_transaction,
-            )
+                },
+                final_subscription: MailboxFinalSubscriptionRequest::None,
+            })
             .await
-        });
-        return task.await.map_err(|error| {
-            CodexErr::Fatal(format!(
-                "mailbox final subscription acceptance task failed: {error}"
-            ))
-        })?;
-    }
-
-    let accepted = store
-        .accept_mailbox_input(AcceptMailboxInputParams {
-            receiver_thread_id: receiver,
-            submission_key,
-            payload: MailboxPayload::Agent {
-                input: presentation,
-                attribution,
-            },
-            final_subscription: MailboxFinalSubscriptionRequest::None,
-        })
-        .await
-        .map_err(|error| CodexErr::Fatal(format!("failed to accept mailbox input: {error}")))?;
-    drop(permission);
-    drop(recipient_lifecycle);
-    // Only fresh durable acceptance produces this best-effort live sibling notice.
-    // Retries returned above; neither receipt failure nor a missing Main undoes acceptance.
-    if let MailboxPayload::Agent { attribution, input } = &accepted.payload
-        && let Some(id) = codex_protocol::mailbox_acceptance_receipt_id(&accepted.id)
-    {
-        let mut receipt = codex_protocol::items::AgentMessageItem::new(&[]);
-        receipt.id = id.to_string();
-        receipt.phase = Some(codex_protocol::models::MessagePhase::Commentary);
-        receipt.attribution = Some(attribution.as_ref().clone());
-        receipt.input = Some(input.clone());
-        if let Err(error) = self
-            .mirror_attributed_agent_input(
-                receiver,
-                &codex_protocol::items::TurnItem::AgentMessage(receipt),
-            )
-            .await
+            .map_err(|error| CodexErr::Fatal(format!("failed to accept mailbox input: {error}")))?;
+        drop(permission);
+        drop(recipient_lifecycle);
+        // Only fresh durable acceptance produces this best-effort live sibling notice.
+        // Retries returned above; neither receipt failure nor a missing Main undoes acceptance.
+        if let MailboxPayload::Agent { attribution, input } = &accepted.payload
+            && let Some(id) = codex_protocol::mailbox_acceptance_receipt_id(&accepted.id)
         {
-            tracing::warn!(%error, "failed to present mailbox acceptance notice");
+            let mut receipt = codex_protocol::items::AgentMessageItem::new(&[]);
+            receipt.id = id.to_string();
+            receipt.phase = Some(codex_protocol::models::MessagePhase::Commentary);
+            receipt.attribution = Some(attribution.as_ref().clone());
+            receipt.input = Some(input.clone());
+            if let Err(error) = self
+                .mirror_attributed_agent_input(
+                    receiver,
+                    &codex_protocol::items::TurnItem::AgentMessage(receipt),
+                )
+                .await
+            {
+                tracing::warn!(%error, "failed to present mailbox acceptance notice");
+            }
         }
+        // The existing scheduler owns idle inventory admission. A missing or concurrently
+        // unloaded runtime cannot undo durable acceptance; the helper never loads a receiver.
+        self.notify_mailbox_activity(receiver).await;
+        Ok(accepted)
     }
-    // The existing scheduler owns idle inventory admission. A missing or concurrently
-    // unloaded runtime cannot undo durable acceptance; the helper never loads a receiver.
-    self.notify_mailbox_activity(receiver).await;
-    Ok(accepted)
 }

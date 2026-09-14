@@ -31,7 +31,7 @@ fn mailbox_final_subscription_authority_matches(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn complete_mailbox_final_subscription_acceptance(
+pub(in crate::agent::control) async fn complete_mailbox_final_subscription_acceptance(
     control: AgentControl,
     manager: Arc<crate::thread_manager::ThreadManagerState>,
     source: Arc<CodexThread>,

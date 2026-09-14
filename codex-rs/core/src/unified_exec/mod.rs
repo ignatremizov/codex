@@ -161,6 +161,7 @@ impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct UserInputWait {
     pub steer_activity_rx: watch::Receiver<u64>,
     pub pending_steer: bool,

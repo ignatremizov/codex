@@ -4,9 +4,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::turn_timing::now_unix_timestamp_ms;
-use crate::unified_exec::HeadTailBuffer;
 use crate::unified_exec::UserInputWait;
 use crate::unified_exec::WriteStdinInteractionEvent;
+use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 use crate::unified_exec::process::OutputHandles;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TerminalInteractionEvent;
