@@ -86,6 +86,7 @@ use codex_protocol::protocol::sub_agent_completion_model_visibility_from_respons
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_thread_store::PersistContext;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
@@ -3382,6 +3383,121 @@ async fn send_input_accepts_structured_items() {
         .submit(Op::Shutdown {})
         .await
         .expect("shutdown should submit");
+}
+
+#[tokio::test]
+async fn send_input_mailbox_hints_when_receiver_is_unloaded() {
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = turn.config.as_ref().clone();
+    config
+        .features
+        .enable(Feature::Collab)
+        .expect("test config should allow V1 collaboration");
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("test config should disable V2 collaboration");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow mailbox storage");
+    let state_db = init_state_db(&config).await;
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        state_db,
+    );
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let child = manager
+        .get_thread(agent_id)
+        .await
+        .expect("child should be loaded before persistence");
+    child
+        .session
+        .abort_all_tasks(TurnAbortReason::Interrupted)
+        .await;
+    child
+        .session
+        .inject_no_new_turn(
+            vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "materialize mailbox receiver".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            None,
+        )
+        .await;
+    child
+        .session
+        .ensure_rollout_materialized(PersistContext::Standard)
+        .await;
+    child
+        .session
+        .flush_rollout()
+        .await
+        .expect("child rollout should flush");
+    let removed = manager
+        .remove_thread(&agent_id)
+        .await
+        .expect("child should be removable");
+    removed
+        .submit(Op::Shutdown {})
+        .await
+        .expect("removed child should shut down");
+    removed.wait_until_terminated().await;
+    assert_eq!(
+        manager.agent_control().get_status(agent_id).await,
+        AgentStatus::NotFound
+    );
+
+    let parent_session = Arc::clone(&parent.thread.session);
+    let parent_turn = parent_session.new_default_turn().await;
+    assert!(
+        parent_session.begin_agent_response_turn(&parent_turn.sub_id),
+        "parent turn should become active"
+    );
+    let output = SendInputHandler
+        .handle(invocation(
+            parent_session,
+            parent_turn,
+            "send_input",
+            function_payload(json!({
+                "target": agent_id.to_string(),
+                "message": "read this when resumed",
+                "w": "fz"
+            })),
+        ))
+        .await
+        .expect("mailbox acceptance should succeed");
+    let (content, success) = expect_text_output(output);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&content).expect("mailbox result should be json"),
+        json!({
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    );
+    assert_eq!(success, Some(true));
+    assert!(
+        manager.get_thread(agent_id).await.is_err(),
+        "mailbox acceptance must not load the receiver"
+    );
+
+    let _ = parent
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
 }
 
 #[tokio::test]

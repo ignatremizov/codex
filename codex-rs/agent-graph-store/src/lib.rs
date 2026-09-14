@@ -9,9 +9,11 @@ mod local_aliases;
 mod store;
 mod types;
 
+pub use codex_state::AgentLifecycleAuthorityUpdate;
 pub use codex_state::AgentSendMode;
 pub use codex_state::AgentSendScope;
 pub use codex_state::AgentSendSetting;
+pub use codex_state::ThreadSpawnEdgeAuthority;
 pub use error::AgentGraphStoreError;
 pub use error::AgentGraphStoreResult;
 pub use local::LocalAgentGraphStore;

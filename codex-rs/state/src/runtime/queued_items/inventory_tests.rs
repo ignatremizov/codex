@@ -1,5 +1,11 @@
 use super::*;
+use crate::MailboxClaim;
+use crate::MailboxClaimedMessage;
+use crate::MailboxFinalSubscriptionRequest;
+use crate::MailboxFinalSubscriptionState;
 use crate::MailboxInvocation;
+use crate::MailboxMessage;
+use crate::MailboxMessageState;
 use crate::MailboxSelection;
 use crate::StateRuntime;
 use crate::migrations::QUEUE_MIGRATOR;
@@ -159,6 +165,160 @@ async fn fixed_inventory_and_watermark_survive_reopen_without_repeat_eligibility
             claimed_senders: Vec::new(),
             active_notification: None,
         }
+    );
+}
+
+#[tokio::test]
+async fn inventory_ack_binds_only_accepted_subscriptions_inside_its_fixed_frontier() {
+    let runtime = runtime().await;
+    let queue = runtime.thread_queue();
+    let receiver = ThreadId::new();
+    let first_sender = ThreadId::new();
+    let first = queue
+        .accept_mail_with_final_subscription(
+            receiver,
+            "first",
+            &format!("agent:{first_sender}"),
+            "{}",
+            MailboxFinalSubscriptionRequest::Wake,
+        )
+        .await
+        .unwrap();
+    let original = queue
+        .prepare_mail_inventory(receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    let second_sender = ThreadId::new();
+    let second = queue
+        .accept_mail_with_final_subscription(
+            receiver,
+            "second",
+            &format!("agent:{second_sender}"),
+            "{}",
+            MailboxFinalSubscriptionRequest::Wake,
+        )
+        .await
+        .unwrap();
+
+    let original_ack = queue
+        .acknowledge_mail_inventory_with_final_subscriptions(receiver, &original.id)
+        .await
+        .unwrap();
+    let mut expected_first = first.final_subscription.unwrap();
+    expected_first.state = MailboxFinalSubscriptionState::Bound;
+    expected_first.bound_turn_id = Some(original.id.clone());
+    assert_eq!(
+        original_ack.bound_subscriptions,
+        vec![expected_first.clone()]
+    );
+    assert_eq!(
+        queue
+            .read_active_mailbox_final_subscription(receiver, first_sender)
+            .await
+            .unwrap(),
+        Some(expected_first.clone())
+    );
+
+    // A later accepted message creates a new frontier; the previously bound
+    // unread message is not rebound to this different inventory turn.
+    let later = queue
+        .prepare_mail_inventory(receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(later.through_sequence > original.through_sequence);
+    let later_ack = queue
+        .acknowledge_mail_inventory_with_final_subscriptions(receiver, &later.id)
+        .await
+        .unwrap();
+    let mut expected_second = second.final_subscription.unwrap();
+    expected_second.state = MailboxFinalSubscriptionState::Bound;
+    expected_second.bound_turn_id = Some(later.id.clone());
+    assert_eq!(later_ack.bound_subscriptions, vec![expected_second.clone()]);
+    assert_eq!(
+        queue
+            .read_active_mailbox_final_subscription(receiver, first_sender)
+            .await
+            .unwrap(),
+        Some(expected_first)
+    );
+
+    let config = runtime.sqlite().clone();
+    runtime.close().await;
+    let reopened = StateRuntime::init(config, "test-provider".to_string())
+        .await
+        .unwrap();
+    let queue = reopened.thread_queue();
+    assert_eq!(queue.prepare_mail_inventory(receiver).await.unwrap(), None);
+    assert_eq!(
+        queue
+            .read_mail(receiver, &first.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_subscription
+            .unwrap()
+            .bound_turn_id,
+        Some(original.id)
+    );
+    assert_eq!(
+        queue
+            .read_mail(receiver, &second.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_subscription
+            .unwrap()
+            .bound_turn_id,
+        Some(later.id)
+    );
+}
+
+#[tokio::test]
+async fn cancelled_unrecorded_inventory_does_not_bind_final_subscription() {
+    let runtime = runtime().await;
+    let queue = runtime.thread_queue();
+    let receiver = ThreadId::new();
+    let sender = ThreadId::new();
+    let accepted = queue
+        .accept_mail_with_final_subscription(
+            receiver,
+            "pending",
+            &format!("agent:{sender}"),
+            "{}",
+            MailboxFinalSubscriptionRequest::Wake,
+        )
+        .await
+        .unwrap();
+    let notification = queue
+        .prepare_mail_inventory(receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    queue
+        .cancel_mail_inventory(receiver, &notification.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        queue
+            .read_active_mailbox_final_subscription(receiver, sender)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        MailboxFinalSubscriptionState::Pending
+    );
+    assert_eq!(
+        queue
+            .read_mail(receiver, &accepted.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_subscription
+            .unwrap()
+            .bound_turn_id,
+        None
     );
 }
 
@@ -399,27 +559,100 @@ async fn inventory_migration_preserves_existing_mail_claims_and_ordinary_queue()
         .enqueue(receiver, r#"{"ordinary":true}"#)
         .await
         .unwrap();
-    queue
-        .accept_mail(receiver, "claimed", "a", "{}")
-        .await
-        .unwrap();
     let invocation = MailboxInvocation {
         receiver_thread_id: receiver,
         turn_id: "existing-turn".to_string(),
         tool_call_id: "existing-call".to_string(),
     };
-    let claim = queue
-        .claim_mail(&invocation, &MailboxSelection::All)
-        .await
-        .unwrap();
-    let pending = queue
-        .accept_mail(receiver, "pending", "user", "{}")
-        .await
-        .unwrap();
+    let claimed_message_id = "legacy-claimed-message";
+    let pending_message_id = "legacy-pending-message";
+    let delivery_id = "legacy-delivery";
+
+    // The v3 schema predates mailbox_final_subscriptions, which current queue methods join.
+    // Seed rows using the exact legacy tables so this fixture exercises the v3-to-current path.
+    sqlx::query(
+        "INSERT INTO mailbox_messages
+         (id, receiver_thread_id, submission_key, sender_key, payload_json, state)
+         VALUES (?, ?, ?, ?, ?, 'claimed')",
+    )
+    .bind(claimed_message_id)
+    .bind(receiver.to_string())
+    .bind("claimed")
+    .bind("a")
+    .bind("{}")
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mailbox_messages
+         (id, receiver_thread_id, submission_key, sender_key, payload_json, state)
+         VALUES (?, ?, ?, ?, ?, 'pending')",
+    )
+    .bind(pending_message_id)
+    .bind(receiver.to_string())
+    .bind("pending")
+    .bind("user")
+    .bind("{}")
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mailbox_claims (receiver_thread_id, turn_id, tool_call_id, selection_json)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(receiver.to_string())
+    .bind(&invocation.turn_id)
+    .bind(&invocation.tool_call_id)
+    .bind(serde_json::to_string(&MailboxSelection::All).unwrap())
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mailbox_claim_members
+         (receiver_thread_id, turn_id, tool_call_id, message_id, delivery_id)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(receiver.to_string())
+    .bind(&invocation.turn_id)
+    .bind(&invocation.tool_call_id)
+    .bind(claimed_message_id)
+    .bind(delivery_id)
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
     let revisions = queue
         .changes_since(/*revision*/ 0, &[receiver])
         .await
         .unwrap();
+    let pending = MailboxMessage {
+        id: pending_message_id.to_string(),
+        receiver_thread_id: receiver,
+        submission_key: "pending".to_string(),
+        sender_key: "user".to_string(),
+        payload_json: "{}".to_string(),
+        acceptance_sequence: 2,
+        state: MailboxMessageState::Pending,
+        rejection_reason: None,
+        final_subscription: None,
+    };
+    let claim = MailboxClaim {
+        invocation,
+        selection: MailboxSelection::All,
+        messages: vec![MailboxClaimedMessage {
+            message: MailboxMessage {
+                id: claimed_message_id.to_string(),
+                receiver_thread_id: receiver,
+                submission_key: "claimed".to_string(),
+                sender_key: "a".to_string(),
+                payload_json: "{}".to_string(),
+                acceptance_sequence: 1,
+                state: MailboxMessageState::Claimed,
+                rejection_reason: None,
+                final_subscription: None,
+            },
+            delivery_id: delivery_id.to_string(),
+        }],
+    };
     QUEUE_MIGRATOR.run(pool.as_ref()).await.unwrap();
     let prepared = queue
         .prepare_mail_inventory(receiver)

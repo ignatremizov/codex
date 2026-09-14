@@ -57,6 +57,7 @@ fn user_submission(receiver_thread_id: ThreadId, key: &str) -> AcceptMailboxInpu
             ],
             client_id: Some(format!("client-{key}")),
         },
+        final_subscription: MailboxFinalSubscriptionRequest::None,
     }
 }
 
@@ -102,6 +103,7 @@ async fn typed_acceptance_is_immutable_receiver_scoped_and_preserves_authorship(
                 acceptance_sequence: accepted.acceptance_sequence,
                 state: MailboxMessageState::Pending,
                 rejection_reason: None,
+                final_subscription: None,
             }
         );
         assert_eq!(
@@ -138,6 +140,7 @@ async fn typed_acceptance_is_immutable_receiver_scoped_and_preserves_authorship(
                 receiver_thread_id: receiver,
                 submission_key: "agent".to_string(),
                 payload: agent_payload.clone(),
+                final_subscription: MailboxFinalSubscriptionRequest::None,
             })
             .await
             .unwrap();
@@ -151,9 +154,77 @@ async fn typed_acceptance_is_immutable_receiver_scoped_and_preserves_authorship(
                     receiver_thread_id: ThreadId::new(),
                     submission_key: "wrong-recipient".to_string(),
                     payload: agent_payload,
+                    final_subscription: MailboxFinalSubscriptionRequest::None,
                 })
                 .await,
             Err(ThreadStoreError::InvalidRequest { .. })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn final_subscription_retries_keep_the_original_generation_and_fresh_acceptance_supersedes() {
+    let home = tempfile::tempdir().unwrap();
+    let (stores, _runtime) = stores(&home).await;
+    for store in stores {
+        let receiver = ThreadId::new();
+        let sender = ThreadId::new();
+        let accept = |key: &str| AcceptMailboxInputParams {
+            receiver_thread_id: receiver,
+            submission_key: key.to_string(),
+            payload: MailboxPayload::Agent {
+                input: vec![UserInput::Text {
+                    text: format!("mail {key}"),
+                    text_elements: Vec::new(),
+                }],
+                attribution: Box::new(AgentInputAttribution {
+                    sender: identity(sender),
+                    recipient: identity(receiver),
+                    sender_turn_id: "sender-turn".to_string(),
+                }),
+            },
+            final_subscription: MailboxFinalSubscriptionRequest::Wake,
+        };
+        let first = store.accept_mailbox_input(accept("first")).await.unwrap();
+        let second = store.accept_mailbox_input(accept("second")).await.unwrap();
+        let mut expected_first = first.final_subscription.clone().unwrap();
+        expected_first.state = MailboxFinalSubscriptionState::Superseded;
+        assert!(first.acceptance_sequence < second.acceptance_sequence);
+        assert_eq!(
+            store
+                .lookup_mailbox_input(receiver, &first.submission_key)
+                .await
+                .unwrap()
+                .unwrap()
+                .final_subscription,
+            Some(expected_first)
+        );
+        assert_eq!(
+            store
+                .lookup_active_mailbox_final_subscription(receiver, sender)
+                .await
+                .unwrap(),
+            second.final_subscription
+        );
+
+        let retried_first = store.accept_mailbox_input(accept("first")).await.unwrap();
+        assert_eq!(retried_first.id, first.id);
+        assert_eq!(
+            store
+                .lookup_active_mailbox_final_subscription(receiver, sender)
+                .await
+                .unwrap(),
+            second.final_subscription
+        );
+        assert!(matches!(
+            store
+                .accept_mailbox_input(AcceptMailboxInputParams {
+                    final_subscription: MailboxFinalSubscriptionRequest::None,
+                    ..accept("first")
+                })
+                .await
+                .unwrap_err(),
+            ThreadStoreError::InvalidRequest { .. }
         ));
     }
 }
@@ -315,6 +386,7 @@ async fn sender_selection_uses_uuid_and_retains_acceptance_order_without_consumi
                             sender_turn_id: "sender-turn".to_string(),
                         }),
                     },
+                    final_subscription: MailboxFinalSubscriptionRequest::None,
                 })
                 .await
                 .unwrap();
@@ -422,6 +494,7 @@ async fn reconciliation_requires_durable_context_and_typed_agent_presentation() 
                     input: input.clone(),
                     attribution: Box::new(attribution.clone()),
                 },
+                final_subscription: MailboxFinalSubscriptionRequest::None,
             })
             .await
             .unwrap();
@@ -440,6 +513,7 @@ async fn reconciliation_requires_durable_context_and_typed_agent_presentation() 
                     input: input.clone(),
                     attribution: Box::new(attribution.clone()),
                 },
+                final_subscription: MailboxFinalSubscriptionRequest::None,
             })
             .await
             .unwrap();
@@ -702,6 +776,7 @@ async fn submission_lookup_preserves_frozen_attribution_and_returns_current_stat
                     sender_turn_id: "original-sender-turn".to_string(),
                 }),
             },
+            final_subscription: MailboxFinalSubscriptionRequest::None,
         };
         let mut expected = store.accept_mailbox_input(params.clone()).await.unwrap();
         let mut changed_snapshot = params.clone();

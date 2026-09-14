@@ -53,6 +53,7 @@ pub enum TurnItem {
     Reasoning(ReasoningItem),
     CommandExecution(CommandExecutionItem),
     DynamicToolCall(DynamicToolCallItem),
+    MailboxRead(MailboxReadItem),
     CollabAgentToolCall(CollabAgentToolCallItem),
     SubAgentActivity(SubAgentActivityItem),
     UserAgentControl(UserAgentControlItem),
@@ -459,6 +460,36 @@ pub struct DynamicToolCallItem {
     pub duration: Option<Duration>,
 }
 
+/// Canonical sender selection for a completed direct `check_mail` invocation.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(tag = "type", rename_all = "snake_case")]
+pub enum MailboxReadSelector {
+    /// The invocation selected every sender with pending mail.
+    All,
+    /// The invocation selected user-authored mail.
+    User,
+    /// The invocation selected one sender by its canonical thread identity.
+    Agent { thread_id: ThreadId },
+}
+
+/// Durable, payload-free outcome of consuming a fixed mailbox selection.
+///
+/// The item is emitted only after the selected claim is acknowledged. Counts
+/// distinguish consumed messages from messages rejected before consumption.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub struct MailboxReadItem {
+    /// The originating tool call ID, scoped by the containing turn.
+    pub id: String,
+    pub selector: MailboxReadSelector,
+    /// Number of messages terminally acknowledged as consumed.
+    pub consumed_count: u64,
+    /// Number of selected messages terminally rejected before consumption.
+    pub rejected_count: u64,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CollabAgentTool {
@@ -499,7 +530,15 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub wake_on_completion: Option<bool>,
-    /// Whether this send explicitly requested mailbox delivery (`send_input` with `w:z`).
+    /// Whether this V1 lifecycle call granted the target an exact-turn reply route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_messages: Option<bool>,
+    /// Whether this V1 send was queued as a distinct future target turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub queue_input: Option<bool>,
+    /// Whether this send explicitly requested mailbox delivery (`send_input` with `w:z` or `w:zf`).
     /// This is presentation metadata, not evidence of receiver execution or visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -949,6 +988,7 @@ impl TurnItem {
             TurnItem::Reasoning(item) => item.id.clone(),
             TurnItem::CommandExecution(item) => item.id.clone(),
             TurnItem::DynamicToolCall(item) => item.id.clone(),
+            TurnItem::MailboxRead(item) => item.id.clone(),
             TurnItem::CollabAgentToolCall(item) => item.id.clone(),
             TurnItem::SubAgentActivity(item) => item.id.clone(),
             TurnItem::UserAgentControl(item) => item.id.clone(),
@@ -975,6 +1015,7 @@ impl TurnItem {
             | TurnItem::Reasoning(_)
             | TurnItem::CommandExecution(_)
             | TurnItem::DynamicToolCall(_)
+            | TurnItem::MailboxRead(_)
             | TurnItem::SubAgentActivity(_)
             | TurnItem::UserAgentControl(_)
             | TurnItem::WebSearch(_)

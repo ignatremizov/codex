@@ -475,6 +475,7 @@ impl Session {
                 )?;
                 drop(order);
                 session.publication_result(receiver).await?;
+                session.acknowledge_mailbox_final_subscription_delivery(&commit).await;
                 drop(active);
                 Ok(())
             }

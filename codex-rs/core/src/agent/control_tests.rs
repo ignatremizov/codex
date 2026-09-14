@@ -109,6 +109,8 @@ mod scoped_admission_tests;
 mod task_path_control_tests;
 #[path = "control/turn_queue_permission_tests.rs"]
 mod turn_queue_permission_tests;
+#[path = "control/unsupported_mailbox_subscription_tests.rs"]
+mod unsupported_mailbox_subscription_tests;
 
 async fn test_config_with_cli_overrides(
     mut cli_overrides: Vec<(String, TomlValue)>,

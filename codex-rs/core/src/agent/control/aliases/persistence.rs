@@ -74,6 +74,13 @@ impl LocalAgentControl {
                 task_path,
             } => match reserved_descendant_thread_ids {
                 Some(expected_descendant_thread_ids) => {
+                    // Fence acceptance across the graph commit. Queue retirement is a
+                    // separate, retryable write; captured graph epochs remain authoritative.
+                    let _messaging_permission =
+                        self.acquire_messaging_permission_transaction().await;
+                    let revoked_thread_ids = std::iter::once(child_thread_id)
+                        .chain(expected_descendant_thread_ids.iter().copied())
+                        .collect::<Vec<_>>();
                     match agent_graph_store
                         .transfer_agent_alias(TransferAgentAliasRequest {
                             expected_previous_session_id,
@@ -92,7 +99,24 @@ impl LocalAgentControl {
                                 AgentAliasTransfer::AlreadyOwned { .. } => {
                                     agent_graph_store.activate_agent_alias(request).await
                                 }
-                                AgentAliasTransfer::Transferred { alias, .. } => Ok(alias.clone()),
+                                AgentAliasTransfer::Transferred { alias, .. } => {
+                                    if let Err(error) = child_thread
+                                        .session
+                                        .services
+                                        .thread_store
+                                        .supersede_mailbox_final_subscriptions_for_threads(
+                                            revoked_thread_ids,
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            %error,
+                                            thread_id = %child_thread_id,
+                                            "mailbox cleanup after transfer failed; graph epochs fence old intents"
+                                        );
+                                    }
+                                    Ok(alias.clone())
+                                }
                             };
                             transfer = Some(committed);
                             alias
@@ -124,63 +148,75 @@ impl LocalAgentControl {
         })
     }
 
-    pub(in crate::agent::control) async fn set_persisted_agent_lifecycle_state(
-        &self,
-        child_thread_id: ThreadId,
-        status: ThreadSpawnEdgeStatus,
-    ) -> CodexResult<bool> {
-        let Some(session_id) = self.bound_session_id() else {
-            return Ok(false);
-        };
-        let manager = self.upgrade()?;
-        let Some(agent_graph_store) = manager.agent_graph_store() else {
-            return Ok(false);
-        };
-        if !agent_graph_store.supports_agent_aliases() {
-            return Ok(false);
-        }
-        agent_graph_store
-            .ensure_agent_alias_namespace(session_id)
-            .await
-            .map_err(|err| {
-                CodexErr::Fatal(format!(
-                    "failed to initialize durable agent aliases for {}: {err}",
-                    session_id
-                ))
-            })?;
-        agent_graph_store
-            .set_agent_lifecycle_state(session_id, child_thread_id, status)
-            .await
-            .map_err(|err| {
-                CodexErr::Fatal(format!(
-                    "failed to persist agent lifecycle for {child_thread_id}: {err}"
-                ))
-            })
-    }
-
     pub(in crate::agent::control) async fn persist_agent_closed(
         &self,
         child_thread_id: ThreadId,
     ) -> CodexResult<()> {
+        let manager = self.upgrade()?;
+        let _messaging_permission = self.acquire_messaging_permission_transaction().await;
         if self
-            .set_persisted_agent_lifecycle_state(child_thread_id, ThreadSpawnEdgeStatus::Closed)
+            .persist_agent_closed_for_subtree(child_thread_id, &[child_thread_id])
             .await?
+            && let Err(error) = manager
+                .thread_store()
+                .supersede_mailbox_final_subscriptions_for_threads(vec![child_thread_id])
+                .await
         {
-            return Ok(());
+            warn!(
+                %error,
+                thread_id = %child_thread_id,
+                "mailbox cleanup after close failed; graph epochs fence old intents"
+            );
         }
+        Ok(())
+    }
+
+    /// Called under messaging admission serialization; true means committed epoch revocation.
+    pub(in crate::agent::control) async fn persist_agent_closed_for_subtree(
+        &self,
+        child_thread_id: ThreadId,
+        revoked_thread_ids: &[ThreadId],
+    ) -> CodexResult<bool> {
         let manager = self.upgrade()?;
         let Some(agent_graph_store) = manager.agent_graph_store() else {
-            return Ok(());
+            return Ok(false);
         };
-        if agent_graph_store.supports_agent_aliases() && self.bound_session_id().is_some() {
-            // A failed owned update can mean ownership was transferred. Never fall back to an
-            // unqualified edge mutation that could close the destination owner's runtime.
-            return Err(CodexErr::InvalidRequest(format!(
-                "agent {child_thread_id} is no longer controlled by this root"
-            )));
+        if agent_graph_store.supports_agent_aliases()
+            && let Some(session_id) = self.bound_session_id()
+        {
+            agent_graph_store
+                .ensure_agent_alias_namespace(session_id)
+                .await
+                .map_err(|err| CodexErr::Fatal(err.to_string()))?;
+            return match agent_graph_store
+                .set_agent_lifecycle_state_with_authority_revocations(
+                    session_id,
+                    child_thread_id,
+                    ThreadSpawnEdgeStatus::Closed,
+                    revoked_thread_ids.to_vec(),
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to persist agent lifecycle revocation for {child_thread_id}: {err}"
+                    ))
+                })? {
+                codex_agent_graph_store::AgentLifecycleAuthorityUpdate::Revoked => Ok(true),
+                codex_agent_graph_store::AgentLifecycleAuthorityUpdate::Unchanged => Ok(false),
+                codex_agent_graph_store::AgentLifecycleAuthorityUpdate::NotOwned => {
+                    // Never fall back to an unqualified mutation of another owner's edge.
+                    Err(CodexErr::InvalidRequest(format!(
+                        "agent {child_thread_id} is no longer controlled by this root"
+                    )))
+                }
+            };
         }
         agent_graph_store
-            .set_thread_spawn_edge_status(child_thread_id, ThreadSpawnEdgeStatus::Closed)
+            .set_thread_spawn_edge_status_with_authority_revocations(
+                child_thread_id,
+                ThreadSpawnEdgeStatus::Closed,
+                revoked_thread_ids.to_vec(),
+            )
             .await
             .map_err(|err| {
                 CodexErr::Fatal(format!(

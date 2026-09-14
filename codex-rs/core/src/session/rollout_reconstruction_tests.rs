@@ -309,6 +309,8 @@ async fn reconstruction_restores_promoted_task_from_atomic_observation_snapshot(
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
         committed_delivery_response_item_ids: Vec::new(),
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     };
     let rollout_items = vec![
         RolloutItem::InterAgentCommunicationMetadata {

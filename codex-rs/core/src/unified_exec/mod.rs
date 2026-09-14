@@ -43,6 +43,7 @@ use rand::rng;
 use tokio::sync::Mutex;
 use tokio::sync::MutexGuard;
 use tokio::sync::Notify;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::sandboxing::SandboxPermissions;
@@ -58,6 +59,7 @@ mod async_watcher;
 mod errors;
 mod head_tail_buffer;
 mod oneshot;
+mod output_collection;
 mod process;
 mod process_manager;
 mod process_state;
@@ -147,20 +149,29 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub process_id: i32,
     pub input: &'a str,
     pub yield_time_ms: u64,
+    pub wait_until_exit: bool,
     pub max_output_tokens: Option<usize>,
     pub truncation_policy: TruncationPolicy,
     pub interaction_event: Option<WriteStdinInteractionEvent<'a>>,
+    pub user_input_wait: Option<UserInputWait>,
 }
 
 pub(crate) struct WriteStdinInteractionEvent<'a> {
     pub session: &'a Arc<Session>,
     pub turn: &'a Arc<TurnContext>,
+    pub interaction_id: &'a str,
 }
 
 impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("WriteStdinInteractionEvent")
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct UserInputWait {
+    pub steer_activity_rx: watch::Receiver<u64>,
+    pub pending_steer: bool,
 }
 
 #[derive(Default)]
@@ -297,3 +308,7 @@ mod process_tests;
 #[cfg(unix)]
 #[path = "mod_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[cfg(unix)]
+#[path = "wait_until_exit_tests.rs"]
+mod wait_until_exit_tests;

@@ -216,6 +216,8 @@ async fn acknowledged_task_survives_stale_but_not_source_covered_compaction() {
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
         committed_delivery_response_item_ids: Vec::new(),
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     };
     let transaction = Arc::new(tokio::sync::Mutex::new(())).lock_owned().await;
     session

@@ -190,6 +190,7 @@ pub(super) fn cells(
         | ThreadItem::Reasoning { .. }
         | ThreadItem::CommandExecution { .. }
         | ThreadItem::McpToolCall { .. }
+        | ThreadItem::MailboxRead(_)
         | ThreadItem::Sleep(_) => {}
     }
     cells

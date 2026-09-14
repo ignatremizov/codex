@@ -639,6 +639,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMailboxAddResponse,
     },
+    #[experimental("thread/mailbox/read")]
+    ThreadMailboxRead => "thread/mailbox/read" {
+        params: v2::ThreadMailboxReadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadMailboxReadResponse,
+    },
     #[experimental("thread/queue/add")]
     ThreadQueueAdd => "thread/queue/add" {
         params: v2::ThreadQueueAddParams,

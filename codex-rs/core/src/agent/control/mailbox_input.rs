@@ -9,6 +9,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::AcceptMailboxInputParams;
+use codex_thread_store::MailboxFinalSubscriptionRequest;
 use codex_thread_store::MailboxPayload;
 use codex_thread_store::MailboxSender;
 use codex_thread_store::ReadThreadParams;
@@ -129,6 +130,7 @@ impl LocalAgentControl {
             .accept_mailbox_input(AcceptMailboxInputParams {
                 receiver_thread_id: receiver,
                 submission_key,
+                final_subscription: MailboxFinalSubscriptionRequest::None,
                 payload: MailboxPayload::User {
                     input,
                     client_id: Some(client_user_message_id),
@@ -155,6 +157,7 @@ impl LocalAgentControl {
         call_id: &str,
         receiver: ThreadId,
         input: Vec<UserInput>,
+        final_subscription: MailboxFinalSubscriptionRequest,
     ) -> CodexResult<StoredMailboxInput> {
         let control = self.clone();
         let sender_turn_id = sender_turn_id.to_string();
@@ -167,6 +170,7 @@ impl LocalAgentControl {
                     &call_id,
                     receiver,
                     input,
+                    final_subscription,
                 )
                 .await
         })
@@ -178,10 +182,6 @@ impl LocalAgentControl {
         })?
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "mailbox acceptance and configured permission changes share one transaction"
-    )]
     async fn accept_mailbox_agent_input_owned(
         &self,
         sender: SessionPresentationId,
@@ -189,6 +189,7 @@ impl LocalAgentControl {
         call_id: &str,
         receiver: ThreadId,
         input: Vec<UserInput>,
+        final_subscription: MailboxFinalSubscriptionRequest,
     ) -> CodexResult<StoredMailboxInput> {
         if sender.thread_id == receiver {
             return Err(CodexErr::InvalidRequest(
@@ -218,7 +219,23 @@ impl LocalAgentControl {
         // Unlike live-lifecycle admission, this lock neither loads nor validates a receiver:
         // accepted retries still return their stored outcome without requiring a fresh grant.
         let _recipient_lifecycle = manager.agent_lifecycle_lock(receiver).lock_owned().await;
+        let sender_submission = self.state.mailbox_submission(sender.thread_id);
+        let _destination = if final_subscription == MailboxFinalSubscriptionRequest::Wake {
+            Some(
+                Arc::clone(&sender_submission.semaphore)
+                    .acquire_owned()
+                    .await
+                    .map_err(|error| CodexErr::Fatal(format!("mailbox sender closed: {error}")))?,
+            )
+        } else {
+            None
+        };
         let _permission = self.acquire_messaging_permission_transaction().await;
+        let _observer = if final_subscription == MailboxFinalSubscriptionRequest::Wake {
+            Some(self.acquire_response_observation_transaction(sender).await)
+        } else {
+            None
+        };
         let source = manager.get_thread(sender.thread_id).await?;
         if source.session.presentation_id() != sender
             || !Arc::ptr_eq(&self.state, &source.session.services.agent_control.state)
@@ -250,6 +267,8 @@ impl LocalAgentControl {
             let matches = existing.receiver_thread_id == receiver
                 && existing.submission_key == submission_key
                 && existing.sender == MailboxSender::Agent(sender.thread_id)
+                && existing.final_subscription.is_some()
+                    == (final_subscription == MailboxFinalSubscriptionRequest::Wake)
                 && matches!(
                     &existing.payload,
                     MailboxPayload::Agent { input: stored_input, attribution }
@@ -265,6 +284,11 @@ impl LocalAgentControl {
             }
             // An accepted retry is not a new send. Do not recapture mutable attribution,
             // demand a new grant, or reset a consumed/rejected message to pending.
+            if final_subscription == MailboxFinalSubscriptionRequest::Wake {
+                // Recovery reads canonical retirement/delivery proof before acquiring its
+                // observer transaction. The immutable acceptance row is not a fresh grant.
+                self.schedule_mailbox_final_subscription_recovery(sender);
+            }
             return Ok(existing);
         }
 
@@ -345,17 +369,35 @@ impl LocalAgentControl {
                 let _ = proceed.await;
             }
         }
-        let accepted = store
-            .accept_mailbox_input(AcceptMailboxInputParams {
-                receiver_thread_id: receiver,
-                submission_key,
-                payload: MailboxPayload::Agent {
-                    input: presentation,
-                    attribution,
-                },
-            })
-            .await
-            .map_err(|error| CodexErr::Fatal(format!("failed to accept mailbox input: {error}")))?;
+        let params = AcceptMailboxInputParams {
+            receiver_thread_id: receiver,
+            submission_key,
+            final_subscription,
+            payload: MailboxPayload::Agent {
+                input: presentation,
+                attribution,
+            },
+        };
+        let accepted = if final_subscription == MailboxFinalSubscriptionRequest::Wake {
+            let accepted = self.accept_mailbox_subscription(&source, params).await?;
+            if let Err(error) = self
+                .project_accepted_mailbox_subscription(&source, &accepted)
+                .await
+            {
+                source.session.quarantine_history(format!(
+                    "accepted mailbox subscription projection failed: {error}"
+                ));
+                tracing::warn!(%error, "accepted subscription awaits durable recovery");
+            }
+            self.schedule_mailbox_final_subscription_recovery(sender);
+            accepted
+        } else {
+            store.accept_mailbox_input(params).await.map_err(|error| {
+                CodexErr::Fatal(format!("failed to accept mailbox input: {error}"))
+            })?
+        };
+        drop(_observer);
+        drop(_destination);
         drop(_permission);
         drop(_recipient_lifecycle);
         // Only fresh durable acceptance produces this best-effort live sibling notice.

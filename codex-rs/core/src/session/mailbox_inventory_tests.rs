@@ -136,6 +136,7 @@ async fn arrival_after_obsolete_check_before_placeholder_cleanup_is_not_lost() -
             }],
             client_id: None,
         },
+        final_subscription: Default::default(),
     };
     let old = store.accept_mailbox_input(accept("old")).await?;
     let notification = store

@@ -414,6 +414,8 @@ fn exact_rollback_preserves_committed_observed_agent_responses() {
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: Some(response_item_id.clone()),
         committed_delivery_response_item_ids: vec![response_item_id],
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     });
     let items = vec![
         started("turn-1"),

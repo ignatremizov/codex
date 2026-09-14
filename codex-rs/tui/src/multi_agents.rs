@@ -28,6 +28,7 @@ use std::collections::HashSet;
 mod background_commentary;
 mod background_completion;
 mod identity_header;
+mod mailbox_read;
 mod mailbox_send;
 
 #[cfg(test)]
@@ -40,6 +41,7 @@ mod task_path_tests;
 pub(crate) use background_commentary::background_commentary_history_cell_from_agent_message;
 pub(crate) use background_completion::background_completion_history_cell_from_agent_message;
 pub(crate) use identity_header::IdentityHeader;
+pub(crate) use mailbox_read::history_cell_for_mailbox_read;
 
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;

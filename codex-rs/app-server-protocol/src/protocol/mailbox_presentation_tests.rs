@@ -3,11 +3,15 @@ use super::event_mapping::item_event_to_server_notification;
 use super::thread_history::build_turns_from_rollout_items;
 use super::v2::ItemCompletedNotification;
 use super::v2::ItemStartedNotification;
+use super::v2::MailboxReadItem;
+use super::v2::MailboxReadSelector;
 use super::v2::ThreadItem;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus;
+use codex_protocol::items::MailboxReadItem as CoreMailboxReadItem;
+use codex_protocol::items::MailboxReadSelector as CoreMailboxReadSelector;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HasLegacyEvent;
@@ -193,4 +197,81 @@ fn legacy_omission_remains_unknown_without_inference() {
     let turns = build_turns_from_rollout_items(&[RolloutItem::EventMsg(legacy)]);
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].items, vec![expected_legacy]);
+}
+
+#[test]
+fn mailbox_read_item_survives_live_transport_and_rollout_replay() {
+    let thread_id = ThreadId::new();
+    let item = TurnItem::MailboxRead(CoreMailboxReadItem {
+        id: "check-mail-1".to_string(),
+        selector: CoreMailboxReadSelector::Agent { thread_id },
+        consumed_count: 2,
+        rejected_count: 1,
+    });
+    let expected = ThreadItem::MailboxRead(MailboxReadItem {
+        id: "check-mail-1".to_string(),
+        selector: MailboxReadSelector::Agent {
+            thread_id: thread_id.to_string(),
+        },
+        consumed_count: 2,
+        rejected_count: 1,
+    });
+    assert_eq!(
+        serde_json::to_value(&expected).unwrap(),
+        serde_json::json!({
+            "type": "mailboxRead",
+            "id": "check-mail-1",
+            "selector": {
+                "type": "agent",
+                "threadId": thread_id.to_string()
+            },
+            "consumedCount": 2,
+            "rejectedCount": 1
+        }),
+    );
+    let completed = ItemCompletedEvent {
+        thread_id,
+        turn_id: "turn".to_string(),
+        item,
+        started_at_ms: None,
+        completed_at_ms: 2,
+    };
+
+    let notification = item_event_to_server_notification(
+        EventMsg::ItemCompleted(completed.clone()),
+        &thread_id.to_string(),
+        "turn",
+    );
+    let notification: ServerNotification =
+        serde_json::from_value(serde_json::to_value(notification).unwrap()).unwrap();
+    let ServerNotification::ItemCompleted(actual) = notification else {
+        panic!("expected item/completed");
+    };
+    assert_eq!(
+        actual,
+        ItemCompletedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn".to_string(),
+            item: expected.clone(),
+            completed_at_ms: 2,
+        },
+    );
+
+    let rollout = vec![
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn".to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+            agent_queue: None,
+        })),
+        RolloutItem::EventMsg(EventMsg::ItemCompleted(completed.clone())),
+        RolloutItem::EventMsg(EventMsg::ItemCompleted(completed)),
+    ];
+    let replay: Vec<RolloutItem> =
+        serde_json::from_str(&serde_json::to_string(&rollout).unwrap()).unwrap();
+    let turns = build_turns_from_rollout_items(&replay);
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].items, vec![expected]);
 }

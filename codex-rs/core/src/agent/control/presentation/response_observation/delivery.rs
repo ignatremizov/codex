@@ -144,11 +144,31 @@ impl LocalAgentControl {
                 AgentStatus::Completed(text) => Some(text.clone().unwrap_or_default()),
                 _ => None,
             });
-        let Some(observation) = state
+        let Some(relationship) = state
             .response_observation_by_observer_child
             .get_mut(&(commit.parent, commit.child))
-            .and_then(|relationship| relationship.turns.get_mut(&commit.turn_id))
         else {
+            return;
+        };
+        if commit.kind == ResponseObservationDeliveryKind::Final
+            && relationship
+                .turns
+                .get(&commit.turn_id)
+                .is_some_and(|observation| {
+                    observation.final_delivery_response_item_id.as_ref()
+                        != Some(&commit.response_item_id)
+                })
+        {
+            return;
+        }
+        if commit.kind == ResponseObservationDeliveryKind::Final
+            && commit.mailbox_final_subscription_message_id.is_some()
+            && relationship.mailbox_final_subscription_message_id
+                == commit.mailbox_final_subscription_message_id
+        {
+            relationship.mailbox_final_subscription_message_id = None;
+        }
+        let Some(observation) = relationship.turns.get_mut(&commit.turn_id) else {
             return;
         };
         if observation
@@ -301,6 +321,14 @@ impl LocalAgentControl {
                     current.message_wake_turn_id = pending.message_wake_turn_id.clone();
                 }
                 current.final_response = current.final_response.max(pending.final_response);
+                if pending.response_observation_selection_id.is_some() {
+                    current.response_observation_selection_id =
+                        pending.response_observation_selection_id;
+                }
+                if current.mailbox_final_subscription_message_id.is_none() {
+                    current.mailbox_final_subscription_message_id =
+                        pending.mailbox_final_subscription_message_id.clone();
+                }
                 if current.final_delivery_response_item_id.is_none() {
                     current.final_delivery_response_item_id =
                         pending.final_delivery_response_item_id.clone();

@@ -43,6 +43,7 @@ impl LocalAgentControl {
             control.ensure_target_message_route_allowed(&target, parent, policy)?;
             let delivered_final_turns =
                 super::resume_delivery::delivered_final_turns(&observer, target_id).await;
+            let _permission = control.acquire_messaging_permission_transaction().await;
             let transaction = control
                 .acquire_response_observation_transaction(parent)
                 .await;
@@ -167,6 +168,7 @@ impl LocalAgentControl {
                 .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".into()))?;
             observer.session.submission_admission.check_ready()?;
             target.session.submission_admission.check_ready()?;
+            let _permission = control.acquire_messaging_permission_transaction().await;
             let transaction = control
                 .acquire_response_observation_transaction(parent)
                 .await;
@@ -210,11 +212,14 @@ impl LocalAgentControl {
             let prepared = control.prepare_user_observation(
                 parent,
                 child,
-                turn_id,
+                turn_id.clone(),
                 Some(replacement),
                 /*task_preview*/ None,
                 task.as_ref(),
             )?;
+            let mailbox_subscription_to_retire = control
+                .active_mailbox_subscription_for_policy(&observer, child)
+                .await?;
             let snapshots = prepared.snapshots.clone();
             let commit_control = control.clone();
             let result = observer
@@ -227,7 +232,26 @@ impl LocalAgentControl {
                 control.abandon_response_observer(parent, child, &error.to_string());
                 return Err(error);
             }
+            if let Some(message_id) = mailbox_subscription_to_retire {
+                control
+                    .retire_mailbox_subscription_token(&observer, child, &message_id)
+                    .await?;
+                let transaction = control
+                    .acquire_response_observation_transaction(parent)
+                    .await;
+                control.clear_mailbox_final_subscription(
+                    parent,
+                    child,
+                    &message_id,
+                    turn_id.as_deref(),
+                );
+                control
+                    .persist_response_observation_snapshot(parent, child)
+                    .await?;
+                drop(transaction);
+            }
             drop(actor_admission);
+            drop(_permission);
             control.recheck_thread_idle_lifecycle(parent).await;
             Ok(ReplacedFinalResponseObservation {
                 target_thread_id: target_id,

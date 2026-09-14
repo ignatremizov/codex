@@ -1,4 +1,6 @@
 use super::*;
+use codex_app_server_protocol::MailboxReadItem;
+use codex_app_server_protocol::MailboxReadSelector;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::sub_agent_completion_transcript_with_visibility;
@@ -243,6 +245,67 @@ async fn replayed_notices_remain_immediate() {
         ]
     );
     assert!(chat.interrupts.is_empty());
+}
+
+#[tokio::test]
+async fn live_mailbox_read_waits_for_answer_completion() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_agent_message_delta("Answer before".to_string());
+    deliver(
+        &mut chat,
+        AppServerThreadItem::MailboxRead(MailboxReadItem {
+            id: "check-mail-live".to_string(),
+            selector: MailboxReadSelector::User,
+            consumed_count: 1,
+            rejected_count: 0,
+        }),
+    );
+
+    assert!(chat.stream_controller.is_some());
+    assert!(output(&mut rx).is_empty());
+
+    chat.on_agent_message_delta(" and after.".to_string());
+    deliver(
+        &mut chat,
+        message(
+            "main-final".to_string(),
+            "Answer before and after.".to_string(),
+            MessagePhase::FinalAnswer,
+        ),
+    );
+
+    assert_eq!(
+        output(&mut rx),
+        vec![
+            "answer: Answer before and after.".to_string(),
+            "• Checked mailbox from user · 1 message consumed".to_string(),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn replayed_mailbox_read_remains_immediate() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_agent_message_delta("Live answer before replay.".to_string());
+
+    chat.replay_thread_item(
+        AppServerThreadItem::MailboxRead(MailboxReadItem {
+            id: "check-mail-replay".to_string(),
+            selector: MailboxReadSelector::User,
+            consumed_count: 1,
+            rejected_count: 0,
+        }),
+        "replayed-turn".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    assert_eq!(
+        output(&mut rx),
+        vec![
+            "answer: Live answer before replay.".to_string(),
+            "• Checked mailbox from user · 1 message consumed".to_string(),
+        ],
+    );
 }
 
 #[tokio::test]

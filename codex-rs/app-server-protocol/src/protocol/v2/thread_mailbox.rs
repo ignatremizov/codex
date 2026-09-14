@@ -35,3 +35,39 @@ pub struct ThreadMailboxAddResponse {
     pub state: ThreadMailboxMessageState,
     pub rejection_reason: Option<String>,
 }
+
+/// Read aggregate pending mailbox counts without loading a thread or exposing message payloads.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct ThreadMailboxReadParams {
+    pub thread_id: String,
+}
+
+/// Pending counts grouped by the canonical mailbox sender identity.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase", export_to = "v2/")]
+pub enum ThreadMailboxPendingSender {
+    User {
+        #[ts(type = "number")]
+        count: u64,
+    },
+    Agent {
+        #[serde(rename = "threadId")]
+        #[ts(rename = "threadId")]
+        thread_id: String,
+        #[ts(type = "number")]
+        count: u64,
+    },
+}
+
+/// Read-only snapshot of pending mailbox totals for one receiver thread.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadMailboxReadResponse {
+    #[ts(type = "number")]
+    pub pending_total: u64,
+    pub pending_senders: Vec<ThreadMailboxPendingSender>,
+}

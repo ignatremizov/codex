@@ -127,6 +127,113 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Accepts a wake subscription with graph authority captured by Core.
+    ///
+    /// Durable stores should persist the authority values beside the accepted message. Stores
+    /// without this capability reject wake subscriptions instead of silently dropping the fence.
+    fn accept_mailbox_input_with_authority(
+        &self,
+        _params: crate::AcceptMailboxInputParams,
+        _authority: crate::MailboxFinalSubscriptionAuthority,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "accept_mailbox_input_with_authority",
+            })
+        })
+    }
+
+    /// Reads the active mailbox final subscription for a canonical sender/receiver pair.
+    fn lookup_active_mailbox_final_subscription(
+        &self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+        _sender_thread_id: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxFinalSubscription>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "lookup_active_mailbox_final_subscription",
+            })
+        })
+    }
+
+    /// Reads one mailbox final subscription by its accepted message identity, including terminal rows.
+    fn lookup_mailbox_final_subscription(
+        &self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+        _message_id: String,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxFinalSubscription>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "lookup_mailbox_final_subscription",
+            })
+        })
+    }
+
+    /// Lists pending/bound final subscriptions whose receiver or sender is this thread.
+    fn read_active_mailbox_final_subscriptions_for_thread(
+        &self,
+        _thread_id: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, Vec<crate::MailboxFinalSubscription>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "read_active_mailbox_final_subscriptions_for_thread",
+            })
+        })
+    }
+
+    /// Supersedes the active mailbox final subscription after a later ordinary observation.
+    fn supersede_mailbox_final_subscription(
+        &self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+        _sender_thread_id: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "supersede_mailbox_final_subscription",
+            })
+        })
+    }
+
+    /// Supersedes one exact pending/bound final subscription.
+    fn supersede_mailbox_final_subscription_message(
+        &self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+        _message_id: String,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "supersede_mailbox_final_subscription_message",
+            })
+        })
+    }
+
+    /// Retires active subscriptions touching any endpoint in a closed/transferred subtree.
+    fn supersede_mailbox_final_subscriptions_for_threads(
+        &self,
+        _thread_ids: Vec<codex_protocol::ThreadId>,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "supersede_mailbox_final_subscriptions_for_threads",
+            })
+        })
+    }
+
+    /// Marks the exact bound subscription delivered after the existing final-observation receipt
+    /// is durable in the observer's canonical history.
+    fn acknowledge_mailbox_final_subscription_delivery(
+        &self,
+        _receiver_thread_id: codex_protocol::ThreadId,
+        _message_id: String,
+        _turn_id: String,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "acknowledge_mailbox_final_subscription_delivery",
+            })
+        })
+    }
+
     /// Looks up immutable accepted input by receiver and submission key.
     ///
     /// Returns frozen attribution and the current state, without claiming or

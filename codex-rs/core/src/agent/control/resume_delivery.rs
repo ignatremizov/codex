@@ -15,6 +15,10 @@ impl ResponseObserverStart {
         snapshot: &AgentResponseSnapshot,
     ) -> Option<(String, AgentStatus)> {
         match self {
+            Self::MailboxFinalTurn { turn_id } => snapshot
+                .last_terminal
+                .clone()
+                .filter(|(turn, _)| turn == turn_id),
             Self::CurrentOrNext {
                 observed_status,
                 delivered_final_turns,
@@ -58,7 +62,7 @@ pub(super) async fn delivered_final_turns(
     delivered_final_turns_in_history(&history, observer_id, child)
 }
 
-fn delivered_final_turns_in_history(
+pub(super) fn delivered_final_turns_in_history(
     history: &[RolloutItem],
     observer: ThreadId,
     child: ThreadId,

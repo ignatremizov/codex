@@ -100,22 +100,93 @@ impl LocalAgentControl {
         }
         .await;
         if let Err(error) = publication {
-            if let Some((graph, previous)) = checked_graph
-                && let Err(rollback) = graph
-                    .set_thread_spawn_edge_status(thread_id, previous)
-                    .await
-            {
-                if let Some(parent_thread_id) = parent_id {
+            if let Some((graph, previous)) = checked_graph {
+                let owner_session_id = self
+                    .bound_session_id()
+                    .filter(|_| graph.supports_agent_aliases());
+                let rollback: CodexResult<()> = async {
+                    let parent_thread_id = parent_id.ok_or_else(|| {
+                        CodexErr::InvalidRequest("missing restored parent".to_string())
+                    })?;
+                    let _permission = self.acquire_messaging_permission_transaction().await;
+                    match previous {
+                        ThreadSpawnEdgeStatus::Closed => {
+                            let revoked = graph
+                                .close_thread_spawn_edge_if_current(
+                                    codex_agent_graph_store::ThreadSpawnEdgeAuthority {
+                                        thread_id,
+                                        parent_thread_id,
+                                        owner_session_id,
+                                    },
+                                    vec![thread_id],
+                                )
+                                .await
+                                .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+                            if revoked
+                                && let Err(cleanup) = state
+                                    .thread_store()
+                                    .supersede_mailbox_final_subscriptions_for_threads(vec![
+                                        thread_id,
+                                    ])
+                                    .await
+                            {
+                                warn!(
+                                    %cleanup,
+                                    %thread_id,
+                                    "mailbox cleanup after restoration rollback failed; graph epochs fence old intents"
+                                );
+                            }
+                        }
+                        ThreadSpawnEdgeStatus::Open => {
+                            // Publication only writes Open. Do not reopen an edge that
+                            // another owner closed while the failed publication unwound.
+                            let open = graph
+                                .list_thread_spawn_children(
+                                    parent_thread_id,
+                                    Some(ThreadSpawnEdgeStatus::Open),
+                                )
+                                .await
+                                .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+                            if !open.contains(&thread_id) {
+                                return Err(CodexErr::InvalidRequest(
+                                    "restored spawn edge changed during publication".to_string(),
+                                ));
+                            }
+                            if graph.supports_agent_aliases() {
+                                let current = graph
+                                    .find_current_agent_alias_by_thread(thread_id)
+                                    .await
+                                    .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+                                if current.as_ref().map(|alias| alias.session_id)
+                                    != owner_session_id
+                                    || owner_session_id.is_none()
+                                {
+                                    return Err(CodexErr::InvalidRequest(
+                                        "restored spawn edge owner changed during publication"
+                                            .to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(rollback) = rollback {
+                    let parent_thread_id = parent_id.ok_or_else(|| {
+                        CodexErr::InvalidRequest("missing restored parent".to_string())
+                    })?;
                     state.fence_restoration(crate::thread_manager::RestorationFence {
                         runtime: thread.session.presentation_id(),
                         parent_thread_id,
+                        owner_session_id,
                         previous_edge: previous,
                         reason: rollback.to_string(),
                     });
+                    return Err(CodexErr::Fatal(format!(
+                        "{error}; spawn-edge rollback failed: {rollback}; restoration is quarantined for this manager; explicitly close the child, then resume it through its live owner"
+                    )));
                 }
-                return Err(CodexErr::Fatal(format!(
-                    "{error}; spawn-edge rollback failed: {rollback}; restoration is quarantined for this manager; explicitly close the child, then resume it through its live owner"
-                )));
             }
             return Err(error);
         }

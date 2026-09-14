@@ -10,6 +10,9 @@ use futures::future::BoxFuture;
 
 pub(super) enum ResponseObserverStart {
     FutureOnly,
+    MailboxFinalTurn {
+        turn_id: String,
+    },
     CurrentOrNext {
         observed_status: AgentStatus,
         delivered_final_turns: HashSet<String>,
@@ -69,6 +72,7 @@ impl LocalAgentControl {
         )?;
         let delivered_final_turns =
             super::resume_delivery::delivered_final_turns(&observer, child_thread_id).await;
+        let _permission = self.acquire_messaging_permission_transaction().await;
         let _transaction = self
             .acquire_response_observation_transaction(observer.session.presentation_id())
             .await;
@@ -117,6 +121,17 @@ impl LocalAgentControl {
                 .ok_or_else(|| CodexErr::InvalidRequest("observer is closing".to_string()))?;
             let state = self.upgrade()?;
             let generation = state.agent_lifecycle_generation(child.thread_id);
+            let retired = if matches!(&start, ResponseObserverStart::CurrentOrNext { .. }) {
+                self.active_mailbox_subscription_for_policy(observer, child)
+                    .await?
+            } else {
+                None
+            };
+            let selection = retired
+                .as_ref()
+                .map(|_| presentation::ResponseObservationSelection {
+                    selection_id: Uuid::now_v7(),
+                });
             let started_control = self.clone();
             let terminal_control = self.clone();
             let (_, responses, (registration, reconciled_terminal)) =
@@ -152,6 +167,9 @@ impl LocalAgentControl {
                         let reconciled_terminal = start.reconciled_terminal(snapshot);
                         let target_turn = match &start {
                             ResponseObserverStart::FutureOnly => None,
+                            ResponseObserverStart::MailboxFinalTurn { turn_id } => {
+                                Some(turn_id.clone())
+                            }
                             ResponseObserverStart::CurrentOrNext { .. } => {
                                 snapshot.active_turn_id.clone().or_else(|| {
                                     reconciled_terminal.as_ref().map(|(turn, _)| turn.clone())
@@ -168,10 +186,16 @@ impl LocalAgentControl {
                             ResponseObservationPersistence::Durable,
                             snapshot.next_event_sequence,
                             snapshot.last_commentary_item_id.clone(),
+                            selection.map(|selection| selection.selection_id),
                         );
                         (registration, reconciled_terminal)
                     },
                 );
+            if let (Some(message_id), Some(selection)) = (retired.as_ref(), selection) {
+                self.retire_mailbox_final_subscription_preserving_observation(
+                    parent, child, message_id, &selection,
+                );
+            }
             if binding == ResponseObservationBinding::NextTurn
                 && let Err(error) = self
                     .persist_response_observation_snapshot(parent, child)
@@ -182,6 +206,10 @@ impl LocalAgentControl {
             }
             if let Some((turn_id, status)) = reconciled_terminal {
                 self.record_response_observation_terminal(parent, child, &turn_id, status);
+            }
+            if let Some(message_id) = retired {
+                self.retire_mailbox_subscription_token(observer, child, &message_id)
+                    .await?;
             }
             if let Some(registration) = registration {
                 let control = self.clone();

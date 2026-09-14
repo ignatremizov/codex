@@ -29,6 +29,13 @@ use ratatui::style::Modifier;
 use tokio::sync::mpsc::unbounded_channel;
 use unicode_width::UnicodeWidthStr;
 
+fn details_without_receiver(lines: Vec<ratatui::text::Line<'static>>) -> AgentControlPaneDetails {
+    AgentControlPaneDetails {
+        lines,
+        ..AgentControlPaneDetails::default()
+    }
+}
+
 async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> ListSelectionView {
     let mut app = super::super::test_support::make_test_app().await;
     let main_thread_id =
@@ -238,7 +245,7 @@ async fn current_agent_uses_markerless_name_emphasis() {
 
 #[test]
 fn agent_control_pane_details_snapshot() {
-    let details = AgentControlPaneDetails::new(vec![
+    let details = details_without_receiver(vec![
         "Anscombe [reviewer]".bold().into(),
         vec!["running 4m 12s".green(), " · ref 2".dim()].into(),
         vec![
@@ -304,11 +311,11 @@ fn agent_control_pane_details_snapshot() {
 
 #[test]
 fn selecting_agent_updates_shared_preview_revision() {
-    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::new(vec!["First".into()]));
+    let preview = AgentControlPanePreview::new(details_without_receiver(vec!["First".into()]));
     let renderable = preview.renderable();
     assert_eq!(renderable.layout_revision(), Some(0));
 
-    preview.select(AgentControlPaneDetails::new(vec!["Second".into()]));
+    preview.select(details_without_receiver(vec!["Second".into()]));
 
     assert_eq!(renderable.layout_revision(), Some(1));
     assert_eq!(
@@ -319,6 +326,128 @@ fn selecting_agent_updates_shared_preview_revision() {
             .wrapped_lines(/*width*/ 40),
         vec!["Second".into()]
     );
+}
+
+#[test]
+fn mailbox_preview_rejects_stale_reads_and_shows_pending_counts() {
+    let selected = ThreadId::from_u128(1);
+    let other = ThreadId::from_u128(2);
+    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::for_receiver(
+        selected,
+        vec![
+            "Hume [reviewer]".into(),
+            "".into(),
+            "Enter opens this thread".into(),
+        ],
+    ));
+    let first_request = preview
+        .begin_mailbox_read()
+        .expect("a selected receiver should request its mailbox inventory");
+    preview.select(AgentControlPaneDetails::for_receiver(
+        other,
+        vec!["Other".into(), "".into(), "Enter opens this thread".into()],
+    ));
+    let other_request = preview
+        .begin_mailbox_read()
+        .expect("selecting a receiver should request its mailbox inventory");
+    preview.select(AgentControlPaneDetails::for_receiver(
+        selected,
+        vec![
+            "Hume [reviewer]".into(),
+            "".into(),
+            "Enter opens this thread".into(),
+        ],
+    ));
+    let selected_again = preview
+        .begin_mailbox_read()
+        .expect("reselecting a receiver should issue a new inventory request");
+    assert_ne!(first_request.1, selected_again.1);
+    assert!(
+        !preview.finish_mailbox_read(
+            first_request.0,
+            first_request.1,
+            AgentMailboxInventoryDisplay::Available {
+                pending_total: 99,
+                sender_counts: vec![("user".to_string(), 99)],
+            },
+        ),
+        "a result from an earlier selection must not replace current details"
+    );
+    assert!(
+        !preview.finish_mailbox_read(
+            other_request.0,
+            other_request.1,
+            AgentMailboxInventoryDisplay::Unavailable,
+        ),
+        "a result for another receiver must not replace current details"
+    );
+    assert!(preview.finish_mailbox_read(
+        selected_again.0,
+        selected_again.1,
+        AgentMailboxInventoryDisplay::Unavailable,
+    ));
+    let unavailable = preview
+        .selected
+        .lock()
+        .expect("preview state should not be poisoned")
+        .wrapped_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(unavailable.contains("Pending mail: unavailable"));
+
+    let empty_request = preview
+        .begin_mailbox_read()
+        .expect("the selected receiver should be refreshable");
+    assert!(preview.finish_mailbox_read(
+        empty_request.0,
+        empty_request.1,
+        AgentMailboxInventoryDisplay::Available {
+            pending_total: 0,
+            sender_counts: Vec::new(),
+        },
+    ));
+    let empty = preview
+        .selected
+        .lock()
+        .expect("preview state should not be poisoned")
+        .wrapped_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(empty.contains("Pending mail: 0"));
+    assert!(!empty.contains("unavailable"));
+
+    let pending_request = preview
+        .begin_mailbox_read()
+        .expect("the selected receiver should be refreshable");
+    assert!(preview.finish_mailbox_read(
+        pending_request.0,
+        pending_request.1,
+        AgentMailboxInventoryDisplay::Available {
+            pending_total: 3,
+            sender_counts: vec![("ref 2".to_string(), 2), ("user".to_string(), 1)],
+        },
+    ));
+    let rendered = preview
+        .selected
+        .lock()
+        .expect("preview state should not be poisoned")
+        .wrapped_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    Hume [reviewer]
+    Pending mail: 3
+      ref 2: 2
+      user: 1
+
+    Enter opens this thread
+    ");
 }
 
 #[test]
@@ -488,7 +617,7 @@ async fn child_primary_view_uses_durable_ref_one_as_agent_tree_main() {
 
 #[test]
 fn wide_agent_pane_renders_the_complete_side_detail_column() {
-    let details = AgentControlPaneDetails::new(vec![
+    let details = details_without_receiver(vec![
         "Hopper [reviewer]".bold().into(),
         "running · ref 2".into(),
         "".into(),
@@ -550,7 +679,7 @@ fn wide_agent_pane_renders_the_complete_side_detail_column() {
 
 #[test]
 fn wide_agent_pane_uses_side_panel_height_for_agent_rows() {
-    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::new(
+    let preview = AgentControlPanePreview::new(details_without_receiver(
         (1..=20)
             .map(|row| format!("Detail row {row}").into())
             .collect(),
@@ -669,6 +798,7 @@ async fn agent_pane_uses_split_layout_at_94_columns_snapshot() {
     Response: none
     Queued: 0
     Children: 0
+    Pending mail: loading
     Enter opens this thread
     footer:
     ctrl + t inspects transcript · Tab opens controls.
@@ -757,6 +887,7 @@ async fn agent_pane_stacks_details_at_93_columns_snapshot() {
     Response: none
     Queued: 0
     Children: 0
+    Pending mail: loading
     Enter opens this thread
     footer:
     ctrl + t inspects transcript · Tab opens controls.

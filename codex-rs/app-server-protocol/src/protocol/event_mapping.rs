@@ -19,6 +19,9 @@ use crate::protocol::v2::ReasoningSummaryPartAddedNotification;
 use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
+use crate::protocol::v2::TerminalWait;
+use crate::protocol::v2::TerminalWaitCompletionReason;
+use crate::protocol::v2::TerminalWaitMode;
 use crate::protocol::v2::ThreadItem;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::items::TurnItem;
@@ -561,6 +564,49 @@ pub fn item_event_to_server_notification(
                 process_id: terminal_event.process_id,
                 stdin: terminal_event.stdin,
                 deadline_at_ms: terminal_event.deadline_at_ms,
+                wait: terminal_event.wait.map(|wait| match wait {
+                    codex_protocol::protocol::TerminalWaitEvent::Started {
+                        interaction_id,
+                        started_at_ms,
+                        mode,
+                    } => TerminalWait::Started {
+                        interaction_id,
+                        started_at_ms,
+                        mode: match mode {
+                            codex_protocol::protocol::TerminalWaitMode::Timed => {
+                                TerminalWaitMode::Timed
+                            }
+                            codex_protocol::protocol::TerminalWaitMode::UntilExit => {
+                                TerminalWaitMode::UntilExit
+                            }
+                        },
+                    },
+                    codex_protocol::protocol::TerminalWaitEvent::Finished {
+                        interaction_id,
+                        elapsed_ms,
+                        reason,
+                    } => TerminalWait::Finished {
+                        interaction_id,
+                        elapsed_ms,
+                        reason: match reason {
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Exited => {
+                                TerminalWaitCompletionReason::Exited
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Timeout => {
+                                TerminalWaitCompletionReason::Timeout
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Input => {
+                                TerminalWaitCompletionReason::Input
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Cancelled => {
+                                TerminalWaitCompletionReason::Cancelled
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Failed => {
+                                TerminalWaitCompletionReason::Failed
+                            }
+                        },
+                    },
+                }),
             })
         }
         EventMsg::ExecCommandEnd(exec_command_end_event) => {

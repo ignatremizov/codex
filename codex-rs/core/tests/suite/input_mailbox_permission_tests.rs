@@ -68,6 +68,7 @@ async fn mixed_receipt_is_lean_without_hiding_rejection_or_reordering_delivery(
                     sender_turn_id: "sender-turn".to_string(),
                 }),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let accepted = test
@@ -82,6 +83,7 @@ async fn mixed_receipt_is_lean_without_hiding_rejection_or_reordering_delivery(
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let requests = mount_sse_sequence(
@@ -106,7 +108,7 @@ async fn mixed_receipt_is_lean_without_hiding_rejection_or_reordering_delivery(
     let output = requests[1].function_call_output("mixed-call");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(output["output"].as_str().expect("receipt"))?,
-        json!({"status": "ok", "rejected_count": 1}),
+        json!({"rejected_count": 1}),
     );
     let input = requests[1].input();
     let result_index = input
@@ -255,6 +257,7 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
                 input: original.clone(),
                 attribution: Box::new(attribution.clone()),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let arguments = json!({"from": sender.to_string()}).to_string();
@@ -377,6 +380,7 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
                 }],
                 attribution: Box::new(attribution.clone()),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     test.codex
@@ -406,26 +410,12 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
     })
     .await;
     for (request, call_id, expected) in [
-        (
-            &repaired_request,
-            "recover-admitted",
-            json!({
-                "status":"ok"
-            }),
-        ),
-        (
-            &final_request,
-            "recover-admitted",
-            json!({
-                "status":"ok"
-            }),
-        ),
+        (&repaired_request, "recover-admitted", None),
+        (&final_request, "recover-admitted", None),
         (
             &final_request,
             "consume-new",
-            json!({
-                "status":"rejected", "rejected_count":1
-            }),
+            Some(json!({"status":"rejected", "rejected_count":1})),
         ),
     ] {
         let body = request.body_json();
@@ -435,10 +425,15 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
             .iter()
             .find(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
             .expect("mail result");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(output["output"].as_str().expect("result"))?,
-            expected
-        );
+        let output_text = output["output"].as_str().expect("result");
+        if let Some(expected) = expected {
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(output_text)?,
+                expected
+            );
+        } else {
+            assert_eq!(output_text, "");
+        }
     }
     for request in [repaired_request, final_request] {
         let request = request.body_json();

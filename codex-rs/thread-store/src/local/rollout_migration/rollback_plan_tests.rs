@@ -323,6 +323,8 @@ fn agent_response_observation_survives_rollback_of_surrounding_turn() {
             final_delivery: AgentResponseFinalDelivery::Wake,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         },
     ));
     let rollback = line(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
@@ -394,6 +396,8 @@ fn committed_agent_response_pair_survives_historical_rollback() {
             final_delivery: AgentResponseFinalDelivery::Wake,
             final_delivery_response_item_id: Some(response_item_id.clone()),
             committed_delivery_response_item_ids: vec![response_item_id],
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         },
     ));
     let rollback = line(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
@@ -482,6 +486,8 @@ fn adjacent_observation_preserves_committed_response_in_rewritten_compaction() {
             final_delivery: AgentResponseFinalDelivery::Wake,
             final_delivery_response_item_id: Some(response_item_id.clone()),
             committed_delivery_response_item_ids: vec![response_item_id],
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         },
     ));
     let lines = [metadata, response, observation, compaction, rollback];

@@ -299,6 +299,8 @@ mod plan_mode;
 #[path = "tests/plugin_catalog_tests.rs"]
 mod plugin_catalog;
 mod popups_and_settings;
+#[path = "tests/process_wait.rs"]
+mod process_wait;
 #[path = "tests/rate_limit_recovery_tests.rs"]
 mod rate_limit_recovery_tests;
 #[path = "tests/reasoning_status_tests.rs"]
@@ -312,6 +314,8 @@ mod review_picker_tests;
 mod session_model_selection_tests;
 mod side;
 mod slash_commands;
+#[path = "tests/sleep_tests.rs"]
+mod sleep_tests;
 #[path = "tests/sparkle_submission_tests.rs"]
 mod sparkle_submission_tests;
 #[path = "tests/startup_submission_tests.rs"]
@@ -334,12 +338,13 @@ pub(crate) use helpers::make_chatwidget_manual_with_sender;
 pub(crate) use helpers::set_chatgpt_auth;
 pub(crate) use helpers::set_fast_mode_test_catalog;
 pub(super) use helpers::*;
-
 #[path = "tests/questions_tests.rs"]
 mod questions_tests;
 
 #[path = "tests/list_spacing_tests.rs"]
 mod list_spacing_tests;
 
+#[path = "tests/mailbox_read_tests.rs"]
+mod mailbox_read_tests;
 #[path = "tests/question_notifications_tests.rs"]
 mod question_notifications_tests;

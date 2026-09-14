@@ -271,16 +271,16 @@ impl LocalAgentControl {
     }
 
     /// Restore a pending/current runtime before acquiring an outer observer transaction.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "settings must publish under the same permission mutex as input admission"
-    )]
     pub(crate) async fn restore_agent_send_settings(
         &self,
         current: SessionPresentationId,
     ) -> CodexResult<()> {
-        let _permission = self.acquire_messaging_permission_transaction().await;
-        self.restore_agent_send_settings_locked(current).await
+        // Keep settings reads and restoration under the same admission mutex.
+        let permission = self.acquire_messaging_permission_transaction().await;
+        let result = self.restore_agent_send_settings_locked(current).await;
+        drop(permission);
+        result?;
+        Ok(())
     }
 
     pub(in crate::agent::control) async fn restore_agent_send_settings_locked(

@@ -4,6 +4,8 @@
 //! absence under its durable delivery permit before cancellation. SQL does neither.
 
 use super::SqliteQueueStore;
+use super::mailbox::MailboxInventoryAcknowledgement;
+use super::mailbox::bind_mailbox_final_subscriptions_for_inventory;
 use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde::Serialize;
@@ -197,7 +199,32 @@ impl SqliteQueueStore {
         receiver_thread_id: ThreadId,
         notification_id: &str,
     ) -> anyhow::Result<i64> {
+        Ok(self
+            .acknowledge_mail_inventory_with_final_subscriptions(
+                receiver_thread_id,
+                notification_id,
+            )
+            .await?
+            .notified_through)
+    }
+
+    /// Advances the inventory watermark and binds every eligible final
+    /// subscription in the same transaction.
+    pub async fn acknowledge_mail_inventory_with_final_subscriptions(
+        &self,
+        receiver_thread_id: ThreadId,
+        notification_id: &str,
+    ) -> anyhow::Result<MailboxInventoryAcknowledgement> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let through_sequence = sqlx::query_scalar::<_, i64>(
+            "SELECT notification_through FROM mailbox_inventory_state
+             WHERE receiver_thread_id = ? AND notification_id = ?",
+        )
+        .bind(receiver_thread_id.to_string())
+        .bind(notification_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(stale_notification)?;
         let watermark = sqlx::query_scalar(
             "UPDATE mailbox_inventory_state SET
                 notified_through = MAX(notified_through, notification_through),
@@ -210,8 +237,18 @@ impl SqliteQueueStore {
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(stale_notification)?;
+        let bound_subscriptions = bind_mailbox_final_subscriptions_for_inventory(
+            &mut tx,
+            receiver_thread_id,
+            notification_id,
+            through_sequence,
+        )
+        .await?;
         tx.commit().await?;
-        Ok(watermark)
+        Ok(MailboxInventoryAcknowledgement {
+            notified_through: watermark,
+            bound_subscriptions,
+        })
     }
 
     /// Retires a matching preparation without advancing notification or consumption state.

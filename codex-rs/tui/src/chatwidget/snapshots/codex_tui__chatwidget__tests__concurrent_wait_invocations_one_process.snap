@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/process_wait.rs
+expression: concurrent
+---
+• Waiting on 1 process (esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+  └ Until exit · 5s elapsed · cargo build · process p10 · wait w11
+    Until exit · 10s elapsed · cargo build · process p10 · wait w10
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project

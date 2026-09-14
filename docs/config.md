@@ -240,6 +240,10 @@ When Codex knows which client started the turn, the legacy notify JSON payload a
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.
 
+## Background terminal waits
+
+Pass `wait_until_exit: true` to `write_stdin` to wait without a yield deadline until that process exits. In that mode `yield_time_ms` is ignored, including the configured maximum poll window. New turn input or explicit cancellation ends the wait and returns control without terminating the background process; omitting the field or passing `false` preserves the bounded polling behavior.
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key), falling

@@ -32,6 +32,7 @@ async fn observation_failure_releases_only_its_exact_observer_and_shared_native_
                     ResponseObservationPersistence::Durable,
                     /*minimum_event_sequence*/ 0,
                     /*after_item_id*/ None,
+                    /*selection_id*/ None,
                 )
                 .expect("independent observation"),
         );
@@ -95,4 +96,55 @@ async fn observation_failure_releases_only_its_exact_observer_and_shared_native_
         .shutdown_all_threads_bounded(Duration::from_secs(/*secs*/ 5))
         .await;
     assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+}
+
+#[tokio::test]
+async fn explicit_selection_can_downgrade_an_unclaimed_mailbox_wake() {
+    let harness = AgentControlHarness::new().await;
+    let (_, observer) = harness.start_thread().await;
+    let control = &observer.session.services.agent_control;
+    let parent = observer.session.presentation_id();
+    for replacement in [
+        FinalResponseObservation::None,
+        FinalResponseObservation::PresentationOnly,
+        FinalResponseObservation::Passive,
+    ] {
+        let child = SessionPresentationId::new(ThreadId::new(), Uuid::now_v7());
+        let selection = presentation::ResponseObservationSelection {
+            selection_id: Uuid::now_v7(),
+        };
+        control.install_mailbox_final_subscription(parent, child, "mail-token");
+        control.bind_mailbox_final_subscription_to_turn(parent, child, "mail-token", "bound-turn");
+        let registration = control.register_response_watcher_with_parent_at_sequence(
+            child,
+            &observer,
+            ResponseObservationPolicy::from_parts(/*commentary*/ false, replacement),
+            /*retain_passive_completion_relationship*/ false,
+            Some("bound-turn".into()),
+            ResponseObservationBinding::NextTurn,
+            ResponseObservationPersistence::Durable,
+            /*minimum_event_sequence*/ 0,
+            /*after_item_id*/ None,
+            Some(selection.selection_id),
+        );
+        control.retire_mailbox_final_subscription_preserving_observation(
+            parent,
+            child,
+            "mail-token",
+            &selection,
+        );
+        assert_eq!(
+            (
+                control.response_observation_turn_final_response(parent, child, "bound-turn"),
+                control.mailbox_final_subscription_for_turn(parent, child, "bound-turn"),
+                control.mailbox_final_subscription_message_id(parent, child),
+            ),
+            (Some(replacement), None, None),
+        );
+        drop(registration);
+    }
+    observer
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown observer");
 }

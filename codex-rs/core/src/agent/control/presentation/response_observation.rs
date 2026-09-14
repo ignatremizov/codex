@@ -7,6 +7,7 @@ use codex_protocol::protocol::AgentResponseCommentaryDelivery;
 use codex_protocol::protocol::AgentResponseObservation;
 
 mod delivery;
+mod mailbox_subscription;
 mod runtime;
 mod snapshot;
 mod user_policy;
@@ -16,6 +17,8 @@ pub(crate) use user_reply_route::TargetMessageRouteMode;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ResponseTurnObservation {
+    pub(super) response_observation_selection_id: Option<Uuid>,
+    pub(super) mailbox_final_subscription_message_id: Option<String>,
     pub(super) task_preview: Option<String>,
     pub(super) promoted_task_context:
         Option<codex_protocol::protocol::AgentResponsePromotedTaskContext>,
@@ -34,6 +37,8 @@ pub(super) struct ResponseTurnObservation {
 impl Default for ResponseTurnObservation {
     fn default() -> Self {
         Self {
+            response_observation_selection_id: None,
+            mailbox_final_subscription_message_id: None,
             task_preview: None,
             promoted_task_context: None,
             commentary_admissions: Vec::new(),
@@ -98,6 +103,8 @@ impl ResponseTurnObservation {
 
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::agent::control) struct ResponseObserverRelationship {
+    pub(super) mailbox_final_subscription_message_id: Option<String>,
+    pub(super) mailbox_final_subscription_suppressed_message_id: Option<String>,
     pub(super) revoked: bool,
     pub(super) persistence: ResponseObservationPersistence,
     pub(super) baseline_final_response: FinalResponseObservation,
@@ -111,6 +118,8 @@ pub(in crate::agent::control) struct ResponseObserverRelationship {
 impl Default for ResponseObserverRelationship {
     fn default() -> Self {
         Self {
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
             revoked: false,
             persistence: ResponseObservationPersistence::RuntimeOnly,
             baseline_final_response: FinalResponseObservation::None,
@@ -121,6 +130,11 @@ impl Default for ResponseObserverRelationship {
             turns: HashMap::new(),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ResponseObservationSelection {
+    pub(crate) selection_id: Uuid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +178,7 @@ pub(crate) struct ResponseObservationDeliveryCommit {
     pub(crate) turn_id: String,
     pub(crate) response_item_id: ResponseItemId,
     pub(crate) kind: ResponseObservationDeliveryKind,
+    pub(crate) mailbox_final_subscription_message_id: Option<String>,
     /// Captured at delivery admission, before live policy can be retired or replaced.
     pub(crate) model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility,
 }
@@ -205,6 +220,7 @@ impl LocalAgentControl {
         persistence: ResponseObservationPersistence,
         minimum_event_sequence: u64,
         after_item_id: Option<String>,
+        selection_id: Option<Uuid>,
     ) -> Option<ResponseWatcherRegistration> {
         let parent = observer.session.presentation_id();
         if parent.instance_id.is_nil() || child.instance_id.is_nil() {
@@ -229,6 +245,7 @@ impl LocalAgentControl {
             // a wake policy on the current turn.
             relationship.baseline_final_response = FinalResponseObservation::Passive;
         }
+        let selected_turn = target_turn_id.clone();
         match target_turn_id {
             Some(target_turn_id) => {
                 relationship
@@ -260,6 +277,27 @@ impl LocalAgentControl {
                     .or_default()
                     .merge(response_observation, minimum_event_sequence, after_item_id),
             },
+        }
+        let selected = match selected_turn {
+            Some(turn) => relationship.turns.get_mut(&turn),
+            None => match pending_binding {
+                ResponseObservationBinding::NextTurn => relationship.pending_next_turn.as_mut(),
+                ResponseObservationBinding::ExplicitAdmission(id) => {
+                    relationship.pending_admissions.get_mut(&id)
+                }
+            },
+        };
+        if let Some(selected) = selected {
+            // An explicit replacement supersedes an unclaimed mailbox wake, including
+            // downgrades to passive or presentation-only. Ordinary policy merges and
+            // already claimed receipt identities remain unchanged.
+            if selection_id.is_some()
+                && selected.mailbox_final_subscription_message_id.is_some()
+                && selected.final_delivery_response_item_id.is_none()
+            {
+                selected.final_response = response_observation.final_response();
+            }
+            selected.response_observation_selection_id = selection_id;
         }
 
         state
@@ -552,6 +590,7 @@ impl ResponseWatcherRegistration {
             .get(&(self.parent, self.child))
             .is_some_and(|relationship| {
                 relationship.baseline_final_response != FinalResponseObservation::None
+                    || relationship.mailbox_final_subscription_message_id.is_some()
                     || relationship.reply_route.is_some()
                     || relationship.pending_next_turn.is_some()
                     || !relationship.pending_admissions.is_empty()

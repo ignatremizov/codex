@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/tests/process_wait.rs
+expression: completed
+---
+• Waited 1m 00.24s · timed wait ended · cargo fmt --check (process p3)

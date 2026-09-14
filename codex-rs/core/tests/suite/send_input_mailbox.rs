@@ -9,6 +9,7 @@ use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::UserAgentReplyRouteMode;
+use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_features::Feature;
 use codex_protocol::items::CollabAgentToolCallStatus;
@@ -21,6 +22,7 @@ use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
+use codex_thread_store::MailboxFinalSubscriptionState;
 use codex_thread_store::MailboxMessageState;
 use codex_thread_store::MailboxPayload;
 use codex_thread_store::MailboxSender;
@@ -51,17 +53,20 @@ enum ReceiverRuntime {
     Active,
 }
 
-#[test_case("z", ReceiverRuntime::Idle, ThreadHistoryMode::Legacy; "idle")]
-#[test_case("zx", ReceiverRuntime::Idle, ThreadHistoryMode::Paginated; "idle_extra_x")]
-#[test_case("zfx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy; "unloaded_cancelled_wake")]
-#[test_case("zfxx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Paginated; "unloaded_extra_x")]
-#[test_case("zz", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy; "repeated_z")]
-#[test_case("z", ReceiverRuntime::Active, ThreadHistoryMode::Paginated; "active_not_steered")]
+#[test_case("z", ReceiverRuntime::Idle, ThreadHistoryMode::Legacy, false; "idle")]
+#[test_case("zx", ReceiverRuntime::Idle, ThreadHistoryMode::Paginated, false; "idle_extra_x")]
+#[test_case("zfx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy, false; "unloaded_cancelled_wake")]
+#[test_case("zfxx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Paginated, false; "unloaded_extra_x")]
+#[test_case("zf", ReceiverRuntime::Idle, ThreadHistoryMode::Legacy, true; "conditional_final_subscription")]
+#[test_case("zffx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Paginated, true; "normalized_conditional_final_subscription")]
+#[test_case("zz", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy, false; "repeated_z")]
+#[test_case("z", ReceiverRuntime::Active, ThreadHistoryMode::Paginated, false; "active_not_steered")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mailbox_accepts_original_typed_input_without_receiver_work(
     flags: &str,
     runtime: ReceiverRuntime,
     history_mode: ThreadHistoryMode,
+    expects_final_subscription: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let (server, _) = start_streaming_sse_server(Vec::new()).await;
@@ -250,8 +255,28 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
         .lookup_mailbox_input(receiver, &key)
         .await?
         .ok_or_else(|| anyhow::anyhow!("accepted mailbox row"))?;
-    assert_eq!(result, json!({"status": "mailboxAccepted"}));
+    let expected_result = if matches!(runtime, ReceiverRuntime::Unloaded) {
+        json!({
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    } else {
+        json!({"status": "mailboxAccepted"})
+    };
+    assert_eq!(result, expected_result);
     assert_eq!(accepted.state, MailboxMessageState::Pending);
+    if expects_final_subscription {
+        let subscription = accepted
+            .final_subscription
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("conditional final subscription"))?;
+        assert_eq!(
+            (subscription.state, subscription.bound_turn_id.as_deref()),
+            (MailboxFinalSubscriptionState::Pending, None),
+        );
+    } else {
+        assert_eq!(accepted.final_subscription, None);
+    }
     assert_eq!(
         accepted.sender,
         MailboxSender::Agent(test.session_configured.thread_id)
@@ -323,7 +348,6 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
 #[test_case("zc", false; "commentary")]
 #[test_case("zm", false; "transient_reply_grant")]
 #[test_case("zq", false; "queued_turn")]
-#[test_case("zffx", false; "remaining_wake")]
 #[test_case("z", true; "interrupt")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn incompatible_mailbox_flags_never_admit_receiver_input(
@@ -392,6 +416,282 @@ async fn incompatible_mailbox_flags_never_admit_receiver_input(
     assert!(call_output(&request, "invalid-mail-call")?.contains("mailbox"));
     assert_eq!(target.agent_status().await, before);
     assert_eq!(server.requests().await.len(), 2);
+    server.shutdown().await;
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config.features.enable(Feature::Collab).expect("V1");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("not V2");
+        })
+        .build_with_streaming_server_auto_env(&server)
+        .await?;
+    let sender_id = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions::default())
+        .await?
+        .target_thread_id;
+    let receiver_spawn = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions::default())
+        .await?;
+    let receiver_id = receiver_spawn.target_thread_id;
+    let receiver_ref = receiver_spawn
+        .agent_ref
+        .expect("receiver should have a root-scoped reference")
+        .to_string();
+    let sender = test.thread_manager.get_thread(sender_id).await?;
+    test.codex
+        .set_agent_reply_route(
+            &sender_id.to_string(),
+            Some(&receiver_id.to_string()),
+            UserAgentReplyRouteMode::Enabled,
+        )
+        .await?;
+
+    let arguments = serde_json::to_string(&json!({
+        "target": receiver_id.to_string(),
+        "message": "conditional response mail",
+        "w": "zf",
+    }))?;
+    server
+        .mount_response(
+            |_| true,
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("conditional-mail-send"),
+                    ev_function_call_with_namespace(
+                        "conditional-mail-call",
+                        "multi_agent_v1",
+                        "send_input",
+                        &arguments,
+                    ),
+                    ev_completed("conditional-mail-send"),
+                ]),
+            }],
+        )
+        .await;
+    let mut followup = server
+        .mount_response(
+            |_| true,
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("conditional-mail-accepted"),
+                    ev_completed("conditional-mail-accepted"),
+                ]),
+            }],
+        )
+        .await;
+    let submission = sender
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Save this result without starting receiver work.".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let TurnInputSubmission::Started { turn_id } = submission else {
+        anyhow::bail!("sender should start a new turn");
+    };
+    let request = timeout(
+        Duration::from_secs(/*secs*/ 15),
+        followup.wait_for_request(),
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_str::<Value>(&call_output(&request, "conditional-mail-call")?)?,
+        json!({"status": "mailboxAccepted"})
+    );
+    wait_for_event(sender.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let key = serde_json::to_string(&(
+        "v1-send-input-mailbox",
+        sender_id,
+        turn_id,
+        "conditional-mail-call",
+    ))?;
+    let accepted = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted mailbox row"))?;
+    let subscription = accepted
+        .final_subscription
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("conditional final subscription"))?;
+    assert_eq!(
+        (subscription.state, subscription.bound_turn_id.as_deref()),
+        (MailboxFinalSubscriptionState::Pending, None),
+    );
+
+    test.codex
+        .close_agent(
+            &receiver_id.to_string(),
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let closed = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("closed mailbox row"))?;
+    assert_eq!(
+        closed
+            .final_subscription
+            .as_ref()
+            .map(|subscription| subscription.state),
+        Some(MailboxFinalSubscriptionState::Superseded),
+    );
+    test.codex
+        .resume_agent(
+            &receiver_id.to_string(),
+            /*task*/ None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let resumed = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("resumed mailbox row"))?;
+    assert_eq!(
+        resumed
+            .final_subscription
+            .as_ref()
+            .map(|subscription| subscription.state),
+        Some(MailboxFinalSubscriptionState::Superseded),
+    );
+    assert_eq!(
+        test.thread_store
+            .lookup_active_mailbox_final_subscription(receiver_id, sender_id)
+            .await?,
+        None,
+    );
+
+    sender.shutdown_and_wait().await?;
+    test.thread_manager.remove_thread(&sender_id).await;
+    test.codex
+        .resume_agent(
+            &sender_id.to_string(),
+            /*task*/ None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    assert_eq!(
+        test.thread_store
+            .lookup_active_mailbox_final_subscription(receiver_id, sender_id)
+            .await?,
+        None,
+    );
+
+    let mut receiver_response = server
+        .mount_response(
+            |request| request.body_contains_text("complete receiver after close and resume"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("receiver-after-close"),
+                    ev_completed("receiver-after-close"),
+                ]),
+            }],
+        )
+        .await;
+    let expected_receiver_ref = receiver_ref;
+    let mut stale_wake_response = server
+        .mount_response(
+            move |request| {
+                request.body_json()["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|item| item["content"].as_array().into_iter().flatten())
+                    .filter_map(|content| content["text"].as_str())
+                    .filter_map(|text| {
+                        text.strip_prefix("<subagent_notification>")
+                            .and_then(|body| body.strip_suffix("</subagent_notification>"))
+                            .and_then(|body| serde_json::from_str::<Value>(body).ok())
+                    })
+                    .any(|notification| {
+                        notification["ref"].as_str() == Some(expected_receiver_ref.as_str())
+                    })
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("stale-mailbox-final-wake"),
+                    ev_completed("stale-mailbox-final-wake"),
+                ]),
+            }],
+        )
+        .await;
+    let resumed_receiver = test.thread_manager.get_thread(receiver_id).await?;
+    let submission = resumed_receiver
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "complete receiver after close and resume".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let TurnInputSubmission::Started { turn_id } = submission else {
+        anyhow::bail!("resumed receiver should start a new turn");
+    };
+    timeout(
+        Duration::from_secs(/*secs*/ 15),
+        receiver_response.wait_for_request(),
+    )
+    .await?;
+    timeout(
+        Duration::from_secs(/*secs*/ 15),
+        receiver_response.wait_for_completion(),
+    )
+    .await?;
+    wait_for_event(
+        resumed_receiver.as_ref(),
+        |event| matches!(event, EventMsg::TurnComplete(event) if event.turn_id == turn_id),
+    )
+    .await;
+    let after_receiver_turn = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("mailbox row after receiver turn"))?;
+    assert_eq!(
+        after_receiver_turn
+            .final_subscription
+            .as_ref()
+            .map(|subscription| subscription.state),
+        Some(MailboxFinalSubscriptionState::Superseded),
+    );
+    assert_eq!(
+        test.thread_store
+            .lookup_active_mailbox_final_subscription(receiver_id, sender_id)
+            .await?,
+        None,
+    );
+    assert!(
+        timeout(
+            Duration::from_secs(/*secs*/ 2),
+            stale_wake_response.wait_for_request(),
+        )
+        .await
+        .is_err(),
+        "a superseded mailbox final subscription must not wake its former sender",
+    );
     server.shutdown().await;
     Ok(())
 }
@@ -574,7 +874,17 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
         .map_err(|_| anyhow::anyhow!("retry gate closed"))?;
     let retry_request =
         timeout(Duration::from_secs(/*secs*/ 15), changed.wait_for_request()).await?;
-    assert_eq!(call_output(&retry_request, "retry-mail")?, first_output);
+    assert_eq!(
+        serde_json::from_str::<Value>(&first_output)?,
+        json!({"status": "mailboxAccepted"})
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&call_output(&retry_request, "retry-mail")?)?,
+        json!({
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    );
     let changed_request =
         timeout(Duration::from_secs(/*secs*/ 15), denied.wait_for_request()).await?;
     assert!(call_output(&changed_request, "retry-mail")?.contains("different input"));

@@ -62,6 +62,7 @@ impl Session {
                                 .final_delivery_response_item_id
                                 .clone()?,
                             kind: crate::agent::control::ResponseObservationDeliveryKind::Final,
+                            mailbox_final_subscription_message_id: observation.mailbox_final_subscription_message_id.clone(),
                             // Wait returns the consumed answer directly to the recipient model.
                             model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
                         })
@@ -83,6 +84,7 @@ impl Session {
                 };
                 records.insert(0, RolloutItem::EventMsg(event.msg.clone()));
                 let control = session.services.agent_control.clone();
+                let acknowledged_commits = commits.clone();
                 let receiver = session.dispatch_completion_publication(
                     permit,
                     records,
@@ -100,6 +102,9 @@ impl Session {
                     move || presentation_commit.commit(),
                 )?;
                 session.publication_result(receiver).await?;
+                for commit in &acknowledged_commits {
+                    session.acknowledge_mailbox_final_subscription_delivery(commit).await;
+                }
                 Ok::<(), CodexErr>(())
             }
             .await;

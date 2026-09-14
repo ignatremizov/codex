@@ -63,6 +63,7 @@ pub(crate) struct StatusIndicatorWidget {
     /// Hook activity may move below the status row when it cannot fit in full.
     hook_status_message: Option<String>,
     show_interrupt_hint: bool,
+    show_global_timer: bool,
     interrupt_binding: Option<ShortcutHint>,
 
     app_event_tx: AppEventSender,
@@ -103,6 +104,7 @@ impl StatusIndicatorWidget {
             inline_message: None,
             hook_status_message: None,
             show_interrupt_hint: true,
+            show_global_timer: true,
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc).into()),
             app_event_tx,
             frame_requester,
@@ -170,6 +172,14 @@ impl StatusIndicatorWidget {
         self.show_interrupt_hint = visible;
     }
 
+    pub(crate) fn set_global_timer_visible(&mut self, visible: bool) -> bool {
+        if self.show_global_timer == visible {
+            return false;
+        }
+        self.show_global_timer = visible;
+        true
+    }
+
     pub(crate) fn set_interrupt_binding(&mut self, binding: Option<ShortcutHint>) {
         self.interrupt_binding = binding;
     }
@@ -178,12 +188,6 @@ impl StatusIndicatorWidget {
         StatusIndicator { row: self, timer }
     }
 
-    fn countdown_remaining_seconds_at(&self, now: Instant) -> Option<u64> {
-        self.countdown_deadline.map(|deadline| {
-            let remaining = deadline.saturating_duration_since(now);
-            remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
-        })
-    }
     /// Wrap the details text into a fixed width and return the lines, truncating if necessary.
     fn wrapped_details_lines(&self, width: u16) -> Vec<Line<'static>> {
         let Some(details) = self.details.as_deref() else {
@@ -262,24 +266,24 @@ impl StatusIndicator<'_> {
         if !spans.is_empty() {
             spans.push(" ".into());
         }
-        if let Some(pretty_remaining) = pretty_remaining.as_deref() {
-            if row.show_interrupt_hint
-                && let Some(interrupt_binding) = row.interrupt_binding
-            {
-                spans.push(format!("({pretty_remaining} left • ").dim());
-                spans.extend(interrupt_binding.spans());
-                spans.push(" to interrupt)".dim());
-            } else {
-                spans.push(format!("({pretty_remaining} left)").dim());
+        let timer_prefix = row.show_global_timer.then(|| {
+            pretty_remaining.as_deref().map_or_else(
+                || format!("({pretty_elapsed}"),
+                |remaining| format!("({remaining} left"),
+            )
+        });
+        let interrupt_binding = row.interrupt_binding.filter(|_| row.show_interrupt_hint);
+        match (timer_prefix, interrupt_binding) {
+            (Some(prefix), Some(binding)) => spans.extend(vec![
+                format!("{prefix} • ").dim(),
+                binding.into(),
+                " to interrupt)".dim(),
+            ]),
+            (Some(prefix), None) => spans.push(format!("{prefix})").dim()),
+            (None, Some(binding)) => {
+                spans.extend(vec!["(".dim(), binding.into(), " to interrupt)".dim()])
             }
-        } else if row.show_interrupt_hint
-            && let Some(interrupt_binding) = row.interrupt_binding
-        {
-            spans.push(format!("({pretty_elapsed} • ").dim());
-            spans.extend(interrupt_binding.spans());
-            spans.push(" to interrupt)".dim());
-        } else {
-            spans.push(format!("({pretty_elapsed})").dim());
+            (None, None) => {}
         }
         if let Some(message) = &row.inline_message {
             // Keep optional context after elapsed/interrupt text so that core
@@ -324,10 +328,11 @@ impl Renderable for StatusIndicator<'_> {
         }
         if self.row.animations_enabled
             || self.timer.display_started_at.is_some()
-            || self
-                .timer
-                .countdown_remaining_seconds_at(Instant::now())
-                .is_some()
+            || (self.row.show_global_timer
+                && self
+                    .timer
+                    .countdown_deadline
+                    .is_some_and(|deadline| deadline > Instant::now()))
         {
             let interval_ms = if self.row.animations_enabled
                 && (self.row.effects.progress || self.row.effects.shimmer)
@@ -496,8 +501,8 @@ mod tests {
             Default::default(),
         );
         w.update_header("Waiting".to_string());
-        w.update_countdown_deadline(Some(Instant::now() + Duration::from_secs(60)));
         let mut timer = StatusTimer::default();
+        timer.countdown_deadline = Some(Instant::now() + Duration::from_secs(60));
         timer.pause_at(timer.last_resume_at);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
@@ -522,8 +527,8 @@ mod tests {
             /*animations_enabled*/ false,
             Default::default(),
         );
-        w.update_countdown_deadline(Some(Instant::now() - Duration::from_secs(1)));
         let mut timer = StatusTimer {
+            countdown_deadline: Some(Instant::now() - Duration::from_secs(1)),
             elapsed_running: Duration::from_secs(7),
             ..Default::default()
         };

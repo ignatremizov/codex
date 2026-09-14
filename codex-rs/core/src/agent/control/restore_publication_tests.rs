@@ -13,6 +13,7 @@ use codex_thread_store::InMemoryThreadStore;
 use pretty_assertions::assert_eq;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tokio::sync::Notify;
 
@@ -23,9 +24,44 @@ struct FaultGraph {
     pause_open: AtomicBool,
     open_started: Notify,
     release_open: Notify,
+    revocations: AtomicUsize,
 }
 
 impl AgentGraphStore for FaultGraph {
+    fn close_thread_spawn_edge_if_current(
+        &self,
+        expected: codex_agent_graph_store::ThreadSpawnEdgeAuthority,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async move {
+            if self.fail_closed.load(Ordering::Acquire) {
+                return Err(AgentGraphStoreError::Internal {
+                    message: "injected close failure".to_string(),
+                });
+            }
+            let mut edges = self.edges.lock().expect("graph");
+            let edge = edges.get_mut(&expected.thread_id).ok_or_else(|| {
+                AgentGraphStoreError::InvalidRequest {
+                    message: "missing captured edge".to_string(),
+                }
+            })?;
+            if edge.0 != expected.parent_thread_id
+                || expected.owner_session_id.is_some()
+                || !revoked_thread_ids.contains(&expected.thread_id)
+            {
+                return Err(AgentGraphStoreError::InvalidRequest {
+                    message: "restoration edge authority changed".to_string(),
+                });
+            }
+            let revoked = edge.1 == ThreadSpawnEdgeStatus::Open;
+            if revoked {
+                edge.1 = ThreadSpawnEdgeStatus::Closed;
+                self.revocations.fetch_add(1, Ordering::AcqRel);
+            }
+            Ok(revoked)
+        })
+    }
+
     fn upsert_thread_spawn_edge(
         &self,
         parent: ThreadId,
@@ -184,6 +220,7 @@ async fn fixture() -> Fixture {
 async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged_close() {
     let fixture = fixture().await;
     let state = fixture.owner.upgrade().expect("manager");
+    let generation = state.agent_lifecycle_generation(fixture.child.thread_id);
     let lock = state.v2_spawn_resume_lock(fixture.child.thread_id);
     let guard = lock.lock_owned().await;
     fixture.graph.fail_closed.store(true, Ordering::Release);
@@ -248,6 +285,8 @@ async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged
         .err()
         .expect("failed close keeps fence");
     assert!(close_error.to_string().contains("injected close failure"));
+    assert_eq!(fixture.graph.revocations.load(Ordering::Acquire), 0);
+    assert!(state.agent_lifecycle_generation_is_current(fixture.child.thread_id, generation));
     assert_eq!(
         state
             .restoration_fence(fixture.child.thread_id)
@@ -261,6 +300,8 @@ async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged
         .await
         .expect("explicit close acknowledges edge");
     assert!(state.restoration_fence(fixture.child.thread_id).is_none());
+    assert_eq!(fixture.graph.revocations.load(Ordering::Acquire), 1);
+    assert!(!state.agent_lifecycle_generation_is_current(fixture.child.thread_id, generation));
     assert_eq!(
         fixture
             .graph
@@ -272,6 +313,123 @@ async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged
             .expect("closed children"),
         vec![fixture.child.thread_id],
     );
+    fixture
+        .parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown parent");
+}
+
+#[tokio::test]
+async fn failed_publication_quarantines_an_edge_closed_during_metadata_commit() {
+    let fixture = fixture().await;
+    let state = fixture.owner.upgrade().expect("manager");
+    let guard = state
+        .agent_lifecycle_lock(fixture.child.thread_id)
+        .lock_owned()
+        .await;
+    fixture
+        .graph
+        .upsert_thread_spawn_edge(
+            fixture.parent.thread_id,
+            fixture.child.thread_id,
+            ThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open edge before restoration");
+    let error = fixture
+        .owner
+        .publish_restored_agent(&fixture.child.thread, Some(&fixture.parent.thread), || {
+            fixture.graph.edges.lock().expect("graph").insert(
+                fixture.child.thread_id,
+                (fixture.parent.thread_id, ThreadSpawnEdgeStatus::Closed),
+            );
+            Err(CodexErr::InvalidRequest(
+                "injected publication failure".to_string(),
+            ))
+        })
+        .await
+        .expect_err("changed edge is quarantined");
+    assert!(
+        error
+            .to_string()
+            .contains("spawn edge changed during publication")
+    );
+    let _error = fixture
+        .owner
+        .cleanup_unpublished_restoration(&fixture.child.thread, error)
+        .await;
+    drop(guard);
+    assert_eq!(
+        fixture
+            .graph
+            .edges
+            .lock()
+            .expect("graph")
+            .get(&fixture.child.thread_id)
+            .copied(),
+        Some((fixture.parent.thread_id, ThreadSpawnEdgeStatus::Closed)),
+    );
+    assert_eq!(fixture.graph.revocations.load(Ordering::Acquire), 0);
+    assert!(state.restoration_fence(fixture.child.thread_id).is_some());
+    fixture
+        .parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown parent");
+}
+
+#[tokio::test]
+async fn stale_restoration_fence_cannot_close_a_reparented_edge() {
+    let fixture = fixture().await;
+    let state = fixture.owner.upgrade().expect("manager");
+    let guard = state
+        .agent_lifecycle_lock(fixture.child.thread_id)
+        .lock_owned()
+        .await;
+    fixture.graph.fail_closed.store(true, Ordering::Release);
+    let error = fixture
+        .owner
+        .publish_restored_agent(&fixture.child.thread, Some(&fixture.parent.thread), || {
+            Err(CodexErr::InvalidRequest(
+                "injected publication failure".to_string(),
+            ))
+        })
+        .await
+        .expect_err("failed rollback establishes quarantine");
+    let _error = fixture
+        .owner
+        .cleanup_unpublished_restoration(&fixture.child.thread, error)
+        .await;
+    drop(guard);
+    let new_parent = ThreadId::new();
+    fixture.graph.edges.lock().expect("graph").insert(
+        fixture.child.thread_id,
+        (new_parent, ThreadSpawnEdgeStatus::Open),
+    );
+    fixture.graph.fail_closed.store(false, Ordering::Release);
+    let generation = state.agent_lifecycle_generation(fixture.child.thread_id);
+    let error = fixture
+        .owner
+        .close_agent(fixture.child.thread_id)
+        .await
+        .expect_err("stale quarantine cannot mutate adopted edge");
+    assert!(error.to_string().contains("authority changed"));
+    assert_eq!(
+        fixture
+            .graph
+            .edges
+            .lock()
+            .expect("graph")
+            .get(&fixture.child.thread_id)
+            .copied(),
+        Some((new_parent, ThreadSpawnEdgeStatus::Open)),
+    );
+    assert_eq!(fixture.graph.revocations.load(Ordering::Acquire), 0);
+    assert!(state.agent_lifecycle_generation_is_current(fixture.child.thread_id, generation));
+    assert!(state.restoration_fence(fixture.child.thread_id).is_some());
     fixture
         .parent
         .thread

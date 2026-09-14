@@ -192,6 +192,7 @@ mod safety_check_downgrade;
 mod scenarios;
 mod search_tool;
 mod send_input_mailbox;
+mod send_input_mailbox_final_subscription;
 mod send_user_message_async;
 mod settings_commits;
 mod settings_constraints;
@@ -223,6 +224,7 @@ mod unified_exec;
 mod unified_exec_process_events;
 mod unified_exec_stdin_approval;
 mod unified_exec_stdin_review_size;
+mod unified_exec_wait_until_exit;
 #[cfg(unix)]
 mod unified_exec_zsh_fork_approvals;
 mod unstable_features_warning;

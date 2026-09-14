@@ -178,13 +178,7 @@ impl ChatWidget {
             }
             ServerNotification::TerminalInteraction(notification) => {
                 if replay_kind.is_none() {
-                    self.on_terminal_interaction(
-                        notification.turn_id,
-                        notification.item_id,
-                        notification.process_id,
-                        notification.stdin,
-                        notification.deadline_at_ms,
-                    );
+                    self.on_terminal_interaction(notification);
                 } else if !notification.stdin.is_empty() {
                     // Replay may retain authored stdin history, but cannot mutate a live wait.
                     let command_display = self
@@ -596,6 +590,7 @@ impl ChatWidget {
             self.clear_status_countdown();
         }
         self.restore_realtime_transcripts_before_turn(&notification.turn_id);
+        let turn_id = notification.turn_id.clone();
         match notification.item {
             ThreadItem::UserMessage { content, .. } if replay_kind.is_none() => {
                 self.note_realtime_user_item_started(&notification.turn_id, &content);
@@ -656,6 +651,7 @@ impl ChatWidget {
             ThreadItem::WebSearch(item) => {
                 self.on_web_search_begin(item.id);
             }
+            ThreadItem::Sleep(item) => self.on_sleep_started(item, turn_id),
             ThreadItem::ImageGeneration(_) => {
                 self.on_image_generation_begin();
             }

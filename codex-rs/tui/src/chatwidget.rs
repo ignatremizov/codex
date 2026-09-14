@@ -331,10 +331,10 @@ use self::exec_state::CompletedUnifiedExecProcess;
 use self::exec_state::RunningCommand;
 use self::exec_state::UnifiedExecProcessSummary;
 use self::exec_state::UnifiedExecWaitState;
-use self::exec_state::UnifiedExecWaitStreak;
 use self::exec_state::command_execution_command_and_parsed;
 use self::exec_state::is_standard_tool_call;
 use self::exec_state::is_unified_exec_source;
+use self::process_wait::UnifiedExecWaitTracker;
 mod goal_status;
 use self::goal_status::GoalStatusState;
 #[cfg(test)]
@@ -405,6 +405,7 @@ mod countdown;
 mod luna_reserve_model;
 mod luna_reserve_return;
 pub(crate) use backend_banners::AutomaticModelSwitchReason;
+mod process_wait;
 mod protocol;
 mod protocol_requests;
 mod rate_limits;
@@ -444,6 +445,7 @@ mod service_tiers;
 mod settings;
 mod settings_popups;
 mod side;
+mod sleep;
 use self::safety_buffering::SafetyBufferingState;
 mod status_state;
 mod windows_sandbox_prompts;
@@ -665,7 +667,7 @@ pub(crate) struct ChatWidget {
     skills_all: Vec<SkillMetadata>,
     skills_initial_state: Option<HashMap<AbsolutePathBuf, bool>>,
     last_unified_wait: Option<UnifiedExecWaitState>,
-    unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
+    unified_exec_wait_tracker: Option<UnifiedExecWaitTracker>,
     turn_lifecycle: TurnLifecycleState,
     realtime_conversation: RealtimeConversationUiState,
     dictation: Option<crate::dictation::session::Session>,
@@ -1332,6 +1334,7 @@ impl ChatWidget {
         }
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
+        self.refresh_unified_exec_wait_status();
         self.bottom_pane.pre_draw_tick();
         self.flush_realtime_transcript_history();
         self.refresh_realtime_microphone_level();

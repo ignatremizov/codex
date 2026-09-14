@@ -35,6 +35,19 @@ impl LocalAgentGraphStore {
 }
 
 impl AgentGraphStore for LocalAgentGraphStore {
+    fn close_thread_spawn_edge_if_current(
+        &self,
+        expected: crate::ThreadSpawnEdgeAuthority,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.state_db
+                .close_thread_spawn_edge_if_current(expected, &revoked_thread_ids)
+                .await
+                .map_err(internal_error)
+        })
+    }
+
     fn supports_agent_send_settings(&self) -> bool {
         true
     }
@@ -70,6 +83,20 @@ impl AgentGraphStore for LocalAgentGraphStore {
 
     fn supports_agent_aliases(&self) -> bool {
         true
+    }
+
+    fn read_thread_lifecycle_authority_epochs(
+        &self,
+        thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, Vec<(ThreadId, i64)>> {
+        Box::pin(async move {
+            self.state_db
+                .read_agent_thread_lifecycle_epochs(&thread_ids)
+                .await
+                .map_err(|error| AgentGraphStoreError::Internal {
+                    message: error.to_string(),
+                })
+        })
     }
 
     fn ensure_agent_alias_namespace(
@@ -121,6 +148,26 @@ impl AgentGraphStore for LocalAgentGraphStore {
         status: ThreadSpawnEdgeStatus,
     ) -> AgentGraphStoreFuture<'_, bool> {
         self.set_agent_lifecycle_state_impl(session_id, thread_id, status)
+    }
+
+    fn set_agent_lifecycle_state_with_authority_revocations(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, crate::AgentLifecycleAuthorityUpdate> {
+        Box::pin(async move {
+            self.state_db
+                .set_agent_lifecycle_state_with_authority_revocations(
+                    session_id,
+                    thread_id,
+                    to_state_status(status),
+                    &revoked_thread_ids,
+                )
+                .await
+                .map_err(internal_error)
+        })
     }
 
     fn find_agent_alias_by_thread(
@@ -194,6 +241,24 @@ impl AgentGraphStore for LocalAgentGraphStore {
         Box::pin(async move {
             self.state_db
                 .set_thread_spawn_edge_status(child_thread_id, to_state_status(status))
+                .await
+                .map_err(internal_error)
+        })
+    }
+
+    fn set_thread_spawn_edge_status_with_authority_revocations(
+        &self,
+        thread_id: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.state_db
+                .set_thread_spawn_edge_status_with_authority_revocations(
+                    thread_id,
+                    to_state_status(status),
+                    &revoked_thread_ids,
+                )
                 .await
                 .map_err(internal_error)
         })

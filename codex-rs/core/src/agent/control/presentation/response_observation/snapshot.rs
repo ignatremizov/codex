@@ -133,6 +133,10 @@ impl LocalAgentControl {
                 ResponseObservationDeliveryKind::Final => Some(commit.response_item_id.clone()),
             },
             committed_delivery_response_item_ids: vec![commit.response_item_id.clone()],
+            mailbox_final_subscription_message_id: commit
+                .mailbox_final_subscription_message_id
+                .clone(),
+            mailbox_final_subscription_suppressed_message_id: None,
         }]
     }
 
@@ -205,6 +209,12 @@ pub(super) fn snapshots_for_relationship(
         final_delivery: pending.final_response.into(),
         final_delivery_response_item_id: pending.final_delivery_response_item_id.clone(),
         committed_delivery_response_item_ids: pending.committed_delivery_response_item_ids.clone(),
+        mailbox_final_subscription_message_id: relationship
+            .mailbox_final_subscription_message_id
+            .clone(),
+        mailbox_final_subscription_suppressed_message_id: relationship
+            .mailbox_final_subscription_suppressed_message_id
+            .clone(),
     });
     let mut turns = relationship.turns.iter().collect::<Vec<_>>();
     turns.sort_by_key(|(turn_id, _)| *turn_id);
@@ -213,6 +223,10 @@ pub(super) fn snapshots_for_relationship(
             observer_thread_id: parent.thread_id,
             target_thread_id: child.thread_id,
             target_turn_id: Some(turn_id.clone()),
+            mailbox_final_subscription_message_id: observation
+                .mailbox_final_subscription_message_id
+                .clone(),
+            mailbox_final_subscription_suppressed_message_id: None,
             task_preview: observation.task_preview.clone(),
             promoted_task_context: observation.promoted_task_context.clone(),
             target_messages: observation.target_messages,

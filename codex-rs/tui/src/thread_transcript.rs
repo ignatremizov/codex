@@ -253,6 +253,13 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
                     }
                 }
             }
+            ThreadItem::MailboxRead(item) => {
+                cells.push(Arc::new(
+                    crate::multi_agents::history_cell_for_mailbox_read(&item, |thread_id| {
+                        metadata.get(&thread_id).cloned().unwrap_or_default()
+                    }),
+                ));
+            }
             item => {
                 let projected = item_to_cells(
                     item,
@@ -447,6 +454,7 @@ fn item_to_cells(
                 cells.push(Arc::new(command.into_cell(output_preview_line_limits)));
             }
         }
+        ThreadItem::MailboxRead(_) | ThreadItem::Sleep(_) => return None,
         other => cells.extend(other_items::cells(
             other,
             cwd,

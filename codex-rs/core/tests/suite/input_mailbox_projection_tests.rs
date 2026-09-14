@@ -121,6 +121,7 @@ async fn fresh_agent_mail_projects_receiver_ref_without_rewriting_canonical_or_u
                 input: original.clone(),
                 attribution: Box::new(attribution.clone()),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let accepted_user = test
@@ -132,6 +133,7 @@ async fn fresh_agent_mail_projects_receiver_ref_without_rewriting_canonical_or_u
                 input: user_input.clone(),
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let mut first = server

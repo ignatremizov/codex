@@ -341,7 +341,11 @@ The experimental `agentQueue/list` and `agentQueue/delete` methods expose and ca
 
 `thread/mailbox/add` accepts `{threadId, input, clientUserMessageId}` as user-authored mailbox input for explicit receiver consumption. It returns a stable `messageId` and `pending`, `claimed`, `consumed`, or `rejected` state, never a turn ID. Retrying the same receiver/client message identity returns its stored state and preserves typed input and attachments; mailbox acceptance does not load, adopt, or start a payload-bearing turn. Unloaded receivers retain pending mail until a compatible runtime is loaded, while fresh deposits to a known unsupported backend are rejected before persistence.
 
+`thread/mailbox/read` returns a payload-free aggregate snapshot with `pendingTotal` and canonical `pendingSenders`. It does not load, claim, or consume messages; storage/backend unavailability is distinct from an empty mailbox.
+
 Collab-agent history may expose nullable `agentRef`, `taskPath`, and `mailboxInput` presentation metadata. `agentRef` is the trusted root-scoped numeric alias encoded as a string; task paths are assignment labels, not lifecycle ancestry. Clients must not infer missing refs from task paths, nicknames, prompts, or tool-output text, nor infer mailbox delivery, receiver consumption, or visibility from missing legacy fields.
+
+Direct `check_mail` completion is represented by a payload-free `mailboxRead` item containing the selector and acknowledged consumed/rejected counts. It is emitted only after the fixed batch acknowledgement and never includes message bodies; mailbox consumption from `wait_agent` does not emit this item.
 
 ## User shell commands
 
@@ -350,6 +354,8 @@ Collab-agent history may expose nullable `agentRef`, `taskPath`, and `mailboxInp
 Optional `responseHandling` selects `finalDelivery` (`passive`, `wake`, or `presentationOnly`) and `queueCommand`. Omission keeps passive, concurrent execution. With `queueCommand: true`, execution waits for earlier user-shell submissions in the same thread; later requests without queuing can still run concurrently. This execution queue is separate from agent input queues.
 
 Commands emit `item/started`, optional `item/commandExecution/outputDelta` notifications, and `item/completed` with the same `commandExecution` item ID and `source: "userShell"`. An idle-thread command uses a standalone activity ID; later model turns can start while it runs. An active-thread command uses that turn's presentation identity without inheriting its cancellation. Command items expose the resolved policy as `userShellResponseHandling`.
+
+`item/commandExecution/terminalInteraction` may include a `wait` lifecycle object for `write_stdin`. Started waits identify the interaction, start time, and mode (`timed` or `untilExit`); finished waits include elapsed time and a reason such as `exited`, `timeout`, `input`, `cancelled`, or `failed`. Older events may omit this metadata.
 
 Passive and wake results enter a continuable active turn's message stream. Otherwise passive delivery records the result without starting a turn, while wake delivery requests a model turn through ordinary admission after publishing the completed activity. Presentation-only results remain visible in thread history without entering model context or starting a turn. Stopping a wake-enabled command downgrades its result delivery to passive.
 

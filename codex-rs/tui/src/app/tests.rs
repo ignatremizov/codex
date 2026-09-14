@@ -4510,6 +4510,13 @@ async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disable
 
     assert_matches!(
         app_event_rx.try_recv(),
+        Ok(AppEvent::LoadAgentMailboxInventory {
+            receiver_thread_id,
+            ..
+        }) if receiver_thread_id == thread_id
+    );
+    assert_matches!(
+        app_event_rx.try_recv(),
         Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
     );
     Ok(())

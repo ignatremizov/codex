@@ -211,9 +211,26 @@ impl Session {
                 .recover_mailbox_inventory(notification.clone())
                 .await?
             {
-                MailboxInventoryRecovery::AlreadyCovered { .. } => return Ok(None),
+                MailboxInventoryRecovery::AlreadyCovered { .. } => {
+                    let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                    self.services
+                        .agent_control
+                        .bind_mailbox_final_subscriptions(
+                            self.presentation_id(),
+                            acknowledgement.bound_subscriptions,
+                        )
+                        .await;
+                    return Ok(None);
+                }
                 MailboxInventoryRecovery::Recorded { .. } => {
-                    store.reconcile_mailbox_inventory(notification).await?;
+                    let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                    self.services
+                        .agent_control
+                        .bind_mailbox_final_subscriptions(
+                            self.presentation_id(),
+                            acknowledgement.bound_subscriptions,
+                        )
+                        .await;
                 }
                 MailboxInventoryRecovery::NotRecorded => {
                     if store
@@ -259,10 +276,25 @@ impl Session {
             .await?
         {
             MailboxInventoryRecovery::AlreadyCovered { .. } => {
+                let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                self.services
+                    .agent_control
+                    .bind_mailbox_final_subscriptions(
+                        self.presentation_id(),
+                        acknowledgement.bound_subscriptions,
+                    )
+                    .await;
                 return Ok(InventoryRecording::NotNeeded);
             }
             MailboxInventoryRecovery::Recorded { .. } => {
-                store.reconcile_mailbox_inventory(notification).await?;
+                let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                self.services
+                    .agent_control
+                    .bind_mailbox_final_subscriptions(
+                        self.presentation_id(),
+                        acknowledgement.bound_subscriptions,
+                    )
+                    .await;
                 return Ok(InventoryRecording::NotNeeded);
             }
             MailboxInventoryRecovery::NotRecorded => {
@@ -301,13 +333,21 @@ impl Session {
                 );
             }
         }
-        store
+        let acknowledgement = store
             .reconcile_mailbox_inventory(notification)
             .await
             .map_err(|error| {
                 self.quarantine_history(format!("inventory acknowledgement failed: {error}"));
                 error
             })?;
+        drop(_durable);
+        self.services
+            .agent_control
+            .bind_mailbox_final_subscriptions(
+                self.presentation_id(),
+                acknowledgement.bound_subscriptions,
+            )
+            .await;
         Ok(InventoryRecording::Recorded)
     }
 }

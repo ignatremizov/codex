@@ -158,36 +158,63 @@ impl LocalAgentControl {
             .agent_turn_queue
             .acquire_source_admissions(locked.iter().copied())
             .await;
-        if let Some(fence) = &fence {
-            state.close_fenced_restoration_edge(fence).await?;
+        let closed_thread_ids = std::iter::once(agent_id)
+            .chain(descendants.iter().copied())
+            .collect::<Vec<_>>();
+        let messaging_permission = self.acquire_messaging_permission_transaction().await;
+        let authority_revoked = if let Some(fence) = &fence {
+            state
+                .close_fenced_restoration_edge(fence, &closed_thread_ids)
+                .await?
         } else {
             match state.get_thread(agent_id).await {
                 Ok(thread) => {
                     if !thread.config_snapshot().await.ephemeral {
-                        self.persist_agent_closed(agent_id).await?;
+                        self.persist_agent_closed_for_subtree(agent_id, &closed_thread_ids)
+                            .await?
+                    } else {
+                        false
                     }
                 }
                 Err(err)
                     if known_agent
                         && matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) =>
                 {
-                    self.persist_agent_closed(agent_id).await?;
+                    self.persist_agent_closed_for_subtree(agent_id, &closed_thread_ids)
+                        .await?
                 }
-                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
-                Err(err) => {
-                    warn!("failed to inspect agent before close {agent_id}: {err}");
-                }
+                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => false,
+                Err(err) => return Err(err),
             }
+        };
+        if authority_revoked
+            && let Err(error) = state
+                .thread_store()
+                .supersede_mailbox_final_subscriptions_for_threads(closed_thread_ids.clone())
+                .await
+        {
+            warn!(
+                %error,
+                thread_id = %agent_id,
+                "mailbox cleanup after close failed; committed graph epochs fence old intents"
+            );
         }
         // An explicit close revokes future live recovery across every observer control.
         // Accepted exact-session deliveries are drained independently; their receipts are
         // never moved to a later runtime with the same rollout UUID.
-        for closed_id in std::iter::once(agent_id).chain(descendants.iter().copied()) {
-            state.advance_agent_lifecycle_generation(closed_id);
-            if let Ok(thread) = state.get_thread(closed_id).await {
+        for closed_id in closed_thread_ids {
+            let thread = state.get_thread(closed_id).await.ok();
+            // Re-closing an absent closed alias must not invalidate fresh current-epoch
+            // opportunities. A still-live exact runtime is independently retired below.
+            if authority_revoked || thread.is_some() {
+                state.advance_agent_lifecycle_generation(closed_id);
+            }
+            if let Some(thread) = thread {
                 self.revoke_response_observations_for_child(thread.session.presentation_id());
             }
         }
+        // Delivery/shutdown draining must not hold the admission lock needed by accepted work.
+        drop(messaging_permission);
         state
             .agent_turn_queue
             .cancel_for_threads(locked.iter().copied());

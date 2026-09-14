@@ -306,6 +306,7 @@ async fn acknowledged_policy_cannot_overwrite_a_concurrently_bound_turn() {
             ResponseObservationPersistence::Durable,
             /*minimum_event_sequence*/ 0,
             /*after_item_id*/ None,
+            /*selection_id*/ None,
         )
         .expect("reserve next turn");
     let transaction = control
@@ -373,6 +374,7 @@ async fn user_policy_replacement_cannot_reassign_an_accepted_final_delivery() {
             ResponseObservationPersistence::Durable,
             /*minimum_event_sequence*/ 0,
             /*after_item_id*/ None,
+            /*selection_id*/ None,
         )
         .expect("bind turn");
     let terminal = control

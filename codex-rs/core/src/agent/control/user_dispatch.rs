@@ -375,6 +375,13 @@ impl LocalAgentControl {
                 (policy, ResponseObservationBinding::NextTurn)
             }
         };
+        let mailbox_subscription_to_retire =
+            if policy.final_response() != FinalResponseObservation::None {
+                self.active_mailbox_subscription_for_policy(&observer, child)
+                    .await?
+            } else {
+                None
+            };
         let last_task_message =
             non_empty_task_message(render_input_preview(request.input.presentation()));
         // The forward prompt was already accepted. Preserve its policy/receipt without publishing
@@ -433,6 +440,17 @@ impl LocalAgentControl {
                 target_turn_id,
                 warning,
             }) => {
+                if let Some(message_id) = mailbox_subscription_to_retire.as_ref() {
+                    let _ = self
+                        .retire_mailbox_subscription_token(&observer, child, message_id)
+                        .await;
+                    self.clear_mailbox_final_subscription(
+                        request.observer,
+                        child,
+                        message_id,
+                        Some(&target_turn_id),
+                    );
+                }
                 self.abandon_response_observer(request.observer, child, &warning);
                 return Ok(ObservedInputResult::Submitted {
                     input_persisted: None,
@@ -488,6 +506,17 @@ impl LocalAgentControl {
             Some((resolution.minimum_event_sequence, resolution.after_item_id)),
             ResponseObservationBindingPublication::Deferred,
         );
+        if let Some(message_id) = mailbox_subscription_to_retire {
+            let _ = self
+                .retire_mailbox_subscription_token(&observer, child, &message_id)
+                .await;
+            self.clear_mailbox_final_subscription(
+                request.observer,
+                child,
+                &message_id,
+                Some(&resolution.target_turn_id),
+            );
+        }
         let result = self
             .publish_user_task_observation(
                 &observer,

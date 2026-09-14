@@ -15,6 +15,9 @@ use codex_app_server_protocol::ThreadLoadedListResponse;
 use codex_app_server_protocol::ThreadMailboxAddParams;
 use codex_app_server_protocol::ThreadMailboxAddResponse;
 use codex_app_server_protocol::ThreadMailboxMessageState;
+use codex_app_server_protocol::ThreadMailboxPendingSender;
+use codex_app_server_protocol::ThreadMailboxReadParams;
+use codex_app_server_protocol::ThreadMailboxReadResponse;
 use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -123,6 +126,100 @@ async fn first_mailbox_input_preserves_typed_user_authorship_without_payload_tur
 }
 
 #[tokio::test]
+async fn mailbox_read_returns_pending_sender_counts_without_payloads() -> Result<()> {
+    let (mut app, _home, _server, store) = mailbox_app(MultiAgentVersion::V1).await?;
+    let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
+    let receiver = ThreadId::from_string(&thread.id)?;
+    for client_user_message_id in ["read-user-1", "read-user-2"] {
+        add_mail(
+            &mut app,
+            ThreadMailboxAddParams {
+                thread_id: thread.id.clone(),
+                input: vec![UserInput::Text {
+                    text: "private body".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                client_user_message_id: client_user_message_id.to_string(),
+            },
+        )
+        .await?;
+    }
+
+    let agent_sender = ThreadId::new();
+    let identity = |thread_id| AgentInputIdentity {
+        thread_id,
+        nickname: None,
+        agent_ref: None,
+        task_path: None,
+        role: None,
+        model: None,
+        reasoning_effort: None,
+    };
+    for submission_key in ["read-agent-1", "read-agent-2"] {
+        store
+            .accept_mailbox_input(AcceptMailboxInputParams {
+                receiver_thread_id: receiver,
+                submission_key: submission_key.to_string(),
+                payload: MailboxPayload::Agent {
+                    input: vec![CoreUserInput::Text {
+                        text: "private agent body".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    attribution: Box::new(AgentInputAttribution {
+                        sender: identity(agent_sender),
+                        recipient: identity(receiver),
+                        sender_turn_id: "read-agent-turn".to_string(),
+                    }),
+                },
+                final_subscription: Default::default(),
+            })
+            .await?;
+    }
+
+    let params = ThreadMailboxReadParams {
+        thread_id: thread.id,
+    };
+    let first: ThreadMailboxReadResponse = app
+        .request(|request_id| ClientRequest::ThreadMailboxRead {
+            request_id,
+            params: params.clone(),
+        })
+        .await?;
+    assert_eq!(
+        first,
+        ThreadMailboxReadResponse {
+            pending_total: 4,
+            pending_senders: vec![
+                ThreadMailboxPendingSender::Agent {
+                    thread_id: agent_sender.to_string(),
+                    count: 2,
+                },
+                ThreadMailboxPendingSender::User { count: 2 },
+            ],
+        },
+    );
+    let second: ThreadMailboxReadResponse = app
+        .request(|request_id| ClientRequest::ThreadMailboxRead { request_id, params })
+        .await?;
+    assert_eq!(second, first);
+    let serialized = serde_json::to_string(&first)?;
+    assert!(!serialized.contains("private body"));
+    assert!(!serialized.contains("private agent body"));
+    assert_eq!(
+        serde_json::to_value(&first)?,
+        json!({
+            "pendingTotal": 4,
+            "pendingSenders": [
+                {"type": "agent", "threadId": agent_sender.to_string(), "count": 2},
+                {"type": "user", "count": 2},
+            ],
+        }),
+    );
+    app.shutdown_gracefully().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn archived_unloaded_user_mail_retries_keep_state_and_agent_keys_are_separate() -> Result<()>
 {
     let (mut app, _home, server, store) = mailbox_app(MultiAgentVersion::V1).await?;
@@ -183,6 +280,7 @@ async fn archived_unloaded_user_mail_retries_keep_state_and_agent_keys_are_separ
                     sender_turn_id: "turn".to_string(),
                 }),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let params = ThreadMailboxAddParams {
@@ -322,6 +420,18 @@ async fn user_mailbox_requires_experimental_handshake() -> Result<()> {
         "threadId": ThreadId::new().to_string(), "input": [{"type":"text","text":"not admitted"}],
         "clientUserMessageId": "gate-test",
     }))).await?;
+    let error = timeout(
+        READ_TIMEOUT,
+        app.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert!(error.error.message.contains("experimental"));
+    let request_id = app
+        .send_request(
+            "thread/mailbox/read",
+            Some(json!({"threadId": ThreadId::new().to_string()})),
+        )
+        .await?;
     let error = timeout(
         READ_TIMEOUT,
         app.read_stream_until_error_message(RequestId::Integer(request_id)),

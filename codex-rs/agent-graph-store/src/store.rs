@@ -28,6 +28,21 @@ pub type AgentGraphStoreFuture<'a, T> =
 /// Implementations that only provide graph traversal may retain the default unsupported alias
 /// methods.
 pub trait AgentGraphStore: Send + Sync {
+    /// Closes a captured restoration edge only if parent and owner still match.
+    /// Comparison, close and epoch revocation share one graph transaction. Returns
+    /// true only for a committed open-to-closed transition; queue cleanup is separate.
+    fn close_thread_spawn_edge_if_current(
+        &self,
+        _expected: crate::ThreadSpawnEdgeAuthority,
+        _revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async {
+            Err(AgentGraphStoreError::InvalidRequest {
+                message: "conditional restoration edge close is unavailable".to_string(),
+            })
+        })
+    }
+
     /// Whether this backend persists authoritative explicit send settings.
     /// Unsupported backends must not substitute volatile permission storage.
     fn supports_agent_send_settings(&self) -> bool {
@@ -67,6 +82,23 @@ pub trait AgentGraphStore: Send + Sync {
     /// Whether this store implements the durable alias operations below.
     fn supports_agent_aliases(&self) -> bool {
         false
+    }
+
+    /// Reads persistent lifecycle epochs for the requested threads.
+    ///
+    /// Durable alias stores must return one epoch for every requested thread, including zero for
+    /// threads without a prior revocation. Backends without durable aliases may return empty.
+    fn read_thread_lifecycle_authority_epochs(
+        &self,
+        _thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, Vec<(ThreadId, i64)>> {
+        Box::pin(async {
+            Err(AgentGraphStoreError::InvalidRequest {
+                message:
+                    "persistent lifecycle authority epochs are unavailable for this graph store"
+                        .into(),
+            })
+        })
     }
 
     /// Ensure that the root namespace exists and return its ref-1 Main alias.
@@ -150,6 +182,23 @@ pub trait AgentGraphStore: Send + Sync {
         unsupported_alias_store()
     }
 
+    /// Closes an owned agent and advances authority for the exact revoked subtree atomically.
+    /// Distinguishes denied ownership and no-op updates from committed epoch revocation.
+    fn set_agent_lifecycle_state_with_authority_revocations(
+        &self,
+        _session_id: SessionId,
+        _thread_id: ThreadId,
+        _status: ThreadSpawnEdgeStatus,
+        _revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, crate::AgentLifecycleAuthorityUpdate> {
+        Box::pin(async {
+            Err(AgentGraphStoreError::Internal {
+                message: "graph store does not support subtree lifecycle authority revocation"
+                    .into(),
+            })
+        })
+    }
+
     /// Find an alias by canonical thread UUID.
     fn find_agent_alias_by_thread(
         &self,
@@ -223,6 +272,22 @@ pub trait AgentGraphStore: Send + Sync {
         child_thread_id: ThreadId,
         status: ThreadSpawnEdgeStatus,
     ) -> AgentGraphStoreFuture<'_, ()>;
+
+    /// Updates a fallback spawn edge and advances authority for the exact revoked subtree atomically.
+    /// Returns whether an open-to-closed transition actually revoked authority.
+    fn set_thread_spawn_edge_status_with_authority_revocations(
+        &self,
+        _thread_id: ThreadId,
+        _status: ThreadSpawnEdgeStatus,
+        _revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async {
+            Err(AgentGraphStoreError::Internal {
+                message: "graph store does not support subtree lifecycle authority revocation"
+                    .into(),
+            })
+        })
+    }
 
     /// Find the direct persisted parent of a spawned thread.
     fn find_thread_spawn_parent(

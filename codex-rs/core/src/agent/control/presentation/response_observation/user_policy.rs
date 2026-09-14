@@ -19,6 +19,7 @@ pub(in crate::agent::control) struct PreparedUserObservation {
     turn_id: Option<String>,
     expected: ResponseTurnObservation,
     replacement: ResponseTurnObservation,
+    retired_mailbox_subscription: Option<String>,
     pub(in crate::agent::control) snapshots: Vec<AgentResponseObservation>,
 }
 
@@ -115,7 +116,10 @@ impl LocalAgentControl {
         let relationship = state
             .response_observation_by_observer_child
             .get(&(parent, child))
-            .filter(|relationship| !relationship.revoked)
+            .filter(|relationship| {
+                !relationship.revoked
+                    && relationship.persistence == ResponseObservationPersistence::Durable
+            })
             .ok_or_else(|| {
                 CodexErr::InvalidRequest("response observation is no longer live".into())
             })?;
@@ -131,8 +135,11 @@ impl LocalAgentControl {
             ));
         }
         let mut replacement = expected.clone();
+        let retired_mailbox_subscription =
+            final_response.and(relationship.mailbox_final_subscription_message_id.clone());
         if let Some(final_response) = final_response {
             replacement.final_response = final_response;
+            replacement.mailbox_final_subscription_message_id = None;
         }
         if let Some(task_preview) = task_preview {
             replacement.task_preview = Some(task_preview);
@@ -143,23 +150,28 @@ impl LocalAgentControl {
                     .ok_or_else(|| CodexErr::InvalidRequest("invalid user task context".into()))?,
             );
         }
+        let mut projected = relationship.clone();
+        if let Some(turn) = turn_id.as_ref() {
+            projected.turns.insert(turn.clone(), replacement.clone());
+        } else {
+            projected.pending_next_turn = Some(replacement.clone());
+        }
+        if let Some(message_id) = retired_mailbox_subscription.as_ref() {
+            super::mailbox_subscription::suppress_mailbox_subscription(
+                &mut projected,
+                message_id,
+                turn_id.as_deref(),
+            );
+        }
+        let snapshots = super::snapshot::snapshots_for_relationship(parent, child, &projected);
         drop(state);
-        let mut snapshots = self.response_observation_snapshots(parent, child);
-        let snapshot = snapshots
-            .iter_mut()
-            .find(|snapshot| snapshot.target_turn_id == turn_id)
-            .ok_or_else(|| {
-                CodexErr::InvalidRequest("missing durable response observation".into())
-            })?;
-        snapshot.final_delivery = replacement.final_response.into();
-        snapshot.task_preview = replacement.task_preview.clone();
-        snapshot.promoted_task_context = replacement.promoted_task_context.clone();
         Ok(PreparedUserObservation {
             parent,
             child,
             turn_id,
             expected,
             replacement,
+            retired_mailbox_subscription,
             snapshots,
         })
     }
@@ -169,23 +181,33 @@ impl LocalAgentControl {
         prepared: PreparedUserObservation,
     ) -> CodexResult<()> {
         let mut state = self.wait_agent_presentations.state();
-        let current = state
+        let relationship = state
             .response_observation_by_observer_child
             .get_mut(&(prepared.parent, prepared.child))
             .filter(|relationship| !relationship.revoked)
-            .and_then(|relationship| match prepared.turn_id.as_deref() {
-                Some(turn) => relationship.turns.get_mut(turn),
-                None => relationship.pending_next_turn.as_mut(),
-            })
             .ok_or_else(|| {
                 CodexErr::Fatal("observation changed during canonical publication".into())
             })?;
+        let current = match prepared.turn_id.as_deref() {
+            Some(turn) => relationship.turns.get_mut(turn),
+            None => relationship.pending_next_turn.as_mut(),
+        }
+        .ok_or_else(|| {
+            CodexErr::Fatal("observation changed during canonical publication".into())
+        })?;
         if current != &prepared.expected {
             return Err(CodexErr::Fatal(
                 "observation changed during canonical publication".into(),
             ));
         }
         *current = prepared.replacement;
+        if let Some(message_id) = prepared.retired_mailbox_subscription {
+            super::mailbox_subscription::suppress_mailbox_subscription(
+                relationship,
+                &message_id,
+                prepared.turn_id.as_deref(),
+            );
+        }
         drop(state);
         self.publish_response_observation_binding();
         Ok(())

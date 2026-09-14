@@ -1432,14 +1432,16 @@ async fn unified_exec_completed_session_poll_snapshot() {
     );
     end_exec(&mut chat, completed, "", "", /*exit_code*/ 0);
     let mut cells = drain_insert_history_transcript(&mut rx);
-    chat.on_terminal_interaction(
-        "turn-1".to_string(),
-        "call-watch".to_string(),
-        "completed-proc".to_string(),
-        String::new(),
-        Some(future_deadline_at_ms(/*offset_ms*/ 60_000)),
-    );
-    terminal_interaction(&mut chat, "call-watch", "completed-proc", "");
+    chat.on_terminal_interaction(codex_app_server_protocol::TerminalInteractionNotification {
+        thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+        turn_id: "turn-1".to_string(),
+        item_id: "call-watch".to_string(),
+        process_id: "completed-proc".to_string(),
+        stdin: String::new(),
+        deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+        wait: None,
+    });
+    terminal_interaction(&mut chat, "call-poll", "completed-proc", "");
 
     cells.extend(drain_insert_history_transcript(&mut rx));
     let combined = cells
@@ -1587,11 +1589,13 @@ async fn unified_exec_wait_status_renders_countdown() {
                 process_id: "proc-1".to_string(),
                 stdin: String::new(),
                 deadline_at_ms: Some(deadline_at_ms),
+                wait: None,
             },
         ),
         /*replay_kind*/ None,
     );
 
+    chat.bottom_pane.reset_status_timer(Duration::ZERO);
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
         rendered.contains("Waiting for background terminal (") && rendered.contains(" left"),
@@ -1603,6 +1607,7 @@ async fn unified_exec_wait_status_renders_countdown() {
 async fn unified_exec_initial_status_renders_countdown() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
+    chat.set_status_header("Analyzing the request".to_string());
     let command = vec![
         "bash".to_string(),
         "-lc".to_string(),
@@ -1635,10 +1640,23 @@ async fn unified_exec_initial_status_renders_countdown() {
         /*replay_kind*/ None,
     );
 
+    chat.bottom_pane.reset_status_timer(Duration::ZERO);
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
         rendered.contains("Working (") && rendered.contains(" left"),
         "expected initial unified exec countdown in status row, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("sleep 60"),
+        "expected active command in status row, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Analyzing the request"),
+        "stale reasoning header remained visible after command start:\n{rendered}"
+    );
+    assert_chatwidget_snapshot!(
+        "unified_exec_initial_status_shows_command",
+        normalize_snapshot_paths(rendered)
     );
 }
 
@@ -1663,6 +1681,7 @@ async fn unified_exec_wait_countdown_survives_status_refresh() {
                 process_id: "proc-1".to_string(),
                 stdin: String::new(),
                 deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+                wait: None,
             },
         ),
         /*replay_kind*/ None,
@@ -1757,7 +1776,7 @@ async fn unified_exec_empty_poll_for_finished_process_does_not_show_waiting_stat
         .status_widget()
         .expect("task status indicator should remain visible");
     assert_eq!(status.header(), "Working");
-    assert!(chat.unified_exec_wait_streak.is_none());
+    assert!(chat.unified_exec_wait_tracker.is_none());
 }
 
 #[tokio::test]

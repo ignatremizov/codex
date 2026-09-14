@@ -2468,6 +2468,13 @@ impl ThreadManagerState {
                 ));
                 if registration == ThreadRegistration::Immediate {
                     e.insert(thread.clone());
+                    thread
+                        .session
+                        .services
+                        .agent_control
+                        .schedule_mailbox_final_subscription_recovery(
+                            thread.session.presentation_id(),
+                        );
                 }
                 return Ok(ThreadSpawnResult {
                     thread_id,
