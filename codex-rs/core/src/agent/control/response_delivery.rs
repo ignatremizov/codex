@@ -87,6 +87,7 @@ impl LocalAgentControl {
             turn_id: turn_id.to_string(),
             response_item_id: delivery.response_item_id.clone(),
             kind: ResponseObservationDeliveryKind::Commentary,
+            mailbox_final_subscription_message_id: None,
             model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
         };
         let agent = self
@@ -203,6 +204,11 @@ impl LocalAgentControl {
             turn_id: terminal.turn_id.clone(),
             response_item_id: context_id.clone(),
             kind: ResponseObservationDeliveryKind::Final,
+            mailbox_final_subscription_message_id: self.mailbox_final_subscription_for_turn(
+                parent,
+                child,
+                &terminal.turn_id,
+            ),
             model_visibility: if disposition == FinalResponseObservation::PresentationOnly {
                 codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible
             } else {

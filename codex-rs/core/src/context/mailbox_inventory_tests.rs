@@ -64,7 +64,7 @@ fn projects_frozen_counts_and_only_advertised_refs_without_mutating_canonical_me
             json!({"from": from, "count": group.count})
         })
         .collect::<Vec<_>>();
-    let expected_json = json!({"receiver": "1", "pending_senders": rows});
+    let expected_json = json!({"pending": rows});
     let mut expected = canonical.clone();
     if let ResponseItem::Message { content, .. } = &mut expected {
         *content = vec![ContentItem::InputText {
@@ -85,9 +85,8 @@ fn projects_frozen_counts_and_only_advertised_refs_without_mutating_canonical_me
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(projected["receiver"], receiver.to_string());
     assert!(
-        projected["pending_senders"]
+        projected["pending"]
             .as_array()
             .unwrap()
             .contains(&json!({"from": "9", "count": 1}))
@@ -225,7 +224,7 @@ fn bounds_many_senders_with_explicit_prose_omission_and_no_extra_json_metadata()
             .unwrap(),
     )
     .unwrap();
-    let rows = body["pending_senders"].as_array().unwrap();
+    let rows = body["pending"].as_array().unwrap();
     assert!(!rows.is_empty());
     assert!(rows.len() < snapshot.pending_senders.len());
     let expected_rows = snapshot.pending_senders[..rows.len()]
@@ -237,9 +236,6 @@ fn bounds_many_senders_with_explicit_prose_omission_and_no_extra_json_metadata()
             json!({"from": id.to_string(), "count": group.count})
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        body,
-        json!({"receiver": receiver.to_string(), "pending_senders": expected_rows})
-    );
+    assert_eq!(body, json!({"pending": expected_rows}));
     assert_eq!(snapshot.context().unwrap().item, canonical);
 }

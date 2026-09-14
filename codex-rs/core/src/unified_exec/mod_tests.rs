@@ -34,16 +34,17 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Notify;
+use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
-async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
+pub(super) async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
     let (session, turn) = make_session_and_context().await;
     (Arc::new(session), Arc::new(turn))
 }
 
-async fn exec_command(
+pub(super) async fn exec_command(
     session: &Arc<Session>,
     turn: &Arc<TurnContext>,
     cmd: &str,
@@ -173,12 +174,14 @@ async fn exec_command_with_tty(
     }
 
     let deadline = started_at.checked_add(Duration::from_millis(yield_time_ms));
-    let collected_output = UnifiedExecProcessManager::collect_output_until_deadline(
+    let collected_output = super::output_collection::collect_output_until_deadline(
         process.output_handles(),
         Some(session.subscribe_elicitation_pause_state()),
         deadline,
+        None,
     )
-    .await;
+    .await
+    .collected;
     let wall_time = Instant::now().saturating_duration_since(started_at);
     let original_token_count = usize::try_from(approx_tokens_from_byte_count(
         collected_output.total_bytes(),
@@ -237,6 +240,8 @@ struct BlockingTerminateExecProcess {
     process_id: ProcessId,
     terminate_started: watch::Sender<bool>,
     allow_terminate: Arc<Notify>,
+    write_started: Option<watch::Sender<bool>>,
+    write_tx: Option<mpsc::Sender<Vec<u8>>>,
     wake_tx: watch::Sender<u64>,
 }
 
@@ -253,7 +258,16 @@ impl BlockingTerminateExecProcess {
         })
     }
 
-    async fn write(&self) -> Result<WriteResponse, codex_exec_server::ExecServerError> {
+    async fn write(
+        &self,
+        chunk: Vec<u8>,
+    ) -> Result<WriteResponse, codex_exec_server::ExecServerError> {
+        if let Some(write_started) = self.write_started.as_ref() {
+            let _ = write_started.send(true);
+        }
+        if let Some(write_tx) = self.write_tx.as_ref() {
+            let _ = write_tx.send(chunk).await;
+        }
         Ok(WriteResponse {
             status: WriteStatus::Accepted,
         })
@@ -288,8 +302,8 @@ impl ExecProcess for BlockingTerminateExecProcess {
         Box::pin(BlockingTerminateExecProcess::read(self))
     }
 
-    fn write(&self, _chunk: Vec<u8>) -> ExecProcessFuture<'_, WriteResponse> {
-        Box::pin(BlockingTerminateExecProcess::write(self))
+    fn write(&self, chunk: Vec<u8>) -> ExecProcessFuture<'_, WriteResponse> {
+        Box::pin(BlockingTerminateExecProcess::write(self, chunk))
     }
 
     fn signal(&self, _signal: ProcessSignal) -> ExecProcessFuture<'_, ()> {
@@ -313,6 +327,8 @@ async fn blocking_terminate_unified_process(
                 process_id: process_id.to_string().into(),
                 terminate_started,
                 allow_terminate,
+                write_started: None,
+                write_tx: None,
                 wake_tx,
             }),
             sandbox_type: Some(codex_sandboxing::SandboxType::None),
@@ -328,6 +344,51 @@ async fn write_stdin(
     input: &str,
     yield_time_ms: u64,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    write_stdin_with_options(
+        session,
+        turn,
+        WriteStdinOptions {
+            process_id,
+            input,
+            yield_time_ms,
+            wait_until_exit: false,
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            user_input_wait: None,
+            interaction_id: None,
+        },
+    )
+    .await
+}
+
+pub(super) struct WriteStdinOptions<'a> {
+    pub process_id: i32,
+    pub input: &'a str,
+    pub yield_time_ms: u64,
+    pub wait_until_exit: bool,
+    pub cancellation_token: tokio_util::sync::CancellationToken,
+    pub user_input_wait: Option<UserInputWait>,
+    pub interaction_id: Option<&'a str>,
+}
+
+pub(super) async fn write_stdin_with_options(
+    session: &Arc<Session>,
+    turn: &Arc<TurnContext>,
+    options: WriteStdinOptions<'_>,
+) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    let WriteStdinOptions {
+        process_id,
+        input,
+        yield_time_ms,
+        wait_until_exit,
+        cancellation_token,
+        user_input_wait,
+        interaction_id,
+    } = options;
+    let interaction_event = interaction_id.map(|interaction_id| WriteStdinInteractionEvent {
+        session,
+        turn,
+        interaction_id,
+    });
     session
         .services
         .unified_exec_manager
@@ -337,16 +398,18 @@ async fn write_stdin(
                 crate::session::step_context::StepContext::for_test_with_current_settings(
                     Arc::clone(turn),
                 ),
-                tokio_util::sync::CancellationToken::new(),
+                cancellation_token,
                 "write".to_string(),
             ),
             WriteStdinRequest {
                 process_id,
                 input,
                 yield_time_ms,
+                wait_until_exit,
                 max_output_tokens: None,
                 truncation_policy: TruncationPolicy::Tokens(10_000),
-                interaction_event: None,
+                interaction_event,
+                user_input_wait,
             },
         )
         .await
@@ -757,12 +820,15 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
                     process_id,
                     input: "",
                     yield_time_ms: u64::MAX,
+                    wait_until_exit: false,
                     max_output_tokens: None,
                     truncation_policy: TruncationPolicy::Tokens(10_000),
                     interaction_event: Some(WriteStdinInteractionEvent {
                         session: &session,
                         turn: &turn,
+                        interaction_id: "poll-call",
                     }),
+                    user_input_wait: None,
                 },
             ).await
                 }
@@ -846,6 +912,137 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() -> anyhow::Result<()>
+{
+    let (session, turn) = test_session_and_turn().await;
+    let manager = &session.services.unified_exec_manager;
+    let process_id = manager.allocate_process_id().await;
+    let (write_started_tx, mut write_started_rx) = watch::channel(/*init*/ false);
+    let (terminate_started_tx, _terminate_started_rx) = watch::channel(/*init*/ false);
+    let (wake_tx, _wake_rx) = watch::channel(/*init*/ 0);
+    let (write_tx, mut write_rx) = mpsc::channel(/*buffer*/ 1);
+    let allow_terminate = Arc::new(Notify::new());
+    write_tx
+        .send(Vec::new())
+        .await
+        .expect("blocked stdin channel should stay open");
+    let process = Arc::new(
+        UnifiedExecProcess::from_exec_server_started(StartedExecProcess {
+            process: Arc::new(BlockingTerminateExecProcess {
+                process_id: process_id.to_string().into(),
+                terminate_started: terminate_started_tx,
+                allow_terminate: Arc::clone(&allow_terminate),
+                write_started: Some(write_started_tx),
+                write_tx: Some(write_tx),
+                wake_tx,
+            }),
+            sandbox_type: Some(codex_sandboxing::SandboxType::None),
+        })
+        .await?,
+    );
+    #[allow(deprecated)]
+    let cwd = turn.cwd.clone();
+    manager.process_store.lock().await.processes.insert(
+        process_id,
+        ProcessEntry {
+            process: Arc::clone(&process),
+            plugin_metrics_sidecar: None,
+            call_id: "call".to_string(),
+            process_id,
+            cwd: cwd.into(),
+            initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            hook_command: "sleep 60".to_string(),
+            tty: true,
+            environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
+            permissions: TerminalPermissions::for_launch(
+                turn.environments.primary().expect("turn environment"),
+                &turn,
+                TerminalSandboxSource::Native,
+                SandboxPermissions::UseDefault,
+                /*additional_permissions*/ None,
+                /*internal_permissions*/ None,
+            ),
+            network_approval: None,
+            session: Arc::downgrade(&session),
+            last_used: Instant::now(),
+        },
+    );
+
+    let cancellation_token = CancellationToken::new();
+    let write_cancellation_token = cancellation_token.clone();
+    let write_task = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            write_stdin_with_options(
+                &session,
+                &turn,
+                WriteStdinOptions {
+                    process_id,
+                    input: "blocked input",
+                    yield_time_ms: 100,
+                    wait_until_exit: false,
+                    cancellation_token: write_cancellation_token,
+                    user_input_wait: None,
+                    interaction_id: None,
+                },
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        write_started_rx.wait_for(|started| *started),
+    )
+    .await
+    .expect("stdin write should block")
+    .expect("write-started sender should stay open");
+
+    cancellation_token.cancel();
+    let cancelled_write = tokio::time::timeout(Duration::from_secs(2), write_task)
+        .await
+        .expect("cancelled stdin write should release its task")
+        .expect("stdin write task should not panic");
+    assert!(cancelled_write.is_err());
+    assert!(
+        manager
+            .process_store
+            .lock()
+            .await
+            .processes
+            .contains_key(&process_id),
+        "cancelling a write must preserve the process"
+    );
+    assert_eq!(
+        write_rx.recv().await,
+        Some(Vec::new()),
+        "the cancelled write must leave the queued stdin payload untouched"
+    );
+    assert!(matches!(
+        write_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    let followup_write = tokio::time::timeout(
+        Duration::from_secs(2),
+        write_stdin(
+            &session, &turn, process_id, "\n", /*yield_time_ms*/ 100,
+        ),
+    )
+    .await
+    .expect("subsequent same-process write should acquire the interaction lock")?;
+    assert_eq!(followup_write.process_id, Some(process_id));
+    allow_terminate.notify_one();
+    process.terminate_confirmed().await?;
+    if let Some(output_task) = process.output_task_abort_handle() {
+        output_task.abort();
+    }
+    manager.release_process_id(process_id).await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     #[allow(deprecated)]
@@ -917,12 +1114,14 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
     process.write(b"printf 'remote-unified-exec\\n'\n").await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+    let collected = super::output_collection::collect_output_until_deadline(
         process.output_handles(),
         /*pause_state*/ None,
         Instant::now().checked_add(Duration::from_millis(2_500)),
+        None,
     )
     .await
+    .collected
     .to_bytes_with_omission_marker();
 
     assert!(String::from_utf8_lossy(&collected).contains("remote-unified-exec"));

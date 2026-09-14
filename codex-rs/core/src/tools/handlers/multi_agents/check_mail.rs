@@ -3,6 +3,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::session::mailbox::MailboxConsumption;
+use crate::session::mailbox::MailboxConsumptionPresentation;
 use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE_DESCRIPTION;
 use crate::tools::registry::MailboxToolResult;
@@ -38,10 +39,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
                 description: "Deliver and consume pending mailbox messages as structured input after this tool result. \
                     Omit from to consume all pending mail, or select one sender by agent ref, nickname, task path, \
                     full UUID, or user. The selected batch is fixed; later arrivals and unselected senders remain pending. \
-                    This does not consume queued prompts or start another turn. Output contains metadata, not message bodies. \
-                    Completed fixed batches report ok when any messages were delivered, empty when none were selected, \
-                    or rejected when all selected messages were rejected. A positive rejected_count is included only \
-                    when some messages were rejected, including mixed ok batches. Rejection warnings go to loaded senders. \
+                    This does not consume queued prompts or start another turn. Message bodies are delivered separately \
+                    as structured input and never repeated in this output. Successful terminal batches leave this tool result empty. \
+                    Mixed delivered/rejected batches report rejected_count without a success status. Empty selections report \
+                    status empty; wholly rejected batches report status rejected with rejected_count. Rejection warnings go to loaded senders. \
                     Results cover earlier attempts of the same invocation. Delivery_requested means acceptance only; \
                     its from uses a hydrated receiver ref when available, otherwise UUID, user, or null for all senders. \
                     Direct calls only; unavailable inside code-mode or nested tool execution.".to_string(),
@@ -54,45 +55,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     /*required*/ None,
                     /*additional_properties*/ Some(false.into()),
                 ),
-                output_schema: Some(serde_json::json!({
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "properties": {
-                                "status": {"type": "string", "enum": ["delivery_requested"]},
-                                "from": {"type": ["string", "null"]}
-                            },
-                            "required": ["status", "from"],
-                            "additionalProperties": false
-                        },
-                        {
-                            "type": "object",
-                            "properties": {
-                                "status": {"type": "string", "enum": ["ok"]},
-                                "rejected_count": {"type": "integer", "minimum": 1}
-                            },
-                            "required": ["status"],
-                            "additionalProperties": false
-                        },
-                        {
-                            "type": "object",
-                            "properties": {
-                                "status": {"type": "string", "enum": ["empty"]}
-                            },
-                            "required": ["status"],
-                            "additionalProperties": false
-                        },
-                        {
-                            "type": "object",
-                            "properties": {
-                                "status": {"type": "string", "enum": ["rejected"]},
-                                "rejected_count": {"type": "integer", "minimum": 1}
-                            },
-                            "required": ["status", "rejected_count"],
-                            "additionalProperties": false
-                        }
-                    ]
-                })),
+                output_schema: None,
             })],
         })
     }
@@ -167,6 +130,7 @@ impl CoreToolRuntime for Handler {
                 Some(MailboxConsumption {
                     tool_call_id: invocation.call_id,
                     selection,
+                    presentation: MailboxConsumptionPresentation::CheckMail,
                 }),
             ))
         })

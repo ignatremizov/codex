@@ -17,6 +17,14 @@ pub enum WakeEventFinalDelivery {
     PresentationOnly,
 }
 
+/// Conditional mailbox response subscription after normalizing `f` and `x`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WakeEventMailboxSubscription {
+    #[default]
+    None,
+    Wake,
+}
+
 /// Normalized response flags, independent of their input order or repetition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WakeEventFlags {
@@ -26,6 +34,8 @@ pub struct WakeEventFlags {
     pub queue_input: bool,
     /// Mailbox admission without automatic response delivery.
     pub mailbox_input: bool,
+    /// Whether mailbox admission also requests a final-response subscription.
+    pub mailbox_subscription: WakeEventMailboxSubscription,
 }
 
 impl WakeEventFlags {
@@ -44,6 +54,7 @@ impl WakeEventFlags {
         let mut target_messages = false;
         let mut queue_input = false;
         let mut mailbox_input = false;
+        let mut mailbox_subscription = WakeEventMailboxSubscription::None;
         let mut wake_count = 0_usize;
         let mut presentation_count = 0_usize;
         for flag in value.chars() {
@@ -75,18 +86,14 @@ impl WakeEventFlags {
             std::cmp::Ordering::Greater => WakeEventFinalDelivery::Wake,
         };
         if mailbox_input {
-            // Compatibility follows normalized delivery: cancelled wakes are harmless,
-            // and excess presentation flags have no meaning for mailbox admission.
-            if commentary
-                || target_messages
-                || queue_input
-                || final_delivery == WakeEventFinalDelivery::Wake
-            {
-                return Err(
-                    "mailbox flag `z` cannot be combined with c, m, q, or effective wake delivery"
-                        .to_string(),
-                );
+            if commentary || target_messages || queue_input {
+                return Err("mailbox flag `z` cannot be combined with c, m, or q".to_string());
             }
+            if final_delivery == WakeEventFinalDelivery::Wake {
+                mailbox_subscription = WakeEventMailboxSubscription::Wake;
+            }
+            // Mailbox admission never changes the current-turn response policy. The
+            // normalized wake count above is exposed separately as a conditional subscription.
             final_delivery = WakeEventFinalDelivery::Passive;
         }
         Ok(Self {
@@ -95,6 +102,7 @@ impl WakeEventFlags {
             target_messages,
             queue_input,
             mailbox_input,
+            mailbox_subscription,
         })
     }
 }

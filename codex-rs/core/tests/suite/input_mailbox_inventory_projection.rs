@@ -77,6 +77,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
                         sender_turn_id: "author-turn".to_string(),
                     }),
                 },
+                final_subscription: Default::default(),
             })
             .await?;
     }
@@ -91,6 +92,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let frozen = test
@@ -145,7 +147,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
         .collect::<Vec<_>>();
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(body)?,
-        json!({"receiver": "1", "pending_senders": rows}),
+        json!({"pending": rows}),
     );
     assert_eq!(guidance, "check_mail: {\"from\":\"<ref>\"} or {} for all.");
     let hydration = request
@@ -234,6 +236,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let consumption = mount_sse_sequence(
@@ -277,10 +280,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
     let receipt = &requests[1];
     for call in ["select-agent", "select-user"] {
         let output = receipt.function_call_output(call);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(output["output"].as_str().expect("receipt"))?,
-            json!({"status": "ok"}),
-        );
+        assert_eq!(output["output"], "");
     }
     for payload in [
         "Original private user mail.",
@@ -374,6 +374,7 @@ async fn compaction_projects_inventory_for_local_and_remote_paths(
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let frozen = test
@@ -409,7 +410,7 @@ async fn compaction_projects_inventory_for_local_and_remote_paths(
     let json_line = projected.lines().nth(1).expect("inventory JSON");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(json_line)?,
-        json!({"receiver": receiver.to_string(), "pending_senders": [{"from": "user", "count": 1}]}),
+        json!({"pending": [{"from": "user", "count": 1}]}),
     );
     let compact = match boundary {
         CompactionPath::Local => {

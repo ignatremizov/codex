@@ -37,6 +37,7 @@ pub(crate) use response_observation::ResponseObservationDeliveryCommit;
 pub(crate) use response_observation::ResponseObservationDeliveryKind;
 pub(crate) use response_observation::ResponseObservationEventMatch;
 pub(crate) use response_observation::ResponseObservationPersistence;
+pub(crate) use response_observation::ResponseObservationSelection;
 use response_observation::ResponseObserverRelationship;
 pub(crate) use response_observation::ResponseWatcherRegistration;
 pub(crate) use response_observation::TargetMessageRouteMode;
@@ -81,7 +82,7 @@ pub(super) struct WaitAgentPresentations {
     pub(super) response_observation_changed: Notify,
     pub(super) watcher_terminal_changed: Notify,
     observation_transactions: Mutex<HashMap<SessionPresentationId, Arc<tokio::sync::Mutex<()>>>>,
-    messaging_refresh: tokio::sync::Mutex<()>,
+    messaging_refresh: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)]
     pub(in crate::agent::control) scoped_permission_check_gate: Mutex<
         Option<(

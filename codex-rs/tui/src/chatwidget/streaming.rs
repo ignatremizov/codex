@@ -42,7 +42,10 @@ impl ChatWidget {
 
     pub(super) fn restore_reasoning_status_header(&mut self) {
         if self.safety_buffering_is_waiting()
-            || self.unified_exec_wait_streak.is_some()
+            || self
+                .unified_exec_wait_tracker
+                .as_ref()
+                .is_some_and(UnifiedExecWaitTracker::has_active_wait)
             || self.status_state.compaction.is_some()
             || !self.status_state.pending_guardian_review_status.is_empty()
         {
@@ -326,7 +329,11 @@ impl ChatWidget {
             return;
         }
 
-        if self.unified_exec_wait_streak.is_some() {
+        if self
+            .unified_exec_wait_tracker
+            .as_ref()
+            .is_some_and(UnifiedExecWaitTracker::has_active_wait)
+        {
             // Unified exec waiting should take precedence over reasoning-derived status headers.
             return;
         }

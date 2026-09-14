@@ -25,8 +25,27 @@ impl LocalAgentControl {
     /// capacity/mailbox waits and before any response-observation transaction.
     pub(crate) async fn acquire_messaging_permission_transaction(
         &self,
-    ) -> tokio::sync::MutexGuard<'_, ()> {
-        self.wait_agent_presentations.messaging_refresh.lock().await
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        #[cfg(test)]
+        if let Some(attempted) = self
+            .wait_agent_presentations
+            .messaging_permission_attempted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            let sources = self
+                .wait_agent_presentations
+                .state()
+                .live_revert_messaging
+                .keys()
+                .copied()
+                .collect();
+            let _ = attempted.send(sources);
+        }
+        Arc::clone(&self.wait_agent_presentations.messaging_refresh)
+            .lock_owned()
+            .await
     }
 
     pub(crate) async fn set_subtree_messaging(
@@ -86,29 +105,8 @@ impl LocalAgentControl {
         self.refresh_messaging_context(current).await
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "reconciliation must serialize across runtime reads and permission publication"
-    )]
     async fn refresh_messaging_context(&self, current: ThreadId) -> CodexResult<()> {
-        #[cfg(test)]
-        if let Some(attempted) = self
-            .wait_agent_presentations
-            .messaging_refresh_attempted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
-            let sources = self
-                .wait_agent_presentations
-                .state()
-                .live_revert_messaging
-                .keys()
-                .copied()
-                .collect();
-            let _ = attempted.send(sources);
-        }
-        let _refresh = self.wait_agent_presentations.messaging_refresh.lock().await;
+        let _refresh = self.acquire_messaging_permission_transaction().await;
         self.refresh_messaging_context_locked(current).await
     }
 

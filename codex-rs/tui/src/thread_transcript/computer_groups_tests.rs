@@ -133,6 +133,8 @@ fn joins_respect_actual_turns_and_intervening_items() {
         ThreadItem::Sleep(codex_app_server_protocol::SleepItem {
             id: "sleep".into(),
             duration_ms: 10,
+            elapsed_ms: Some(10),
+            outcome: Some(codex_app_server_protocol::SleepOutcome::Completed),
         }),
         last.clone(),
     ]);

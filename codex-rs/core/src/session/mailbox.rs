@@ -42,6 +42,13 @@ use std::sync::Arc;
 pub(crate) struct MailboxConsumption {
     pub(crate) tool_call_id: String,
     pub(crate) selection: MailboxSelection,
+    pub(crate) presentation: MailboxConsumptionPresentation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MailboxConsumptionPresentation {
+    None,
+    CheckMail,
 }
 
 impl Session {
@@ -78,10 +85,6 @@ impl Session {
             let control = &session.services.agent_control;
             let mut warnings = Vec::new();
             let mut input_audits = Vec::new();
-            #[expect(
-                clippy::await_holding_invalid_type,
-                reason = "the messaging admission transaction must span permission checks, canonical delivery, and acknowledgement so permission changes cannot interleave"
-            )]
             let outcome = async {
                 let _messaging = control.acquire_messaging_permission_transaction().await;
                 let _durable = session
@@ -415,9 +418,24 @@ impl Session {
                         deliveries: evidence.clone(),
                     })
                     .await?;
-                let result = ensure_acknowledged(&reconciled, &evidence);
-                durable_outcome.finished = result.is_ok();
-                result
+                ensure_acknowledged(&reconciled, &evidence)?;
+                if operation.presentation == MailboxConsumptionPresentation::CheckMail {
+                    session
+                        .publish_mailbox_read(&turn.sub_id, &operation.tool_call_id, &reconciled)
+                        .await?;
+                }
+                let subscriptions = reconciled
+                    .messages
+                    .into_iter()
+                    .filter_map(|member| member.message.final_subscription)
+                    .filter(|subscription| {
+                        subscription.state
+                            == codex_thread_store::MailboxFinalSubscriptionState::Bound
+                            && subscription.bound_turn_id.as_deref() == Some(turn.sub_id.as_str())
+                    })
+                    .collect::<Vec<_>>();
+                durable_outcome.finished = true;
+                Ok(subscriptions)
             };
             let outcome = outcome.await;
             publication.finished = outcome.is_ok();
@@ -443,7 +461,11 @@ impl Session {
                     }
                 });
             }
-            outcome
+            let subscriptions = outcome?;
+            control
+                .bind_mailbox_final_subscriptions(session.presentation_id(), subscriptions)
+                .await;
+            Ok(())
         };
         tokio::spawn(commit)
             .await

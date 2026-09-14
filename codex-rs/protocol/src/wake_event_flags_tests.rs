@@ -29,6 +29,7 @@ fn all_five_flag_sequences_obey_presence_and_pairwise_cancellation() {
                 target_messages: input.contains('m'),
                 queue_input: input.contains('q'),
                 mailbox_input: false,
+                mailbox_subscription: WakeEventMailboxSubscription::None,
             },
             "{input}"
         );
@@ -83,6 +84,7 @@ fn mailbox_flags_normalize_order_repetition_and_cancelled_wakes() {
         target_messages: false,
         queue_input: false,
         mailbox_input: true,
+        mailbox_subscription: WakeEventMailboxSubscription::None,
     };
     for input in [
         "z", "zz", "zx", "xz", "zfx", "fxz", "xzf", "zfxx", "xxfz", "zzxxff", "zxxx",
@@ -113,15 +115,10 @@ fn mailbox_surface_preserves_agent_flags_and_checks_normalized_compatibility() {
                 WakeEventFlags::parse(&input, WakeEventSurface::Agent),
                 "{input}"
             );
-        } else if input.contains(['c', 'm', 'q'])
-            || input.matches('f').count() > input.matches('x').count()
-        {
+        } else if input.contains(['c', 'm', 'q']) {
             assert_eq!(
                 actual,
-                Err(
-                    "mailbox flag `z` cannot be combined with c, m, q, or effective wake delivery"
-                        .to_string()
-                ),
+                Err("mailbox flag `z` cannot be combined with c, m, or q".to_string()),
                 "{input}"
             );
         } else {
@@ -133,6 +130,12 @@ fn mailbox_surface_preserves_agent_flags_and_checks_normalized_compatibility() {
                     target_messages: false,
                     queue_input: false,
                     mailbox_input: true,
+                    mailbox_subscription: if input.matches('f').count() > input.matches('x').count()
+                    {
+                        WakeEventMailboxSubscription::Wake
+                    } else {
+                        WakeEventMailboxSubscription::None
+                    },
                 }),
                 "{input}"
             );
@@ -142,15 +145,32 @@ fn mailbox_surface_preserves_agent_flags_and_checks_normalized_compatibility() {
 
 #[test]
 fn mailbox_incompatible_flags_are_rejected_even_after_cancellation() {
-    for input in [
-        "zf", "fz", "zffx", "xffz", "zc", "mz", "zq", "zfxc", "mxzf", "qzfx",
-    ] {
+    for input in ["zc", "mz", "zq", "zfxc", "mxzf", "qzfx"] {
         assert_eq!(
             WakeEventFlags::parse(input, WakeEventSurface::AgentMailbox),
-            Err(
-                "mailbox flag `z` cannot be combined with c, m, q, or effective wake delivery"
-                    .to_string()
-            ),
+            Err("mailbox flag `z` cannot be combined with c, m, or q".to_string()),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn mailbox_final_subscriptions_follow_normalized_wake_counts() {
+    for input in ["zf", "fz", "zzf", "zffx", "xffz", "zfffx"] {
+        assert_eq!(
+            WakeEventFlags::parse(input, WakeEventSurface::AgentMailbox)
+                .expect("effective wake should request a conditional mailbox subscription")
+                .mailbox_subscription,
+            WakeEventMailboxSubscription::Wake,
+            "{input}"
+        );
+    }
+    for input in ["z", "zz", "zfx", "fxz", "zfxx", "xxfz", "zffxx"] {
+        assert_eq!(
+            WakeEventFlags::parse(input, WakeEventSurface::AgentMailbox)
+                .expect("cancelled or hidden mailbox final policy should be accepted")
+                .mailbox_subscription,
+            WakeEventMailboxSubscription::None,
             "{input}"
         );
     }

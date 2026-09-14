@@ -8,9 +8,12 @@ use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
 use codex_protocol::WakeEventFinalDelivery;
 use codex_protocol::WakeEventFlags;
+use codex_protocol::WakeEventMailboxSubscription;
 use codex_protocol::WakeEventSurface;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_thread_store::MailboxFinalSubscriptionRequest;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -54,7 +57,16 @@ impl Handler {
         let arguments = function_arguments(payload)?;
         let args: SendInputArgs = parse_arguments(&arguments)?;
         let input_items = parse_collab_input(args.message, args.items)?;
-        let mailbox = matches!(args.w, SendInputMode::Mailbox);
+        let mailbox = matches!(args.w, SendInputMode::Mailbox(_));
+        let mailbox_final_subscription = match args.w {
+            SendInputMode::Mailbox(WakeEventMailboxSubscription::Wake) => {
+                MailboxFinalSubscriptionRequest::Wake
+            }
+            SendInputMode::Response(_)
+            | SendInputMode::Mailbox(WakeEventMailboxSubscription::None) => {
+                MailboxFinalSubscriptionRequest::None
+            }
+        };
         if mailbox && args.interrupt {
             return Err(FunctionCallError::RespondToModel(
                 "mailbox input cannot interrupt a receiver; omit interrupt when using w:z"
@@ -68,7 +80,7 @@ impl Handler {
         }
         let response_observation = match args.w {
             SendInputMode::Response(policy) => policy,
-            SendInputMode::Mailbox => ResponseObservationPolicy::from_parts(
+            SendInputMode::Mailbox(_) => ResponseObservationPolicy::from_parts(
                 /*commentary*/ false,
                 FinalResponseObservation::None,
             ),
@@ -160,7 +172,7 @@ impl Handler {
             cyber_access_program: turn.cyber_access_program,
             ..Default::default()
         };
-        let result = async {
+        let mut result = async {
             if mailbox {
                 // Acceptance may hint a loaded receiver's inventory scheduler; this tool
                 // does not admit a payload-bearing turn or deliver the payload to its model.
@@ -171,11 +183,13 @@ impl Handler {
                         &call_id,
                         receiver_thread_id,
                         input_items,
+                        mailbox_final_subscription,
                     )
                     .await
                     .map(|accepted| SendInputResult {
                         submission_id: accepted.id,
                         status: SendInputAdmissionStatus::MailboxAccepted,
+                        hint: None,
                     })
             } else if sends_to_descendant {
                 let input = agent_control
@@ -201,6 +215,7 @@ impl Handler {
                         .map(|submission| SendInputResult {
                             submission_id: submission.queue_id.to_string(),
                             status: SendInputAdmissionStatus::Queued,
+                            hint: None,
                         })
                 } else {
                     agent_control
@@ -215,6 +230,7 @@ impl Handler {
                         .map(|submission_id| SendInputResult {
                             submission_id,
                             status: SendInputAdmissionStatus::Submitted,
+                            hint: None,
                         })
                 }
             } else if response_observation.queue_input() {
@@ -231,6 +247,7 @@ impl Handler {
                     .map(|submission| SendInputResult {
                         submission_id: submission.queue_id.to_string(),
                         status: SendInputAdmissionStatus::Queued,
+                        hint: None,
                     })
             } else {
                 agent_control
@@ -246,6 +263,7 @@ impl Handler {
                     .map(|submission_id| SendInputResult {
                         submission_id,
                         status: SendInputAdmissionStatus::Submitted,
+                        hint: None,
                     })
             }
         }
@@ -263,6 +281,13 @@ impl Handler {
             .agent_control
             .get_status(receiver_thread_id)
             .await;
+        if mailbox
+            && matches!(&status, AgentStatus::NotFound)
+            && let Ok(result) = &mut result
+        {
+            result.hint =
+                Some("Mail saved; receiver not loaded. Use resume_agent first.".to_string());
+        }
         let tool_call_status = if result.is_ok() && mailbox {
             CollabAgentToolCallStatus::Completed
         } else if result.is_ok() {
@@ -323,7 +348,7 @@ struct SendInputArgs {
 #[derive(Clone, Copy, Debug)]
 enum SendInputMode {
     Response(ResponseObservationPolicy),
-    Mailbox,
+    Mailbox(WakeEventMailboxSubscription),
 }
 
 impl Default for SendInputMode {
@@ -343,7 +368,7 @@ impl<'de> Deserialize<'de> for SendInputMode {
                 serde::de::Error::custom(format!("invalid wake/event state `{value}`; {error}"))
             })?;
         if flags.mailbox_input {
-            return Ok(Self::Mailbox);
+            return Ok(Self::Mailbox(flags.mailbox_subscription));
         }
         let final_response = match flags.final_delivery {
             WakeEventFinalDelivery::Passive => FinalResponseObservation::Passive,
@@ -363,6 +388,8 @@ impl<'de> Deserialize<'de> for SendInputMode {
 pub(crate) struct SendInputResult {
     submission_id: String,
     status: SendInputAdmissionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -376,6 +403,8 @@ enum SendInputAdmissionStatus {
 #[derive(Serialize)]
 struct SendInputModelResult<'a> {
     status: &'a SendInputAdmissionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -397,6 +426,7 @@ impl ToolOutput for SendInputResult {
             payload,
             &SendInputModelResult {
                 status: &self.status,
+                hint: self.hint.as_deref(),
             },
             Some(true),
             "send_input",
@@ -407,6 +437,7 @@ impl ToolOutput for SendInputResult {
         tool_output_code_mode_result(
             &SendInputModelResult {
                 status: &self.status,
+                hint: self.hint.as_deref(),
             },
             "send_input",
         )

@@ -77,6 +77,7 @@ mod completion_watcher;
 mod identity_snapshot;
 pub(crate) use identity_snapshot::V1AgentIdentitySnapshot;
 mod input;
+mod mailbox_final_subscription;
 mod mailbox_input;
 mod mailbox_inventory;
 pub(crate) use aliases::V1WaitStatusAuthority;

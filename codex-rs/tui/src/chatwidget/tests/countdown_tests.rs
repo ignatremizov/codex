@@ -11,6 +11,7 @@ fn poll(chat: &mut ChatWidget, item_id: &str, process_id: &str, deadline_at_ms: 
                 process_id: process_id.into(),
                 stdin: String::new(),
                 deadline_at_ms,
+                wait: None,
             },
         ),
         /*replay_kind*/ None,
@@ -107,13 +108,15 @@ async fn replay_and_stale_turn_notifications_never_arm_countdown() {
     }
     handle_turn_started(&mut chat, "turn-2");
     begin_unified_exec_startup(&mut chat, "current-item", "current-proc", "sleep 120");
-    chat.on_terminal_interaction(
-        "turn-2".into(),
-        "current-item".into(),
-        "current-proc".into(),
-        String::new(),
-        Some(future_deadline()),
-    );
+    chat.on_terminal_interaction(codex_app_server_protocol::TerminalInteractionNotification {
+        thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+        turn_id: "turn-2".into(),
+        item_id: "current-item".into(),
+        process_id: "current-proc".into(),
+        stdin: String::new(),
+        deadline_at_ms: Some(future_deadline()),
+        wait: None,
+    });
     let owner = chat.status_state.countdown_owner.clone();
     poll(&mut chat, "item", "proc", Some(future_deadline()));
     chat.handle_server_notification(
@@ -141,6 +144,7 @@ async fn terminal_replay_preserves_stdin_history_without_mutating_live_countdown
                     process_id: "proc".into(),
                     stdin: stdin.into(),
                     deadline_at_ms: Some(future_deadline()),
+                    wait: None,
                 },
             ),
             Some(ReplayKind::ThreadSnapshot),

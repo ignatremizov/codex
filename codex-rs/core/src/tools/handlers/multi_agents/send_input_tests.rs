@@ -12,6 +12,7 @@ fn admission_projection_keeps_internal_identifiers_out_of_model_results() {
         let result = SendInputResult {
             submission_id: "internal-admission-id".to_string(),
             status,
+            hint: None,
         };
         let payload = ToolPayload::Function {
             arguments: "{}".to_string(),
@@ -37,4 +38,41 @@ fn admission_projection_keeps_internal_identifiers_out_of_model_results() {
             json!({"status": expected})
         );
     }
+}
+
+#[test]
+fn unloaded_mailbox_hint_is_model_visible_without_exposing_internal_identifiers() {
+    let result = SendInputResult {
+        submission_id: "internal-admission-id".to_string(),
+        status: SendInputAdmissionStatus::MailboxAccepted,
+        hint: Some("Mail saved; receiver not loaded. Use resume_agent first.".to_string()),
+    };
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let expected = json!({
+        "status": "mailboxAccepted",
+        "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+    });
+    assert_eq!(result.code_mode_result(&payload), expected);
+    assert_eq!(
+        serde_json::from_str::<JsonValue>(&result.log_output()).expect("internal log"),
+        json!({
+            "submission_id": "internal-admission-id",
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    );
+    let ResponseInputItem::FunctionCallOutput { output, .. } =
+        result.to_response_item("send-call", &payload)
+    else {
+        panic!("expected function output");
+    };
+    let codex_protocol::models::FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("expected JSON text");
+    };
+    assert_eq!(
+        serde_json::from_str::<JsonValue>(&text).expect("model result"),
+        expected
+    );
 }

@@ -663,6 +663,49 @@ fn unified_exec_interaction_cell_retains_detailed_wait() {
 }
 
 #[test]
+fn unified_exec_wait_result_cell_renders_subsecond_elapsed_without_interaction_id() {
+    let short_wait = new_unified_exec_wait_result(
+        Some("node".to_string()),
+        "54965".to_string(),
+        "call_kF123".to_string(),
+        /*elapsed_ms*/ 240,
+        codex_app_server_protocol::TerminalWaitCompletionReason::Exited,
+    );
+    let immediate_wait = new_unified_exec_wait_result(
+        Some("node".to_string()),
+        "54965".to_string(),
+        "call_kF123".to_string(),
+        /*elapsed_ms*/ 0,
+        codex_app_server_protocol::TerminalWaitCompletionReason::Exited,
+    );
+
+    let lines = render_lines(&short_wait.display_lines(/*width*/ 80));
+    let immediate_lines = render_lines(&immediate_wait.display_lines(/*width*/ 80));
+    assert_eq!(
+        render_lines(&short_wait.raw_lines()),
+        ["Waited 240ms · process exited · node · process 54965"]
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("call_kF123")),
+        "interaction IDs must remain internal to wait results: {lines:?}"
+    );
+    insta::assert_snapshot!(
+        [lines, immediate_lines].concat().join("\n"),
+        @"
+        • Waited 240ms · process exited · node (process 54965)
+        • Waited <1ms · process exited · node (process 54965)
+        "
+    );
+}
+
+#[test]
+fn unified_exec_interaction_cell_renders_completed_output_check() {
+    let cell = new_unified_exec_output_check(/*command_display*/ None);
+    let lines = render_transcript(&cell);
+    assert_eq!(lines, vec!["• Checked background terminal output"]);
+}
+
+#[test]
 fn final_message_separator_preserves_runtime_metrics_for_short_turns() {
     let summary = RuntimeMetricsSummary {
         tool_calls: RuntimeMetricTotals {

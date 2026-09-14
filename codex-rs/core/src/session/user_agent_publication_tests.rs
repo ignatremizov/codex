@@ -117,6 +117,8 @@ async fn uncertain_task_append_never_installs_context_or_observation_policy() {
             final_delivery: AgentResponseFinalDelivery::Wake,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         };
         let installed = Arc::new(AtomicBool::new(false));
         let installation = Arc::clone(&installed);

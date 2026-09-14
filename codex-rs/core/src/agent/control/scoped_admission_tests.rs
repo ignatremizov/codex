@@ -173,6 +173,7 @@ async fn validated_scoped_steer_rejects_a_different_receiver_turn_at_submission(
             ResponseObservationPersistence::Durable,
             /*minimum_event_sequence*/ 0,
             /*after_item_id*/ None,
+            /*selection_id*/ None,
         )
         .expect("turn-scoped route");
     let TargetMessageAdmission::Wake(reservation_id) = control
