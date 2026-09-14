@@ -9,10 +9,13 @@ use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::UserAgentReplyRouteMode;
+use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_features::Feature;
+use codex_history::RolloutItem;
 use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::TurnItem;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -21,6 +24,7 @@ use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::LoadThreadHistoryParams;
+use codex_thread_store::MailboxFinalSubscriptionState;
 use codex_thread_store::MailboxMessageState;
 use codex_thread_store::MailboxPayload;
 use codex_thread_store::MailboxSender;
@@ -51,17 +55,20 @@ enum ReceiverRuntime {
     Active,
 }
 
-#[test_case("z", ReceiverRuntime::Idle, ThreadHistoryMode::Legacy; "idle")]
-#[test_case("zx", ReceiverRuntime::Idle, ThreadHistoryMode::Paginated; "idle_extra_x")]
-#[test_case("zfx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy; "unloaded_cancelled_wake")]
-#[test_case("zfxx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Paginated; "unloaded_extra_x")]
-#[test_case("zz", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy; "repeated_z")]
-#[test_case("z", ReceiverRuntime::Active, ThreadHistoryMode::Paginated; "active_not_steered")]
+#[test_case("z", ReceiverRuntime::Idle, ThreadHistoryMode::Legacy, false; "idle")]
+#[test_case("zx", ReceiverRuntime::Idle, ThreadHistoryMode::Paginated, false; "idle_extra_x")]
+#[test_case("zfx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy, false; "unloaded_cancelled_wake")]
+#[test_case("zfxx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Paginated, false; "unloaded_extra_x")]
+#[test_case("zf", ReceiverRuntime::Idle, ThreadHistoryMode::Legacy, true; "conditional_final_subscription")]
+#[test_case("zffx", ReceiverRuntime::Unloaded, ThreadHistoryMode::Paginated, true; "normalized_conditional_final_subscription")]
+#[test_case("zz", ReceiverRuntime::Unloaded, ThreadHistoryMode::Legacy, false; "repeated_z")]
+#[test_case("z", ReceiverRuntime::Active, ThreadHistoryMode::Paginated, false; "active_not_steered")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mailbox_accepts_original_typed_input_without_receiver_work(
     flags: &str,
     runtime: ReceiverRuntime,
     history_mode: ThreadHistoryMode,
+    expects_final_subscription: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let (server, _) = start_streaming_sse_server(Vec::new()).await;
@@ -256,6 +263,18 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
         .ok_or_else(|| anyhow::anyhow!("accepted mailbox row"))?;
     assert_eq!(result, json!({"status": "mailboxAccepted"}));
     assert_eq!(accepted.state, MailboxMessageState::Pending);
+    if expects_final_subscription {
+        let subscription = accepted
+            .final_subscription
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("conditional final subscription"))?;
+        assert_eq!(
+            (subscription.state, subscription.bound_turn_id.as_deref()),
+            (MailboxFinalSubscriptionState::Pending, None),
+        );
+    } else {
+        assert_eq!(accepted.final_subscription, None);
+    }
     assert_eq!(
         accepted.sender,
         MailboxSender::Agent(test.session_configured.thread_id)
@@ -328,7 +347,6 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
 #[test_case("zc", false; "commentary")]
 #[test_case("zm", false; "transient_reply_grant")]
 #[test_case("zq", false; "queued_turn")]
-#[test_case("zffx", false; "remaining_wake")]
 #[test_case("z", true; "interrupt")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn incompatible_mailbox_flags_never_admit_receiver_input(
@@ -397,6 +415,208 @@ async fn incompatible_mailbox_flags_never_admit_receiver_input(
     assert!(call_output(&request, "invalid-mail-call")?.contains("mailbox"));
     assert_eq!(target.agent_status().await, before);
     assert_eq!(server.requests().await.len(), 2);
+    server.shutdown().await;
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config.features.enable(Feature::Collab).expect("V1");
+            config
+                .features
+                .disable(Feature::MultiAgentV2)
+                .expect("not V2");
+        })
+        .build_with_streaming_server_auto_env(&server)
+        .await?;
+    let sender_id = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions::default())
+        .await?
+        .target_thread_id;
+    let receiver_id = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions::default())
+        .await?
+        .target_thread_id;
+    let sender = test.thread_manager.get_thread(sender_id).await?;
+    test.codex
+        .set_agent_reply_route(
+            &sender_id.to_string(),
+            Some(&receiver_id.to_string()),
+            UserAgentReplyRouteMode::Enabled,
+        )
+        .await?;
+
+    let arguments = serde_json::to_string(&json!({
+        "target": receiver_id.to_string(),
+        "message": "conditional response mail",
+        "w": "zf",
+    }))?;
+    server
+        .mount_response(
+            |_| true,
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("conditional-mail-send"),
+                    ev_function_call_with_namespace(
+                        "conditional-mail-call",
+                        "multi_agent_v1",
+                        "send_input",
+                        &arguments,
+                    ),
+                    ev_completed("conditional-mail-send"),
+                ]),
+            }],
+        )
+        .await;
+    let mut followup = server
+        .mount_response(
+            |_| true,
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("conditional-mail-accepted"),
+                    ev_completed("conditional-mail-accepted"),
+                ]),
+            }],
+        )
+        .await;
+    let submission = sender
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Save this result without starting receiver work.".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let TurnInputSubmission::Started { turn_id } = submission else {
+        anyhow::bail!("sender should start a new turn");
+    };
+    let request = timeout(
+        Duration::from_secs(/*secs*/ 15),
+        followup.wait_for_request(),
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_str::<Value>(&call_output(&request, "conditional-mail-call")?)?,
+        json!({"status": "mailboxAccepted"})
+    );
+    wait_for_event(sender.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let key = serde_json::to_string(&(
+        "v1-send-input-mailbox",
+        sender_id,
+        turn_id,
+        "conditional-mail-call",
+    ))?;
+    let accepted = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted mailbox row"))?;
+    let subscription = accepted
+        .final_subscription
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("conditional final subscription"))?;
+    let subscription_id = subscription.message_id.clone();
+    assert_eq!(
+        (subscription.state, subscription.bound_turn_id.as_deref()),
+        (MailboxFinalSubscriptionState::Pending, None),
+    );
+
+    test.codex
+        .close_agent(
+            &receiver_id.to_string(),
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let closed = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("closed mailbox row"))?;
+    assert_eq!(
+        closed
+            .final_subscription
+            .as_ref()
+            .map(|subscription| subscription.state),
+        Some(MailboxFinalSubscriptionState::Superseded),
+    );
+    test.codex
+        .resume_agent(
+            &receiver_id.to_string(),
+            /*task*/ None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let resumed = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("resumed mailbox row"))?;
+    assert_eq!(
+        resumed
+            .final_subscription
+            .as_ref()
+            .map(|subscription| subscription.state),
+        Some(MailboxFinalSubscriptionState::Superseded),
+    );
+
+    sender.shutdown_and_wait().await?;
+    test.thread_manager.remove_thread(&sender_id).await;
+    test.codex
+        .resume_agent(
+            &sender_id.to_string(),
+            /*task*/ None,
+            UserAgentResponseHandling::Presentation,
+        )
+        .await?;
+    let tombstone = timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            let history = test
+                .thread_store
+                .load_rollback_history(LoadThreadHistoryParams {
+                    thread_id: sender_id,
+                    include_archived: false,
+                })
+                .await?;
+            if let Some(tombstone) = history.items.iter().rev().find_map(|item| {
+                let RolloutItem::AgentResponseObservation(observation) = item else {
+                    return None;
+                };
+                (observation.observer_thread_id == sender_id
+                    && observation.target_thread_id == receiver_id
+                    && observation
+                        .mailbox_final_subscription_suppressed_message_id
+                        .as_deref()
+                        == Some(subscription_id.as_str()))
+                .then_some(observation.clone())
+            }) {
+                return Ok::<_, anyhow::Error>(tombstone);
+            }
+            tokio::time::sleep(Duration::from_millis(/*millis*/ 25)).await;
+        }
+    })
+    .await??;
+    assert_eq!(
+        (
+            tombstone.final_delivery,
+            tombstone.mailbox_final_subscription_message_id.as_deref(),
+        ),
+        (AgentResponseFinalDelivery::None, None),
+    );
     server.shutdown().await;
     Ok(())
 }

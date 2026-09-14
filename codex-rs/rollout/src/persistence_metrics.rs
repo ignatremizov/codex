@@ -270,6 +270,7 @@ fn turn_item_type(item: &TurnItem) -> &'static str {
         TurnItem::Reasoning(_) => "reasoning",
         TurnItem::CommandExecution(_) => "command_execution",
         TurnItem::DynamicToolCall(_) => "dynamic_tool_call",
+        TurnItem::MailboxRead(_) => "mailbox_read",
         TurnItem::CollabAgentToolCall(_) => "collab_agent_tool_call",
         TurnItem::SubAgentActivity(_) => "sub_agent_activity",
         TurnItem::UserAgentControl(_) => "user_agent_control",

@@ -1599,6 +1599,13 @@ fn explicit_user_observation_replaces_final_policy_without_removing_commentary()
             ResponseObservationPersistence::Durable,
         )
         .expect("watcher registration");
+    assert!(control.install_mailbox_final_subscription(parent, child, "mailbox-message"));
+    assert!(control.bind_mailbox_final_subscription_to_turn(
+        parent,
+        child,
+        "mailbox-message",
+        "turn-1",
+    ));
 
     assert_eq!(
         control.replace_final_response_observation(
@@ -1625,6 +1632,56 @@ fn explicit_user_observation_replaces_final_policy_without_removing_commentary()
         snapshot.final_delivery,
         codex_protocol::protocol::AgentResponseFinalDelivery::PresentationOnly
     );
+    let relationship_snapshot = control
+        .response_observation_snapshots(parent, child)
+        .into_iter()
+        .find(|snapshot| snapshot.target_turn_id.is_none())
+        .expect("relationship observation");
+    assert_eq!(
+        relationship_snapshot.mailbox_final_subscription_message_id,
+        None
+    );
+    assert_eq!(
+        relationship_snapshot.mailbox_final_subscription_suppressed_message_id,
+        Some("mailbox-message".to_string())
+    );
+    assert!(!control.install_mailbox_final_subscription(parent, child, "mailbox-message",));
+    assert!(control.install_mailbox_final_subscription(parent, child, "new-mailbox-message",));
+    assert_eq!(
+        control.mailbox_final_subscription_message_id(parent, child),
+        Some("new-mailbox-message".to_string())
+    );
+}
+
+#[test]
+fn ordinary_final_observation_keeps_its_turn_policy_when_suppressing_mailbox_final() {
+    let control = AgentControl::default();
+    let parent = session_presentation_id(ThreadId::new());
+    let child = session_presentation_id(ThreadId::new());
+    assert!(control.install_mailbox_final_subscription(parent, child, "mailbox-message"));
+    assert!(control.bind_mailbox_final_subscription_to_turn(
+        parent,
+        child,
+        "mailbox-message",
+        "turn-1",
+    ));
+
+    assert!(control.clear_mailbox_final_subscription(
+        parent,
+        child,
+        "mailbox-message",
+        Some("turn-1"),
+    ));
+    let turn = control
+        .response_observation_snapshots(parent, child)
+        .into_iter()
+        .find(|snapshot| snapshot.target_turn_id.as_deref() == Some("turn-1"))
+        .expect("ordinary final observation turn");
+    assert_eq!(
+        turn.final_delivery,
+        codex_protocol::protocol::AgentResponseFinalDelivery::Wake
+    );
+    assert_eq!(turn.mailbox_final_subscription_message_id, None);
 }
 
 #[test]
@@ -1656,6 +1713,7 @@ fn prepared_user_observation_does_not_change_live_policy_before_commit() {
             Some("turn-1"),
             /*last_terminal_turn_id*/ None,
             FinalResponseObservation::Wake,
+            /*mailbox_final_subscription_to_suppress*/ None,
         )
         .expect("prepare replacement");
 
@@ -1775,6 +1833,7 @@ fn explicit_user_observation_cannot_replace_claimed_final_delivery() {
             FinalResponseObservation::Wake,
             Some(response_item_id.clone()),
             false,
+            None,
         )
     );
 
@@ -2048,6 +2107,8 @@ async fn idle_turn_reservation_rechecks_a_wake_bound_after_idle_detection() {
                 final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Wake,
                 final_delivery_response_item_id: None,
                 committed_delivery_response_item_ids: Vec::new(),
+                mailbox_final_subscription_message_id: None,
+                mailbox_final_subscription_suppressed_message_id: None,
             },
         )
         .expect("late-bound watcher registration");
@@ -2131,6 +2192,7 @@ fn queued_turn_observation_retains_queued_source_delivery() {
             FinalResponseObservation::Passive,
             Some(response_item_id),
             true,
+            None,
         )
     );
 }
@@ -2165,6 +2227,8 @@ fn fire_and_forget_audit_snapshot_records_canonical_target_without_a_watcher() {
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         }]
     );
 }
@@ -2724,6 +2788,7 @@ fn one_complete_commentary_satisfies_all_pending_commentary_requests() {
         turn_id: "turn-1".to_string(),
         response_item_id: first.response_item_id,
         kind: ResponseObservationDeliveryKind::Commentary,
+        mailbox_final_subscription_message_id: None,
     });
     let _ = control.register_response_watcher_with_admission(
         child,
@@ -2770,6 +2835,7 @@ fn commentary_observation_respects_each_admission_boundary() {
             ResponseObservationPersistence::Durable,
             /*minimum_event_sequence*/ 5,
             /*after_item_id*/ None,
+            /*selection_id*/ None,
         )
         .expect("watcher registration");
     let _ = control.register_response_watcher_with_admission_at_sequence(
@@ -2783,6 +2849,7 @@ fn commentary_observation_respects_each_admission_boundary() {
         ResponseObservationPersistence::Durable,
         /*minimum_event_sequence*/ 10,
         /*after_item_id*/ None,
+        /*selection_id*/ None,
     );
 
     let first = control
@@ -2801,6 +2868,7 @@ fn commentary_observation_respects_each_admission_boundary() {
         turn_id: "turn-1".to_string(),
         response_item_id: first.response_item_id,
         kind: ResponseObservationDeliveryKind::Commentary,
+        mailbox_final_subscription_message_id: None,
     });
     assert!(
         control
@@ -2853,6 +2921,7 @@ fn recovered_commentary_uses_the_canonical_source_item_boundary() {
             ResponseObservationPersistence::Durable,
             /*minimum_event_sequence*/ 2,
             Some("commentary-before-admission".to_string()),
+            /*selection_id*/ None,
         )
         .expect("watcher registration");
     let mut prior_item_ids = HashSet::new();

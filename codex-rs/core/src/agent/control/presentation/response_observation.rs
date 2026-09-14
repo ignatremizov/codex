@@ -23,6 +23,8 @@ pub(super) struct ResponseTurnObservation {
     pub(super) queue_delivery: bool,
     pub(super) message_wake_reservation_id: Option<Uuid>,
     pub(super) message_wake_turn_id: Option<String>,
+    pub(super) response_observation_selection_id: Option<Uuid>,
+    pub(super) mailbox_final_subscription_message_id: Option<String>,
     pub(super) final_delivery_response_item_id: Option<ResponseItemId>,
     pub(super) committed_delivery_response_item_ids: Vec<ResponseItemId>,
 }
@@ -39,6 +41,8 @@ impl Default for ResponseTurnObservation {
             queue_delivery: false,
             message_wake_reservation_id: None,
             message_wake_turn_id: None,
+            response_observation_selection_id: None,
+            mailbox_final_subscription_message_id: None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
         }
@@ -108,6 +112,8 @@ pub(in crate::agent::control) struct ResponseObserverRelationship {
     pub(super) pending_next_turn: Option<ResponseTurnObservation>,
     pub(super) pending_admissions: HashMap<Uuid, ResponseTurnObservation>,
     pub(super) turns: HashMap<String, ResponseTurnObservation>,
+    pub(super) mailbox_final_subscription_message_id: Option<String>,
+    pub(super) mailbox_final_subscription_suppressed_message_id: Option<String>,
 }
 
 impl Default for ResponseObserverRelationship {
@@ -121,6 +127,8 @@ impl Default for ResponseObserverRelationship {
             pending_next_turn: None,
             pending_admissions: HashMap::new(),
             turns: HashMap::new(),
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         }
     }
 }
@@ -129,6 +137,11 @@ impl Default for ResponseObserverRelationship {
 pub(crate) enum ResponseObservationBinding {
     NextTurn,
     ExplicitAdmission(Uuid),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResponseObservationSelection {
+    pub(crate) selection_id: Uuid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +224,7 @@ pub(crate) struct ResponseObservationDeliveryCommit {
     pub(crate) turn_id: String,
     pub(crate) response_item_id: ResponseItemId,
     pub(crate) kind: ResponseObservationDeliveryKind,
+    pub(crate) mailbox_final_subscription_message_id: Option<String>,
 }
 
 enum CompletionDeliveryAdmissionRegistration {
@@ -785,6 +799,7 @@ impl AgentControl {
         active_turn_id: Option<&str>,
         last_terminal_turn_id: Option<&str>,
         replacement: FinalResponseObservation,
+        mailbox_final_subscription_to_suppress: Option<String>,
     ) -> Result<PreparedFinalResponseObservationReplacement, FinalResponseObservationReplacement>
     {
         let state = self.wait_agent_presentations.state();
@@ -807,6 +822,11 @@ impl AgentControl {
                 binding,
                 task_preview,
             } => {
+                if let Some(message_id) = mailbox_final_subscription_to_suppress {
+                    replacement_relationship.mailbox_final_subscription_message_id = None;
+                    replacement_relationship.mailbox_final_subscription_suppressed_message_id =
+                        Some(message_id);
+                }
                 let target_turn_id = match binding {
                     ReplacedFinalResponseObservationBinding::ActiveTurn => {
                         active_turn_id.map(ToOwned::to_owned)
@@ -929,28 +949,68 @@ fn replace_final_response_observation_in_relationship(
     } else {
         return FinalResponseObservationReplacement::NoObservation;
     };
-    let observation = match binding {
+    let (previous, task_preview) = {
+        let observation = match binding {
+            ReplacedFinalResponseObservationBinding::ActiveTurn => {
+                active_turn_id.and_then(|turn_id| relationship.turns.get_mut(turn_id))
+            }
+            ReplacedFinalResponseObservationBinding::UndeliveredCompletion => {
+                last_terminal_turn_id.and_then(|turn_id| relationship.turns.get_mut(turn_id))
+            }
+            ReplacedFinalResponseObservationBinding::NextTurn => {
+                relationship.pending_next_turn.as_mut()
+            }
+        };
+        let Some(observation) = observation else {
+            return FinalResponseObservationReplacement::NoObservation;
+        };
+        if observation.final_delivery_response_item_id.is_some()
+            || !observation.committed_delivery_response_item_ids.is_empty()
+        {
+            return FinalResponseObservationReplacement::DeliveryClaimed;
+        }
+        (observation.final_response, observation.task_preview.clone())
+    };
+    if let Some(message_id) = relationship.mailbox_final_subscription_message_id.take() {
+        relationship.mailbox_final_subscription_suppressed_message_id = Some(message_id);
+    }
+    for observation in relationship
+        .pending_next_turn
+        .iter_mut()
+        .chain(relationship.pending_admissions.values_mut())
+        .chain(relationship.turns.values_mut())
+    {
+        if observation.mailbox_final_subscription_message_id.is_some()
+            && observation.final_delivery_response_item_id.is_none()
+        {
+            observation.mailbox_final_subscription_message_id = None;
+            observation.final_response = FinalResponseObservation::None;
+        }
+    }
+    match binding {
         ReplacedFinalResponseObservationBinding::ActiveTurn => {
-            active_turn_id.and_then(|turn_id| relationship.turns.get_mut(turn_id))
+            if let Some(turn_id) = active_turn_id
+                && let Some(observation) = relationship.turns.get_mut(turn_id)
+            {
+                observation.final_response = replacement;
+                observation.mailbox_final_subscription_message_id = None;
+            }
         }
         ReplacedFinalResponseObservationBinding::UndeliveredCompletion => {
-            last_terminal_turn_id.and_then(|turn_id| relationship.turns.get_mut(turn_id))
+            if let Some(turn_id) = last_terminal_turn_id
+                && let Some(observation) = relationship.turns.get_mut(turn_id)
+            {
+                observation.final_response = replacement;
+                observation.mailbox_final_subscription_message_id = None;
+            }
         }
         ReplacedFinalResponseObservationBinding::NextTurn => {
-            relationship.pending_next_turn.as_mut()
+            if let Some(observation) = relationship.pending_next_turn.as_mut() {
+                observation.final_response = replacement;
+                observation.mailbox_final_subscription_message_id = None;
+            }
         }
-    };
-    let Some(observation) = observation else {
-        return FinalResponseObservationReplacement::NoObservation;
-    };
-    if observation.final_delivery_response_item_id.is_some()
-        || !observation.committed_delivery_response_item_ids.is_empty()
-    {
-        return FinalResponseObservationReplacement::DeliveryClaimed;
     }
-    let previous = observation.final_response;
-    let task_preview = observation.task_preview.clone();
-    observation.final_response = replacement;
     FinalResponseObservationReplacement::Replaced {
         previous,
         binding,
@@ -976,6 +1036,7 @@ impl AgentControl {
             ResponseObservationPersistence::Durable,
             /*minimum_event_sequence*/ 0,
             /*after_item_id*/ None,
+            /*selection_id*/ None,
         )
     }
 
@@ -1021,6 +1082,7 @@ impl AgentControl {
             persistence,
             /*minimum_event_sequence*/ 0,
             /*after_item_id*/ None,
+            /*selection_id*/ None,
         )
     }
 
@@ -1037,6 +1099,7 @@ impl AgentControl {
         persistence: ResponseObservationPersistence,
         minimum_event_sequence: u64,
         after_item_id: Option<String>,
+        selection_id: Option<Uuid>,
     ) -> Option<CompletionWatcherRegistration> {
         self.register_completion_watcher_inner(
             child,
@@ -1049,6 +1112,7 @@ impl AgentControl {
             persistence,
             minimum_event_sequence,
             after_item_id,
+            selection_id,
         )
     }
 
@@ -1095,6 +1159,28 @@ impl AgentControl {
             });
         }
         relationship.reply_route_context_installed |= observation.reply_route_context_installed;
+        if observation.target_turn_id.is_none() {
+            if let Some(message_id) = observation.mailbox_final_subscription_message_id.as_ref() {
+                relationship.mailbox_final_subscription_message_id = Some(message_id.clone());
+                if relationship
+                    .mailbox_final_subscription_suppressed_message_id
+                    .as_ref()
+                    == Some(message_id)
+                {
+                    relationship.mailbox_final_subscription_suppressed_message_id = None;
+                }
+            }
+            if let Some(message_id) = observation
+                .mailbox_final_subscription_suppressed_message_id
+                .as_ref()
+            {
+                relationship.mailbox_final_subscription_suppressed_message_id =
+                    Some(message_id.clone());
+                if relationship.mailbox_final_subscription_message_id.as_ref() == Some(message_id) {
+                    relationship.mailbox_final_subscription_message_id = None;
+                }
+            }
+        }
         let turn_observation = match observation.target_turn_id.as_deref() {
             Some(turn_id) => relationship.turns.get_mut(turn_id),
             None => match binding {
@@ -1123,6 +1209,8 @@ impl AgentControl {
             turn_observation.target_messages = observation.target_messages;
             turn_observation.queue_delivery = observation.queue_delivery;
             turn_observation.message_wake_turn_id = observation.message_wake_turn_id.clone();
+            turn_observation.mailbox_final_subscription_message_id =
+                observation.mailbox_final_subscription_message_id.clone();
             turn_observation.final_delivery_response_item_id =
                 observation.final_delivery_response_item_id.clone();
             turn_observation.committed_delivery_response_item_ids =
@@ -1144,6 +1232,7 @@ impl AgentControl {
         persistence: ResponseObservationPersistence,
         minimum_event_sequence: u64,
         after_item_id: Option<String>,
+        selection_id: Option<Uuid>,
     ) -> Option<CompletionWatcherRegistration> {
         let mut state = self.wait_agent_presentations.state();
         let observer_child = (parent, child);
@@ -1161,6 +1250,7 @@ impl AgentControl {
             // a wake policy on the current turn.
             relationship.baseline_final_response = FinalResponseObservation::Passive;
         }
+        let selection_target_turn_id = target_turn_id.clone();
         match target_turn_id {
             Some(target_turn_id) => {
                 relationship
@@ -1192,6 +1282,19 @@ impl AgentControl {
                     .or_default()
                     .merge(response_observation, minimum_event_sequence, after_item_id),
             },
+        }
+        if let Some(selection_id) = selection_id
+            && let Some(observation) = match selection_target_turn_id {
+                Some(turn_id) => relationship.turns.get_mut(&turn_id),
+                None => match pending_binding {
+                    ResponseObservationBinding::NextTurn => relationship.pending_next_turn.as_mut(),
+                    ResponseObservationBinding::ExplicitAdmission(admission_id) => {
+                        relationship.pending_admissions.get_mut(&admission_id)
+                    }
+                },
+            }
+        {
+            observation.response_observation_selection_id = Some(selection_id);
         }
         drop(state);
         self.wait_agent_presentations

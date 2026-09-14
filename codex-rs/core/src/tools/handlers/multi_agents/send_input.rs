@@ -7,9 +7,11 @@ use crate::agent::response_observation::ResponseObservationPolicy;
 use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
 use codex_protocol::WakeEventFinalDelivery;
 use codex_protocol::WakeEventFlags;
+use codex_protocol::WakeEventMailboxSubscription;
 use codex_protocol::WakeEventSurface;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_thread_store::MailboxFinalSubscriptionRequest;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -53,7 +55,16 @@ impl Handler {
         let arguments = function_arguments(payload)?;
         let args: SendInputArgs = parse_arguments(&arguments)?;
         let input_items = parse_collab_input(args.message, args.items)?;
-        let mailbox = matches!(args.w, SendInputMode::Mailbox);
+        let mailbox = matches!(args.w, SendInputMode::Mailbox(_));
+        let mailbox_final_subscription = match args.w {
+            SendInputMode::Mailbox(WakeEventMailboxSubscription::Wake) => {
+                MailboxFinalSubscriptionRequest::Wake
+            }
+            SendInputMode::Response(_)
+            | SendInputMode::Mailbox(WakeEventMailboxSubscription::None) => {
+                MailboxFinalSubscriptionRequest::None
+            }
+        };
         if mailbox && args.interrupt {
             return Err(FunctionCallError::RespondToModel(
                 "mailbox input cannot interrupt a receiver; omit interrupt when using w:z"
@@ -67,7 +78,7 @@ impl Handler {
         }
         let response_observation = match args.w {
             SendInputMode::Response(policy) => policy,
-            SendInputMode::Mailbox => ResponseObservationPolicy::from_parts(
+            SendInputMode::Mailbox(_) => ResponseObservationPolicy::from_parts(
                 /*commentary*/ false,
                 FinalResponseObservation::None,
             ),
@@ -169,6 +180,7 @@ impl Handler {
                         &call_id,
                         receiver_thread_id,
                         input_items,
+                        mailbox_final_subscription,
                     )
                     .await
                     .map(|accepted| SendInputResult {
@@ -321,7 +333,7 @@ struct SendInputArgs {
 #[derive(Clone, Copy, Debug)]
 enum SendInputMode {
     Response(ResponseObservationPolicy),
-    Mailbox,
+    Mailbox(WakeEventMailboxSubscription),
 }
 
 impl Default for SendInputMode {
@@ -341,7 +353,7 @@ impl<'de> Deserialize<'de> for SendInputMode {
                 serde::de::Error::custom(format!("invalid wake/event state `{value}`; {error}"))
             })?;
         if flags.mailbox_input {
-            return Ok(Self::Mailbox);
+            return Ok(Self::Mailbox(flags.mailbox_subscription));
         }
         let final_response = match flags.final_delivery {
             WakeEventFinalDelivery::Passive => FinalResponseObservation::Passive,

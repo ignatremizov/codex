@@ -938,6 +938,7 @@ pub(super) fn terminal_interaction(
                 process_id: process_id.to_string(),
                 stdin: stdin.to_string(),
                 deadline_at_ms: None,
+                wait: None,
             },
         ),
         /*replay_kind*/ None,

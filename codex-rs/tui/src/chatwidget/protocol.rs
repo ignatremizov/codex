@@ -104,11 +104,9 @@ impl ChatWidget {
                 }
             }
             ServerNotification::ReasoningSummaryPartAdded(_) => self.on_reasoning_section_break(),
-            ServerNotification::TerminalInteraction(notification) => self.on_terminal_interaction(
-                notification.process_id,
-                notification.stdin,
-                notification.deadline_at_ms,
-            ),
+            ServerNotification::TerminalInteraction(notification) => {
+                self.on_terminal_interaction(notification)
+            }
             ServerNotification::CommandExecutionOutputDelta(notification) => {
                 self.on_exec_command_output_delta(&notification.item_id, &notification.delta);
             }
@@ -419,6 +417,7 @@ impl ChatWidget {
         from_replay: bool,
     ) {
         let deadline_at_ms = notification.deadline_at_ms;
+        let turn_id = notification.turn_id;
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => {
                 self.on_command_execution_started(item, deadline_at_ms);
@@ -430,6 +429,7 @@ impl ChatWidget {
             ThreadItem::WebSearch(item) => {
                 self.on_web_search_begin(item.id);
             }
+            ThreadItem::Sleep(item) => self.on_sleep_started(item, turn_id),
             ThreadItem::ImageGeneration(_) => {
                 self.on_image_generation_begin();
             }

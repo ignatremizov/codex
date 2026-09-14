@@ -15,6 +15,32 @@ pub(crate) enum InterAgentCommunicationRecord {
 }
 
 impl Session {
+    async fn acknowledge_mailbox_final_subscription_delivery(
+        &self,
+        commit: &crate::agent::control::ResponseObservationDeliveryCommit,
+    ) {
+        let Some(message_id) = commit.mailbox_final_subscription_message_id.as_ref() else {
+            return;
+        };
+        if let Err(error) = self
+            .services
+            .thread_store
+            .acknowledge_mailbox_final_subscription_delivery(
+                commit.child.thread_id,
+                message_id.clone(),
+                commit.turn_id.clone(),
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                message_id,
+                turn_id = %commit.turn_id,
+                "failed to acknowledge mailbox final subscription delivery"
+            );
+        }
+    }
+
     pub(crate) async fn record_wait_commentary(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -224,6 +250,8 @@ impl Session {
                     self.services
                         .agent_control
                         .commit_response_observation_delivery(response_delivery_commit);
+                    self.acknowledge_mailbox_final_subscription_delivery(response_delivery_commit)
+                        .await;
                 } else {
                     self.persist_rollout_items(&rollout_items).await;
                 }
@@ -386,6 +414,8 @@ impl Session {
                     sess.services
                         .agent_control
                         .commit_response_observation_delivery(response_delivery_commit);
+                    sess.acknowledge_mailbox_final_subscription_delivery(response_delivery_commit)
+                        .await;
                 }
                 let response_already_recorded = {
                     let mut state = sess.state.lock().await;

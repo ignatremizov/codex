@@ -16,6 +16,12 @@ pub(super) enum WatcherTerminalPoll {
     Closed,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum ResponseObservationRollbackPolicy {
+    RequireReloadOnUnknownOutcome,
+    RetryAuthoritativeMailboxProjection,
+}
+
 impl AgentControl {
     pub(super) async fn persist_response_observation_snapshot_transactionally(
         &self,
@@ -368,6 +374,7 @@ impl AgentControl {
                     turn_id: turn_id.to_string(),
                     response_item_id: delivery.response_item_id.clone(),
                     kind: ResponseObservationDeliveryKind::Commentary,
+                    mailbox_final_subscription_message_id: None,
                 },
                 submission_permit,
                 target_lifecycle_guard,
@@ -442,6 +449,7 @@ impl AgentControl {
                     turn_id: turn_id.to_string(),
                     response_item_id: delivery.response_item_id.clone(),
                     kind: ResponseObservationDeliveryKind::Commentary,
+                    mailbox_final_subscription_message_id: None,
                 },
                 submission_permit,
                 target_lifecycle_guard,
@@ -501,6 +509,7 @@ impl AgentControl {
                     turn_id: turn_id.to_string(),
                     response_item_id: delivery.response_item_id.clone(),
                     kind: ResponseObservationDeliveryKind::Commentary,
+                    mailbox_final_subscription_message_id: None,
                 },
                 submission_permit,
                 target_lifecycle_guard,
@@ -555,6 +564,7 @@ impl AgentControl {
             turn_id: commentary.turn_id.clone(),
             response_item_id: commentary.delivery.response_item_id.clone(),
             kind: ResponseObservationDeliveryKind::Commentary,
+            mailbox_final_subscription_message_id: None,
         };
         let rollout_suffix = self
             .response_observation_committed_snapshots(
@@ -687,13 +697,17 @@ impl AgentControl {
             .acquire_response_observation_transaction(terminal.presentation.parent())
             .await;
         let terminal_response_item_id = terminal.presentation.completion_context_response_item_id();
-        let (mut final_response_observation, response_item_id, queue_delivery) = self
-            .prepare_final_response_observation_delivery(
-                terminal.presentation.parent(),
-                terminal.presentation.child(),
-                &terminal.turn_id,
-                &terminal_response_item_id,
-            );
+        let (
+            mut final_response_observation,
+            response_item_id,
+            queue_delivery,
+            mailbox_final_subscription_message_id,
+        ) = self.prepare_final_response_observation_delivery(
+            terminal.presentation.parent(),
+            terminal.presentation.child(),
+            &terminal.turn_id,
+            &terminal_response_item_id,
+        );
         // Commentary-only root observations still need terminal cleanup, but do not
         // own final model delivery. Use the canonical hidden presentation locally;
         // do not turn this oversight default into a persisted observation or grant.
@@ -725,17 +739,35 @@ impl AgentControl {
             && terminal.presentation.wait_owns_presentation().await
         {
             if final_response_observation != FinalResponseObservation::PresentationOnly {
-                self.commit_final_response_observation_delivery(
-                    terminal.presentation.parent(),
-                    terminal.presentation.child(),
-                    &terminal.turn_id,
-                );
-                return self
+                let Some(response_item_id) = response_item_id else {
+                    return false;
+                };
+                let commit = ResponseObservationDeliveryCommit {
+                    parent: terminal.presentation.parent(),
+                    child: terminal.presentation.child(),
+                    turn_id: terminal.turn_id.clone(),
+                    response_item_id,
+                    kind: ResponseObservationDeliveryKind::Final,
+                    mailbox_final_subscription_message_id: mailbox_final_subscription_message_id
+                        .clone(),
+                };
+                self.commit_response_observation_delivery(&commit);
+                let committed = self
                     .persist_response_observation_snapshot(
                         terminal.presentation.parent(),
                         terminal.presentation.child(),
                     )
                     .await;
+                if committed {
+                    self.acknowledge_mailbox_final_subscription_delivery(
+                        terminal.presentation.parent(),
+                        terminal.presentation.child(),
+                        &terminal.turn_id,
+                        mailbox_final_subscription_message_id.as_deref(),
+                    )
+                    .await;
+                }
+                return committed;
             }
             return true;
         }
@@ -849,6 +881,7 @@ impl AgentControl {
                                 turn_id: terminal.turn_id.clone(),
                                 response_item_id,
                                 kind: ResponseObservationDeliveryKind::Final,
+                                mailbox_final_subscription_message_id,
                             },
                             submission_permit,
                             target_lifecycle_guard,
@@ -948,16 +981,70 @@ impl AgentControl {
                 }
             }
         }
-        self.commit_final_response_observation_delivery(
-            terminal.presentation.parent(),
-            terminal.presentation.child(),
-            &terminal.turn_id,
-        );
-        self.persist_response_observation_snapshot(
-            terminal.presentation.parent(),
-            terminal.presentation.child(),
-        )
-        .await
+        let commit = ResponseObservationDeliveryCommit {
+            parent: terminal.presentation.parent(),
+            child: terminal.presentation.child(),
+            turn_id: terminal.turn_id.clone(),
+            response_item_id,
+            kind: ResponseObservationDeliveryKind::Final,
+            mailbox_final_subscription_message_id: mailbox_final_subscription_message_id.clone(),
+        };
+        self.commit_response_observation_delivery(&commit);
+        let committed = self
+            .persist_response_observation_snapshot(
+                terminal.presentation.parent(),
+                terminal.presentation.child(),
+            )
+            .await;
+        if committed {
+            self.acknowledge_mailbox_final_subscription_delivery(
+                terminal.presentation.parent(),
+                terminal.presentation.child(),
+                &terminal.turn_id,
+                mailbox_final_subscription_message_id.as_deref(),
+            )
+            .await;
+        }
+        committed
+    }
+
+    async fn acknowledge_mailbox_final_subscription_delivery(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        turn_id: &str,
+        message_id: Option<&str>,
+    ) {
+        let Some(message_id) = message_id else {
+            return;
+        };
+        let Ok(state) = self.upgrade() else {
+            return;
+        };
+        let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await else {
+            return;
+        };
+        if parent_thread.session.presentation_id() != parent {
+            return;
+        }
+        if let Err(error) = parent_thread
+            .session
+            .services
+            .thread_store
+            .acknowledge_mailbox_final_subscription_delivery(
+                child.thread_id,
+                message_id.to_string(),
+                turn_id.to_string(),
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                %message_id,
+                %turn_id,
+                "failed to acknowledge mailbox final subscription delivery"
+            );
+        }
     }
 
     pub(super) async fn finish_and_persist_response_observation_turn(
@@ -1136,6 +1223,7 @@ impl AgentControl {
         previous_relationship: Option<super::presentation::ResponseObserverRelationship>,
         target_turn_id: Option<String>,
         failed_operation: &str,
+        rollback_policy: ResponseObservationRollbackPolicy,
     ) -> CodexResult<()> {
         self.restore_response_observation_relationship_snapshot(
             parent,
@@ -1152,7 +1240,10 @@ impl AgentControl {
             return Ok(());
         }
 
-        if let Ok(state) = self.upgrade()
+        if matches!(
+            rollback_policy,
+            ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome
+        ) && let Ok(state) = self.upgrade()
             && let Ok(parent_thread) = state.get_thread_including_pending(parent.thread_id).await
             && parent_thread.session.presentation_id() == parent
         {

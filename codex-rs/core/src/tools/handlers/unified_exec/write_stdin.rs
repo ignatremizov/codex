@@ -8,13 +8,11 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::sandboxing::ToolError;
-use crate::turn_timing::now_unix_timestamp_ms;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
+use crate::unified_exec::UserInputWait;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::TerminalInteractionEvent;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
@@ -22,7 +20,7 @@ use serde::Deserialize;
 use super::super::shell_spec::create_write_stdin_tool;
 use super::post_unified_exec_tool_use_payload;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 struct WriteStdinArgs {
     // The model is trained on `session_id`.
     session_id: i32,
@@ -30,6 +28,8 @@ struct WriteStdinArgs {
     chars: String,
     #[serde(default)]
     yield_time_ms: Option<u64>,
+    #[serde(default)]
+    wait_until_exit: bool,
     #[serde(default)]
     max_output_tokens: Option<usize>,
 }
@@ -97,32 +97,22 @@ impl WriteStdinHandler {
         let yield_time_ms = args
             .yield_time_ms
             .unwrap_or(turn.unified_exec_write_stdin_yield_time_ms);
-        let mut empty_poll_started = None;
-        if args.chars.is_empty()
-            && let Ok((process_id, event_call_id)) = session
-                .services
-                .unified_exec_manager
-                .process_event_metadata(args.session_id)
-                .await
-        {
-            empty_poll_started = Some((process_id, event_call_id.clone()));
-            let effective_yield_time_ms = session
-                .services
-                .unified_exec_manager
-                .effective_write_stdin_yield_time_ms(&args.chars, yield_time_ms);
-            let deadline_at_ms = i64::try_from(effective_yield_time_ms)
-                .ok()
-                .and_then(|yield_time_ms| now_unix_timestamp_ms().checked_add(yield_time_ms));
-            let interaction = TerminalInteractionEvent {
-                call_id: event_call_id,
-                process_id: process_id.to_string(),
-                stdin: String::new(),
-                deadline_at_ms,
-            };
-            session
-                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
+        let user_input_wait = if args.wait_until_exit {
+            let turn_state = session
+                .input_queue
+                .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
                 .await;
-        }
+            let (steer_activity_rx, pending_steer) = session
+                .input_queue
+                .subscribe_steer_activity(turn_state.as_deref())
+                .await;
+            Some(UserInputWait {
+                steer_activity_rx,
+                pending_steer,
+            })
+        } else {
+            None
+        };
         let response = match session
             .services
             .unified_exec_manager
@@ -132,29 +122,21 @@ impl WriteStdinHandler {
                     process_id: args.session_id,
                     input: &args.chars,
                     yield_time_ms,
+                    wait_until_exit: args.wait_until_exit,
                     max_output_tokens: args.max_output_tokens,
                     truncation_policy: turn.model_info().truncation_policy.into(),
                     interaction_event: Some(WriteStdinInteractionEvent {
                         session: &session,
                         turn: &turn,
+                        interaction_id: &context.call_id,
                     }),
+                    user_input_wait,
                 },
             )
             .await
         {
             Ok(response) => response,
             Err(err) => {
-                if let Some((process_id, event_call_id)) = empty_poll_started.as_ref() {
-                    let interaction = TerminalInteractionEvent {
-                        call_id: event_call_id.clone(),
-                        process_id: process_id.to_string(),
-                        stdin: String::new(),
-                        deadline_at_ms: None,
-                    };
-                    session
-                        .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
-                        .await;
-                }
                 let message = match err {
                     UnifiedExecError::StdinApproval(ToolError::Rejected(reason)) => {
                         format!("write_stdin rejected: {reason}")
@@ -177,6 +159,10 @@ impl CoreToolRuntime for WriteStdinHandler {
         matches!(payload, ToolPayload::Function { .. })
     }
 
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
+    }
+
     fn pre_tool_use_payload(&self, _invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
         // `write_stdin` is transport for an existing exec session. Empty writes
         // are background polls, and non-empty writes continue a command that
@@ -194,3 +180,7 @@ impl CoreToolRuntime for WriteStdinHandler {
         post_unified_exec_tool_use_payload(invocation, result)
     }
 }
+
+#[cfg(test)]
+#[path = "write_stdin_tests.rs"]
+mod tests;

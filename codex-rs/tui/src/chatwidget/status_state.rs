@@ -38,9 +38,19 @@ pub(super) enum TerminalTitleStatusKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum StatusCountdownOwner {
-    CollabWait { call_id: String },
-    UnifiedExecInitial { process_key: String },
-    UnifiedExecWait { process_id: String },
+    CollabWait {
+        call_id: String,
+    },
+    UnifiedExecInitial {
+        process_key: String,
+    },
+    UnifiedExecWait {
+        process_id: String,
+    },
+    UnifiedExecWaitInvocation {
+        turn_id: String,
+        interaction_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

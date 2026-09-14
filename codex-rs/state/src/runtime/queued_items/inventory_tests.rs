@@ -1,4 +1,6 @@
 use super::*;
+use crate::MailboxFinalSubscriptionRequest;
+use crate::MailboxFinalSubscriptionState;
 use crate::MailboxInvocation;
 use crate::MailboxSelection;
 use crate::StateRuntime;
@@ -159,6 +161,160 @@ async fn fixed_inventory_and_watermark_survive_reopen_without_repeat_eligibility
             claimed_senders: Vec::new(),
             active_notification: None,
         }
+    );
+}
+
+#[tokio::test]
+async fn inventory_ack_binds_only_accepted_subscriptions_inside_its_fixed_frontier() {
+    let runtime = runtime().await;
+    let queue = runtime.thread_queue();
+    let receiver = ThreadId::new();
+    let first_sender = ThreadId::new();
+    let first = queue
+        .accept_mail_with_final_subscription(
+            receiver,
+            "first",
+            &format!("agent:{first_sender}"),
+            "{}",
+            MailboxFinalSubscriptionRequest::Wake,
+        )
+        .await
+        .unwrap();
+    let original = queue
+        .prepare_mail_inventory(receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    let second_sender = ThreadId::new();
+    let second = queue
+        .accept_mail_with_final_subscription(
+            receiver,
+            "second",
+            &format!("agent:{second_sender}"),
+            "{}",
+            MailboxFinalSubscriptionRequest::Wake,
+        )
+        .await
+        .unwrap();
+
+    let original_ack = queue
+        .acknowledge_mail_inventory_with_final_subscriptions(receiver, &original.id)
+        .await
+        .unwrap();
+    let mut expected_first = first.final_subscription.unwrap();
+    expected_first.state = MailboxFinalSubscriptionState::Bound;
+    expected_first.bound_turn_id = Some(original.id.clone());
+    assert_eq!(
+        original_ack.bound_subscriptions,
+        vec![expected_first.clone()]
+    );
+    assert_eq!(
+        queue
+            .read_active_mailbox_final_subscription(receiver, first_sender)
+            .await
+            .unwrap(),
+        Some(expected_first.clone())
+    );
+
+    // A later accepted message creates a new frontier; the previously bound
+    // unread message is not rebound to this different inventory turn.
+    let later = queue
+        .prepare_mail_inventory(receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(later.through_sequence > original.through_sequence);
+    let later_ack = queue
+        .acknowledge_mail_inventory_with_final_subscriptions(receiver, &later.id)
+        .await
+        .unwrap();
+    let mut expected_second = second.final_subscription.unwrap();
+    expected_second.state = MailboxFinalSubscriptionState::Bound;
+    expected_second.bound_turn_id = Some(later.id.clone());
+    assert_eq!(later_ack.bound_subscriptions, vec![expected_second.clone()]);
+    assert_eq!(
+        queue
+            .read_active_mailbox_final_subscription(receiver, first_sender)
+            .await
+            .unwrap(),
+        Some(expected_first)
+    );
+
+    let config = runtime.sqlite().clone();
+    runtime.close().await;
+    let reopened = StateRuntime::init(config, "test-provider".to_string())
+        .await
+        .unwrap();
+    let queue = reopened.thread_queue();
+    assert_eq!(queue.prepare_mail_inventory(receiver).await.unwrap(), None);
+    assert_eq!(
+        queue
+            .read_mail(receiver, &first.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_subscription
+            .unwrap()
+            .bound_turn_id,
+        Some(original.id)
+    );
+    assert_eq!(
+        queue
+            .read_mail(receiver, &second.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_subscription
+            .unwrap()
+            .bound_turn_id,
+        Some(later.id)
+    );
+}
+
+#[tokio::test]
+async fn cancelled_unrecorded_inventory_does_not_bind_final_subscription() {
+    let runtime = runtime().await;
+    let queue = runtime.thread_queue();
+    let receiver = ThreadId::new();
+    let sender = ThreadId::new();
+    let accepted = queue
+        .accept_mail_with_final_subscription(
+            receiver,
+            "pending",
+            &format!("agent:{sender}"),
+            "{}",
+            MailboxFinalSubscriptionRequest::Wake,
+        )
+        .await
+        .unwrap();
+    let notification = queue
+        .prepare_mail_inventory(receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    queue
+        .cancel_mail_inventory(receiver, &notification.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        queue
+            .read_active_mailbox_final_subscription(receiver, sender)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        MailboxFinalSubscriptionState::Pending
+    );
+    assert_eq!(
+        queue
+            .read_mail(receiver, &accepted.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_subscription
+            .unwrap()
+            .bound_turn_id,
+        None
     );
 }
 

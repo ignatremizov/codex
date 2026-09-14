@@ -5,9 +5,57 @@ use codex_thread_store::ClaimedMailboxInput;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::MailboxPayload;
 use codex_thread_store::StoredMailboxInput;
+use codex_thread_store::ThreadStoreFuture;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+
+fn claim(receiver: ThreadId, call_id: &str, states: Vec<MailboxMessageState>) -> MailboxClaim {
+    MailboxClaim {
+        invocation: MailboxInvocation {
+            receiver_thread_id: receiver,
+            turn_id: "turn".to_string(),
+            tool_call_id: call_id.to_string(),
+        },
+        selection: MailboxSelection::All,
+        messages: states
+            .into_iter()
+            .enumerate()
+            .map(|(index, state)| ClaimedMailboxInput {
+                delivery_id: format!("delivery-{index}"),
+                message: StoredMailboxInput {
+                    id: format!("message-{index}"),
+                    receiver_thread_id: receiver,
+                    submission_key: format!("submission-{index}"),
+                    sender: MailboxSender::User,
+                    payload: MailboxPayload::User {
+                        input: Vec::new(),
+                        client_id: None,
+                    },
+                    acceptance_sequence: index as i64,
+                    state,
+                    rejection_reason: None,
+                    final_subscription: None,
+                },
+            })
+            .collect(),
+    }
+}
+
+struct FixedClaimStore(MailboxClaim);
+
+impl ThreadStore for FixedClaimStore {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn lookup_mailbox_claim(
+        &self,
+        invocation: MailboxInvocation,
+    ) -> ThreadStoreFuture<'_, Option<MailboxClaim>> {
+        Box::pin(async move { Ok((self.0.invocation == invocation).then(|| self.0.clone())) })
+    }
+}
 
 fn pair(call_id: &str, acceptance: Value) -> Vec<ResponseItem> {
     let mut items: Vec<ResponseItem> = serde_json::from_value(json!([
@@ -33,68 +81,77 @@ fn structured(items: &[ResponseItem]) -> Value {
 }
 
 #[test]
-fn terminal_receipts_describe_the_fixed_batch_and_nonterminal_is_not_delivery() {
+fn terminal_claim_outcomes_describe_the_fixed_batch_and_nonterminal_is_not_delivery() {
     let receiver = ThreadId::new();
     for (states, expected) in [
-        (vec![], Some(json!({"status":"empty"}))),
+        (vec![], ClaimOutcome::Empty),
         (
             vec![MailboxMessageState::Consumed, MailboxMessageState::Consumed],
-            Some(json!({"status":"ok"})),
+            ClaimOutcome::Success { rejected_count: 0 },
         ),
         (
             vec![MailboxMessageState::Consumed, MailboxMessageState::Rejected],
-            Some(json!({"status":"ok", "rejected_count":1})),
+            ClaimOutcome::Success { rejected_count: 1 },
         ),
         (
             vec![MailboxMessageState::Rejected],
-            Some(json!({"status":"rejected", "rejected_count":1})),
+            ClaimOutcome::Rejected { rejected_count: 1 },
         ),
         (
             vec![MailboxMessageState::Rejected, MailboxMessageState::Rejected],
-            Some(json!({"status":"rejected", "rejected_count":2})),
+            ClaimOutcome::Rejected { rejected_count: 2 },
         ),
         (
             vec![MailboxMessageState::Consumed, MailboxMessageState::Claimed],
-            None,
+            ClaimOutcome::Nonterminal,
         ),
-        (vec![MailboxMessageState::Pending], None),
+        (
+            vec![MailboxMessageState::Pending],
+            ClaimOutcome::Nonterminal,
+        ),
     ] {
-        let claim = MailboxClaim {
-            invocation: MailboxInvocation {
-                receiver_thread_id: receiver,
-                turn_id: "turn".to_string(),
-                tool_call_id: "check".to_string(),
-            },
-            selection: MailboxSelection::All,
-            messages: states
-                .into_iter()
-                .enumerate()
-                .map(|(index, state)| ClaimedMailboxInput {
-                    delivery_id: format!("delivery-{index}"),
-                    message: StoredMailboxInput {
-                        id: format!("message-{index}"),
-                        receiver_thread_id: receiver,
-                        submission_key: format!("submission-{index}"),
-                        sender: MailboxSender::User,
-                        payload: MailboxPayload::User {
-                            input: Vec::new(),
-                            client_id: None,
-                        },
-                        acceptance_sequence: index as i64,
-                        state,
-                        rejection_reason: None,
-                    },
-                })
-                .collect(),
-        };
-        let summary = ClaimSummary::from_claim(&claim).unwrap();
-        assert_eq!(summary.from, None);
         assert_eq!(
-            summary
-                .receipt
-                .map(|receipt| serde_json::to_value(receipt).unwrap()),
-            expected
+            ClaimSummary::from_claim(&claim(receiver, "check", states)).unwrap(),
+            ClaimSummary {
+                from: None,
+                outcome: expected,
+            }
         );
+    }
+}
+
+#[tokio::test]
+async fn successful_projection_keeps_the_tool_result_pair_without_a_redundant_status() {
+    let receiver = ThreadId::new();
+    for (call_id, states, expected) in [
+        ("success", vec![MailboxMessageState::Consumed], None),
+        (
+            "mixed",
+            vec![MailboxMessageState::Consumed, MailboxMessageState::Rejected],
+            Some(json!({"rejected_count": 1})),
+        ),
+        ("empty", vec![], Some(json!({"status": "empty"}))),
+        (
+            "rejected",
+            vec![MailboxMessageState::Rejected],
+            Some(json!({"status": "rejected", "rejected_count": 1})),
+        ),
+    ] {
+        let original = pair(call_id, json!({"status":"delivery_requested","from":null}));
+        let mut input = original.clone();
+        let store = FixedClaimStore(claim(receiver, call_id, states));
+        project_check_mail_results(&mut input, receiver, &store, &HashMap::new())
+            .await
+            .unwrap();
+
+        let mut expected_items = original;
+        let ResponseItem::FunctionCallOutput { output, .. } = &mut expected_items[1] else {
+            panic!("expected paired check_mail result");
+        };
+        output.body = FunctionCallOutputBody::Text(
+            expected.map_or_else(String::new, |expected| expected.to_string()),
+        );
+        assert_eq!(input, expected_items);
     }
 }
 
@@ -138,6 +195,7 @@ async fn projection_requires_canonical_acceptance_and_never_creates_or_expands_a
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await
         .unwrap();
@@ -325,6 +383,7 @@ async fn nonterminal_acceptance_keeps_current_receiver_refs_and_never_reports_ok
                     sender_turn_id: "sender-turn".to_string(),
                 }),
             },
+            final_subscription: Default::default(),
         })
         .await
         .unwrap();

@@ -498,6 +498,8 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
             final_delivery: AgentResponseFinalDelivery::Wake,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         },
     ));
 

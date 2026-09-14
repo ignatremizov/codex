@@ -1,5 +1,7 @@
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use sqlx::QueryBuilder;
+use sqlx::Sqlite;
 use strum::AsRefStr;
 use strum::EnumString;
 
@@ -27,6 +29,42 @@ enum AgentAliasOwnershipState {
 }
 
 impl StateRuntime {
+    /// Read persistent lifecycle authority epochs, defaulting new threads to epoch zero.
+    pub async fn read_agent_thread_lifecycle_epochs(
+        &self,
+        thread_ids: &[ThreadId],
+    ) -> anyhow::Result<Vec<(ThreadId, i64)>> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT thread_id, epoch FROM agent_thread_lifecycle_authority_epochs WHERE thread_id IN (",
+        );
+        let mut separated = builder.separated(", ");
+        for thread_id in thread_ids {
+            separated.push_bind(thread_id.to_string());
+        }
+        separated.push_unseparated(")");
+        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
+        let epochs = rows
+            .into_iter()
+            .map(|row| {
+                Ok((
+                    ThreadId::try_from(row.try_get::<String, _>("thread_id")?)?,
+                    row.try_get::<i64, _>("epoch")?,
+                ))
+            })
+            .collect::<anyhow::Result<std::collections::HashMap<_, _>>>()?;
+        thread_ids
+            .iter()
+            .copied()
+            .map(|thread_id| {
+                let epoch = epochs.get(&thread_id).copied().unwrap_or_default();
+                Ok((thread_id, epoch))
+            })
+            .collect()
+    }
+
     /// Ensure that a root session has its durable namespace and ref-1 Main alias.
     pub async fn ensure_agent_alias_namespace(
         &self,
@@ -366,6 +404,23 @@ WHERE session_id = ?
         thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<bool> {
+        self.set_agent_lifecycle_state_with_authority_revocations(
+            session_id,
+            thread_id,
+            status,
+            &[thread_id],
+        )
+        .await
+    }
+
+    /// Update an owned lifecycle edge and advance authority for its revoked subtree atomically.
+    pub async fn set_agent_lifecycle_state_with_authority_revocations(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+        status: crate::DirectionalThreadSpawnEdgeStatus,
+        revoked_thread_ids: &[ThreadId],
+    ) -> anyhow::Result<bool> {
         if thread_id == ThreadId::from(session_id) {
             anyhow::bail!("Main's root alias lifecycle cannot be changed");
         }
@@ -389,8 +444,44 @@ WHERE session_id = ?
             tx.commit().await?;
             return Ok(false);
         }
+        let previous_edge_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM thread_spawn_edges WHERE child_thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
         set_thread_spawn_edge_status_in_transaction(&mut tx, thread_id, status).await?;
+        if status == crate::DirectionalThreadSpawnEdgeStatus::Closed
+            && previous_edge_status.as_deref()
+                == Some(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref())
+        {
+            advance_agent_thread_lifecycle_authority_epochs_in_transaction(
+                &mut tx,
+                revoked_thread_ids,
+            )
+            .await?;
+        }
         tx.commit().await?;
         Ok(true)
     }
+}
+
+pub(super) async fn advance_agent_thread_lifecycle_authority_epochs_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    thread_ids: &[ThreadId],
+) -> anyhow::Result<()> {
+    let mut thread_ids = thread_ids.to_vec();
+    thread_ids.sort_by_key(ToString::to_string);
+    thread_ids.dedup();
+    for thread_id in thread_ids {
+        sqlx::query(
+            "INSERT INTO agent_thread_lifecycle_authority_epochs (thread_id, epoch)
+             VALUES (?, 1)
+             ON CONFLICT(thread_id) DO UPDATE SET epoch = epoch + 1",
+        )
+        .bind(thread_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }

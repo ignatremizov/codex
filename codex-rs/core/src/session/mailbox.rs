@@ -14,6 +14,8 @@ use codex_history::ResponseItemEnvelope;
 use codex_history::RolloutItem;
 use codex_protocol::ResponseItemId;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::MailboxReadItem;
+use codex_protocol::items::MailboxReadSelector;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::MessagePhase;
@@ -25,6 +27,7 @@ use codex_protocol::user_input::UserInput;
 use codex_thread_store::ClaimMailboxInputParams;
 use codex_thread_store::MailboxDeliveryArtifacts;
 use codex_thread_store::MailboxDeliveryEvidence;
+use codex_thread_store::MailboxFinalSubscriptionState;
 use codex_thread_store::MailboxInvocation;
 use codex_thread_store::MailboxMessageState;
 use codex_thread_store::MailboxPayload;
@@ -41,6 +44,15 @@ use std::sync::Arc;
 pub(crate) struct MailboxConsumption {
     pub(crate) tool_call_id: String,
     pub(crate) selection: MailboxSelection,
+    pub(crate) presentation: MailboxConsumptionPresentation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MailboxConsumptionPresentation {
+    /// Keep mailbox consumption private to its owning operation, as for `wait_agent`.
+    None,
+    /// Record a committed `check_mail` outcome for transcript presentation.
+    CheckMail,
 }
 
 impl Session {
@@ -99,6 +111,68 @@ impl Session {
                 let history = live
                     .load_rollback_history(/*include_archived*/ false)
                     .await?;
+                let existing_mailbox_read = if operation.presentation
+                    == MailboxConsumptionPresentation::CheckMail
+                {
+                    let mut existing_read = None;
+                    for item in &history.items {
+                        let (turn_id, recorded_item, completed) = match item {
+                            RolloutItem::EventMsg(EventMsg::ItemStarted(event)) => {
+                                (&event.turn_id, &event.item, false)
+                            }
+                            RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
+                                (&event.turn_id, &event.item, true)
+                            }
+                            _ => continue,
+                        };
+                        if turn_id != &turn.sub_id
+                            || recorded_item.id().as_str() != operation.tool_call_id.as_str()
+                        {
+                            continue;
+                        }
+                        match (completed, recorded_item) {
+                            (true, TurnItem::MailboxRead(recorded)) => {
+                                if existing_read
+                                    .as_ref()
+                                    .is_some_and(|previous| previous != recorded)
+                                {
+                                    return Err(ThreadStoreError::Conflict {
+                                        message: "conflicting canonical mailbox read presentations"
+                                            .to_string(),
+                                    });
+                                }
+                                existing_read = Some(recorded.clone());
+                            }
+                            _ => {
+                                return Err(ThreadStoreError::Conflict {
+                                    message: "mailbox read presentation ID conflicts with a canonical turn item"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
+                    let response_item_id_collision = history.items.iter().any(|item| {
+                        matches!(
+                            item,
+                            RolloutItem::ResponseItem(envelope)
+                                if envelope.item.turn_id() == Some(turn.sub_id.as_str())
+                                    && envelope
+                                        .id()
+                                        .is_some_and(|id| {
+                                            id.as_str() == operation.tool_call_id.as_str()
+                                        })
+                        )
+                    });
+                    if response_item_id_collision {
+                        return Err(ThreadStoreError::Conflict {
+                            message: "mailbox read presentation ID conflicts with a canonical response item"
+                                .to_string(),
+                        });
+                    }
+                    existing_read
+                } else {
+                    None
+                };
                 let mut existing_result = None;
                 let mut result_index = None;
                 for (index, item) in history.items.iter().enumerate() {
@@ -366,7 +440,91 @@ impl Session {
                         deliveries: evidence.clone(),
                     })
                     .await?;
-                ensure_acknowledged(&reconciled, &evidence)
+                ensure_acknowledged(&reconciled, &evidence)?;
+
+                if operation.presentation == MailboxConsumptionPresentation::CheckMail {
+                    let selector = match &reconciled.selection {
+                        MailboxSelection::All => MailboxReadSelector::All,
+                        MailboxSelection::Senders(senders) => match senders.as_slice() {
+                            [MailboxSender::User] => MailboxReadSelector::User,
+                            [MailboxSender::Agent(thread_id)] => MailboxReadSelector::Agent {
+                                thread_id: *thread_id,
+                            },
+                            _ => {
+                                return Err(ThreadStoreError::Internal {
+                                    message:
+                                        "check_mail recovery returned a non-canonical selection"
+                                            .to_string(),
+                                });
+                            }
+                        },
+                    };
+                    let consumed_count = u64::try_from(
+                        reconciled
+                            .messages
+                            .iter()
+                            .filter(|member| member.message.state == MailboxMessageState::Consumed)
+                            .count(),
+                    )
+                    .map_err(|error| ThreadStoreError::Internal {
+                        message: format!("mailbox consumed count is out of range: {error}"),
+                    })?;
+                    let rejected_count = u64::try_from(
+                        reconciled
+                            .messages
+                            .iter()
+                            .filter(|member| member.message.state == MailboxMessageState::Rejected)
+                            .count(),
+                    )
+                    .map_err(|error| ThreadStoreError::Internal {
+                        message: format!("mailbox rejected count is out of range: {error}"),
+                    })?;
+                    let read_item = MailboxReadItem {
+                        id: operation.tool_call_id.clone(),
+                        selector,
+                        consumed_count,
+                        rejected_count,
+                    };
+                    match existing_mailbox_read {
+                        Some(recorded) if recorded == read_item => {}
+                        Some(_) => {
+                            return Err(ThreadStoreError::Conflict {
+                                message: "conflicting canonical mailbox read presentation"
+                                    .to_string(),
+                            });
+                        }
+                        None => {
+                            session
+                                .send_event_raw_flushed(Event {
+                                    id: turn.sub_id.clone(),
+                                    msg: EventMsg::ItemCompleted(ItemCompletedEvent {
+                                        thread_id: session.thread_id,
+                                        turn_id: turn.sub_id.clone(),
+                                        item: TurnItem::MailboxRead(read_item),
+                                        started_at_ms: None,
+                                        completed_at_ms: chrono::Utc::now().timestamp_millis(),
+                                    }),
+                                })
+                                .await
+                                .map_err(|error| ThreadStoreError::Internal {
+                                    message: format!(
+                                        "failed to persist mailbox read presentation: {error}"
+                                    ),
+                                })?;
+                        }
+                    }
+                }
+
+                let bound_subscriptions = reconciled
+                    .messages
+                    .into_iter()
+                    .filter_map(|member| member.message.final_subscription)
+                    .filter(|subscription| {
+                        subscription.state == MailboxFinalSubscriptionState::Bound
+                            && subscription.bound_turn_id.as_deref() == Some(turn.sub_id.as_str())
+                    })
+                    .collect();
+                Ok(bound_subscriptions)
             };
             let outcome = outcome.await;
             // Warning delivery is presentation-only and best effort, outside
@@ -376,7 +534,11 @@ impl Session {
                     .publish_mailbox_rejection(sender, session.thread_id, &message_id, &reason)
                     .await;
             }
-            outcome
+            let bound_subscriptions = outcome?;
+            control
+                .bind_mailbox_final_subscriptions(session.presentation_id(), bound_subscriptions)
+                .await;
+            Ok(())
         };
         tokio::spawn(commit)
             .await

@@ -131,8 +131,14 @@ pub fn create_write_stdin_tool(default_yield_time_ms: u64) -> ToolSpec {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(format!(
-                "Maximum poll wait in uint64 ms, independent of exec_command’s initial wait. Omit for default {default_yield_time_ms} ms"
+                "Maximum poll wait in uint64 ms, independent of exec_command’s initial wait. Ignored when wait_until_exit is true. Omit for default {default_yield_time_ms} ms"
             ))),
+        ),
+        (
+            "wait_until_exit".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, wait until the process exits instead of stopping at yield_time_ms. New turn input or cancellation releases the wait without terminating the process. False or omitted preserves the bounded poll behavior.".to_string(),
+            )),
         ),
         (
             "max_output_tokens".to_string(),
@@ -144,7 +150,7 @@ pub fn create_write_stdin_tool(default_yield_time_ms: u64) -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),
-        description: "Writes chars to or polls an exec session, returning recent output. Polls return immediately on process exit; prefer long yield_time_ms values to repeated polls.".to_string(),
+        description: "Writes chars to or polls an exec session, returning recent output. Polls return immediately on process exit; set wait_until_exit to wait for process exit instead of a yield_time_ms deadline.".to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(

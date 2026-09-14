@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/process_wait.rs
+expression: remaining
+---
+• Waiting for timed process result (12s left • esc to interrupt)
+  └ Timed · cargo test · process p2 · wait w2
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project

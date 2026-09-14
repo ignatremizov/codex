@@ -1479,34 +1479,9 @@ impl AgentControl {
             .unwrap_or_else(|| new_thread.thread_id.to_string());
         let mut post_admission_warning = None;
         let unpublished_spawn_result: CodexResult<()> = async {
-            let _initial_user_input_permit =
-                if matches!(&initial_input, SpawnInitialInput::UserInput { .. }) {
-                    Some(
-                        self.acquire_mailbox_submission_permit(new_thread.thread_id)
-                            .await?,
-                    )
-                } else {
-                    None
-                };
             new_thread.thread.session.services.agent_control
                 .restore_agent_send_settings(new_thread.thread.session.presentation_id())
                 .await?;
-            // Admission binding follows the observer contract, not the child's protocol. User
-            // control and V1 tools can deliberately attach a durable observer to a V2 child.
-            let _response_observation_transaction = if observer_multi_agent_version
-                == Some(MultiAgentVersion::V1)
-                && let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id,
-                    ..
-                })) = notification_source.as_ref()
-                && let Ok(parent_thread) =
-                    state.get_thread_including_pending(*parent_thread_id).await
-            {
-                let parent = parent_thread.session.presentation_id();
-                Some(self.acquire_response_observation_transaction(parent).await)
-            } else {
-                None
-            };
             // Attach before exposing the child or submitting its first input so an early failure
             // cannot publish a watcher-owned final-outcome presentation without a consumer.
             self.maybe_start_completion_watcher(
@@ -1520,6 +1495,15 @@ impl AgentControl {
             )
             .await?;
 
+            let _initial_user_input_permit =
+                if matches!(&initial_input, SpawnInitialInput::UserInput { .. }) {
+                    Some(
+                        self.acquire_mailbox_submission_permit(new_thread.thread_id)
+                            .await?,
+                    )
+                } else {
+                    None
+                };
             match initial_input {
                 SpawnInitialInput::None => {}
                 SpawnInitialInput::UserInput {
@@ -1599,6 +1583,7 @@ impl AgentControl {
                                     /*previous_relationship*/ None,
                                     /*target_turn_id*/ None,
                                     "failed to clean up response observation state after spawned turn admission failed",
+                                    super::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                                 )
                                 .await?;
                             }
@@ -1653,6 +1638,7 @@ impl AgentControl {
                                     /*previous_relationship*/ None,
                                     Some(resolution.target_turn_id.clone()),
                                     message,
+                                    super::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                                 )
                                 .await;
                             match post_admission_failure {
@@ -1703,6 +1689,7 @@ impl AgentControl {
                                     /*previous_relationship*/ None,
                                     Some(resolution.target_turn_id.clone()),
                                     &message,
+                                    super::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                                 )
                                 .await;
                             match post_admission_failure {
@@ -2534,12 +2521,6 @@ impl AgentControl {
                              {thread_id}"
                         )));
                     }
-                    let _response_observation_permit =
-                        if let Some((parent, _)) = response_observer_endpoint {
-                            Some(self.acquire_response_observation_transaction(parent).await)
-                        } else {
-                            None
-                        };
                     let watcher_setup_sink = if transfers_ownership
                         && let Some((parent, child)) = response_observer_endpoint
                     {
@@ -3413,28 +3394,53 @@ impl AgentControl {
                             {
                                 let status = agent_alias_lifecycle_status(previous_alias.state);
                                 match status {
-                                    Some(status) => graph
-                                        .set_agent_lifecycle_state(
-                                            previous_alias.session_id,
-                                            previous_alias.thread_id,
-                                            status,
-                                        )
-                                        .await
-                                        .map_err(|err| {
-                                            CodexErr::Fatal(format!(
-                                                "failed to restore resumed agent lifecycle: {err}"
-                                            ))
-                                        })
-                                        .and_then(|restored| {
-                                            if restored {
-                                                Ok(())
+                                    Some(status) => {
+                                        let _messaging_permission =
+                                            if status == ThreadSpawnEdgeStatus::Closed {
+                                                Some(
+                                                    control
+                                                        .acquire_messaging_permission_transaction()
+                                                        .await,
+                                                )
                                             } else {
-                                                Err(CodexErr::Fatal(format!(
-                                                    "resumed agent lifecycle disappeared for {}",
-                                                    previous_alias.thread_id
-                                                )))
-                                            }
-                                        }),
+                                                None
+                                            };
+                                        let restored = graph
+                                            .set_agent_lifecycle_state(
+                                                previous_alias.session_id,
+                                                previous_alias.thread_id,
+                                                status,
+                                            )
+                                            .await
+                                            .map_err(|err| {
+                                                CodexErr::Fatal(format!(
+                                                    "failed to restore resumed agent lifecycle: {err}"
+                                                ))
+                                            })?;
+                                        if !restored {
+                                            return Err(CodexErr::Fatal(format!(
+                                                "resumed agent lifecycle disappeared for {}",
+                                                previous_alias.thread_id
+                                            )));
+                                        }
+                                        if status == ThreadSpawnEdgeStatus::Closed
+                                            && let Err(error) = thread
+                                                .session
+                                                .services
+                                                .thread_store
+                                                .supersede_mailbox_final_subscriptions_for_threads(
+                                                    vec![previous_alias.thread_id],
+                                                )
+                                                .await
+                                        {
+                                            warn!(
+                                                %error,
+                                                thread_id = %previous_alias.thread_id,
+                                                "mailbox subscription cleanup after lifecycle restore failed; graph epochs still fence old intents"
+                                            );
+                                        }
+                                        Ok(())
+                                    }
                                     None => Err(CodexErr::Fatal(format!(
                                         "cannot restore transferred historical alias for {}",
                                         previous_alias.thread_id
@@ -3520,19 +3526,6 @@ impl AgentControl {
                 .agent_control
                 .restore_agent_send_settings(resumed_thread.thread.session.presentation_id())
                 .await?;
-            let _response_observation_permit = if resumed_thread.thread.multi_agent_version()
-                != Some(MultiAgentVersion::V2)
-                && let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id, ..
-                }) = &response_observer_source
-                && let Ok(parent_thread) =
-                    state.get_thread_including_pending(*parent_thread_id).await
-            {
-                let parent = parent_thread.session.presentation_id();
-                Some(self.acquire_response_observation_transaction(parent).await)
-            } else {
-                None
-            };
             self.maybe_start_completion_watcher(
                 &resumed_thread.thread,
                 Some(response_observer_source),

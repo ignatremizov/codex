@@ -51,6 +51,7 @@ async fn accept_agent_mail(session: &Session, sender: ThreadId) -> anyhow::Resul
                     sender_turn_id: "sender-turn".to_string(),
                 }),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     Ok(())
@@ -110,6 +111,7 @@ async fn activity_rechecks_selection_without_claiming_or_consuming() -> anyhow::
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?;
     session.notify_mailbox_activity();

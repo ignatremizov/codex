@@ -1,12 +1,16 @@
 use super::stores;
 use super::user_submission;
+use crate::AcceptMailboxInputParams;
 use crate::AppendThreadItemsParams;
 use crate::CreateThreadParams;
+use crate::MailboxFinalSubscriptionRequest;
+use crate::MailboxFinalSubscriptionState;
 use crate::MailboxInventory;
 use crate::MailboxInventoryAcknowledgement;
 use crate::MailboxInventoryAcknowledgementOutcome;
 use crate::MailboxInventoryRecovery;
 use crate::MailboxMessageState;
+use crate::MailboxPayload;
 use crate::MailboxSender;
 use crate::MailboxSenderInventory;
 use crate::ThreadPersistenceMetadata;
@@ -187,6 +191,7 @@ async fn inventory_proof_and_retired_retry_preserve_newer_active_notification() 
                     notification_id: original.id.clone(),
                     notified_through: original.through_sequence,
                     outcome: MailboxInventoryAcknowledgementOutcome::AlreadyCovered,
+                    bound_subscriptions: Vec::new(),
                 }
             );
             assert_eq!(
@@ -443,6 +448,88 @@ async fn inventory_recovery_survives_reopening_with_original_snapshot_and_exact_
 }
 
 #[tokio::test]
+async fn recorded_inventory_binds_accepted_final_subscriptions_to_its_original_turn() {
+    let home = tempfile::tempdir().unwrap();
+    let (stores, _) = stores(&home).await;
+    for store in stores {
+        for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+            let receiver = ThreadId::new();
+            let sender = ThreadId::new();
+            create_thread(store.as_ref(), receiver, mode).await;
+            let accepted = store
+                .accept_mailbox_input(AcceptMailboxInputParams {
+                    receiver_thread_id: receiver,
+                    submission_key: "first".to_string(),
+                    payload: MailboxPayload::Agent {
+                        input: vec![codex_protocol::user_input::UserInput::Text {
+                            text: "private payload".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                        attribution: Box::new(codex_protocol::AgentInputAttribution {
+                            sender: super::identity(sender),
+                            recipient: super::identity(receiver),
+                            sender_turn_id: "sender-turn".to_string(),
+                        }),
+                    },
+                    final_subscription: MailboxFinalSubscriptionRequest::Wake,
+                })
+                .await
+                .unwrap();
+            let notification = store
+                .prepare_mailbox_inventory(receiver)
+                .await
+                .unwrap()
+                .unwrap();
+            let later_sender = ThreadId::new();
+            store
+                .accept_mailbox_input(AcceptMailboxInputParams {
+                    receiver_thread_id: receiver,
+                    submission_key: "later".to_string(),
+                    payload: MailboxPayload::Agent {
+                        input: vec![codex_protocol::user_input::UserInput::Text {
+                            text: "later private payload".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                        attribution: Box::new(codex_protocol::AgentInputAttribution {
+                            sender: super::identity(later_sender),
+                            recipient: super::identity(receiver),
+                            sender_turn_id: "sender-turn".to_string(),
+                        }),
+                    },
+                    final_subscription: MailboxFinalSubscriptionRequest::Wake,
+                })
+                .await
+                .unwrap();
+
+            store
+                .append_items_and_flush(AppendThreadItemsParams {
+                    thread_id: receiver,
+                    items: vec![RolloutItem::ResponseItem(notification.context().unwrap())],
+                })
+                .await
+                .unwrap();
+            let acknowledgement = store
+                .reconcile_mailbox_inventory(notification.clone())
+                .await
+                .unwrap();
+            let mut expected = accepted.final_subscription.unwrap();
+            expected.state = MailboxFinalSubscriptionState::Bound;
+            expected.bound_turn_id = Some(notification.id.clone());
+            assert_eq!(acknowledgement.bound_subscriptions, vec![expected.clone()]);
+            assert_eq!(
+                store
+                    .reconcile_mailbox_inventory(notification.clone())
+                    .await
+                    .unwrap()
+                    .bound_subscriptions,
+                vec![expected]
+            );
+            store.shutdown_thread(receiver).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn inventory_groups_canonical_authors_without_payload_or_volatile_labels() {
     let home = tempfile::tempdir().unwrap();
     let (stores, _) = stores(&home).await;
@@ -468,6 +555,7 @@ async fn inventory_groups_canonical_authors_without_payload_or_volatile_labels()
                         sender_turn_id: "sender-turn".to_string(),
                     }),
                 },
+                final_subscription: crate::MailboxFinalSubscriptionRequest::None,
             })
             .await
             .unwrap();

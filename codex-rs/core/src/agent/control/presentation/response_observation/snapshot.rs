@@ -94,6 +94,8 @@ impl AgentControl {
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         });
         snapshots
     }
@@ -181,6 +183,10 @@ impl AgentControl {
                 ResponseObservationDeliveryKind::Final => Some(commit.response_item_id.clone()),
             },
             committed_delivery_response_item_ids: vec![commit.response_item_id.clone()],
+            mailbox_final_subscription_message_id: commit
+                .mailbox_final_subscription_message_id
+                .clone(),
+            mailbox_final_subscription_suppressed_message_id: None,
         }]
     }
 
@@ -192,8 +198,8 @@ impl AgentControl {
         claimed_target_turns
             .iter()
             .flat_map(|target| {
-                let (_final_response, response_item_id, _queue_delivery) = self
-                    .prepare_final_response_observation_delivery(
+                let (_final_response, response_item_id, _queue_delivery, _mailbox_subscription) =
+                    self.prepare_final_response_observation_delivery(
                         parent,
                         target.child,
                         &target.turn_id,
@@ -250,6 +256,12 @@ fn response_observation_snapshots_for_relationship(
         final_delivery: pending.final_response.into(),
         final_delivery_response_item_id: pending.final_delivery_response_item_id.clone(),
         committed_delivery_response_item_ids: pending.committed_delivery_response_item_ids.clone(),
+        mailbox_final_subscription_message_id: relationship
+            .mailbox_final_subscription_message_id
+            .clone(),
+        mailbox_final_subscription_suppressed_message_id: relationship
+            .mailbox_final_subscription_suppressed_message_id
+            .clone(),
     });
     let mut turns = relationship.turns.iter().collect::<Vec<_>>();
     turns.sort_by_key(|(turn_id, _)| *turn_id);
@@ -277,6 +289,10 @@ fn response_observation_snapshots_for_relationship(
             committed_delivery_response_item_ids: observation
                 .committed_delivery_response_item_ids
                 .clone(),
+            mailbox_final_subscription_message_id: observation
+                .mailbox_final_subscription_message_id
+                .clone(),
+            mailbox_final_subscription_suppressed_message_id: None,
         }
     }));
     snapshots

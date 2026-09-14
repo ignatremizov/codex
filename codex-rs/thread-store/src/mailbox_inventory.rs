@@ -62,6 +62,7 @@ pub struct MailboxInventoryAcknowledgement {
     pub notification_id: String,
     pub notified_through: i64,
     pub outcome: MailboxInventoryAcknowledgementOutcome,
+    pub bound_subscriptions: Vec<crate::MailboxFinalSubscription>,
 }
 
 #[derive(Serialize)]

@@ -37,6 +37,7 @@ pub(crate) use self::response_observation::ResponseObservationDeliveryCommit;
 pub(crate) use self::response_observation::ResponseObservationDeliveryKind;
 pub(crate) use self::response_observation::ResponseObservationEventMatch;
 pub(crate) use self::response_observation::ResponseObservationPersistence;
+pub(crate) use self::response_observation::ResponseObservationSelection;
 pub(crate) use self::response_observation::ResponseObservationTurnBinding;
 pub(in crate::agent::control) use self::response_observation::ResponseObserverRelationship;
 pub(crate) use self::response_observation::TargetMessageRouteMode;
@@ -46,7 +47,7 @@ pub(crate) struct WaitAgentPresentations {
     state: Mutex<PresentationState>,
     response_observation_changed: Notify,
     pub(super) watcher_terminal_changed: Notify,
-    messaging_refresh: AsyncMutex<()>,
+    messaging_refresh: Arc<AsyncMutex<()>>,
     #[cfg(test)]
     pub(in crate::agent::control) mailbox_acceptance_gate: Mutex<
         Option<(
@@ -1122,6 +1123,10 @@ impl CompletionWatcherRegistration {
 fn response_observer_relationship_has_work(relationship: &ResponseObserverRelationship) -> bool {
     relationship.baseline_final_response != FinalResponseObservation::None
         || relationship.reply_route.is_some()
+        || relationship.mailbox_final_subscription_message_id.is_some()
+        || relationship
+            .mailbox_final_subscription_suppressed_message_id
+            .is_some()
         || relationship.pending_next_turn.is_some()
         || !relationship.pending_admissions.is_empty()
         || !relationship.turns.is_empty()

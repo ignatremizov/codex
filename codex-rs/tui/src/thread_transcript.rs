@@ -260,6 +260,16 @@ pub(crate) fn thread_items_with_sources_to_transcript_cells(
                     )));
                 }
             }
+            ThreadItem::MailboxRead(item) => {
+                cells.push(Arc::new(
+                    crate::multi_agents::history_cell_for_mailbox_read(&item, |thread_id| {
+                        known_collab_agent_metadata
+                            .get(&thread_id)
+                            .cloned()
+                            .unwrap_or_default()
+                    }),
+                ));
+            }
             ThreadItem::Plan { text, .. } => {
                 if !text.trim().is_empty() {
                     cells.push(Arc::new(crate::history_cell::new_proposed_plan(
@@ -613,6 +623,7 @@ fn fallback_transcript_cell(
         | ThreadItem::Plan { .. }
         | ThreadItem::Reasoning { .. }
         | ThreadItem::UserAgentControl { .. }
+        | ThreadItem::MailboxRead(_)
         | ThreadItem::Sleep(_) => return None,
     };
     (!lines.is_empty()).then(|| Arc::new(PlainHistoryCell::new(lines)) as Arc<dyn HistoryCell>)

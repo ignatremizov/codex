@@ -40,6 +40,11 @@ impl ChatWidget {
             StatusDetailsCapitalization::Preserve,
             details_max_lines,
         );
+        if !super::process_wait::is_unified_exec_process_wait_header(
+            &self.status_state.current_status.header,
+        ) {
+            self.bottom_pane.set_global_status_timer_visible(true);
+        }
         let title_uses_status = self
             .config
             .tui_terminal_title

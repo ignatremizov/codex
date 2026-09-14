@@ -1,3 +1,4 @@
+use super::super::output_collection::collect_output_until_deadline;
 use super::*;
 use crate::unified_exec::clamp_yield_time;
 use codex_network_proxy::ManagedNetworkSandboxContext;
@@ -329,10 +330,11 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         cancellation_token: cancellation_token.clone(),
     };
 
-    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+    let collect = collect_output_until_deadline(
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(5)),
+        None,
     );
     let produce = async {
         for chunk in chunks {
@@ -361,7 +363,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
     for chunk in chunks {
         expected.push_chunk(chunk);
     }
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
 }
 
 #[tokio::test]
@@ -386,12 +388,14 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
         cancellation_token,
     };
 
-    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+    let collected = collect_output_until_deadline(
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(1)),
+        None,
     )
-    .await;
+    .await
+    .collected;
 
     assert_eq!(collected, expected);
 }
@@ -448,12 +452,14 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
         });
     }
 
-    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+    let collected = collect_output_until_deadline(
         &output,
         /*pause_state*/ None,
         Some(Instant::now()),
+        None,
     )
-    .await;
+    .await
+    .collected;
 
     let mut expected = HeadTailBuffer::default();
     expected.push_chunk(b"late output");
@@ -491,10 +497,11 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
         });
     }
 
-    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
-        &output, /*pause_state*/ None, /*deadline*/ None,
+    let collected = collect_output_until_deadline(
+        &output, /*pause_state*/ None, /*deadline*/ None, None,
     )
-    .await;
+    .await
+    .collected;
 
     let mut expected = HeadTailBuffer::default();
     expected.push_chunk(b"unbounded output");

@@ -50,6 +50,8 @@ impl App {
                     | AppEvent::BeginThreadSwitchHistoryReplayBuffer
                     | AppEvent::EndInitialHistoryReplayBuffer
                     | AppEvent::FatalExitRequest(_)
+                    | AppEvent::LoadAgentMailboxInventory { .. }
+                    | AppEvent::AgentMailboxInventoryLoaded { .. }
             )
         {
             return Ok(AppRunControl::Continue);
@@ -2846,6 +2848,35 @@ impl App {
                 result,
             } => {
                 self.apply_agent_picker_thread_refresh(primary_thread_id, request_id, result);
+            }
+            AppEvent::LoadAgentMailboxInventory {
+                receiver_thread_id,
+                request_id,
+                preview,
+            } => {
+                if self.reconnect.offline {
+                    self.apply_agent_mailbox_inventory(
+                        receiver_thread_id,
+                        request_id,
+                        preview,
+                        Err("app server is offline".to_string()),
+                    );
+                } else {
+                    self.request_agent_mailbox_inventory(
+                        app_server,
+                        receiver_thread_id,
+                        request_id,
+                        preview,
+                    );
+                }
+            }
+            AppEvent::AgentMailboxInventoryLoaded {
+                receiver_thread_id,
+                request_id,
+                preview,
+                result,
+            } => {
+                self.apply_agent_mailbox_inventory(receiver_thread_id, request_id, preview, result);
             }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)

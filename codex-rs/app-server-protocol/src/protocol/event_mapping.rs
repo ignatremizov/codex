@@ -19,6 +19,9 @@ use crate::protocol::v2::ReasoningSummaryPartAddedNotification;
 use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
+use crate::protocol::v2::TerminalWait;
+use crate::protocol::v2::TerminalWaitCompletionReason;
+use crate::protocol::v2::TerminalWaitMode;
 use crate::protocol::v2::ThreadItem;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
@@ -543,6 +546,49 @@ pub fn item_event_to_server_notification(
                 process_id: terminal_event.process_id,
                 stdin: terminal_event.stdin,
                 deadline_at_ms: terminal_event.deadline_at_ms,
+                wait: terminal_event.wait.map(|wait| match wait {
+                    codex_protocol::protocol::TerminalWaitEvent::Started {
+                        interaction_id,
+                        started_at_ms,
+                        mode,
+                    } => TerminalWait::Started {
+                        interaction_id,
+                        started_at_ms,
+                        mode: match mode {
+                            codex_protocol::protocol::TerminalWaitMode::Timed => {
+                                TerminalWaitMode::Timed
+                            }
+                            codex_protocol::protocol::TerminalWaitMode::UntilExit => {
+                                TerminalWaitMode::UntilExit
+                            }
+                        },
+                    },
+                    codex_protocol::protocol::TerminalWaitEvent::Finished {
+                        interaction_id,
+                        elapsed_ms,
+                        reason,
+                    } => TerminalWait::Finished {
+                        interaction_id,
+                        elapsed_ms,
+                        reason: match reason {
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Exited => {
+                                TerminalWaitCompletionReason::Exited
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Timeout => {
+                                TerminalWaitCompletionReason::Timeout
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Input => {
+                                TerminalWaitCompletionReason::Input
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Cancelled => {
+                                TerminalWaitCompletionReason::Cancelled
+                            }
+                            codex_protocol::protocol::TerminalWaitCompletionReason::Failed => {
+                                TerminalWaitCompletionReason::Failed
+                            }
+                        },
+                    },
+                }),
             })
         }
         EventMsg::ExecCommandEnd(exec_command_end_event) => {
@@ -565,6 +611,9 @@ mod tests {
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
+    use codex_protocol::protocol::TerminalInteractionEvent;
+    use codex_protocol::protocol::TerminalWaitEvent as CoreTerminalWaitEvent;
+    use codex_protocol::protocol::TerminalWaitMode as CoreTerminalWaitMode;
     use pretty_assertions::assert_eq;
 
     fn assert_item_started_server_notification(
@@ -713,6 +762,65 @@ mod tests {
                 item_id: "call-1".to_string(),
                 delta: "hello".to_string(),
             },
+        );
+    }
+
+    #[test]
+    fn terminal_wait_metadata_maps_with_v2_camel_case_fields() {
+        let notification = item_event_to_server_notification(
+            EventMsg::TerminalInteraction(TerminalInteractionEvent {
+                call_id: "exec-call".to_string(),
+                process_id: "42".to_string(),
+                stdin: String::new(),
+                deadline_at_ms: None,
+                wait: Some(CoreTerminalWaitEvent::Started {
+                    interaction_id: "wait-call".to_string(),
+                    started_at_ms: 123,
+                    mode: CoreTerminalWaitMode::UntilExit,
+                }),
+            }),
+            "thread-1",
+            "turn-1",
+        );
+        let ServerNotification::TerminalInteraction(notification) = notification else {
+            panic!("expected terminal interaction notification");
+        };
+
+        assert_eq!(
+            notification.wait,
+            Some(TerminalWait::Started {
+                interaction_id: "wait-call".to_string(),
+                started_at_ms: 123,
+                mode: TerminalWaitMode::UntilExit,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(notification.wait.expect("wait metadata"))
+                .expect("wait metadata should serialize"),
+            serde_json::json!({
+                "phase": "started",
+                "interactionId": "wait-call",
+                "startedAtMs": 123,
+                "mode": "untilExit",
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_wait_completion_serializes_camel_case_fields_and_reason() {
+        assert_eq!(
+            serde_json::to_value(TerminalWait::Finished {
+                interaction_id: "wait-call".to_string(),
+                elapsed_ms: 456,
+                reason: TerminalWaitCompletionReason::Input,
+            })
+            .expect("wait completion should serialize"),
+            serde_json::json!({
+                "phase": "finished",
+                "interactionId": "wait-call",
+                "elapsedMs": 456,
+                "reason": "input",
+            })
         );
     }
 }

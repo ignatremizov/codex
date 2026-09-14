@@ -63,6 +63,7 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
                 input: input.clone(),
                 client_id: Some("original-client".to_string()),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let params = ClaimMailboxInputParams {
@@ -106,6 +107,7 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
     let operation = MailboxConsumption {
         tool_call_id: params.invocation.tool_call_id.clone(),
         selection: MailboxSelection::All,
+        presentation: MailboxConsumptionPresentation::CheckMail,
     };
     session
         .commit_mailbox_consumption(Arc::clone(&turn), result.clone(), operation.clone())
@@ -118,17 +120,25 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
     }
     assert_eq!(
         serde_json::to_value(presentations)?,
-        serde_json::to_value(vec![TurnItem::UserMessage(UserMessageItem {
-            id: id.to_string(),
-            client_id: Some("original-client".to_string()),
-            content: input,
-        })])?,
+        serde_json::to_value(vec![
+            TurnItem::UserMessage(UserMessageItem {
+                id: id.to_string(),
+                client_id: Some("original-client".to_string()),
+                content: input,
+            }),
+            TurnItem::MailboxRead(MailboxReadItem {
+                id: params.invocation.tool_call_id.clone(),
+                selector: MailboxReadSelector::All,
+                consumed_count: 1,
+                rejected_count: 0,
+            }),
+        ])?,
     );
     assert_eq!(
         session.clone_history().await.into_annotated_items(),
         vec![result.clone(), context.clone()],
     );
-    let reconciled = store.claim_mailbox_input(params).await?;
+    let reconciled = store.claim_mailbox_input(params.clone()).await?;
     assert_eq!(
         reconciled
             .messages
@@ -156,5 +166,20 @@ async fn repaired_presentation_is_published_when_context_was_restored_before_ret
     assert_eq!(history.items.iter().filter(|item| {
         matches!(item, RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) if event.item.id() == id.as_str())
     }).count(), 1);
+    assert_eq!(
+        history
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                        if matches!(&event.item, TurnItem::MailboxRead(item)
+                            if item.id == params.invocation.tool_call_id)
+                )
+            })
+            .count(),
+        1,
+    );
     Ok(())
 }

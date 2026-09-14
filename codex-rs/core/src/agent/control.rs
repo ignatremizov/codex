@@ -131,6 +131,7 @@ fn is_steer_only_target_ended_error(err: &CodexErr) -> bool {
 
 enum InitialTerminalObservation {
     FutureTurnsOnly,
+    MailboxFinalTurn(String),
     ReconcileIfAdvancedFrom(AgentStatus),
     ReconcileOrObserveNextFrom(AgentStatus),
 }
@@ -347,6 +348,7 @@ impl InitialTerminalObservation {
     fn target_turn_id(&self, active_turn_id: Option<String>) -> Option<String> {
         match self {
             Self::FutureTurnsOnly => None,
+            Self::MailboxFinalTurn(turn_id) => Some(turn_id.clone()),
             Self::ReconcileIfAdvancedFrom(_) | Self::ReconcileOrObserveNextFrom(_) => {
                 active_turn_id
             }
@@ -362,6 +364,10 @@ impl InitialTerminalObservation {
         match self {
             Self::FutureTurnsOnly => InitialTerminalReconciliation {
                 terminal: None,
+                status: snapshot_status,
+            },
+            Self::MailboxFinalTurn(expected_turn_id) => InitialTerminalReconciliation {
+                terminal: last_terminal.filter(|(turn_id, _status)| turn_id == &expected_turn_id),
                 status: snapshot_status,
             },
             Self::ReconcileIfAdvancedFrom(previous_status)
@@ -422,6 +428,7 @@ mod directory;
 mod execution;
 mod identity_snapshot;
 mod legacy;
+mod mailbox_final_subscription;
 mod mailbox_input;
 mod mailbox_inventory;
 mod message_audit;
@@ -515,6 +522,10 @@ fn response_observations_have_work(
                 != codex_protocol::protocol::AgentResponseFinalDelivery::None
             || observation.baseline_final_delivery
                 != codex_protocol::protocol::AgentResponseFinalDelivery::None
+            || observation.mailbox_final_subscription_message_id.is_some()
+            || observation
+                .mailbox_final_subscription_suppressed_message_id
+                .is_some()
     })
 }
 
@@ -857,6 +868,33 @@ impl AgentControl {
         let admission_id = uuid::Uuid::now_v7();
         let binding = ResponseObservationBinding::ExplicitAdmission(admission_id);
         let child = thread.session.presentation_id();
+        let supersedes_mailbox_final_subscription = observes_response
+            && response_observation.final_response() != FinalResponseObservation::None;
+        let mailbox_final_subscription_to_suppress = if supersedes_mailbox_final_subscription {
+            let runtime_subscription = self.mailbox_final_subscription_message_id(observer, child);
+            match thread
+                .session
+                .services
+                .thread_store
+                .lookup_active_mailbox_final_subscription(agent_id, observer.thread_id)
+                .await
+            {
+                Ok(subscription) => subscription
+                    .map(|subscription| subscription.message_id)
+                    .or(runtime_subscription),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        target_thread_id = %agent_id,
+                        observer_thread_id = %observer.thread_id,
+                        "failed to look up active mailbox final subscription before input admission"
+                    );
+                    runtime_subscription
+                }
+            }
+        } else {
+            None
+        };
         let pending_next_turn_response_observation = if observes_response && is_queued_admission {
             self.pending_next_turn_response_observation(observer, child)
         } else {
@@ -893,8 +931,11 @@ impl AgentControl {
             /*retain_passive_completion_relationship*/ false,
             binding,
             InitialTerminalObservation::FutureTurnsOnly,
+            None,
             /*task_preview*/ None,
             &std::collections::HashSet::new(),
+            /*selection*/ None,
+            self::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
         )
         .await?;
         let revoked_message = if is_queued_admission {
@@ -975,7 +1016,6 @@ impl AgentControl {
                 admission_mode,
             )
             .await;
-        drop(permission);
         let crate::session::SubmittedInputTurn {
             submission_id,
             resolution,
@@ -997,6 +1037,35 @@ impl AgentControl {
                 return Err(err);
             }
         };
+        if supersedes_mailbox_final_subscription {
+            if let Some(message_id) = mailbox_final_subscription_to_suppress.as_ref() {
+                self.clear_mailbox_final_subscription(
+                    observer,
+                    child,
+                    message_id,
+                    Some(&resolution.target_turn_id),
+                );
+            }
+            if let Err(error) = thread
+                .session
+                .services
+                .thread_store
+                .supersede_mailbox_final_subscription(agent_id, observer.thread_id)
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    target_thread_id = %agent_id,
+                    observer_thread_id = %observer.thread_id,
+                    "durable mailbox final subscription could not be superseded after input admission"
+                );
+                thread
+                    .session
+                    .submission_admission
+                    .rollback_requires_reload();
+            }
+        }
+        drop(permission);
         let bind_pending_next_turn = || {
             if consumes_pending_next_turn {
                 self.bind_response_observation_turn_at_sequence(ResponseObservationTurnBinding {
@@ -1019,6 +1088,14 @@ impl AgentControl {
                 child,
                 previous_relationship.clone(),
             );
+            if let Some(message_id) = mailbox_final_subscription_to_suppress.as_ref() {
+                self.clear_mailbox_final_subscription(
+                    observer,
+                    child,
+                    message_id,
+                    Some(&resolution.target_turn_id),
+                );
+            }
             bind_pending_next_turn();
             self.response_observation_relationship_snapshot(observer, child)
         };
@@ -1056,6 +1133,7 @@ impl AgentControl {
                         fallback_relationship,
                         Some(resolution.target_turn_id.clone()),
                         message,
+                        self::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                     )
                     .await,
                 );
@@ -1084,6 +1162,7 @@ impl AgentControl {
                     previous_relationship.clone(),
                     Some(resolution.target_turn_id.clone()),
                     message,
+                    self::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                 )
                 .await,
             );
@@ -1107,6 +1186,7 @@ impl AgentControl {
                     fallback_relationship,
                     Some(resolution.target_turn_id.clone()),
                     &message,
+                    self::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                 )
                 .await,
             );
@@ -1173,6 +1253,33 @@ impl AgentControl {
                 "agent {agent_id} has no reserved next-turn response observation"
             )));
         };
+        let mailbox_final_subscription_to_suppress = if response_observation.final_response()
+            != FinalResponseObservation::None
+        {
+            let runtime_subscription = self.mailbox_final_subscription_message_id(observer, child);
+            match thread
+                .session
+                .services
+                .thread_store
+                .lookup_active_mailbox_final_subscription(agent_id, observer.thread_id)
+                .await
+            {
+                Ok(subscription) => subscription
+                    .map(|subscription| subscription.message_id)
+                    .or(runtime_subscription),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        target_thread_id = %agent_id,
+                        observer_thread_id = %observer.thread_id,
+                        "failed to look up active mailbox final subscription before reserved input admission"
+                    );
+                    runtime_subscription
+                }
+            }
+        } else {
+            None
+        };
 
         let observed_task_preview = non_empty_task_message(render_input_preview(&input));
         let task_preview = if response_observation.exposes_source_model_context() {
@@ -1204,7 +1311,6 @@ impl AgentControl {
                 InputTurnAdmissionMode::AnyTurn,
             )
             .await;
-        drop(permission);
         let crate::session::SubmittedInputTurn {
             submission_id,
             resolution,
@@ -1220,6 +1326,35 @@ impl AgentControl {
                 return Err(err);
             }
         };
+        if response_observation.final_response() != FinalResponseObservation::None {
+            if let Some(message_id) = mailbox_final_subscription_to_suppress.as_ref() {
+                self.clear_mailbox_final_subscription(
+                    observer,
+                    child,
+                    message_id,
+                    Some(&resolution.target_turn_id),
+                );
+            }
+            if let Err(error) = thread
+                .session
+                .services
+                .thread_store
+                .supersede_mailbox_final_subscription(agent_id, observer.thread_id)
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    target_thread_id = %agent_id,
+                    observer_thread_id = %observer.thread_id,
+                    "durable mailbox final subscription could not be superseded after reserved input admission"
+                );
+                thread
+                    .session
+                    .submission_admission
+                    .rollback_requires_reload();
+            }
+        }
+        drop(permission);
         debug_assert!(queue_start_permit.is_none());
         self.bind_response_observation_turn_at_sequence(ResponseObservationTurnBinding {
             parent: observer,
@@ -1254,6 +1389,7 @@ impl AgentControl {
                     consumed_relationship,
                     Some(resolution.target_turn_id.clone()),
                     message,
+                    self::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                 )
                 .await,
             );
@@ -1282,6 +1418,7 @@ impl AgentControl {
                     consumed_relationship,
                     Some(resolution.target_turn_id.clone()),
                     &message,
+                    self::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
                 )
                 .await,
             );
@@ -2456,11 +2593,6 @@ impl AgentControl {
         initial_terminal_observation: InitialTerminalObservation,
         setup_sink: Option<&CompletionWatcherSetupSink>,
     ) -> CodexResult<AgentStatus> {
-        if !response_observation.commentary()
-            && response_observation.final_response() == FinalResponseObservation::None
-        {
-            return Ok(child_thread.agent_status().await);
-        }
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         })) = session_source
@@ -2478,6 +2610,152 @@ impl AgentControl {
         let parent = parent_thread.session.presentation_id();
         let child = child_thread.session.presentation_id();
         let child_thread_id = child.thread_id;
+        let durable_v1 = observer_multi_agent_version == MultiAgentVersion::V1;
+        let delivered_final_turns = if durable_v1 {
+            self::resume_delivery::delivered_final_turns(&state, parent.thread_id, child_thread_id)
+                .await
+        } else {
+            std::collections::HashSet::new()
+        };
+        let sender_submission_permit = if durable_v1 {
+            Some(
+                self.acquire_mailbox_submission_permit(child_thread_id)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let messaging_permission = if durable_v1 {
+            Some(self.acquire_messaging_permission_transaction().await)
+        } else {
+            None
+        };
+        let active_mailbox_final_subscription = if durable_v1 {
+            Some(
+                parent_thread
+                    .session
+                    .services
+                    .thread_store
+                    .lookup_active_mailbox_final_subscription(child_thread_id, parent.thread_id)
+                    .await
+                    .map_err(|error| {
+                        CodexErr::Fatal(format!(
+                            "failed to check active mailbox final subscription for {child_thread_id}: {error}"
+                        ))
+                    })?,
+            )
+        } else {
+            None
+        };
+        let observation_transaction = if durable_v1 {
+            Some(self.acquire_response_observation_transaction(parent).await)
+        } else {
+            None
+        };
+        let mut effective_response_observation = response_observation;
+        let mut effective_terminal_observation = initial_terminal_observation;
+        let mut mailbox_target_turn_id = None;
+        if let Some(Some(subscription)) = active_mailbox_final_subscription.as_ref() {
+            let authority = self
+                .read_mailbox_final_subscription_authority(
+                    &state,
+                    child_thread_id,
+                    parent.thread_id,
+                )
+                .await?;
+            if subscription.receiver_lifecycle_epoch != authority.receiver_lifecycle_epoch
+                || subscription.sender_lifecycle_epoch != authority.sender_lifecycle_epoch
+            {
+                self.clear_mailbox_final_subscription(
+                    parent,
+                    child,
+                    &subscription.message_id,
+                    None,
+                );
+                parent_thread
+                    .session
+                    .services
+                    .thread_store
+                    .supersede_mailbox_final_subscription_message(
+                        child_thread_id,
+                        subscription.message_id.clone(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        CodexErr::Fatal(format!(
+                            "failed to retire stale mailbox final subscription {}: {error}",
+                            subscription.message_id
+                        ))
+                    })?;
+                if !self
+                    .persist_response_observation_snapshot(parent, child)
+                    .await
+                {
+                    return Err(CodexErr::Fatal(
+                        "failed to persist stale mailbox final subscription cleanup".to_string(),
+                    ));
+                }
+            } else if !self.install_mailbox_final_subscription(
+                parent,
+                child,
+                &subscription.message_id,
+            ) {
+                return Ok(child_thread.agent_status().await);
+            } else {
+                match (subscription.state, subscription.bound_turn_id.as_deref()) {
+                    (codex_thread_store::MailboxFinalSubscriptionState::Pending, None) => {
+                        effective_response_observation = ResponseObservationPolicy::from_parts(
+                            response_observation.commentary(),
+                            FinalResponseObservation::None,
+                        );
+                        effective_terminal_observation =
+                            InitialTerminalObservation::FutureTurnsOnly;
+                    }
+                    (codex_thread_store::MailboxFinalSubscriptionState::Bound, Some(turn_id))
+                        if !turn_id.is_empty() =>
+                    {
+                        self.bind_mailbox_final_subscription_to_turn(
+                            parent,
+                            child,
+                            &subscription.message_id,
+                            turn_id,
+                        );
+                        effective_response_observation = ResponseObservationPolicy::from_parts(
+                            response_observation.commentary(),
+                            FinalResponseObservation::Wake,
+                        );
+                        effective_terminal_observation =
+                            InitialTerminalObservation::MailboxFinalTurn(turn_id.to_string());
+                        mailbox_target_turn_id = Some(turn_id.to_string());
+                    }
+                    _ => {
+                        return Err(CodexErr::Fatal(format!(
+                            "active mailbox final subscription {} has an invalid binding",
+                            subscription.message_id
+                        )));
+                    }
+                }
+            }
+        }
+        if !effective_response_observation.commentary()
+            && effective_response_observation.final_response() == FinalResponseObservation::None
+        {
+            if durable_v1 && active_mailbox_final_subscription.flatten().is_some() {
+                if !self
+                    .persist_response_observation_snapshot(parent, child)
+                    .await
+                {
+                    return Err(CodexErr::Fatal(
+                        "failed to persist pending mailbox final subscription suppression"
+                            .to_string(),
+                    ));
+                }
+            }
+            drop(observation_transaction);
+            drop(messaging_permission);
+            drop(sender_submission_permit);
+            return Ok(child_thread.agent_status().await);
+        }
         let (response_snapshot, mut response_rx) = match observer_multi_agent_version {
             MultiAgentVersion::V1 | MultiAgentVersion::Disabled => {
                 let terminal_control = self.clone();
@@ -2506,13 +2784,16 @@ impl AgentControl {
             // watcher branch above so the caller receives V1 delivery and durability semantics.
             MultiAgentVersion::V2 => child_thread.session.subscribe_agent_responses(),
         };
-        let target_turn_id =
-            initial_terminal_observation.target_turn_id(response_snapshot.active_turn_id.clone());
-        let initial_reconciliation = initial_terminal_observation.reconcile(
-            response_snapshot.active_turn_id.clone(),
-            response_snapshot.last_terminal.clone(),
-            response_snapshot.status.clone(),
-        );
+        let target_turn_id = mailbox_target_turn_id.or_else(|| {
+            effective_terminal_observation.target_turn_id(response_snapshot.active_turn_id.clone())
+        });
+        let initial_reconciliation = effective_terminal_observation
+            .reconcile(
+                response_snapshot.active_turn_id.clone(),
+                response_snapshot.last_terminal.clone(),
+                response_snapshot.status.clone(),
+            )
+            .without_delivered_finals(&delivered_final_turns);
         let previous_relationship = self.response_observation_relationship_snapshot(parent, child);
         let retain_passive_completion_relationship =
             observer_multi_agent_version != MultiAgentVersion::V1;
@@ -2520,7 +2801,7 @@ impl AgentControl {
             child,
             parent,
             &parent_thread.session.submission_admission,
-            response_observation,
+            effective_response_observation,
             retain_passive_completion_relationship,
             target_turn_id.clone(),
             ResponseObservationBinding::NextTurn,
@@ -2532,6 +2813,7 @@ impl AgentControl {
             },
             response_snapshot.next_event_sequence,
             response_snapshot.last_commentary_item_id,
+            /*selection_id*/ None,
         );
         if let (Some(watcher_registration), Some(setup_sink)) =
             (watcher_registration.as_ref(), setup_sink)
@@ -2562,10 +2844,14 @@ impl AgentControl {
                 previous_relationship,
                 target_turn_id,
                 message,
+                self::response_delivery::ResponseObservationRollbackPolicy::RequireReloadOnUnknownOutcome,
             )
             .await?;
             return Err(CodexErr::Fatal(message.to_string()));
         }
+        drop(observation_transaction);
+        drop(messaging_permission);
+        drop(sender_submission_permit);
         let Some(watcher_registration) = watcher_registration else {
             return Ok(initial_reconciliation.status);
         };

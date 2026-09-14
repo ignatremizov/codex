@@ -1079,6 +1079,14 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn set_global_status_timer_visible(&mut self, visible: bool) {
+        if let Some(status) = self.status.as_mut()
+            && status.set_global_timer_visible(visible)
+        {
+            self.request_redraw();
+        }
+    }
+
     /// Show the transient "press again to quit" hint for `key`.
     ///
     /// `ChatWidget` owns the quit shortcut state machine (it decides when quit is

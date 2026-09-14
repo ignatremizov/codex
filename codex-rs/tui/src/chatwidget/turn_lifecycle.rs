@@ -1,9 +1,12 @@
 //! Agent-turn lifecycle state for `ChatWidget`.
 
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use codex_utils_sleep_inhibitor::SleepInhibitor;
+
+const MAX_RECENTLY_HANDLED_SLEEP_ITEMS: usize = 32;
 
 #[derive(Debug)]
 pub(super) struct TurnLifecycleState {
@@ -14,6 +17,8 @@ pub(super) struct TurnLifecycleState {
     pub(super) last_turn_id: Option<String>,
     pub(super) budget_limited_turn_ids: HashSet<String>,
     pub(super) goal_status_active_turn_started_at: Option<Instant>,
+    /// Recent completed sleep identities prevent late duplicate notifications from rendering twice.
+    recently_handled_sleep_item_ids: VecDeque<(String, String)>,
 }
 
 impl TurnLifecycleState {
@@ -25,6 +30,7 @@ impl TurnLifecycleState {
             last_turn_id: None,
             budget_limited_turn_ids: HashSet::new(),
             goal_status_active_turn_started_at: None,
+            recently_handled_sleep_item_ids: VecDeque::new(),
         }
     }
 
@@ -63,6 +69,7 @@ impl TurnLifecycleState {
         self.finish();
         self.last_turn_id = None;
         self.budget_limited_turn_ids.clear();
+        self.recently_handled_sleep_item_ids.clear();
     }
 
     pub(super) fn set_prevent_idle_sleep(&mut self, enabled: bool) {
@@ -77,6 +84,27 @@ impl TurnLifecycleState {
 
     pub(super) fn take_budget_limited(&mut self, turn_id: &str) -> bool {
         self.budget_limited_turn_ids.remove(turn_id)
+    }
+
+    pub(super) fn has_handled_sleep_item(&self, turn_id: &str, item_id: &str) -> bool {
+        self.recently_handled_sleep_item_ids
+            .iter()
+            .any(|(handled_turn_id, handled_item_id)| {
+                handled_turn_id == turn_id && handled_item_id == item_id
+            })
+    }
+
+    /// Remembers a recent sleep item identity, returning whether it was new.
+    pub(super) fn remember_sleep_item(&mut self, turn_id: &str, item_id: &str) -> bool {
+        if self.has_handled_sleep_item(turn_id, item_id) {
+            return false;
+        }
+        self.recently_handled_sleep_item_ids
+            .push_back((turn_id.to_string(), item_id.to_string()));
+        if self.recently_handled_sleep_item_ids.len() > MAX_RECENTLY_HANDLED_SLEEP_ITEMS {
+            let _ = self.recently_handled_sleep_item_ids.pop_front();
+        }
+        true
     }
 }
 

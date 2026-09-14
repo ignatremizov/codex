@@ -182,7 +182,7 @@ impl ChatWidget {
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
-        self.unified_exec_wait_streak = None;
+        self.clear_unified_exec_wait_tracking();
         if !from_replay {
             let body = Notification::agent_turn_preview(
                 &notification_response,
@@ -318,6 +318,7 @@ impl ChatWidget {
         // failed-cell finalization, so transient tail cells are never persisted.
         self.clear_active_stream_tail();
         // Ensure any spinner is replaced by a red ✗ and flushed into history.
+        self.compact_active_sleep_for_turn_end();
         self.finalize_active_cell_as_failed();
         // Turn-scoped hook rows are transient live state; once the turn is over,
         // do not leave an orphaned running row behind if no matching completion
@@ -332,7 +333,7 @@ impl ChatWidget {
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
-        self.unified_exec_wait_streak = None;
+        self.clear_unified_exec_wait_tracking();
         self.adaptive_chunking.reset();
         self.stream_controller = None;
         self.plan_stream_controller = None;

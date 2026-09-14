@@ -2886,6 +2886,8 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
         final_delivery_response_item_id: Some(response_item_id.clone()),
         committed_delivery_response_item_ids: vec![response_item_id.clone()],
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     };
     let mut communication = InterAgentCommunication::new(
         AgentPath::root().join("worker").expect("worker path"),
@@ -3010,6 +3012,8 @@ async fn response_observation_replacement_persists_task_and_policy_in_one_record
         final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
         committed_delivery_response_item_ids: Vec::new(),
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     };
     store
         .fail_agent_response_observation_flushes_after(

@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::status::is_final;
 use crate::session::mailbox::MailboxConsumption;
+use crate::session::mailbox::MailboxConsumptionPresentation;
 use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
@@ -153,6 +154,7 @@ impl Handler {
                 selection: MailboxSelection::Senders(
                     senders.into_iter().map(MailboxSender::Agent).collect(),
                 ),
+                presentation: MailboxConsumptionPresentation::None,
             }
         });
         if let Some(operation) = &mailbox_operation

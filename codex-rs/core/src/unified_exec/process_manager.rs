@@ -56,7 +56,6 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::UserShellCommandEntry;
 use crate::unified_exec::UserShellCommandRetirement;
 use crate::unified_exec::UserShellSubmissionPhase;
-use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
@@ -65,6 +64,9 @@ use crate::unified_exec::async_watcher::start_streaming_output;
 use crate::unified_exec::clamp_yield_time;
 use crate::unified_exec::generate_chunk_id;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
+use crate::unified_exec::output_collection::OutputCollectionInterrupts;
+use crate::unified_exec::output_collection::TerminalWaitReporter;
+use crate::unified_exec::output_collection::collect_output_until_deadline;
 use crate::unified_exec::process::OutputBuffer;
 use crate::unified_exec::process::OutputHandles;
 use crate::unified_exec::process::SpawnLifecycleHandle;
@@ -83,7 +85,8 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
-use codex_protocol::protocol::TerminalInteractionEvent;
+use codex_protocol::protocol::TerminalWaitCompletionReason;
+use codex_protocol::protocol::TerminalWaitMode;
 use codex_protocol::shell_environment::is_non_inheritable_env_var;
 use codex_sandboxing::SandboxCommand;
 use codex_shell_command::is_dangerous_command::DangerousCommandPlatform;
@@ -111,12 +114,6 @@ const INTERRUPT: &str = "\u{3}";
 
 fn deadline_after(start: Instant, timeout_ms: u64) -> Option<Instant> {
     start.checked_add(Duration::from_millis(timeout_ms))
-}
-
-fn extend_deadline(deadline: &mut Option<Instant>, extension: Duration) {
-    if let Some(current_deadline) = *deadline {
-        *deadline = current_deadline.checked_add(extension);
-    }
 }
 
 /// Test-only override for deterministic unified exec process IDs.
@@ -689,12 +686,14 @@ impl UnifiedExecProcessManager {
         );
         let deadline = start.checked_add(wait);
         let output = process.output_handles().clone();
-        let collected_output = Self::collect_output_until_deadline(
+        let collected_output = collect_output_until_deadline(
             &output,
             Some(context.session.subscribe_elicitation_pause_state()),
             deadline,
+            None,
         )
-        .await;
+        .await
+        .collected;
         if let Some(completion) = completion.as_mut()
             && !process.has_exited()
         {
@@ -921,29 +920,68 @@ impl UnifiedExecProcessManager {
         // Different terminal sessions can be polled concurrently, but reads and
         // writes against one terminal must not overlap because they share a
         // draining output buffer and process lifecycle.
-        let locked_process = {
-            let store = self.process_store.lock().await;
-            let entry = store
-                .processes
-                .get(&process_id)
-                .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
-            Arc::clone(&entry.process)
+        if context.cancellation_token.is_cancelled() {
+            return Err(UnifiedExecError::process_failed(
+                "write_stdin cancelled".to_string(),
+            ));
+        }
+        let locked_process = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                return Err(UnifiedExecError::process_failed(
+                    "write_stdin cancelled".to_string(),
+                ));
+            }
+            result = async {
+                let store = self.process_store.lock().await;
+                let entry = store
+                    .processes
+                    .get(&process_id)
+                    .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+                Ok::<_, UnifiedExecError>(Arc::clone(&entry.process))
+            } => result?,
         };
-        let _interaction_guard = locked_process.interaction_lock().lock_owned().await;
+        let _interaction_guard = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                return Err(UnifiedExecError::process_failed(
+                    "write_stdin cancelled".to_string(),
+                ));
+            }
+            guard = locked_process.interaction_lock().lock_owned() => guard,
+        };
+        if context.cancellation_token.is_cancelled() {
+            return Err(UnifiedExecError::process_failed(
+                "write_stdin cancelled".to_string(),
+            ));
+        }
         // A queued write must observe strict review enabled while it was waiting.
-        let strict_auto_review = context
-            .session
-            .active_turn_context_and_strict_auto_review()
-            .await
-            .is_some_and(|(_, _, strict)| strict);
-        let approval = {
-            let store = self.process_store.lock().await;
-            let entry = store
-                .processes
-                .get(&process_id)
-                .filter(|entry| Arc::ptr_eq(&entry.process, &locked_process))
-                .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
-            entry.stdin_approval(context, request.input, strict_auto_review)?
+        let active_turn_context = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                return Err(UnifiedExecError::process_failed(
+                    "write_stdin cancelled".to_string(),
+                ));
+            }
+            result = context.session.active_turn_context_and_strict_auto_review() => result,
+        };
+        let strict_auto_review = active_turn_context.is_some_and(|(_, _, strict)| strict);
+        let approval = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                return Err(UnifiedExecError::process_failed(
+                    "write_stdin cancelled".to_string(),
+                ));
+            }
+            result = async {
+                let store = self.process_store.lock().await;
+                let entry = store
+                    .processes
+                    .get(&process_id)
+                    .filter(|entry| Arc::ptr_eq(&entry.process, &locked_process))
+                    .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+                entry.stdin_approval(context, request.input, strict_auto_review)
+            } => result?,
         };
         if let Some((approval, approval_reason)) = approval {
             let reviewed = crate::guardian::format_guardian_action_pretty(
@@ -987,14 +1025,28 @@ impl UnifiedExecProcessManager {
                 retry_reason: None,
                 network_approval_context: None,
             };
-            context
-                .session
-                .request_approval(approval, approval_context)
-                .await
-                .map_err(UnifiedExecError::StdinApproval)?;
+            let approval_result = tokio::select! {
+                biased;
+                _ = context.cancellation_token.cancelled() => {
+                    return Err(UnifiedExecError::process_failed(
+                        "write_stdin cancelled".to_string(),
+                    ));
+                }
+                result = context.session.request_approval(approval, approval_context) => result,
+            };
+            approval_result.map_err(UnifiedExecError::StdinApproval)?;
         }
 
         // Revalidate the identity after approval: a removed process ID can be reused.
+        let prepared_process_handles = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                return Err(UnifiedExecError::process_failed(
+                    "write_stdin cancelled".to_string(),
+                ));
+            }
+            result = self.prepare_process_handles(process_id, &locked_process) => result?,
+        };
         let PreparedProcessHandles {
             process,
             output,
@@ -1006,30 +1058,65 @@ impl UnifiedExecProcessManager {
             process_id,
             tty,
             ..
-        } = self
-            .prepare_process_handles(process_id, &locked_process)
-            .await?;
+        } = prepared_process_handles;
         let mut status_after_write = None;
 
+        if context.cancellation_token.is_cancelled() {
+            return Err(UnifiedExecError::process_failed(
+                "write_stdin cancelled".to_string(),
+            ));
+        }
         if !request.input.is_empty() {
             if !tty {
                 if request.input == INTERRUPT {
-                    process.interrupt().await?;
+                    tokio::select! {
+                        biased;
+                        _ = context.cancellation_token.cancelled() => {
+                            return Err(UnifiedExecError::process_failed(
+                                "write_stdin cancelled".to_string(),
+                            ));
+                        }
+                        result = process.interrupt() => result?,
+                    }
                 } else {
                     return Err(UnifiedExecError::StdinClosed);
                 }
             } else {
-                match process.write(request.input.as_bytes()).await {
+                // An exec server may have accepted the request before cancellation wins.
+                // Releasing this caller must not be treated as a process termination.
+                let write_result = tokio::select! {
+                    biased;
+                    _ = context.cancellation_token.cancelled() => {
+                        return Err(UnifiedExecError::process_failed(
+                            "write_stdin cancelled".to_string(),
+                        ));
+                    }
+                    result = process.write(request.input.as_bytes()) => result,
+                };
+                match write_result {
                     Ok(()) => {
                         // Give the remote process a brief window to react so that we are
                         // more likely to capture its output in the poll below.
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        tokio::select! {
+                            biased;
+                            _ = context.cancellation_token.cancelled() => {
+                                return Err(UnifiedExecError::process_failed(
+                                    "write_stdin cancelled".to_string(),
+                                ));
+                            }
+                            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                        }
                     }
                     Err(err) => {
                         let status = self.refresh_process_state(process_id).await;
                         if matches!(status, ProcessStatus::Exited { .. }) {
                             status_after_write = Some(status);
                         } else if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
+                            if context.cancellation_token.is_cancelled() {
+                                return Err(UnifiedExecError::process_failed(
+                                    "write_stdin cancelled".to_string(),
+                                ));
+                            }
                             process.terminate();
                             self.release_process_id(process_id).await;
                             return Err(err);
@@ -1041,12 +1128,43 @@ impl UnifiedExecProcessManager {
             }
         }
 
-        let yield_time_ms =
-            self.effective_write_stdin_yield_time_ms(request.input, request.yield_time_ms);
         let start = Instant::now();
-        let deadline = deadline_after(start, yield_time_ms);
-        let collected_output =
-            Self::collect_output_until_deadline(&output, pause_state, deadline).await;
+        let (deadline, deadline_at_ms, wait_mode) = if request.wait_until_exit {
+            (None, None, TerminalWaitMode::UntilExit)
+        } else {
+            let yield_time_ms =
+                self.effective_write_stdin_yield_time_ms(request.input, request.yield_time_ms);
+            let deadline = deadline_after(start, yield_time_ms);
+            let deadline_at_ms = i64::try_from(yield_time_ms)
+                .ok()
+                .and_then(|yield_time_ms| now_unix_timestamp_ms().checked_add(yield_time_ms));
+            (deadline, deadline_at_ms, TerminalWaitMode::Timed)
+        };
+        let wait_reporter = request.interaction_event.as_ref().map(|interaction_event| {
+            TerminalWaitReporter::new(
+                interaction_event,
+                call_id.clone(),
+                process_id,
+                request.input,
+                wait_mode,
+                deadline_at_ms,
+            )
+        });
+        if let Some(wait_reporter) = wait_reporter.as_ref() {
+            wait_reporter.started().await;
+        }
+        let collected_output = collect_output_until_deadline(
+            &output,
+            pause_state,
+            deadline,
+            Some(OutputCollectionInterrupts {
+                cancellation_token: context.cancellation_token.clone(),
+                user_input_wait: request.user_input_wait,
+            }),
+        )
+        .await;
+        let mut completion_reason = collected_output.completion_reason;
+        let mut collected_output = collected_output.collected;
         let mut collected_output = Self::finish_output_collection_after_exit(
             process.as_ref(),
             &output.output_buffer,
@@ -1061,6 +1179,11 @@ impl UnifiedExecProcessManager {
             let message =
                 network_denial_message_for_session(session.as_ref(), network_approval.clone())
                     .await;
+            if let Some(wait_reporter) = wait_reporter.as_ref() {
+                wait_reporter
+                    .finished(TerminalWaitCompletionReason::Failed)
+                    .await;
+            }
             self.release_process_id(process_id).await;
             return Err(fail_process_with_message(process.as_ref(), message));
         }
@@ -1072,7 +1195,17 @@ impl UnifiedExecProcessManager {
             .await;
             self.release_process_id(process_id).await;
             if let Err(message) = finish_result {
+                if let Some(wait_reporter) = wait_reporter.as_ref() {
+                    wait_reporter
+                        .finished(TerminalWaitCompletionReason::Failed)
+                        .await;
+                }
                 return Err(fail_process_with_message(process.as_ref(), message));
+            }
+            if let Some(wait_reporter) = wait_reporter.as_ref() {
+                wait_reporter
+                    .finished(TerminalWaitCompletionReason::Failed)
+                    .await;
             }
             return Err(UnifiedExecError::process_failed(message));
         }
@@ -1086,6 +1219,11 @@ impl UnifiedExecProcessManager {
         } else {
             self.refresh_process_state(process_id).await
         };
+        if matches!(&status, ProcessStatus::Exited { .. })
+            || (matches!(&status, ProcessStatus::Unknown) && process.has_exited())
+        {
+            completion_reason = TerminalWaitCompletionReason::Exited;
+        }
         if matches!(&status, ProcessStatus::Exited { .. })
             || (matches!(&status, ProcessStatus::Unknown) && process.has_exited())
         {
@@ -1108,6 +1246,11 @@ impl UnifiedExecProcessManager {
                 if let Err(message) =
                     finish_network_approval_after_process_exit_for_entry(&entry).await
                 {
+                    if let Some(wait_reporter) = wait_reporter.as_ref() {
+                        wait_reporter
+                            .finished(TerminalWaitCompletionReason::Failed)
+                            .await;
+                    }
                     return Err(fail_process_with_message(entry.process.as_ref(), message));
                 }
                 (None, exit_code, call_id)
@@ -1116,6 +1259,11 @@ impl UnifiedExecProcessManager {
                 if process.has_exited() {
                     (None, process.exit_code(), call_id)
                 } else {
+                    if let Some(wait_reporter) = wait_reporter.as_ref() {
+                        wait_reporter
+                            .finished(TerminalWaitCompletionReason::Failed)
+                            .await;
+                    }
                     return Err(UnifiedExecError::UnknownProcessId {
                         process_id: request.process_id,
                     });
@@ -1143,22 +1291,8 @@ impl UnifiedExecProcessManager {
             hook_command: Some(hook_command),
         };
 
-        let should_emit_interaction = !request.input.is_empty() || response.process_id.is_some();
-        if should_emit_interaction
-            && let Some(WriteStdinInteractionEvent { session, turn }) = request.interaction_event
-        {
-            let interaction = TerminalInteractionEvent {
-                call_id: response.event_call_id.clone(),
-                process_id: response
-                    .process_id
-                    .unwrap_or(request.process_id)
-                    .to_string(),
-                stdin: request.input.to_string(),
-                deadline_at_ms: None,
-            };
-            session
-                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
-                .await;
+        if let Some(wait_reporter) = wait_reporter.as_ref() {
+            wait_reporter.finished(completion_reason).await;
         }
 
         Ok(response)
@@ -1237,18 +1371,6 @@ impl UnifiedExecProcessManager {
                 .map_or(time_ms, |max_timeout_ms| time_ms.min(max_timeout_ms));
         }
         time_ms
-    }
-
-    pub(crate) async fn process_event_metadata(
-        &self,
-        process_id: i32,
-    ) -> Result<(i32, String), UnifiedExecError> {
-        let store = self.process_store.lock().await;
-        let entry = store
-            .processes
-            .get(&process_id)
-            .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
-        Ok((entry.process_id, entry.call_id.clone()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1600,121 +1722,6 @@ impl UnifiedExecProcessManager {
             })
     }
 
-    pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
-        output: &OutputHandles<MAX_BYTES>,
-        mut pause_state: Option<watch::Receiver<bool>>,
-        mut deadline: Option<Instant>,
-    ) -> HeadTailBuffer<MAX_BYTES> {
-        const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_secs(1);
-
-        let OutputHandles {
-            output_buffer,
-            output_notify,
-            output_closed,
-            output_closed_notify,
-            cancellation_token,
-        } = output;
-        let mut collected = HeadTailBuffer::default();
-        let mut exit_signal_received = cancellation_token.is_cancelled();
-        let mut post_exit_deadline: Option<Instant> = None;
-        loop {
-            Self::extend_deadlines_while_paused(
-                &mut pause_state,
-                &mut deadline,
-                &mut post_exit_deadline,
-            )
-            .await;
-            let drained_output: HeadTailBuffer<MAX_BYTES>;
-            let has_drained_output: bool;
-            let mut wait_for_output = None;
-            {
-                let mut guard = output_buffer.lock().await;
-                drained_output = std::mem::take(&mut *guard);
-                has_drained_output =
-                    drained_output.retained_bytes() > 0 || drained_output.omitted_bytes() > 0;
-                if !has_drained_output {
-                    wait_for_output = Some(output_notify.notified());
-                }
-            }
-
-            collected.push_buffer(drained_output);
-
-            exit_signal_received |= cancellation_token.is_cancelled();
-            if exit_signal_received {
-                if output_closed.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-
-                let now = Instant::now();
-                let close_wait_deadline = *post_exit_deadline.get_or_insert_with(|| {
-                    let remaining = deadline
-                        .map(|deadline| deadline.saturating_duration_since(now))
-                        .unwrap_or(POST_EXIT_CLOSE_WAIT_CAP);
-                    now + if remaining == Duration::ZERO {
-                        POST_EXIT_CLOSE_WAIT_CAP
-                    } else {
-                        remaining.min(POST_EXIT_CLOSE_WAIT_CAP)
-                    }
-                });
-                let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
-                if close_wait_remaining == Duration::ZERO {
-                    break;
-                }
-                if has_drained_output {
-                    continue;
-                }
-                let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-                let closed = output_closed_notify.notified();
-                tokio::pin!(notified);
-                tokio::pin!(closed);
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut closed => {}
-                    _ = tokio::time::sleep(close_wait_remaining) => break,
-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                }
-                continue;
-            }
-
-            if has_drained_output {
-                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                    break;
-                }
-                continue;
-            }
-
-            let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-            tokio::pin!(notified);
-            let exit_notified = cancellation_token.cancelled();
-            tokio::pin!(exit_notified);
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining == Duration::ZERO {
-                    break;
-                }
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut exit_notified => exit_signal_received = true,
-                    _ = tokio::time::sleep(remaining) => break,
-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                }
-            } else {
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut exit_notified => exit_signal_received = true,
-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                }
-            }
-        }
-
-        {
-            let mut guard = output_buffer.lock().await;
-            collected.push_buffer(guard.drain());
-        }
-
-        collected
-    }
-
     async fn finish_output_collection_after_exit(
         process: &UnifiedExecProcess,
         output_buffer: &OutputBuffer,
@@ -1727,44 +1734,6 @@ impl UnifiedExecProcessManager {
             collected.push_buffer(output_buffer.lock().await.drain());
         }
         collected
-    }
-
-    async fn extend_deadlines_while_paused(
-        pause_state: &mut Option<watch::Receiver<bool>>,
-        deadline: &mut Option<Instant>,
-        post_exit_deadline: &mut Option<Instant>,
-    ) {
-        let Some(receiver) = pause_state.as_mut() else {
-            return;
-        };
-        if !*receiver.borrow() {
-            return;
-        }
-
-        let paused_at = Instant::now();
-        while *receiver.borrow() {
-            if receiver.changed().await.is_err() {
-                break;
-            }
-        }
-
-        let paused_for = paused_at.elapsed();
-        extend_deadline(deadline, paused_for);
-        if let Some(post_exit_deadline) = post_exit_deadline.as_mut()
-            && let Some(extended_deadline) = post_exit_deadline.checked_add(paused_for)
-        {
-            *post_exit_deadline = extended_deadline;
-        }
-    }
-
-    async fn wait_for_pause_change(pause_state: Option<&watch::Receiver<bool>>) {
-        match pause_state {
-            Some(pause_state) => {
-                let mut receiver = pause_state.clone();
-                let _ = receiver.changed().await;
-            }
-            None => std::future::pending::<()>().await,
-        }
     }
 
     fn prune_processes_if_needed(store: &mut ProcessStore) -> Option<ProcessEntry> {

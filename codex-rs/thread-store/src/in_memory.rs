@@ -1340,6 +1340,115 @@ impl ThreadStore for InMemoryThreadStore {
         Box::pin(async move { self.mailbox.lock().await.accept(params) })
     }
 
+    fn accept_mailbox_input_with_authority(
+        &self,
+        params: crate::AcceptMailboxInputParams,
+        authority: crate::MailboxFinalSubscriptionAuthority,
+    ) -> ThreadStoreFuture<'_, crate::StoredMailboxInput> {
+        Box::pin(async move {
+            self.mailbox
+                .lock()
+                .await
+                .accept_with_authority(params, Some(authority))
+        })
+    }
+
+    fn lookup_active_mailbox_final_subscription(
+        &self,
+        receiver: codex_protocol::ThreadId,
+        sender: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxFinalSubscription>> {
+        Box::pin(async move {
+            Ok(self
+                .mailbox
+                .lock()
+                .await
+                .lookup_active_final_subscription(receiver, sender))
+        })
+    }
+
+    fn lookup_mailbox_final_subscription(
+        &self,
+        receiver: codex_protocol::ThreadId,
+        message_id: String,
+    ) -> ThreadStoreFuture<'_, Option<crate::MailboxFinalSubscription>> {
+        Box::pin(async move {
+            Ok(self
+                .mailbox
+                .lock()
+                .await
+                .lookup_final_subscription(receiver, &message_id))
+        })
+    }
+
+    fn read_active_mailbox_final_subscriptions_for_thread(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, Vec<crate::MailboxFinalSubscription>> {
+        Box::pin(async move {
+            Ok(self
+                .mailbox
+                .lock()
+                .await
+                .active_final_subscriptions_for_thread(thread_id))
+        })
+    }
+
+    fn supersede_mailbox_final_subscription(
+        &self,
+        receiver: codex_protocol::ThreadId,
+        sender: codex_protocol::ThreadId,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.mailbox
+                .lock()
+                .await
+                .supersede_final_subscription(receiver, sender);
+            Ok(())
+        })
+    }
+
+    fn supersede_mailbox_final_subscription_message(
+        &self,
+        receiver: codex_protocol::ThreadId,
+        message_id: String,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.mailbox
+                .lock()
+                .await
+                .supersede_final_subscription_message(receiver, &message_id);
+            Ok(())
+        })
+    }
+
+    fn supersede_mailbox_final_subscriptions_for_threads(
+        &self,
+        thread_ids: Vec<codex_protocol::ThreadId>,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.mailbox
+                .lock()
+                .await
+                .supersede_final_subscriptions_for_threads(&thread_ids);
+            Ok(())
+        })
+    }
+
+    fn acknowledge_mailbox_final_subscription_delivery(
+        &self,
+        receiver: codex_protocol::ThreadId,
+        message_id: String,
+        turn_id: String,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.mailbox
+                .lock()
+                .await
+                .acknowledge_final_subscription_delivery(receiver, &message_id, &turn_id)
+        })
+    }
+
     fn lookup_mailbox_input<'a>(
         &'a self,
         receiver_thread_id: codex_protocol::ThreadId,

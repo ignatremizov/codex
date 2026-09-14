@@ -1,7 +1,7 @@
 //! Command execution lifecycle handlers for `ChatWidget`.
 //!
 //! This module owns command start/output/completion rendering, including active
-//! exec-cell grouping and unified exec wait state.
+//! exec-cell grouping and unified exec process state.
 
 use super::*;
 use crate::bottom_pane::BackgroundTerminalCompletion;
@@ -9,17 +9,6 @@ use crate::bottom_pane::BackgroundTerminalCompletion;
 const MAX_COMPLETED_UNIFIED_EXEC_PROCESSES: usize = 16;
 
 impl ChatWidget {
-    pub(super) fn flush_unified_exec_wait_streak(&mut self) {
-        let Some(wait) = self.unified_exec_wait_streak.take() else {
-            return;
-        };
-        self.transcript.needs_final_message_separator = true;
-        let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
-        self.app_event_tx
-            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
-        self.restore_reasoning_status_header();
-    }
-
     pub(super) fn on_command_execution_started(
         &mut self,
         item: ThreadItem,
@@ -61,6 +50,29 @@ impl ChatWidget {
             }
             // Unified exec may be parsed as Unknown; keep the working indicator visible regardless.
             self.bottom_pane.ensure_status_indicator();
+            if *source == ExecCommandSource::UnifiedExecStartup {
+                if self
+                    .unified_exec_wait_tracker
+                    .as_ref()
+                    .is_some_and(UnifiedExecWaitTracker::has_active_process_waits)
+                {
+                    self.refresh_unified_exec_wait_status();
+                } else {
+                    let process_key = process_id.as_deref().unwrap_or(id);
+                    let command_display = self
+                        .unified_exec_processes
+                        .iter()
+                        .find(|process| process.key == process_key)
+                        .map(|process| process.command_display.clone());
+                    self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Working;
+                    self.set_status(
+                        "Working".to_string(),
+                        command_display,
+                        StatusDetailsCapitalization::Preserve,
+                        /*details_max_lines*/ 1,
+                    );
+                }
+            }
             if let Some(deadline_at_ms) = deadline_at_ms {
                 self.set_status_countdown_deadline_at_ms(
                     StatusCountdownOwner::UnifiedExecInitial {
@@ -101,96 +113,6 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn on_terminal_interaction(
-        &mut self,
-        process_id: String,
-        stdin: String,
-        deadline_at_ms: Option<i64>,
-    ) {
-        if !self.bottom_pane.is_task_running() {
-            return;
-        }
-        let active_command_display = self
-            .unified_exec_processes
-            .iter()
-            .find(|process| process.key == process_id)
-            .map(|process| process.command_display.clone());
-        if stdin.is_empty() && active_command_display.is_none() {
-            // Empty polls emit a deadline-bearing interaction when they start and a second
-            // interaction without a deadline when they finish. If the process has already left
-            // the active map, render only the completion half of that pair.
-            if deadline_at_ms.is_some() {
-                return;
-            }
-            let command_display = self
-                .completed_unified_exec_processes
-                .iter()
-                .rev()
-                .find(|process| process.key == process_id)
-                .map(|process| process.command_display.clone());
-            self.flush_answer_stream_with_separator();
-            self.add_to_history(history_cell::new_unified_exec_output_check(command_display));
-            return;
-        }
-        let command_display = active_command_display;
-
-        self.flush_answer_stream_with_separator();
-        if stdin.is_empty() {
-            // Empty stdin means we are polling for background output.
-            // Surface this in the status indicator (single "waiting" surface) instead of
-            // the transcript. Keep the header short so the interrupt hint remains visible.
-            self.bottom_pane.ensure_status_indicator();
-            self.bottom_pane
-                .set_interrupt_hint_visible(/*visible*/ true);
-            self.status_state.terminal_title_status_kind =
-                TerminalTitleStatusKind::WaitingForBackgroundTerminal;
-            self.set_status(
-                "Waiting for background terminal".to_string(),
-                command_display.clone(),
-                StatusDetailsCapitalization::Preserve,
-                /*details_max_lines*/ 1,
-            );
-            let countdown_owner = StatusCountdownOwner::UnifiedExecWait {
-                process_id: process_id.clone(),
-            };
-            if let Some(deadline_at_ms) = deadline_at_ms {
-                self.set_status_countdown_deadline_at_ms(countdown_owner.clone(), deadline_at_ms);
-            } else {
-                self.clear_status_countdown_if_owner(&countdown_owner);
-            }
-            match &mut self.unified_exec_wait_streak {
-                Some(wait) if wait.process_id == process_id => {
-                    wait.update_command_display(command_display);
-                }
-                Some(_) => {
-                    self.flush_unified_exec_wait_streak();
-                    self.unified_exec_wait_streak =
-                        Some(UnifiedExecWaitStreak::new(process_id, command_display));
-                }
-                None => {
-                    self.unified_exec_wait_streak =
-                        Some(UnifiedExecWaitStreak::new(process_id, command_display));
-                }
-            }
-            self.request_redraw();
-        } else {
-            if self
-                .unified_exec_wait_streak
-                .as_ref()
-                .is_some_and(|wait| wait.process_id == process_id)
-            {
-                self.flush_unified_exec_wait_streak();
-                self.clear_status_countdown_if_owner(&StatusCountdownOwner::UnifiedExecWait {
-                    process_id,
-                });
-            }
-            self.add_to_history(history_cell::new_unified_exec_interaction(
-                command_display,
-                stdin,
-            ));
-        }
-    }
-
     pub(super) fn on_command_execution_completed(&mut self, item: ThreadItem) {
         let ThreadItem::CommandExecution {
             id,
@@ -209,9 +131,9 @@ impl ChatWidget {
                 process_key: process_id.as_deref().unwrap_or(id).to_string(),
             };
             let completed_wait_streak = process_id.as_deref().is_some_and(|process_id| {
-                self.unified_exec_wait_streak
+                self.unified_exec_wait_tracker
                     .as_ref()
-                    .is_some_and(|wait| wait.process_id == process_id)
+                    .is_some_and(|tracker| tracker.has_transcript_streak_for_process(process_id))
             });
             if completed_wait_streak {
                 let wait_owner =
@@ -319,7 +241,7 @@ impl ChatWidget {
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
-        self.unified_exec_wait_streak = None;
+        self.clear_unified_exec_wait_tracking();
         self.clear_status_countdown();
         self.clear_unified_exec_process_tracking();
     }

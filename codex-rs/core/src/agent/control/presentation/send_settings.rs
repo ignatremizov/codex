@@ -306,8 +306,11 @@ impl AgentControl {
         &self,
         current: SessionPresentationId,
     ) -> CodexResult<()> {
-        let _permission = self.acquire_messaging_permission_transaction().await;
-        self.restore_agent_send_settings_locked(current).await
+        let permission = self.acquire_messaging_permission_transaction().await;
+        let result = self.restore_agent_send_settings_locked(current).await;
+        drop(permission);
+        result?;
+        Ok(())
     }
 
     pub(in crate::agent::control) async fn restore_agent_send_settings_locked(

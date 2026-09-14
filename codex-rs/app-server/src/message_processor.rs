@@ -1213,6 +1213,11 @@ impl MessageProcessor {
                 .thread_mailbox_add(params)
                 .await
                 .map(|response| Some(response.into())),
+            ClientRequest::ThreadMailboxRead { params, .. } => self
+                .thread_processor
+                .thread_mailbox_read(params)
+                .await
+                .map(|response| Some(response.into())),
             ClientRequest::ThreadQueueAdd { params, .. } => self
                 .thread_queue_processor
                 .add(params)

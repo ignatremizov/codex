@@ -786,6 +786,7 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::FunctionCallOutput(_)
             | codex_protocol::items::TurnItem::CommandExecution(_)
             | codex_protocol::items::TurnItem::DynamicToolCall(_)
+            | codex_protocol::items::TurnItem::MailboxRead(_)
             | codex_protocol::items::TurnItem::CollabAgentToolCall(_)
             | codex_protocol::items::TurnItem::SubAgentActivity(_)
             | codex_protocol::items::TurnItem::UserAgentControl(_)

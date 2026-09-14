@@ -33,6 +33,7 @@ fn delivery() -> (MailboxClaim, MailboxDeliveryEvidence, Vec<RolloutItem>) {
             acceptance_sequence: 1,
             state: MailboxMessageState::Claimed,
             rejection_reason: None,
+            final_subscription: None,
         },
         delivery_id,
     };

@@ -62,6 +62,7 @@ async fn recovery_does_not_treat_malformed_canonical_history_as_unrecorded_mail(
                 input: Vec::new(),
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await
         .unwrap();
@@ -145,6 +146,7 @@ async fn revert_reconciles_only_proven_delivery_and_preserves_ambiguous_recovery
                     input: input.clone(),
                     client_id: Some("client".to_string()),
                 },
+                final_subscription: Default::default(),
             })
             .await
             .unwrap();

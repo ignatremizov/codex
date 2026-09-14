@@ -94,7 +94,8 @@ impl CodexThread {
                 )
                 .await
         });
-        match admission.await.map_err(|error| {
+        let admission = admission.await;
+        match admission.map_err(|error| {
             CodexErr::Fatal(format!("mailbox inventory admission task failed: {error}"))
         })? {
             Ok(outcome) => Ok(outcome),
@@ -138,15 +139,41 @@ impl Session {
         };
         live.flush_canonical().await?;
         let store = &self.services.thread_store;
+        let control = self.services.agent_control.clone();
+        let receiver = self.presentation_id();
         let inventory = store.read_mailbox_inventory(self.thread_id).await?;
         if let Some(notification) = inventory.active_notification {
             match store
                 .recover_mailbox_inventory(notification.clone())
                 .await?
             {
-                MailboxInventoryRecovery::AlreadyCovered { .. } => return Ok(None),
+                MailboxInventoryRecovery::AlreadyCovered { .. } => {
+                    let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                    if !acknowledgement.bound_subscriptions.is_empty() {
+                        tokio::spawn(async move {
+                            control
+                                .bind_mailbox_final_subscriptions(
+                                    receiver,
+                                    acknowledgement.bound_subscriptions,
+                                )
+                                .await;
+                        });
+                    }
+                    return Ok(None);
+                }
                 MailboxInventoryRecovery::Recorded { .. } => {
-                    store.reconcile_mailbox_inventory(notification).await?;
+                    let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                    if !acknowledgement.bound_subscriptions.is_empty() {
+                        let control = control.clone();
+                        tokio::spawn(async move {
+                            control
+                                .bind_mailbox_final_subscriptions(
+                                    receiver,
+                                    acknowledgement.bound_subscriptions,
+                                )
+                                .await;
+                        });
+                    }
                 }
                 MailboxInventoryRecovery::NotRecorded => {
                     if store
@@ -186,10 +213,27 @@ impl Session {
             .await?
         {
             MailboxInventoryRecovery::AlreadyCovered { .. } => {
+                let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                drop(_durable);
+                self.services
+                    .agent_control
+                    .bind_mailbox_final_subscriptions(
+                        self.presentation_id(),
+                        acknowledgement.bound_subscriptions,
+                    )
+                    .await;
                 return Ok(InventoryRecording::NotNeeded);
             }
             MailboxInventoryRecovery::Recorded { .. } => {
-                store.reconcile_mailbox_inventory(notification).await?;
+                let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+                drop(_durable);
+                self.services
+                    .agent_control
+                    .bind_mailbox_final_subscriptions(
+                        self.presentation_id(),
+                        acknowledgement.bound_subscriptions,
+                    )
+                    .await;
                 return Ok(InventoryRecording::NotNeeded);
             }
             MailboxInventoryRecovery::NotRecorded => {
@@ -224,7 +268,15 @@ impl Session {
                 );
             }
         }
-        store.reconcile_mailbox_inventory(notification).await?;
+        let acknowledgement = store.reconcile_mailbox_inventory(notification).await?;
+        drop(_durable);
+        self.services
+            .agent_control
+            .bind_mailbox_final_subscriptions(
+                self.presentation_id(),
+                acknowledgement.bound_subscriptions,
+            )
+            .await;
         Ok(InventoryRecording::Recorded)
     }
 }

@@ -539,6 +539,7 @@ impl TurnItem {
             TurnItem::Plan(_) => Vec::new(),
             TurnItem::CommandExecution(_)
             | TurnItem::DynamicToolCall(_)
+            | TurnItem::MailboxRead(_)
             | TurnItem::CollabAgentToolCall(_) => Vec::new(),
             TurnItem::SubAgentActivity(_) | TurnItem::UserAgentControl(_) => Vec::new(),
             TurnItem::WebSearch(item) => vec![item.as_legacy_event()],

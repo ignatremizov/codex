@@ -405,8 +405,18 @@ impl ChatWidget {
                     self.add_boxed_history(Box::new(cell));
                 }
             }
+            ThreadItem::MailboxRead(item) => {
+                let cell = multi_agents::history_cell_for_mailbox_read(&item, |thread_id| {
+                    self.collab_agent_metadata(thread_id)
+                });
+                if from_replay {
+                    self.on_collab_event(cell);
+                } else {
+                    self.on_async_agent_notice(cell);
+                }
+            }
             ThreadItem::DynamicToolCall { .. } => {}
-            ThreadItem::Sleep(_) => {}
+            ThreadItem::Sleep(item) => self.on_sleep_completed(item, &turn_id),
         }
 
         if matches!(

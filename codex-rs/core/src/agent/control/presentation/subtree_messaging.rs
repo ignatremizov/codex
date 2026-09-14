@@ -25,8 +25,10 @@ impl AgentControl {
     /// capacity/mailbox waits and before any response-observation transaction.
     pub(crate) async fn acquire_messaging_permission_transaction(
         &self,
-    ) -> tokio::sync::MutexGuard<'_, ()> {
-        self.wait_agent_presentations.messaging_refresh.lock().await
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.wait_agent_presentations.messaging_refresh)
+            .lock_owned()
+            .await
     }
 
     #[expect(

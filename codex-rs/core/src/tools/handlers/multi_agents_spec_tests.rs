@@ -1,4 +1,6 @@
 use super::*;
+use crate::tools::handlers::multi_agents::CheckMailHandler;
+use crate::tools::registry::ToolExecutor;
 use codex_code_mode::render_json_schema_to_typescript;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelServiceTier;
@@ -51,6 +53,30 @@ fn v1_result_schemas_preserve_projection_fields_in_code_mode() {
             assert!(rendered.contains(field), "{rendered} must expose {field}");
         }
     }
+}
+
+#[test]
+fn check_mail_description_matches_disposable_result_projection() {
+    let ToolSpec::Namespace(namespace) = CheckMailHandler.spec() else {
+        panic!("check_mail should use the V1 namespace");
+    };
+    let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace.tools.first() else {
+        panic!("check_mail should be a namespaced function");
+    };
+
+    assert!(
+        tool.description
+            .contains("Successful terminal batches leave this tool result empty")
+    );
+    assert!(tool.description.contains(
+        "Mixed delivered/rejected batches report rejected_count without a success status"
+    ));
+    assert!(
+        tool.description
+            .contains("Empty selections report status empty")
+    );
+    assert!(!tool.description.contains("report ok"));
+    assert_eq!(tool.output_schema, None);
 }
 
 #[test]
@@ -300,7 +326,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
 fn v1_lifecycle_tools_use_compact_response_observation_guidance() {
     // Only send_input owns mailbox admission; spawn/resume keep the compact reference.
     let send_input_description = format!(
-        "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering, starting a payload-bearing turn, or subscribing to replies. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. Normalize f/x first; z rejects c, m, q, and effective wake. z, zx, zfx, and zfxx are equivalent; repeated z is idempotent. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
+        "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering or starting a payload-bearing turn. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. If normalized f/x flags leave an effective f, zf also subscribes to the receiver's exact final turn after check_mail consumes this message or an idle inventory advertises it. The subscription does not expose mail contents or wake on unrelated busy turns. z, zf, and fz are equivalent; zfx and zfxx remain ordinary mailbox admission after f/x cancellation. Repeated z and f flags follow their normal presence/count rules. z rejects c, m, and q. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
     );
     let tools = [
         (

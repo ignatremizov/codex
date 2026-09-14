@@ -1938,6 +1938,10 @@ impl ThreadManagerState {
         self.agent_graph_store.clone()
     }
 
+    pub(crate) fn thread_store(&self) -> Arc<dyn ThreadStore> {
+        Arc::clone(&self.thread_store)
+    }
+
     /// Reserve rollout writers while a separate store commits agent-graph ownership.
     ///
     /// Agent aliases and rollout writers live behind different persistence boundaries. Holding
@@ -3110,7 +3114,17 @@ impl ThreadManagerState {
             }
         };
         match insertion {
-            Ok(new_thread) => return Ok(new_thread),
+            Ok(new_thread) => {
+                new_thread
+                    .thread
+                    .session
+                    .services
+                    .agent_control
+                    .schedule_mailbox_final_subscription_recovery(
+                        new_thread.thread.session.presentation_id(),
+                    );
+                return Ok(new_thread);
+            }
             Err(io) => {
                 if let Err(err) = io.shutdown_and_wait().await {
                     warn!("failed to shut down duplicate thread {thread_id}: {err}");

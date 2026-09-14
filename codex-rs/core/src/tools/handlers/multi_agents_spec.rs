@@ -190,7 +190,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
         (
             "w".to_string(),
             response_observation_schema(&format!(
-                "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering, starting a payload-bearing turn, or subscribing to replies. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. Normalize f/x first; z rejects c, m, q, and effective wake. z, zx, zfx, and zfxx are equivalent; repeated z is idempotent. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
+                "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering or starting a payload-bearing turn. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. If normalized f/x flags leave an effective f, zf also subscribes to the receiver's exact final turn after check_mail consumes this message or an idle inventory advertises it. The subscription does not expose mail contents or wake on unrelated busy turns. z, zf, and fz are equivalent; zfx and zfxx remain ordinary mailbox admission after f/x cancellation. Repeated z and f flags follow their normal presence/count rules. z rejects c, m, and q. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
             )),
         ),
     ]);

@@ -47,10 +47,15 @@ async fn direct_dispatch_carries_selection_without_consuming_and_nested_dispatch
         .mailbox_operation
         .expect("accepted result carries selection");
     assert_eq!(
-        (operation.tool_call_id, operation.selection),
+        (
+            operation.tool_call_id,
+            operation.selection,
+            operation.presentation
+        ),
         (
             "direct-mailbox".to_string(),
-            MailboxSelection::Senders(vec![MailboxSender::User])
+            MailboxSelection::Senders(vec![MailboxSender::User]),
+            MailboxConsumptionPresentation::CheckMail
         ),
     );
     let ResponseItem::FunctionCallOutput { output, .. } = direct.response.item else {

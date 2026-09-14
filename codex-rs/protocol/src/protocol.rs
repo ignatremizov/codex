@@ -3,6 +3,12 @@
 //! Uses a SQ (Submission Queue) / EQ (Event Queue) pattern to asynchronously communicate
 //! between user and agent.
 
+mod terminal_wait;
+
+pub use terminal_wait::TerminalWaitCompletionReason;
+pub use terminal_wait::TerminalWaitEvent;
+pub use terminal_wait::TerminalWaitMode;
+
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
@@ -3427,6 +3433,16 @@ pub struct AgentResponseObservation {
     pub final_delivery_response_item_id: Option<ResponseItemId>,
     #[serde(default)]
     pub committed_delivery_response_item_ids: Vec<ResponseItemId>,
+    /// Accepted mailbox identity whose final observation is conditionally pending or bound.
+    ///
+    /// This is durable watcher recovery metadata, not model or thread-history content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_final_subscription_message_id: Option<String>,
+    /// Latest mailbox-final generation explicitly superseded by an ordinary observation update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_final_subscription_suppressed_message_id: Option<String>,
 }
 
 impl AgentResponseObservation {
@@ -3913,10 +3929,16 @@ pub struct TerminalInteractionEvent {
     pub process_id: String,
     /// Stdin sent to the running session.
     pub stdin: String,
-    /// Unix timestamp in milliseconds when this wait/poll should report back.
+    /// Unix timestamp in milliseconds when a bounded wait should report back.
+    /// Until-exit waits and completed waits have no deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deadline_at_ms: Option<i64>,
+    /// Lifecycle metadata for a `write_stdin` wait. Older serialized events
+    /// omit this field and retain the legacy deadline-based interpretation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait: Option<TerminalWaitEvent>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -6700,5 +6722,23 @@ mod tests {
                 .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+
+    #[test]
+    fn terminal_wait_event_uses_canonical_snake_case_serialization() {
+        assert_eq!(
+            serde_json::to_value(TerminalWaitEvent::Started {
+                interaction_id: "write-call".to_string(),
+                started_at_ms: 123,
+                mode: TerminalWaitMode::UntilExit,
+            })
+            .expect("terminal wait event should serialize"),
+            json!({
+                "phase": "started",
+                "interaction_id": "write-call",
+                "started_at_ms": 123,
+                "mode": "until_exit",
+            })
+        );
     }
 }

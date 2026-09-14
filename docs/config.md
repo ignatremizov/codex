@@ -283,6 +283,11 @@ not capped. To impose a maximum poll window:
 background_terminal_max_timeout = 300000
 ```
 
+Pass `wait_until_exit: true` to `write_stdin` to wait without a yield deadline until that process
+exits. In that mode `yield_time_ms` is ignored, including the configured maximum poll window. New
+turn input or explicit cancellation ends the wait and returns control without terminating the
+background process; omitting the field or passing `false` preserves the bounded polling behavior.
+
 ## SQLite State DB
 
 Codex stores the SQLite-backed state DB under `sqlite_home` (config key) or the

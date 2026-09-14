@@ -96,6 +96,7 @@ async fn accept_user_mail(test: &TestCodex, key: &str, payload: &str) -> anyhow:
                 }],
                 client_id: None,
             },
+            final_subscription: Default::default(),
         })
         .await?
         .acceptance_sequence)

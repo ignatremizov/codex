@@ -190,6 +190,16 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
             return bounded_summary(&format!("Viewed {path}"));
         }
         ThreadItem::ImageGeneration(_) => return Some("Generated an image".to_string()),
+        ThreadItem::MailboxRead(item) => {
+            return Some(if item.consumed_count == 0 && item.rejected_count == 0 {
+                "Checked mailbox: empty".to_string()
+            } else {
+                format!(
+                    "Checked mailbox: {} consumed, {} rejected",
+                    item.consumed_count, item.rejected_count
+                )
+            });
+        }
         ThreadItem::EnteredReviewMode { .. } => return Some("Entered review mode".to_string()),
         ThreadItem::ExitedReviewMode { .. } => return Some("Exited review mode".to_string()),
         ThreadItem::ContextCompaction { .. } => return Some("Compacted context".to_string()),

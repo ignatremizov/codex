@@ -351,10 +351,10 @@ use self::exec_state::CompletedUnifiedExecProcess;
 use self::exec_state::RunningCommand;
 use self::exec_state::UnifiedExecProcessSummary;
 use self::exec_state::UnifiedExecWaitState;
-use self::exec_state::UnifiedExecWaitStreak;
 use self::exec_state::command_execution_command_and_parsed;
 use self::exec_state::is_standard_tool_call;
 use self::exec_state::is_unified_exec_source;
+use self::process_wait::UnifiedExecWaitTracker;
 mod goal_status;
 use self::goal_status::GoalStatusState;
 #[cfg(test)]
@@ -406,6 +406,7 @@ mod permissions_menu;
 pub(crate) use self::permissions_menu::auto_review_available;
 pub(crate) use self::permissions_menu::cyber_model_approval_reviewer;
 mod backend_banners;
+mod process_wait;
 mod protocol;
 mod protocol_requests;
 mod rate_limits;
@@ -433,6 +434,7 @@ mod service_tiers;
 mod settings;
 mod settings_popups;
 mod side;
+mod sleep;
 use self::safety_buffering::SafetyBufferingState;
 mod status_state;
 mod windows_sandbox_prompts;
@@ -631,7 +633,7 @@ pub(crate) struct ChatWidget {
     skills_all: Vec<SkillMetadata>,
     skills_initial_state: Option<HashMap<AbsolutePathBuf, bool>>,
     last_unified_wait: Option<UnifiedExecWaitState>,
-    unified_exec_wait_streak: Option<UnifiedExecWaitStreak>,
+    unified_exec_wait_tracker: Option<UnifiedExecWaitTracker>,
     turn_lifecycle: TurnLifecycleState,
     safety_buffering: SafetyBufferingState,
     task_complete_pending: bool,
@@ -1343,6 +1345,7 @@ impl ChatWidget {
     pub(crate) fn pre_draw_tick(&mut self) {
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
+        self.refresh_unified_exec_wait_status();
         self.bottom_pane.pre_draw_tick();
         if let Some(pet) = self.ambient_pet.as_ref() {
             pet.schedule_next_frame();

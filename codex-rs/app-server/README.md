@@ -286,6 +286,7 @@ Manual Verify CI and commit the reviewed output before shipping.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goal/cleared` — notification emitted whenever a thread goal is removed.
 - `thread/mailbox/add` — experimental; accept `{threadId, input, clientUserMessageId}` as user-authored mailbox input for explicit consumption. Returns `{messageId, state, rejectionReason}`: a stable mailbox identity and its current `pending`, `claimed`, `consumed`, or `rejected` state, not a turn ID. Reusing a receiver/client-message ID requires identical typed input and returns the existing state, including nullable rejection details. Acceptance preserves attachments and user authorship, does not load or adopt the recipient, and does not deliver a payload-bearing turn. A loaded receiver may receive a later inventory-only notification. Clients cannot supply agent attribution or an authorship discriminator.
+- `thread/mailbox/read` — experimental; read `{threadId}` and return `pendingTotal` with `pendingSenders` grouped by canonical user or agent UUID. This is a read-only aggregate snapshot: it returns no message bodies, does not load the receiver, and does not claim or consume pending messages. Storage/backend unavailability is an error, distinct from an empty mailbox.
   Existing unloaded or archived durable receivers can retain pending user mail without being resumed or unarchived. Backend eligibility is deferred until a compatible runtime is loaded; pending mail is not discarded because the receiver is offline. Fresh deposits to a loaded receiver with a known unsupported backend are rejected before persistence. Retrying an existing acceptance returns its current stored state without requiring fresh backend eligibility.
 - `thread/queue/add` — experimental; persist a user turn for automatic FIFO submission when the thread next becomes idle.
 - `thread/queue/list` — experimental; return one page of a thread's queued turns.
@@ -1952,6 +1953,7 @@ The app-server streams JSON-RPC notifications while a turn is running. Each turn
 - `fileChange` — `{id, changes, status}` describing proposed edits; `changes` list `{path, kind, diff}` and `status` is `inProgress`, `completed`, `failed`, or `declined`.
 - `mcpToolCall` — `{id, server, tool, status, arguments, appContext, mcpAppResourceUri?, pluginId, readOnlyHint, result?, error?}` describing MCP calls; `appContext` is `{connectorId, linkId, resourceUri, appName, actionName}` for calls through a trusted MCP app, where `connectorId` identifies the connector that owns the tool, `linkId` identifies the app link, `resourceUri` points to the widget template, `appName` is the connector's display name, and `actionName` is the stable connector `Action.name`. `readOnlyHint` is `true` for read-only tools, `false` for write-capable tools, and `null` when the annotation is unavailable, including older rollout entries. The hint describes tool capability, not whether an invocation succeeded or performed a write; use `status`, `result`, and `error` to determine the execution outcome. `appName` and `actionName` may be null for older rollout entries. The top-level `mcpAppResourceUri` is deprecated and temporarily duplicated for client migration. `tool` identifies the raw MCP tool. `status` is `inProgress`, `completed`, or `failed`.
 - `collabAgentToolCall` — `{id, tool, status, observeCommentary, wakeOnCompletion, senderThreadId, receiverThreadIds, receiverAgents, prompt, model, reasoningEffort, agentsStates}` describing collab tool calls (`spawn_agent`, `send_input`, `resume_agent`, `wait`, `close_agent`); `status` is `inProgress`, `completed`, or `failed`. `observeCommentary` and `wakeOnCompletion` are `true` or `false` for V1 lifecycle calls and `null` for tools without V1 response observation.
+- `mailboxRead` — `{id, selector, consumedCount, rejectedCount}` is the payload-free terminal result of a direct `multi_agent_v1.check_mail` call. `selector` is `{type: "all"}`, `{type: "user"}`, or `{type: "agent", threadId}` using the resolved sender's canonical thread ID. Counts come from the acknowledged fixed batch; both zero means the selection was empty. The item is emitted only as `item/completed` after acknowledgement, uses the original tool call ID, and never includes message bodies. Mailbox consumption requested by `wait_agent` does not emit this item.
 - `subAgentActivity` — `{id, kind, agentThreadId, agentPath}` describing Multi-Agent V2 lifecycle activity; `kind` is `started`, `interacted`, `interrupted`, or `completed`. A successful child completion is attributed to the parent turn that spawned it, so its `item/completed` notification may arrive after that turn's `turn/completed` notification and is included with that turn when history is read.
 
   The `CollabAgentTool` schema also includes `sendMessage`, `followupTask`, `interruptAgent`, and
@@ -1968,7 +1970,7 @@ The app-server streams JSON-RPC notifications while a turn is running. Each turn
 - `contextCompaction` — `{id, summary, message, decodeError, availableSkills}` emitted when codex compacts the conversation history. `summary` contains compacted text when available, `message` contains the decoded compacted prompt stored for display, `decodeError` contains the user-facing reason that display-only decoding failed, and `availableSkills` lists the skill names in the model-visible inventory installed after compaction. The first three result fields are nullable. This can happen automatically.
 - `compacted` — deprecated notification shape retained in the protocol schema but not emitted by app-server v2. Consume the completed `contextCompaction` item, including its nullable `decodeError`, instead.
 
-All items emit shared lifecycle events:
+Items use the shared lifecycle events where applicable:
 
 - `item/started` — emits the full `item` when a new unit of work begins so the UI can render it immediately; the `item.id` in this payload matches the `itemId` used by deltas.
 - `item/contextCompaction/status` — emits transient context compaction progress `{threadId, turnId, itemId, message}` for live UI status only; do not persist it as final compaction text.
@@ -2076,6 +2078,16 @@ When stdin approvals are enabled, a `write_stdin` approval sets `kind: "writeStd
 Non-empty input is reviewed when strict auto-review is active, the terminal bypassed the sandbox at launch, or its retained permissions differ from the current environment's policy, including additional grants and permission changes between turns. Changing permission settings does not re-sandbox or stop existing processes. Input is rejected when the original environment is unavailable, the retained filesystem sandbox cannot enforce current denied-read restrictions, or environment-owned network restrictions changed; empty output polls and non-TTY interrupts remain available without review. Approval reasons describe retained authority and user-visible grants even for clients that do not receive the experimental `additionalPermissions` field. Internal grant paths remain private.
 
 For reviewed stdin, the complete formatted action and approval reason must fit within 8,000 bytes. Oversized or truncated actions are rejected before any bytes reach the terminal, rather than reviewing a shortened input and executing the full input.
+
+`item/commandExecution/terminalInteraction` notifications for new `write_stdin` calls carry a
+`wait` lifecycle object in addition to the parent command `itemId` and `processId`. A `started`
+phase includes the `interactionId` (the `write_stdin` call ID), `startedAtMs`, and `mode`
+(`timed` or `untilExit`); timed waits also carry the existing `deadlineAtMs`. The matching
+`finished` phase includes the same `interactionId`, actual `elapsedMs`, and a `reason` (`exited`,
+`timeout`, `input`, `cancelled`, or `failed`). An until-exit wait has no deadline, returns when the
+process exits, and is also released by new turn input or cancellation without terminating the
+process. Older terminal-interaction events may omit `wait`; clients should retain the previous
+deadline-based interpretation for those events.
 
 ### File change approvals
 

@@ -221,8 +221,24 @@ impl AgentControl {
                 .await;
             thread.session.flush_rollout().await?;
         }
+        // Serialize source validation/acceptance with the authoritative graph epoch transition.
+        // All eligibility and rollout checks above are complete, so a denied or failed close
+        // never invalidates a pending mailbox subscription.
+        let messaging_permission = self.acquire_messaging_permission_transaction().await;
         if persist_target_closed {
-            self.persist_agent_closed(agent_id).await?;
+            self.persist_agent_closed_for_subtree(agent_id, &closed_thread_ids)
+                .await?;
+            if let Err(error) = state
+                .thread_store()
+                .supersede_mailbox_final_subscriptions_for_threads(closed_thread_ids.clone())
+                .await
+            {
+                tracing::warn!(
+                    %error,
+                    thread_id = %agent_id,
+                    "mailbox subscription cleanup after close failed; graph epochs still fence old intents"
+                );
+            }
         }
 
         // Explicit close is authoritative over passive and wake response observation for the
@@ -239,6 +255,7 @@ impl AgentControl {
             affected_wake_observers
                 .extend(self.revoke_response_observations_for_child(closed_thread_id));
         }
+        drop(messaging_permission);
         let result = Box::pin(self.shutdown_prepared_agent_tree_with_descendants(
             agent_id,
             target_thread,

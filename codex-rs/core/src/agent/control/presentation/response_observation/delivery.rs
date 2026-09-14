@@ -11,6 +11,29 @@ enum CommentaryEventBoundary<'a> {
     },
 }
 
+fn retire_mailbox_final_subscription_from_observation(
+    observation: &mut ResponseTurnObservation,
+    message_id: &str,
+    selected_selection_id: Uuid,
+) {
+    let is_selected = observation.response_observation_selection_id == Some(selected_selection_id);
+    let owns_subscription =
+        observation.mailbox_final_subscription_message_id.as_deref() == Some(message_id);
+    if owns_subscription
+        && !is_selected
+        && observation.final_delivery_response_item_id.is_none()
+        && observation.committed_delivery_response_item_ids.is_empty()
+    {
+        observation.final_response = FinalResponseObservation::None;
+    }
+    if owns_subscription {
+        observation.mailbox_final_subscription_message_id = None;
+    }
+    if is_selected {
+        observation.response_observation_selection_id = None;
+    }
+}
+
 pub(crate) struct ResponseObservationTurnBinding<'a> {
     pub(crate) parent: SessionPresentationId,
     pub(crate) child: SessionPresentationId,
@@ -22,6 +45,231 @@ pub(crate) struct ResponseObservationTurnBinding<'a> {
 }
 
 impl AgentControl {
+    pub(crate) fn has_mailbox_final_subscription(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+    ) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .is_some_and(|relationship| {
+                relationship.mailbox_final_subscription_message_id.is_some()
+            })
+    }
+
+    pub(crate) fn mailbox_final_subscription_message_id(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+    ) -> Option<String> {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .and_then(|relationship| relationship.mailbox_final_subscription_message_id.clone())
+    }
+
+    pub(crate) fn mailbox_final_subscription_was_suppressed(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        message_id: &str,
+    ) -> bool {
+        self.wait_agent_presentations
+            .state()
+            .response_observation_by_observer_child
+            .get(&(parent, child))
+            .is_some_and(|relationship| {
+                relationship
+                    .mailbox_final_subscription_suppressed_message_id
+                    .as_deref()
+                    == Some(message_id)
+            })
+    }
+
+    pub(crate) fn mailbox_final_subscription_child(
+        &self,
+        parent: SessionPresentationId,
+        child_thread_id: ThreadId,
+        current_child: Option<SessionPresentationId>,
+    ) -> SessionPresentationId {
+        current_child
+            .or_else(|| {
+                self.wait_agent_presentations
+                    .state()
+                    .response_observation_by_observer_child
+                    .keys()
+                    .find_map(|(observer, child)| {
+                        (*observer == parent && child.thread_id == child_thread_id)
+                            .then_some(*child)
+                    })
+            })
+            .unwrap_or_else(|| SessionPresentationId::new(child_thread_id, Uuid::nil()))
+    }
+
+    pub(crate) fn install_mailbox_final_subscription(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        message_id: &str,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        let relationship = state
+            .response_observation_by_observer_child
+            .entry((parent, child))
+            .or_default();
+        if relationship
+            .mailbox_final_subscription_suppressed_message_id
+            .as_deref()
+            == Some(message_id)
+        {
+            return false;
+        }
+        relationship.persistence = ResponseObservationPersistence::Durable;
+        relationship.baseline_final_response = FinalResponseObservation::None;
+        relationship.mailbox_final_subscription_suppressed_message_id = None;
+        for observation in relationship
+            .pending_next_turn
+            .iter_mut()
+            .chain(relationship.pending_admissions.values_mut())
+            .chain(relationship.turns.values_mut())
+        {
+            if observation.final_delivery_response_item_id.is_none()
+                && observation.final_response != FinalResponseObservation::PresentationOnly
+            {
+                observation.final_response = FinalResponseObservation::None;
+                observation.mailbox_final_subscription_message_id = None;
+            }
+        }
+        relationship.mailbox_final_subscription_message_id = Some(message_id.to_string());
+        drop(state);
+        self.publish_response_observation_binding();
+        true
+    }
+
+    pub(crate) fn bind_mailbox_final_subscription_to_turn(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        message_id: &str,
+        turn_id: &str,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        let relationship = state
+            .response_observation_by_observer_child
+            .entry((parent, child))
+            .or_default();
+        if relationship
+            .mailbox_final_subscription_message_id
+            .as_deref()
+            != Some(message_id)
+        {
+            return false;
+        }
+        let observation = relationship.turns.entry(turn_id.to_string()).or_default();
+        if observation.final_delivery_response_item_id.is_some() {
+            return false;
+        }
+        observation.final_response = FinalResponseObservation::Wake;
+        observation.mailbox_final_subscription_message_id = Some(message_id.to_string());
+        drop(state);
+        self.publish_response_observation_binding();
+        true
+    }
+
+    pub(crate) fn clear_mailbox_final_subscription(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        message_id: &str,
+        preserved_turn_id: Option<&str>,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        let relationship = state
+            .response_observation_by_observer_child
+            .entry((parent, child))
+            .or_default();
+        relationship.persistence = ResponseObservationPersistence::Durable;
+        relationship.mailbox_final_subscription_message_id = None;
+        relationship.mailbox_final_subscription_suppressed_message_id =
+            Some(message_id.to_string());
+        for observation in relationship
+            .pending_next_turn
+            .iter_mut()
+            .chain(relationship.pending_admissions.values_mut())
+        {
+            if observation.mailbox_final_subscription_message_id.is_some() {
+                observation.mailbox_final_subscription_message_id = None;
+                if observation.final_delivery_response_item_id.is_none() {
+                    observation.final_response = FinalResponseObservation::None;
+                }
+            }
+        }
+        for (turn_id, observation) in &mut relationship.turns {
+            if observation.mailbox_final_subscription_message_id.is_some() {
+                observation.mailbox_final_subscription_message_id = None;
+                if observation.final_delivery_response_item_id.is_none()
+                    && preserved_turn_id != Some(turn_id.as_str())
+                {
+                    observation.final_response = FinalResponseObservation::None;
+                }
+            }
+        }
+        drop(state);
+        self.publish_response_observation_binding();
+        true
+    }
+
+    pub(crate) fn retire_mailbox_final_subscription_preserving_observation(
+        &self,
+        parent: SessionPresentationId,
+        child: SessionPresentationId,
+        message_id: &str,
+        selected: &ResponseObservationSelection,
+    ) -> bool {
+        let mut state = self.wait_agent_presentations.state();
+        let relationship = state
+            .response_observation_by_observer_child
+            .entry((parent, child))
+            .or_default();
+        relationship.persistence = ResponseObservationPersistence::Durable;
+        if relationship
+            .mailbox_final_subscription_message_id
+            .as_deref()
+            == Some(message_id)
+        {
+            relationship.mailbox_final_subscription_message_id = None;
+        }
+        relationship.mailbox_final_subscription_suppressed_message_id =
+            Some(message_id.to_string());
+        if let Some(observation) = relationship.pending_next_turn.as_mut() {
+            retire_mailbox_final_subscription_from_observation(
+                observation,
+                message_id,
+                selected.selection_id,
+            );
+        }
+        for observation in relationship.pending_admissions.values_mut() {
+            retire_mailbox_final_subscription_from_observation(
+                observation,
+                message_id,
+                selected.selection_id,
+            );
+        }
+        for observation in relationship.turns.values_mut() {
+            retire_mailbox_final_subscription_from_observation(
+                observation,
+                message_id,
+                selected.selection_id,
+            );
+        }
+        drop(state);
+        self.publish_response_observation_binding();
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn prepare_commentary_observation_delivery(
         &self,
@@ -143,14 +391,19 @@ impl AgentControl {
         child: SessionPresentationId,
         turn_id: &str,
         response_item_id: &ResponseItemId,
-    ) -> (FinalResponseObservation, Option<ResponseItemId>, bool) {
+    ) -> (
+        FinalResponseObservation,
+        Option<ResponseItemId>,
+        bool,
+        Option<String>,
+    ) {
         let mut state = self.wait_agent_presentations.state();
         let Some(observation) = state
             .response_observation_by_observer_child
             .get_mut(&(parent, child))
             .and_then(|relationship| relationship.turns.get_mut(turn_id))
         else {
-            return (FinalResponseObservation::None, None, false);
+            return (FinalResponseObservation::None, None, false, None);
         };
         let final_response = observation.final_response;
         let queue_delivery = observation.queue_delivery;
@@ -158,8 +411,10 @@ impl AgentControl {
             final_response,
             FinalResponseObservation::None | FinalResponseObservation::PresentationOnly
         ) {
-            return (final_response, None, queue_delivery);
+            return (final_response, None, queue_delivery, None);
         }
+        let mailbox_final_subscription_message_id =
+            observation.mailbox_final_subscription_message_id.clone();
         let response_item_id = observation
             .final_delivery_response_item_id
             .get_or_insert_with(|| response_item_id.clone())
@@ -168,9 +423,14 @@ impl AgentControl {
             .committed_delivery_response_item_ids
             .contains(&response_item_id)
         {
-            return (FinalResponseObservation::None, None, queue_delivery);
+            return (FinalResponseObservation::None, None, queue_delivery, None);
         }
-        (final_response, Some(response_item_id), queue_delivery)
+        (
+            final_response,
+            Some(response_item_id),
+            queue_delivery,
+            mailbox_final_subscription_message_id,
+        )
     }
 
     pub(crate) fn response_observation_commentary_delivery(
@@ -386,11 +646,21 @@ impl AgentControl {
         commit: &ResponseObservationDeliveryCommit,
     ) {
         let mut state = self.wait_agent_presentations.state();
-        let Some(observation) = state
+        let Some(relationship) = state
             .response_observation_by_observer_child
             .get_mut(&(commit.parent, commit.child))
-            .and_then(|relationship| relationship.turns.get_mut(&commit.turn_id))
         else {
+            return;
+        };
+        let Some(observation) = relationship.turns.get_mut(&commit.turn_id) else {
+            if commit.kind == ResponseObservationDeliveryKind::Final
+                && let Some(message_id) = commit.mailbox_final_subscription_message_id.as_ref()
+                && relationship.mailbox_final_subscription_message_id.as_ref() == Some(message_id)
+            {
+                relationship.mailbox_final_subscription_message_id = None;
+                drop(state);
+                self.publish_response_observation_binding();
+            }
             return;
         };
         match commit.kind {
@@ -409,6 +679,13 @@ impl AgentControl {
                     != Some(&commit.response_item_id)
                 {
                     return;
+                }
+                if commit.mailbox_final_subscription_message_id.as_ref()
+                    == observation.mailbox_final_subscription_message_id.as_ref()
+                    && relationship.mailbox_final_subscription_message_id.as_ref()
+                        == commit.mailbox_final_subscription_message_id.as_ref()
+                {
+                    relationship.mailbox_final_subscription_message_id = None;
                 }
             }
         }
@@ -457,6 +734,8 @@ impl AgentControl {
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         }];
         snapshots.extend(self.response_observation_snapshots(parent, child));
         snapshots
@@ -537,6 +816,14 @@ impl AgentControl {
                 current.queue_delivery |= pending.queue_delivery;
                 if current.message_wake_turn_id.is_none() {
                     current.message_wake_turn_id = pending.message_wake_turn_id.clone();
+                }
+                if pending.response_observation_selection_id.is_some() {
+                    current.response_observation_selection_id =
+                        pending.response_observation_selection_id;
+                }
+                if current.mailbox_final_subscription_message_id.is_none() {
+                    current.mailbox_final_subscription_message_id =
+                        pending.mailbox_final_subscription_message_id.clone();
                 }
                 if current.final_delivery_response_item_id.is_none() {
                     current.final_delivery_response_item_id =
@@ -703,3 +990,7 @@ impl AgentControl {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "mailbox_final_subscription_retirement_tests.rs"]
+mod tests;

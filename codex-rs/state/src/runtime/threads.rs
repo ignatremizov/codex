@@ -147,8 +147,39 @@ WHERE id = ? AND preview = ''
         child_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await?;
+        self.set_thread_spawn_edge_status_with_authority_revocations(
+            child_thread_id,
+            status,
+            &[child_thread_id],
+        )
+        .await
+    }
+
+    /// Update a spawn edge and advance lifecycle authority for its subtree atomically.
+    pub async fn set_thread_spawn_edge_status_with_authority_revocations(
+        &self,
+        child_thread_id: ThreadId,
+        status: crate::DirectionalThreadSpawnEdgeStatus,
+        revoked_thread_ids: &[ThreadId],
+    ) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let previous_edge_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM thread_spawn_edges WHERE child_thread_id = ?",
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
         set_thread_spawn_edge_status_in_transaction(&mut tx, child_thread_id, status).await?;
+        if status == crate::DirectionalThreadSpawnEdgeStatus::Closed
+            && previous_edge_status.as_deref()
+                == Some(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref())
+        {
+            super::agent_aliases::advance_agent_thread_lifecycle_authority_epochs_in_transaction(
+                &mut tx,
+                revoked_thread_ids,
+            )
+            .await?;
+        }
         tx.commit().await?;
         Ok(())
     }

@@ -326,7 +326,11 @@ impl ChatWidget {
             return;
         }
 
-        if self.unified_exec_wait_streak.is_some() {
+        if self
+            .unified_exec_wait_tracker
+            .as_ref()
+            .is_some_and(UnifiedExecWaitTracker::has_active_wait)
+        {
             // Unified exec waiting should take precedence over reasoning-derived status headers.
             return;
         }

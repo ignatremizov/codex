@@ -69,6 +69,23 @@ pub trait AgentGraphStore: Send + Sync {
         false
     }
 
+    /// Reads persistent lifecycle epochs for the requested threads.
+    ///
+    /// Durable alias stores must return one epoch for every requested thread, including zero for
+    /// threads without a prior revocation. Backends without durable aliases may return empty.
+    fn read_thread_lifecycle_authority_epochs(
+        &self,
+        _thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, Vec<(ThreadId, i64)>> {
+        Box::pin(async {
+            Err(AgentGraphStoreError::InvalidRequest {
+                message:
+                    "persistent lifecycle authority epochs are unavailable for this graph store"
+                        .into(),
+            })
+        })
+    }
+
     /// Ensure that the root namespace exists and return its ref-1 Main alias.
     fn ensure_agent_alias_namespace(
         &self,
@@ -150,6 +167,25 @@ pub trait AgentGraphStore: Send + Sync {
         unsupported_alias_store()
     }
 
+    /// Closes an owned agent and advances authority for the exact revoked subtree atomically.
+    fn set_agent_lifecycle_state_with_authority_revocations(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        if revoked_thread_ids.len() == 1 && revoked_thread_ids[0] == thread_id {
+            return self.set_agent_lifecycle_state(session_id, thread_id, status);
+        }
+        Box::pin(async {
+            Err(AgentGraphStoreError::Internal {
+                message: "graph store does not support subtree lifecycle authority revocation"
+                    .into(),
+            })
+        })
+    }
+
     /// Find an alias by canonical thread UUID.
     fn find_agent_alias_by_thread(
         &self,
@@ -223,6 +259,24 @@ pub trait AgentGraphStore: Send + Sync {
         child_thread_id: ThreadId,
         status: ThreadSpawnEdgeStatus,
     ) -> AgentGraphStoreFuture<'_, ()>;
+
+    /// Updates a fallback spawn edge and advances authority for the exact revoked subtree atomically.
+    fn set_thread_spawn_edge_status_with_authority_revocations(
+        &self,
+        thread_id: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, ()> {
+        if revoked_thread_ids.len() == 1 && revoked_thread_ids[0] == thread_id {
+            return self.set_thread_spawn_edge_status(thread_id, status);
+        }
+        Box::pin(async {
+            Err(AgentGraphStoreError::Internal {
+                message: "graph store does not support subtree lifecycle authority revocation"
+                    .into(),
+            })
+        })
+    }
 
     /// Find the direct persisted parent of a spawned thread.
     fn find_thread_spawn_parent(

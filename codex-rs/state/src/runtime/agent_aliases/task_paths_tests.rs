@@ -4,6 +4,7 @@ use pretty_assertions::assert_eq;
 
 use crate::AgentAliasAllocation;
 use crate::AgentAliasTransferRequest;
+use crate::DirectionalThreadSpawnEdgeStatus;
 use crate::StateRuntime;
 use crate::runtime::test_support::unique_temp_dir;
 
@@ -78,6 +79,13 @@ END
         .expect_err("late transfer failure");
     assert_eq!(
         runtime
+            .read_agent_thread_lifecycle_epochs(&[target, child])
+            .await
+            .expect("epochs after rolled-back transfer"),
+        vec![(target, 0), (child, 0)],
+    );
+    assert_eq!(
+        runtime
             .list_agent_aliases(source.into())
             .await
             .expect("source"),
@@ -111,5 +119,140 @@ END
     assert_eq!(
         (alias.agent_ref, alias.task_path),
         (3, Some("/root/backend-2".to_string())),
+    );
+    assert_eq!(
+        runtime
+            .read_agent_thread_lifecycle_epochs(&[target, child])
+            .await
+            .expect("epochs after committed transfer"),
+        vec![(target, 1), (child, 1)],
+    );
+    let already_owned = runtime
+        .transfer_agent_alias(AgentAliasTransferRequest {
+            expected_previous_session_id: Some(destination.into()),
+            expected_descendant_thread_ids: vec![child],
+            new_session_id: destination.into(),
+            new_parent_thread_id: destination,
+            thread_id: target,
+            nickname: None,
+            task_path: None,
+            authored_selector: target.to_string(),
+        })
+        .await
+        .expect("same-owner transfer is a no-op");
+    assert!(matches!(
+        already_owned,
+        crate::AgentAliasTransfer::AlreadyOwned { .. }
+    ));
+    assert_eq!(
+        runtime
+            .read_agent_thread_lifecycle_epochs(&[target, child])
+            .await
+            .expect("epochs after no-op transfer"),
+        vec![(target, 1), (child, 1)],
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_authority_epochs_advance_only_on_open_to_closed_transitions() {
+    let codex_home = unique_temp_dir();
+    let _cleanup = scopeguard::guard(codex_home.clone(), |codex_home| {
+        let _ = std::fs::remove_dir_all(codex_home);
+    });
+    let runtime = StateRuntime::init(
+        crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
+    .await
+    .expect("database");
+    let root = ThreadId::from_string("00000000-0000-0000-0000-000000002820").expect("root");
+    let target = ThreadId::from_string("00000000-0000-0000-0000-000000002821").expect("target");
+    let child = ThreadId::from_string("00000000-0000-0000-0000-000000002822").expect("child");
+    for (parent, thread_id) in [(root, target), (target, child)] {
+        runtime
+            .allocate_agent_alias(AgentAliasAllocation {
+                session_id: root.into(),
+                parent_thread_id: parent,
+                child_thread_id: thread_id,
+                nickname: None,
+                task_path: None,
+            })
+            .await
+            .expect("owned open alias");
+    }
+
+    assert_eq!(
+        runtime
+            .read_agent_thread_lifecycle_epochs(&[target, child])
+            .await
+            .expect("initial epochs"),
+        vec![(target, 0), (child, 0)],
+    );
+    assert!(
+        !runtime
+            .set_agent_lifecycle_state_with_authority_revocations(
+                ThreadId::new().into(),
+                target,
+                DirectionalThreadSpawnEdgeStatus::Closed,
+                &[target, child],
+            )
+            .await
+            .expect("wrong owner does not close"),
+    );
+    assert_eq!(
+        runtime
+            .read_agent_thread_lifecycle_epochs(&[target, child])
+            .await
+            .expect("epochs after denied close"),
+        vec![(target, 0), (child, 0)],
+    );
+
+    for status in [
+        DirectionalThreadSpawnEdgeStatus::Closed,
+        DirectionalThreadSpawnEdgeStatus::Closed,
+    ] {
+        assert!(
+            runtime
+                .set_agent_lifecycle_state_with_authority_revocations(
+                    root.into(),
+                    target,
+                    status,
+                    &[target, child, child],
+                )
+                .await
+                .expect("owned lifecycle update"),
+        );
+    }
+    assert_eq!(
+        runtime
+            .read_agent_thread_lifecycle_epochs(&[target, child])
+            .await
+            .expect("close idempotence"),
+        vec![(target, 1), (child, 1)],
+    );
+    runtime
+        .set_agent_lifecycle_state_with_authority_revocations(
+            root.into(),
+            target,
+            DirectionalThreadSpawnEdgeStatus::Open,
+            &[target, child],
+        )
+        .await
+        .expect("reopen alias");
+    runtime
+        .set_agent_lifecycle_state_with_authority_revocations(
+            root.into(),
+            target,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+            &[target, child],
+        )
+        .await
+        .expect("close resumed alias");
+    assert_eq!(
+        runtime
+            .read_agent_thread_lifecycle_epochs(&[target, child])
+            .await
+            .expect("second close advances epochs"),
+        vec![(target, 2), (child, 2)],
     );
 }

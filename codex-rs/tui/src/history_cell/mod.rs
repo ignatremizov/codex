@@ -114,10 +114,12 @@ mod messages;
 mod notices;
 mod patches;
 mod plans;
+mod process_wait;
 mod request_user_input;
 mod search;
 mod separators;
 mod session;
+mod sleep;
 mod user_agent_control;
 
 pub(crate) use agent_input::AgentInputHistoryCell;
@@ -132,10 +134,12 @@ pub(crate) use messages::*;
 pub(crate) use notices::*;
 pub(crate) use patches::*;
 pub(crate) use plans::*;
+pub(crate) use process_wait::*;
 pub(crate) use request_user_input::*;
 pub(crate) use search::*;
 pub(crate) use separators::*;
 pub(crate) use session::*;
+pub(crate) use sleep::*;
 pub(crate) use user_agent_control::new_user_agent_control;
 
 #[cfg(test)]

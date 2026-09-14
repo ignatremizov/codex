@@ -351,6 +351,7 @@ async fn turn_completion_clears_wait_countdown_while_mcp_startup_continues() {
                 process_id: "proc-1".to_string(),
                 stdin: String::new(),
                 deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+                wait: None,
             },
         ),
         /*replay_kind*/ None,
