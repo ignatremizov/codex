@@ -2,6 +2,8 @@ use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::CommandExecutionStatus;
+use codex_protocol::items::MailboxReadItem;
+use codex_protocol::items::MailboxReadSelector;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::EventMsg;
@@ -91,10 +93,38 @@ fn user_shell_completion_is_persisted_in_every_history_mode() {
         ..Default::default()
     });
     let mut scan = crate::ModelContextScan::default();
-    assert_eq!(scan.push(completion.clone()), crate::ModelContextScanProgress::Continue);
-    assert_eq!(scan.push(checkpoint.clone()), crate::ModelContextScanProgress::Complete);
+    assert_eq!(
+        scan.push(completion.clone()),
+        crate::ModelContextScanProgress::Continue
+    );
+    assert_eq!(
+        scan.push(checkpoint.clone()),
+        crate::ModelContextScanProgress::Complete
+    );
     assert_eq!(
         serde_json::to_value(scan.finish()).expect("serialize replay scan"),
         serde_json::to_value(vec![checkpoint, completion]).expect("serialize expected replay")
+    );
+}
+
+#[test]
+fn mailbox_read_completion_is_persisted_in_every_history_mode() {
+    let event = EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: codex_protocol::ThreadId::new(),
+        turn_id: "turn-mailbox-read".to_string(),
+        item: TurnItem::MailboxRead(MailboxReadItem {
+            id: "check-mail-1".to_string(),
+            selector: MailboxReadSelector::All,
+            consumed_count: 2,
+            rejected_count: 0,
+        }),
+        started_at_ms: None,
+        completed_at_ms: 0,
+    });
+
+    assert_eq!(
+        [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated]
+            .map(|mode| should_persist_event_msg(&event, mode)),
+        [true, true]
     );
 }

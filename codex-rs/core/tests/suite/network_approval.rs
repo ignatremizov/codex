@@ -48,6 +48,8 @@ use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::TerminalWaitEvent;
+use codex_protocol::protocol::TerminalWaitMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
@@ -535,6 +537,9 @@ PY"#
     );
     let mut args = network_exec_args(&command);
     args["environment_id"] = json!(LOCAL_ENVIRONMENT_ID);
+    // The shared 10-second initial yield can exhaust the 10-second poll-start
+    // budget. Use the supported POSIX floor; the marker still owns disconnect.
+    args["yield_time_ms"] = json!(5_000);
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -583,7 +588,7 @@ PY"#
         ]),
     )
     .await;
-    submit_managed_network_turn(
+    let turn_id = submit_managed_network_turn(
         &test,
         "explain why the network request fails",
         vec![local(test.config.cwd.clone())],
@@ -592,9 +597,64 @@ PY"#
     )
     .await?;
     wait_for_guardian_request(&pending_guardian).await;
-    wait_for_response_request(&parent_poll).await;
+    // A model request is not a write_stdin admission receipt. Keep the socket
+    // open until the exact poll has started, so it owns the disconnect result.
+    // Keep a hard outer bound: shared event helpers extend per-event waits on remote CI.
+    let poll_started = tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_for_event(&test.codex, |event| match event {
+            EventMsg::TerminalInteraction(event) => {
+                event.call_id == call_id
+                    && matches!(
+                        &event.wait,
+                        Some(TerminalWaitEvent::Started { interaction_id, .. })
+                            if interaction_id == poll_call_id
+                    )
+            }
+            EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_) => true,
+            _ => false,
+        }),
+    )
+    .await
+    .context("timed out waiting for the disconnect poll to start")?;
+    let EventMsg::TerminalInteraction(poll_started) = poll_started else {
+        anyhow::bail!("expected the disconnect poll to start: {poll_started:?}");
+    };
+    assert_eq!(poll_started.process_id, "1000");
+    assert!(matches!(
+        poll_started.wait,
+        Some(TerminalWaitEvent::Started {
+            mode: TerminalWaitMode::Timed,
+            ..
+        })
+    ));
+    let initial_output = parent_poll
+        .single_request()
+        .function_call_output_text(call_id)
+        .context("expected the initial exec yield before polling")?;
+    assert!(
+        initial_output
+            .lines()
+            .any(|line| line == "Process running with session ID 1000"),
+        "expected the initial exec to yield the polled session: {initial_output}"
+    );
     fs::write(test.config.cwd.join("disconnect-now"), "close")?;
-    wait_for_completion_without_network_prompt(&test).await;
+    let completed = wait_for_event(&test.codex, |event| match event {
+        EventMsg::ExecApprovalRequest(_) => true,
+        EventMsg::TurnComplete(completed) => {
+            completed.turn_id == turn_id
+                && completed.last_agent_message.as_deref() == Some("understood")
+        }
+        _ => false,
+    })
+    .await;
+    let EventMsg::TurnComplete(completed) = completed else {
+        anyhow::bail!("unexpected human approval after disconnect: {completed:?}");
+    };
+    assert!(
+        completed.error.is_none(),
+        "parent turn failed: {completed:?}"
+    );
 
     let output = parent_final
         .single_request()

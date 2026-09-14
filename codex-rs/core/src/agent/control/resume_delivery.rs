@@ -9,13 +9,19 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 impl ResponseObserverStart {
-    /// Filter only the existing live reconciliation candidate. History cannot supply a turn
-    /// or activate a subscription, and delivered text is never an identity.
+    /// Reconcile a live-authorized binding without using history to grant a subscription.
+    /// Ordinary resume still considers only the latest terminal. A durable mailbox token
+    /// names an exact turn whose outcome survives admission of subsequent work.
     pub(super) fn reconciled_terminal(
         &self,
         snapshot: &AgentResponseSnapshot,
+        terminal_outcomes: &HashMap<String, AgentStatus>,
     ) -> Option<(String, AgentStatus)> {
         match self {
+            Self::MailboxFinalTurn { turn_id } => terminal_outcomes
+                .get(turn_id)
+                .cloned()
+                .map(|status| (turn_id.clone(), status)),
             Self::CurrentOrNext {
                 observed_status,
                 delivered_final_turns,
@@ -60,7 +66,7 @@ pub(super) async fn delivered_final_turns(
     delivered_final_turns_in_history(&history, observer_id, child)
 }
 
-fn delivered_final_turns_in_history(
+pub(super) fn delivered_final_turns_in_history(
     history: &[RolloutItem],
     observer: ThreadId,
     child: ThreadId,

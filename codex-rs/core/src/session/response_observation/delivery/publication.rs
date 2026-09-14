@@ -199,6 +199,9 @@ impl Session {
                     let result = session.publication_result(receiver).await;
                     drop(active);
                     result?;
+                    // Queue retirement follows the existing acknowledged canonical publication.
+                    // It cannot replace source metadata, re-publish a response, or retarget it.
+                    session.acknowledge_mailbox_final_subscription_delivery(&commit).await;
                     return Ok(());
                 }
             }.await;

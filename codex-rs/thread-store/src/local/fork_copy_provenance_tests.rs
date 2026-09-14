@@ -65,6 +65,8 @@ fn context_and_snapshot(kind: ContextKind) -> (ResponseItemEnvelope, RolloutItem
         final_delivery: AgentResponseFinalDelivery::None,
         final_delivery_response_item_id: None,
         committed_delivery_response_item_ids: vec![response.id().expect("source identity").clone()],
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     });
     let mut envelope = ResponseItemEnvelope::new(response);
     envelope.metadata = Some(CodexHarnessMetadata {

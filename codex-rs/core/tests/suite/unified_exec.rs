@@ -31,6 +31,9 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::TerminalWaitCompletionReason;
+use codex_protocol::protocol::TerminalWaitEvent;
+use codex_protocol::protocol::TerminalWaitMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
 use codex_protocol::user_input::UserInput;
@@ -1574,20 +1577,32 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin(
     }
 
     assert_eq!(
-        approvals,
+        approvals
+            .iter()
+            .map(|(kind, call_id, _)| (*kind, call_id.as_str()))
+            .collect::<Vec<_>>(),
         if stdin_approval {
             vec![
-                (ExecApprovalKind::Command, open_call_id.to_string(), None),
-                (
-                    ExecApprovalKind::WriteStdin,
-                    open_call_id.to_string(),
-                    Some(stdin_call_id.to_string()),
-                ),
+                (ExecApprovalKind::Command, open_call_id),
+                (ExecApprovalKind::WriteStdin, open_call_id),
             ]
         } else {
             Vec::new()
         }
     );
+    if stdin_approval {
+        let approval_ids = approvals
+            .iter()
+            .map(|(_, _, id)| id.as_deref().expect("approval has a fresh request ID"))
+            .collect::<Vec<_>>();
+        assert!(approval_ids.iter().all(|id| !id.is_empty()));
+        assert_ne!(approval_ids[0], approval_ids[1]);
+        assert!(
+            approval_ids
+                .iter()
+                .all(|id| *id != stdin_call_id && *id != open_call_id)
+        );
+    }
     let delta = terminal_interaction.expect("expected TerminalInteraction event");
     assert_eq!(delta.process_id, "1000");
     let expected_stdin = stdin_args
@@ -1730,24 +1745,79 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
         "begin event should include process_id for a live session"
     );
 
-    // We expect three terminal interactions matching the three write_stdin calls.
+    // Each write_stdin call emits a uniquely correlated start and finish event.
     assert_eq!(
         terminal_events.len(),
-        3,
-        "expected three terminal interactions; got {terminal_events:?}"
+        6,
+        "expected two terminal wait events per write_stdin call; got {terminal_events:?}"
     );
 
     for event in &terminal_events {
         assert_eq!(event.call_id, open_call_id);
         assert_eq!(event.process_id, "1000");
     }
+    let started = terminal_events
+        .iter()
+        .filter_map(|event| match &event.wait {
+            Some(TerminalWaitEvent::Started {
+                interaction_id,
+                mode,
+                ..
+            }) => Some((interaction_id.as_str(), *mode, event.deadline_at_ms)),
+            Some(TerminalWaitEvent::Finished { .. }) | None => None,
+        })
+        .collect::<Vec<_>>();
+    let finished = terminal_events
+        .iter()
+        .filter_map(|event| match &event.wait {
+            Some(TerminalWaitEvent::Finished {
+                interaction_id,
+                elapsed_ms,
+                reason,
+            }) => Some((
+                interaction_id.as_str(),
+                *elapsed_ms,
+                *reason,
+                event.stdin.as_str(),
+            )),
+            Some(TerminalWaitEvent::Started { .. }) | None => None,
+        })
+        .collect::<Vec<_>>();
+    let expected_interaction_ids = [first_poll_call_id, second_poll_call_id, third_poll_call_id];
+    assert_eq!(started.len(), expected_interaction_ids.len());
+    assert_eq!(finished.len(), expected_interaction_ids.len());
+    for expected_interaction_id in expected_interaction_ids {
+        assert!(
+            started.iter().any(|(interaction_id, mode, deadline)| {
+                *interaction_id == expected_interaction_id
+                    && *mode == TerminalWaitMode::Timed
+                    && deadline.is_some()
+            }),
+            "missing timed start for {expected_interaction_id}: {started:?}"
+        );
+        assert!(
+            finished
+                .iter()
+                .any(|(interaction_id, _, _, _)| { *interaction_id == expected_interaction_id }),
+            "missing matching finish for {expected_interaction_id}: {finished:?}"
+        );
+    }
     assert_eq!(
-        terminal_events
+        finished
             .iter()
-            .map(|ev| ev.stdin.as_str())
+            .map(|(_, _, _, stdin)| *stdin)
             .collect::<Vec<_>>(),
         vec!["x\n", "x\n", "x\n"],
         "terminal interactions should reflect the three stdin polls"
+    );
+    assert!(
+        finished.iter().all(|(_, elapsed_ms, reason, _)| {
+            matches!(
+                *reason,
+                TerminalWaitCompletionReason::Timeout | TerminalWaitCompletionReason::Exited
+            ) && (*reason == TerminalWaitCompletionReason::Exited || *elapsed_ms > 0)
+        }),
+        "timed wait completions should report their outcome, and non-exit waits should have elapsed: {finished:?}"
     );
 
     assert!(
@@ -1861,7 +1931,15 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
                 end_events.push(event);
             }
             EventMsg::TerminalInteraction(event)
-                if event.call_id == open_call_id && event.stdin.is_empty() =>
+                if event.call_id == open_call_id
+                    && event.stdin.is_empty()
+                    && matches!(
+                        &event.wait,
+                        Some(
+                            TerminalWaitEvent::Started { interaction_id, .. }
+                                | TerminalWaitEvent::Finished { interaction_id, .. }
+                        ) if interaction_id == poll_call_id
+                    ) =>
             {
                 terminal_interactions.push(event);
             }
@@ -1886,42 +1964,28 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
         1,
         "expected end event for the write_stdin call"
     );
-    let estimate = terminal_interactions
-        .first()
-        .and_then(|event| event.deadline_at_ms)
-        .expect("the empty poll should announce its bounded wait");
-    assert_eq!(
-        terminal_interactions,
-        vec![
-            codex_protocol::protocol::TerminalInteractionEvent {
-                call_id: open_call_id.to_string(),
-                process_id: "1000".to_string(),
-                stdin: String::new(),
-                deadline_at_ms: Some(estimate),
-            },
-            codex_protocol::protocol::TerminalInteractionEvent {
-                call_id: open_call_id.to_string(),
-                process_id: "1000".to_string(),
-                stdin: String::new(),
-                deadline_at_ms: None,
-            },
-        ],
-        "the successful poll must clear its estimate before the next interaction"
-    );
-    let requests = request_log
-        .requests()
-        .into_iter()
-        .map(|request| request.body_json())
-        .collect::<Vec<_>>();
-    let outputs = collect_tool_outputs(&requests)?;
-    assert_eq!(
-        outputs
-            .get(poll_call_id)
-            .expect("empty poll output")
-            .process_id
-            .as_deref(),
-        Some("1000")
-    );
+    let [poll_started, poll_finished] = terminal_interactions.as_slice() else {
+        panic!("expected a start and finish event for the empty poll: {terminal_interactions:?}");
+    };
+    assert_eq!(poll_started.process_id, "1000");
+    assert!(poll_started.stdin.is_empty());
+    assert!(poll_started.deadline_at_ms.is_some());
+    assert!(matches!(
+        &poll_started.wait,
+        Some(TerminalWaitEvent::Started {
+            interaction_id,
+            mode: TerminalWaitMode::Timed,
+            ..
+        }) if interaction_id == poll_call_id
+    ));
+    assert!(matches!(
+        &poll_finished.wait,
+        Some(TerminalWaitEvent::Finished {
+            interaction_id,
+            elapsed_ms,
+            reason: TerminalWaitCompletionReason::Timeout,
+        }) if interaction_id == poll_call_id && *elapsed_ms > 0
+    ));
 
     let open_event = &begin_events[0];
 
@@ -1936,6 +2000,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let end_event = &end_events[0];
     assert_eq!(end_event.call_id, open_call_id);
+    assert_eq!(request_log.requests().len(), 4);
 
     Ok(())
 }

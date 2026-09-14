@@ -271,7 +271,17 @@ fn admitted_policy_binds_actual_turn_and_cannot_downgrade_an_accepted_final() {
                 ..Default::default()
             },
         );
-    let before = control.response_observation_snapshots(parent, child);
+    let mut expected = control.response_observation_snapshots(parent, child);
+    let pending = expected
+        .iter_mut()
+        .find(|observation| observation.target_turn_id.is_none())
+        .expect("pending admission snapshot");
+    assert_eq!(
+        pending.final_delivery,
+        codex_protocol::protocol::AgentResponseFinalDelivery::PresentationOnly,
+    );
+    // Binding consumes the pending admission, but cannot downgrade the already accepted final.
+    pending.final_delivery = codex_protocol::protocol::AgentResponseFinalDelivery::None;
     control.bind_response_observation_turn_at_sequence(
         parent,
         child,
@@ -282,7 +292,7 @@ fn admitted_policy_binds_actual_turn_and_cannot_downgrade_an_accepted_final() {
     );
     assert_eq!(
         control.response_observation_snapshots(parent, child),
-        before
+        expected
     );
     assert_eq!(
         control.response_observation_event_match(parent, child, &admission.to_string()),
@@ -340,8 +350,9 @@ fn commentary_boundary_delivers_once_and_retains_committed_evidence() {
         parent,
         child,
         turn_id: "turn".to_owned(),
-        response_item_id: delivery.response_item_id.clone(),
+        response_item_id: delivery.response_item_id,
         kind: ResponseObservationDeliveryKind::Commentary,
+        mailbox_final_subscription_message_id: None,
         model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
     };
     let committed = control.deferred_response_observation_commit_snapshots(&commit);
@@ -407,6 +418,7 @@ fn every_final_disposition_commits_one_identity_including_presentation_only() {
             turn_id: "turn".to_owned(),
             response_item_id: context.clone(),
             kind: ResponseObservationDeliveryKind::Final,
+            mailbox_final_subscription_message_id: None,
             model_visibility: if disposition == FinalResponseObservation::PresentationOnly {
                 codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible
             } else {
@@ -514,9 +526,11 @@ fn close_after_claim_yields_inert_exact_turn_committed_tombstone() {
         turn_id: "accepted-turn".to_owned(),
         response_item_id: new_sub_agent_completion_context_response_item_id(),
         kind: ResponseObservationDeliveryKind::Final,
+        mailbox_final_subscription_message_id: None,
         model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
     };
-    control.runtime
+    control
+        .runtime
         .wait_agent_presentations
         .state()
         .response_observation_by_observer_child
@@ -570,6 +584,8 @@ fn close_after_claim_yields_inert_exact_turn_committed_tombstone() {
             final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
             final_delivery_response_item_id: Some(commit.response_item_id.clone()),
             committed_delivery_response_item_ids: vec![commit.response_item_id.clone()],
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
         })
     );
     control.commit_response_observation_delivery(&commit);

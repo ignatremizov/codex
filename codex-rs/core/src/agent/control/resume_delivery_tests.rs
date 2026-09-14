@@ -147,9 +147,11 @@ fn current_reconciliation_suppresses_only_exact_committed_completed_turns() {
             let start = ResponseObserverStart::CurrentOrNext {
                 observed_status: AgentStatus::PendingInit,
                 delivered_final_turns,
+                idle_presentation:
+                    super::super::response_observer::IdlePresentationObservation::StatusOnly,
             };
             assert_eq!(
-                start.reconciled_terminal(&snapshot),
+                start.reconciled_terminal(&snapshot, &HashMap::new()),
                 if suppress { None } else { terminal },
             );
             assert_eq!(snapshot, original, "filtering cannot change actual status");
@@ -172,6 +174,8 @@ fn current_reconciliation_never_broadens_history_catch_up() {
             ResponseObserverStart::CurrentOrNext {
                 observed_status: status.clone(),
                 delivered_final_turns: HashSet::new(),
+                idle_presentation:
+                    super::super::response_observer::IdlePresentationObservation::StatusOnly,
             },
             None,
             terminal.clone(),
@@ -181,6 +185,8 @@ fn current_reconciliation_never_broadens_history_catch_up() {
             ResponseObserverStart::CurrentOrNext {
                 observed_status: AgentStatus::PendingInit,
                 delivered_final_turns: HashSet::new(),
+                idle_presentation:
+                    super::super::response_observer::IdlePresentationObservation::StatusOnly,
             },
             Some("new-turn".to_owned()),
             terminal,
@@ -190,6 +196,8 @@ fn current_reconciliation_never_broadens_history_catch_up() {
             ResponseObserverStart::CurrentOrNext {
                 observed_status: AgentStatus::PendingInit,
                 delivered_final_turns: HashSet::new(),
+                idle_presentation:
+                    super::super::response_observer::IdlePresentationObservation::StatusOnly,
             },
             None,
             None,
@@ -203,6 +211,92 @@ fn current_reconciliation_never_broadens_history_catch_up() {
             last_commentary_item_id: None,
             status: current,
         };
-        assert_eq!(start.reconciled_terminal(&snapshot), None);
+        assert_eq!(start.reconciled_terminal(&snapshot, &HashMap::new()), None);
+    }
+}
+
+#[test]
+fn durable_mailbox_token_reconciles_only_its_exact_bound_terminal() {
+    let snapshot = AgentResponseSnapshot {
+        active_turn_id: Some("new-running-turn".into()),
+        last_terminal: Some((
+            "bound-turn".into(),
+            AgentStatus::Completed(Some("result".into())),
+        )),
+        next_event_sequence: 7,
+        last_commentary_item_id: None,
+        status: AgentStatus::Running,
+    };
+    let outcomes = HashMap::from([snapshot.last_terminal.clone().expect("bound terminal")]);
+    assert_eq!(
+        ResponseObserverStart::MailboxFinalTurn {
+            turn_id: "bound-turn".into()
+        }
+        .reconciled_terminal(&snapshot, &outcomes),
+        snapshot.last_terminal,
+    );
+    assert_eq!(
+        ResponseObserverStart::MailboxFinalTurn {
+            turn_id: "different-turn".into()
+        }
+        .reconciled_terminal(&snapshot, &outcomes),
+        None,
+    );
+}
+
+#[test]
+fn exact_mailbox_reconciliation_does_not_follow_a_later_turn() {
+    let first = AgentStatus::Completed(Some("requested result".into()));
+    let second = AgentStatus::Completed(Some("unrelated result".into()));
+    let outcomes = HashMap::from([
+        ("bound-turn".into(), first.clone()),
+        ("new-turn".into(), second.clone()),
+    ]);
+    for (active_turn_id, last_terminal, status) in [
+        (Some("new-turn".into()), None, AgentStatus::Running),
+        (None, Some(("new-turn".into(), second.clone())), second),
+    ] {
+        let snapshot = AgentResponseSnapshot {
+            active_turn_id,
+            last_terminal,
+            status,
+            next_event_sequence: 9,
+            last_commentary_item_id: None,
+        };
+        assert_eq!(
+            ResponseObserverStart::MailboxFinalTurn {
+                turn_id: "bound-turn".into()
+            }
+            .reconciled_terminal(&snapshot, &outcomes),
+            Some(("bound-turn".into(), first.clone())),
+        );
+        assert_eq!(
+            ResponseObserverStart::MailboxFinalTurn {
+                turn_id: "absent-turn".into()
+            }
+            .reconciled_terminal(&snapshot, &outcomes),
+            None,
+        );
+        assert_eq!(
+            ResponseObserverStart::FutureOnly.reconciled_terminal(&snapshot, &outcomes),
+            None,
+            "retained outcomes alone never grant a subscription",
+        );
+        let current = ResponseObserverStart::CurrentOrNext {
+            observed_status: AgentStatus::PendingInit,
+            delivered_final_turns: HashSet::new(),
+            idle_presentation:
+                super::super::response_observer::IdlePresentationObservation::StatusOnly,
+        };
+        let expected = if snapshot.active_turn_id.is_some() {
+            None
+        } else {
+            snapshot.last_terminal.clone()
+        };
+        assert_eq!(
+            current.reconciled_terminal(&snapshot, &outcomes),
+            expected,
+            "ordinary current-or-next observation still uses only the current snapshot"
+        );
     }
 }

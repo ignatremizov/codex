@@ -5,7 +5,6 @@ use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ListSelectionView;
-use pretty_assertions::assert_eq;
 use crate::bottom_pane::SelectionRowDisplay;
 use crate::multi_agents::SubAgentActivityDisplay;
 use codex_app_server_protocol::AgentAlias;
@@ -22,11 +21,19 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::openai_models::ReasoningEffort;
 use crossterm::event::KeyCode;
+use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use tokio::sync::mpsc::unbounded_channel;
 use unicode_width::UnicodeWidthStr;
+
+fn details_without_receiver(lines: Vec<ratatui::text::Line<'static>>) -> AgentControlPaneDetails {
+    AgentControlPaneDetails {
+        lines,
+        ..AgentControlPaneDetails::default()
+    }
+}
 
 async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> ListSelectionView {
     let mut app = super::super::test_support::make_test_app().await;
@@ -237,9 +244,60 @@ async fn current_agent_uses_markerless_name_emphasis() {
     }
 }
 
+#[tokio::test]
+async fn agent_rows_and_details_keep_the_nickname_identity_color() {
+    let view = adaptive_agent_layout_view(Some(1)).await;
+    let width = 160;
+    let height = 30;
+    let buffer = render_agent_layout_buffer(&view, width, height);
+    let rows =
+        render_agent_layout_buffer_region(&buffer, height, /*start*/ 0, /*end*/ width);
+    let mut hume_positions = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("Hume [reviewer]"))
+        .map(|(row, line)| {
+            let name_start = line.find("Hume").expect("visible Hume identity");
+            (
+                UnicodeWidthStr::width(&line[..name_start]) as u16,
+                row as u16,
+            )
+        })
+        .collect::<Vec<_>>();
+    // The preview heading can appear above the selected row. Identify the list
+    // and preview by their columns, not by their vertical rendering order.
+    hume_positions.sort_unstable_by_key(|(column, _)| *column);
+    let [selected_position, detail_position] = hume_positions.as_slice() else {
+        panic!("expected Hume in the selected row and detail heading");
+    };
+    assert!(selected_position.0 < detail_position.0);
+    let identity_color = crate::agent_color::nickname_color("Hume");
+    let selected_style = buffer[*selected_position].style();
+    let selection_style = crate::style::selection_style();
+    let reversed = selection_style.add_modifier.contains(Modifier::REVERSED);
+    // An unknown terminal palette uses reversed default colors for selection.
+    // Explicit fills retain the nickname hue, adjusted against the painted fill.
+    let selected_foreground = if reversed {
+        selection_style.fg
+    } else {
+        Some(crate::style::readable_color_on(
+            identity_color,
+            selection_style.bg,
+        ))
+    };
+    assert_eq!(selected_style.bg, selection_style.bg);
+    assert!(selected_style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        selected_style.add_modifier.contains(Modifier::REVERSED),
+        reversed,
+    );
+    assert_eq!(selected_style.fg, selected_foreground);
+    assert_eq!(buffer[*detail_position].style().fg, Some(identity_color));
+}
+
 #[test]
 fn agent_control_pane_details_snapshot() {
-    let details = AgentControlPaneDetails::new(vec![
+    let details = details_without_receiver(vec![
         "Anscombe [reviewer]".bold().into(),
         vec!["running 4m 12s".green(), " · ref 2".dim()].into(),
         vec![
@@ -305,11 +363,11 @@ fn agent_control_pane_details_snapshot() {
 
 #[test]
 fn selecting_agent_updates_shared_preview_revision() {
-    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::new(vec!["First".into()]));
+    let preview = AgentControlPanePreview::new(details_without_receiver(vec!["First".into()]));
     let renderable = preview.renderable();
     assert_eq!(renderable.layout_revision(), Some(0));
 
-    preview.select(AgentControlPaneDetails::new(vec!["Second".into()]));
+    preview.select(details_without_receiver(vec!["Second".into()]));
 
     assert_eq!(renderable.layout_revision(), Some(1));
     assert_eq!(
@@ -320,6 +378,128 @@ fn selecting_agent_updates_shared_preview_revision() {
             .wrapped_lines(/*width*/ 40),
         vec!["Second".into()]
     );
+}
+
+#[test]
+fn mailbox_preview_rejects_stale_reads_and_shows_pending_counts() {
+    let selected = ThreadId::from_u128(1);
+    let other = ThreadId::from_u128(2);
+    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::for_receiver(
+        selected,
+        vec![
+            "Hume [reviewer]".into(),
+            "".into(),
+            "Enter opens this thread".into(),
+        ],
+    ));
+    let first_request = preview
+        .begin_mailbox_read()
+        .expect("a selected receiver should request its mailbox inventory");
+    preview.select(AgentControlPaneDetails::for_receiver(
+        other,
+        vec!["Other".into(), "".into(), "Enter opens this thread".into()],
+    ));
+    let other_request = preview
+        .begin_mailbox_read()
+        .expect("selecting a receiver should request its mailbox inventory");
+    preview.select(AgentControlPaneDetails::for_receiver(
+        selected,
+        vec![
+            "Hume [reviewer]".into(),
+            "".into(),
+            "Enter opens this thread".into(),
+        ],
+    ));
+    let selected_again = preview
+        .begin_mailbox_read()
+        .expect("reselecting a receiver should issue a new inventory request");
+    assert_ne!(first_request.1, selected_again.1);
+    assert!(
+        !preview.finish_mailbox_read(
+            first_request.0,
+            first_request.1,
+            AgentMailboxInventoryDisplay::Available {
+                pending_total: 99,
+                sender_counts: vec![("user".to_string(), 99)],
+            },
+        ),
+        "a result from an earlier selection must not replace current details"
+    );
+    assert!(
+        !preview.finish_mailbox_read(
+            other_request.0,
+            other_request.1,
+            AgentMailboxInventoryDisplay::Unavailable,
+        ),
+        "a result for another receiver must not replace current details"
+    );
+    assert!(preview.finish_mailbox_read(
+        selected_again.0,
+        selected_again.1,
+        AgentMailboxInventoryDisplay::Unavailable,
+    ));
+    let unavailable = preview
+        .selected
+        .lock()
+        .expect("preview state should not be poisoned")
+        .wrapped_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(unavailable.contains("Pending mail: unavailable"));
+
+    let empty_request = preview
+        .begin_mailbox_read()
+        .expect("the selected receiver should be refreshable");
+    assert!(preview.finish_mailbox_read(
+        empty_request.0,
+        empty_request.1,
+        AgentMailboxInventoryDisplay::Available {
+            pending_total: 0,
+            sender_counts: Vec::new(),
+        },
+    ));
+    let empty = preview
+        .selected
+        .lock()
+        .expect("preview state should not be poisoned")
+        .wrapped_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(empty.contains("Pending mail: 0"));
+    assert!(!empty.contains("unavailable"));
+
+    let pending_request = preview
+        .begin_mailbox_read()
+        .expect("the selected receiver should be refreshable");
+    assert!(preview.finish_mailbox_read(
+        pending_request.0,
+        pending_request.1,
+        AgentMailboxInventoryDisplay::Available {
+            pending_total: 3,
+            sender_counts: vec![("ref 2".to_string(), 2), ("user".to_string(), 1)],
+        },
+    ));
+    let rendered = preview
+        .selected
+        .lock()
+        .expect("preview state should not be poisoned")
+        .wrapped_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    Hume [reviewer]
+    Pending mail: 3
+      ref 2: 2
+      user: 1
+
+    Enter opens this thread
+    ");
 }
 
 #[test]
@@ -503,7 +683,7 @@ async fn child_primary_view_uses_durable_ref_one_as_agent_tree_main() {
 
 #[test]
 fn wide_agent_pane_renders_the_complete_side_detail_column() {
-    let details = AgentControlPaneDetails::new(vec![
+    let details = details_without_receiver(vec![
         "Hopper [reviewer]".bold().into(),
         "running · ref 2".into(),
         "".into(),
@@ -565,7 +745,7 @@ fn wide_agent_pane_renders_the_complete_side_detail_column() {
 
 #[test]
 fn wide_agent_pane_uses_side_panel_height_for_agent_rows() {
-    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::new(
+    let preview = AgentControlPanePreview::new(details_without_receiver(
         (1..=20)
             .map(|row| format!("Detail row {row}").into())
             .collect(),
@@ -684,6 +864,7 @@ async fn agent_pane_uses_split_layout_at_94_columns_snapshot() {
     Response: none
     Queued: 0
     Children: 0
+    Pending mail: loading
     Enter opens this thread
     footer:
     ctrl+t inspects transcript · Tab opens controls.
@@ -774,6 +955,7 @@ async fn agent_pane_stacks_details_at_93_columns_snapshot() {
     Response: none
     Queued: 0
     Children: 0
+    Pending mail: loading
     Enter opens this thread
     footer:
     ctrl+t inspects transcript · Tab opens controls.

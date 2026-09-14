@@ -48,6 +48,10 @@ pub(super) enum StatusCountdownOwner {
         item_id: String,
         process_id: String,
     },
+    UnifiedExecWaitInvocation {
+        turn_id: String,
+        interaction_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

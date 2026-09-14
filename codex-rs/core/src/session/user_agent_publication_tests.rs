@@ -158,6 +158,8 @@ fn task_fixture(session: &Session) -> (ResponseItem, AgentResponseObservation) {
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
         committed_delivery_response_item_ids: Vec::new(),
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     };
     (task, snapshot)
 }

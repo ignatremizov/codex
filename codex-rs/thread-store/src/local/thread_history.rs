@@ -629,6 +629,7 @@ WHERE thread_id = ?
             | ThreadItem::WebSearch(_)
             | ThreadItem::ImageView { .. }
             | ThreadItem::Sleep(_)
+            | ThreadItem::MailboxRead(_)
             | ThreadItem::ImageGeneration(_)
             | ThreadItem::EnteredReviewMode { .. }
             | ThreadItem::ExitedReviewMode { .. }

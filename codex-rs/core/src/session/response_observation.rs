@@ -243,16 +243,18 @@ impl Session {
         let (snapshot, subscription, ()) = self.subscribe_agent_responses_inner(
             /*start_observer*/ None,
             /*terminal_observer*/ None,
-            |_| {},
+            |_, _| {},
         );
         (snapshot, subscription)
     }
 
+    /// Register live observers and inspect retained outcomes under one publication boundary.
+    /// The borrowed outcomes identify exact turns; they do not grant observation authority.
     pub(crate) fn subscribe_agent_responses_observing_turns<R>(
         &self,
         start_observer: impl Fn(&str, u64) + Send + Sync + 'static,
         terminal_observer: impl Fn(&str, AgentStatus) + Send + Sync + 'static,
-        on_snapshot: impl FnOnce(&AgentResponseSnapshot) -> R,
+        on_snapshot: impl FnOnce(&AgentResponseSnapshot, &HashMap<String, AgentStatus>) -> R,
     ) -> (AgentResponseSnapshot, AgentResponseSubscription, R) {
         self.subscribe_agent_responses_inner(
             Some(Arc::new(start_observer)),
@@ -265,7 +267,7 @@ impl Session {
         &self,
         start_observer: Option<AgentResponseStartObserver>,
         terminal_observer: Option<AgentResponseTerminalObserver>,
-        on_snapshot: impl FnOnce(&AgentResponseSnapshot) -> R,
+        on_snapshot: impl FnOnce(&AgentResponseSnapshot, &HashMap<String, AgentStatus>) -> R,
     ) -> (AgentResponseSnapshot, AgentResponseSubscription, R) {
         // Register the callback and snapshot status on the same side of the final-outcome
         // publication boundary. Otherwise publication can enumerate callbacks, an observer can
@@ -302,7 +304,7 @@ impl Session {
             last_commentary_item_id: state.last_commentary_item_id.clone(),
             status: self.agent_status.borrow().clone(),
         };
-        let registration = on_snapshot(&snapshot);
+        let registration = on_snapshot(&snapshot, &state.terminal_outcomes);
         (
             snapshot,
             AgentResponseSubscription {

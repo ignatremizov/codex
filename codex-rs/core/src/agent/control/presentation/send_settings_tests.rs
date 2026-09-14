@@ -1,8 +1,3 @@
-#![expect(
-    clippy::await_holding_invalid_type,
-    reason = "permission checks deliberately run under the caller-owned messaging transaction"
-)]
-
 use super::*;
 use crate::ThreadManager;
 use crate::config::test_config;
@@ -55,6 +50,8 @@ async fn mailbox_permission_reads_closed_sender_settings_without_mutating_runtim
         .raw_items()
         .cloned()
         .collect();
+    // Keep the owned transaction across settings writes and permission reads, matching the
+    // production caller-owned serialization boundary.
     let permission = control.acquire_messaging_permission_transaction().await;
     assert!(
         !control
@@ -172,7 +169,13 @@ async fn unsupported_settings_do_not_become_volatile_user_grants() {
         .start_thread(StartThreadOptions::new(config))
         .await
         .expect("root");
-    let control = root.thread.session.services.local_agent_runtime.control(root.thread.session.session_id());
+    let control = root
+        .thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.thread.session.session_id());
+    // The locked persistence/read APIs require the caller to retain this transaction.
     let permission = control.acquire_messaging_permission_transaction().await;
     let error = control
         .persist_agent_send_setting_locked(

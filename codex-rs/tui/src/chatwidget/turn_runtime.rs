@@ -183,10 +183,11 @@ impl ChatWidget {
         self.clear_safety_buffering();
         self.clear_status_countdown();
         self.update_task_running_state();
-        self.running_commands.retain(|_, command| command.source == ExecCommandSource::UserShell);
+        self.running_commands
+            .retain(|_, command| command.source == ExecCommandSource::UserShell);
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
-        self.unified_exec_wait_streak = None;
+        self.clear_unified_exec_wait_tracking();
         if !from_replay {
             let body = Notification::agent_turn_preview(
                 &notification_response,
@@ -335,6 +336,7 @@ impl ChatWidget {
         // Drop preview-only stream tail content on any termination path before
         // failed-cell finalization, so transient tail cells are never persisted.
         self.clear_active_stream_tail();
+        self.compact_active_sleep_for_turn_end();
         // A model failure does not terminate independently admitted user-shell work.
         let live_user_shell_cell = self.transcript.active_cell.as_ref()
             .and_then(|cell| cell.as_any().downcast_ref::<ExecCell>())
@@ -356,10 +358,11 @@ impl ChatWidget {
         self.turn_lifecycle.finish();
         self.clear_status_countdown();
         self.update_task_running_state();
-        self.running_commands.retain(|_, command| command.source == ExecCommandSource::UserShell);
+        self.running_commands
+            .retain(|_, command| command.source == ExecCommandSource::UserShell);
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
-        self.unified_exec_wait_streak = None;
+        self.clear_unified_exec_wait_tracking();
         self.adaptive_chunking.reset();
         self.stream_controller = None;
         self.plan_stream_controller = None;

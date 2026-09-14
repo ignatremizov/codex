@@ -14,6 +14,11 @@ pub use inventory::MailboxSenderInventory;
 
 pub use mailbox::MailboxClaim;
 pub use mailbox::MailboxClaimedMessage;
+pub use mailbox::MailboxFinalSubscription;
+pub use mailbox::MailboxFinalSubscriptionAuthority;
+pub use mailbox::MailboxFinalSubscriptionRequest;
+pub use mailbox::MailboxFinalSubscriptionState;
+pub use mailbox::MailboxInventoryAcknowledgement;
 pub use mailbox::MailboxInvocation;
 pub use mailbox::MailboxMessage;
 pub use mailbox::MailboxMessageState;

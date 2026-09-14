@@ -25,8 +25,7 @@ struct PendingSender {
 }
 
 struct ProjectedMailboxInventoryContext {
-    receiver: String,
-    pending_senders: Vec<PendingSender>,
+    pending: Vec<PendingSender>,
     omitted: bool,
 }
 
@@ -48,10 +47,7 @@ impl ContextualUserFragment for ProjectedMailboxInventoryContext {
     }
 
     fn body(&self) -> String {
-        let snapshot = json!({
-            "receiver": self.receiver,
-            "pending_senders": self.pending_senders,
-        });
+        let snapshot = json!({"pending": self.pending});
         let omitted = if self.omitted { OMITTED } else { "" };
         format!("{snapshot}{GUIDANCE}{omitted}")
     }
@@ -75,8 +71,7 @@ pub(crate) fn project_mailbox_inventories(
             continue;
         };
         let mut fragment = ProjectedMailboxInventoryContext {
-            receiver: reference(receiver),
-            pending_senders: Vec::new(),
+            pending: Vec::new(),
             omitted: false,
         };
         let mut remaining = approx_bytes_for_tokens(INVENTORY_TOKENS)
@@ -95,7 +90,7 @@ pub(crate) fn project_mailbox_inventories(
                 break;
             }
             remaining -= bytes;
-            fragment.pending_senders.push(sender);
+            fragment.pending.push(sender);
         }
         fragment.omitted |= snapshot.omitted;
         if let ResponseItem::Message { content, .. } = item {

@@ -118,6 +118,44 @@ fn successive_single_item_pages_reunite_without_duplicating_calls() {
 }
 
 #[test]
+fn mailbox_read_retains_order_between_complete_computer_groups() {
+    let read = codex_app_server_protocol::MailboxReadItem {
+        id: "check-mail".to_string(),
+        selector: codex_app_server_protocol::MailboxReadSelector::User,
+        consumed_count: 2,
+        rejected_count: 1,
+    };
+    let first = computer("before-mail");
+    let last = computer("after-mail");
+    let items = vec![
+        first.clone(),
+        ThreadItem::MailboxRead(read.clone()),
+        last.clone(),
+    ];
+    let grouped = project(&items);
+    let mut expected = project(std::slice::from_ref(&first));
+    expected.push(Arc::new(
+        crate::multi_agents::history_cell_for_mailbox_read(&read, |_| {
+            crate::multi_agents::AgentMetadata::default()
+        }),
+    ));
+    expected.extend(project(std::slice::from_ref(&last)));
+    assert_eq!(grouped.len(), 3);
+    for (actual, expected) in grouped.iter().zip(&expected) {
+        assert_eq!(
+            actual.display_hyperlink_lines(/*width*/ 40),
+            expected.display_hyperlink_lines(/*width*/ 40)
+        );
+        assert_eq!(
+            actual.transcript_hyperlink_lines(/*width*/ 40),
+            expected.transcript_hyperlink_lines(/*width*/ 40)
+        );
+        assert_eq!(actual.raw_lines(), expected.raw_lines());
+    }
+    assert!(join_computer_groups(&grouped[0], &grouped[2], &[turn("mail-turn", items)]).is_none());
+}
+
+#[test]
 fn joins_respect_actual_turns_and_intervening_items() {
     let first = computer("first");
     let last = computer("last");
