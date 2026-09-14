@@ -1120,7 +1120,7 @@ mod tests {
         input_queue
             .enqueue_mailbox_communication(mail, Default::default())
             .await;
-        assert_eq!(steer_activity_rx.has_changed(), Ok(false));
+        assert!(matches!(steer_activity_rx.has_changed(), Ok(false)));
 
         input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
@@ -1144,7 +1144,7 @@ mod tests {
             .enqueue_mailbox_communication(mail, Default::default())
             .await;
 
-        assert_eq!(steer_activity_rx.has_changed(), Ok(true));
+        assert!(matches!(steer_activity_rx.has_changed(), Ok(true)));
         assert_eq!(*steer_activity_rx.borrow_and_update(), 1);
     }
 

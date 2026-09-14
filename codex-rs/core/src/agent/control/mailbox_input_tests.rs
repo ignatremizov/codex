@@ -168,9 +168,16 @@ async fn accepted_bound_mailbox_retry_rebinds_the_actual_receiver_endpoint() {
         acknowledgement
             .bound_subscriptions
             .iter()
-            .map(|subscription| (subscription.state, subscription.bound_turn_id.as_deref(),))
+            .map(|subscription| {
+                (
+                    subscription.message_id.as_str(),
+                    subscription.state,
+                    subscription.bound_turn_id.as_deref(),
+                )
+            })
             .collect::<Vec<_>>(),
         vec![(
+            subscription_id.as_str(),
             MailboxFinalSubscriptionState::Bound,
             Some(notification.id.as_str()),
         )],

@@ -1,6 +1,6 @@
 use super::*;
 use codex_protocol::ThreadId;
-use pretty_assertions::assert_eq;
+use codex_protocol::error::CodexErrorDetails;
 
 #[test]
 fn authority_recheck_distinguishes_mismatch_from_read_failure() {
@@ -39,5 +39,12 @@ fn authority_recheck_distinguishes_mismatch_from_read_failure() {
         &subscription,
         Err(CodexErr::Fatal("authority unavailable".to_string())),
     );
-    assert!(matches!(result, Err(CodexErr::Fatal(_))));
+    assert!(matches!(
+        result,
+        Err(error)
+            if matches!(
+                error.details(),
+                CodexErrorDetails::Fatal(message) if message == "authority unavailable"
+            )
+    ));
 }

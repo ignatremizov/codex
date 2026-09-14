@@ -16,6 +16,7 @@ use super::App;
 use super::agent_navigation::AgentNavigationState;
 use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
+use crate::tui::FrameRequester;
 
 #[derive(Clone, Debug, Default)]
 pub(super) enum AgentMailboxDetails {
@@ -146,10 +147,11 @@ impl App {
         request_id: Uuid,
         preview: AgentControlPanePreview,
         result: Result<ThreadMailboxReadResponse, String>,
+        frame_requester: FrameRequester,
     ) {
         let display = mailbox_inventory_display(receiver_thread_id, &self.agent_navigation, result);
         if preview.finish_mailbox_read(receiver_thread_id, request_id, display) {
-            self.chat_widget.request_redraw();
+            frame_requester.schedule_frame();
         }
     }
 }

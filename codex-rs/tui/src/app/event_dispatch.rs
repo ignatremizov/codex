@@ -2860,6 +2860,7 @@ impl App {
                         request_id,
                         preview,
                         Err("app server is offline".to_string()),
+                        tui.frame_requester(),
                     );
                 } else {
                     self.request_agent_mailbox_inventory(
@@ -2876,7 +2877,13 @@ impl App {
                 preview,
                 result,
             } => {
-                self.apply_agent_mailbox_inventory(receiver_thread_id, request_id, preview, result);
+                self.apply_agent_mailbox_inventory(
+                    receiver_thread_id,
+                    request_id,
+                    preview,
+                    result,
+                    tui.frame_requester(),
+                );
             }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)

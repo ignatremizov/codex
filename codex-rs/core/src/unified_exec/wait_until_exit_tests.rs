@@ -23,7 +23,7 @@ enum ObservedWaitPhase {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failure_before_wait_start_returns_an_error_without_a_lifecycle_pair() -> anyhow::Result<()>
 {
-    let (session, turn, mut events) =
+    let (session, turn, events) =
         crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
             CodexAuth::from_api_key("Test API Key"),
             Vec::new(),
