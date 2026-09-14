@@ -1,7 +1,11 @@
 use super::*;
+use crate::MailboxClaim;
+use crate::MailboxClaimedMessage;
 use crate::MailboxFinalSubscriptionRequest;
 use crate::MailboxFinalSubscriptionState;
 use crate::MailboxInvocation;
+use crate::MailboxMessage;
+use crate::MailboxMessageState;
 use crate::MailboxSelection;
 use crate::StateRuntime;
 use crate::migrations::QUEUE_MIGRATOR;
@@ -555,27 +559,100 @@ async fn inventory_migration_preserves_existing_mail_claims_and_ordinary_queue()
         .enqueue(receiver, r#"{"ordinary":true}"#)
         .await
         .unwrap();
-    queue
-        .accept_mail(receiver, "claimed", "a", "{}")
-        .await
-        .unwrap();
     let invocation = MailboxInvocation {
         receiver_thread_id: receiver,
         turn_id: "existing-turn".to_string(),
         tool_call_id: "existing-call".to_string(),
     };
-    let claim = queue
-        .claim_mail(&invocation, &MailboxSelection::All)
-        .await
-        .unwrap();
-    let pending = queue
-        .accept_mail(receiver, "pending", "user", "{}")
-        .await
-        .unwrap();
+    let claimed_message_id = "legacy-claimed-message";
+    let pending_message_id = "legacy-pending-message";
+    let delivery_id = "legacy-delivery";
+
+    // The v3 schema predates mailbox_final_subscriptions, which current queue methods join.
+    // Seed rows using the exact legacy tables so this fixture exercises the v3-to-current path.
+    sqlx::query(
+        "INSERT INTO mailbox_messages
+         (id, receiver_thread_id, submission_key, sender_key, payload_json, state)
+         VALUES (?, ?, ?, ?, ?, 'claimed')",
+    )
+    .bind(claimed_message_id)
+    .bind(receiver.to_string())
+    .bind("claimed")
+    .bind("a")
+    .bind("{}")
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mailbox_messages
+         (id, receiver_thread_id, submission_key, sender_key, payload_json, state)
+         VALUES (?, ?, ?, ?, ?, 'pending')",
+    )
+    .bind(pending_message_id)
+    .bind(receiver.to_string())
+    .bind("pending")
+    .bind("user")
+    .bind("{}")
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mailbox_claims (receiver_thread_id, turn_id, tool_call_id, selection_json)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(receiver.to_string())
+    .bind(&invocation.turn_id)
+    .bind(&invocation.tool_call_id)
+    .bind(serde_json::to_string(&MailboxSelection::All).unwrap())
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mailbox_claim_members
+         (receiver_thread_id, turn_id, tool_call_id, message_id, delivery_id)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(receiver.to_string())
+    .bind(&invocation.turn_id)
+    .bind(&invocation.tool_call_id)
+    .bind(claimed_message_id)
+    .bind(delivery_id)
+    .execute(pool.as_ref())
+    .await
+    .unwrap();
     let revisions = queue
         .changes_since(/*revision*/ 0, &[receiver])
         .await
         .unwrap();
+    let pending = MailboxMessage {
+        id: pending_message_id.to_string(),
+        receiver_thread_id: receiver,
+        submission_key: "pending".to_string(),
+        sender_key: "user".to_string(),
+        payload_json: "{}".to_string(),
+        acceptance_sequence: 2,
+        state: MailboxMessageState::Pending,
+        rejection_reason: None,
+        final_subscription: None,
+    };
+    let claim = MailboxClaim {
+        invocation,
+        selection: MailboxSelection::All,
+        messages: vec![MailboxClaimedMessage {
+            message: MailboxMessage {
+                id: claimed_message_id.to_string(),
+                receiver_thread_id: receiver,
+                submission_key: "claimed".to_string(),
+                sender_key: "a".to_string(),
+                payload_json: "{}".to_string(),
+                acceptance_sequence: 1,
+                state: MailboxMessageState::Claimed,
+                rejection_reason: None,
+                final_subscription: None,
+            },
+            delivery_id: delivery_id.to_string(),
+        }],
+    };
     QUEUE_MIGRATOR.run(pool.as_ref()).await.unwrap();
     let prepared = queue
         .prepare_mail_inventory(receiver)

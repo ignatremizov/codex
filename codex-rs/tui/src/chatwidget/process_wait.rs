@@ -90,8 +90,12 @@ impl ChatWidget {
             deadline_at_ms,
             ..
         } = notification;
-        let active_command_display =
-            self.unified_exec_process_command_display(&item_id, &process_id);
+        let active_command_display = self
+            .unified_exec_processes
+            .iter()
+            .find(|process| process.key == process_id || process.call_id == item_id)
+            .map(|process| process.command_display.clone())
+            .filter(|command| !command.is_empty());
         if stdin.is_empty() && active_command_display.is_none() && deadline_at_ms.is_some() {
             return;
         }

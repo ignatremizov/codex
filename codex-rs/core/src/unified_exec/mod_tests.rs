@@ -842,7 +842,7 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
     let (write_started_tx, mut write_started_rx) = watch::channel(/*init*/ false);
     let (terminate_started_tx, _terminate_started_rx) = watch::channel(/*init*/ false);
     let (wake_tx, _wake_rx) = watch::channel(/*init*/ 0);
-    let (write_tx, _write_rx) = mpsc::channel(/*buffer*/ 1);
+    let (write_tx, mut write_rx) = mpsc::channel(/*buffer*/ 1);
     let allow_terminate = Arc::new(Notify::new());
     write_tx
         .send(Vec::new())
@@ -935,14 +935,25 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
             .contains_key(&process_id),
         "cancelling a write must preserve the process"
     );
+    assert_eq!(
+        write_rx.recv().await,
+        Some(Vec::new()),
+        "the cancelled write must leave the queued stdin payload untouched"
+    );
+    assert!(matches!(
+        write_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
 
-    let poll = tokio::time::timeout(
+    let followup_write = tokio::time::timeout(
         Duration::from_secs(2),
-        write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 100),
+        write_stdin(
+            &session, &turn, process_id, "\n", /*yield_time_ms*/ 100,
+        ),
     )
     .await
-    .expect("subsequent same-process poll should acquire the interaction lock")?;
-    assert_eq!(poll.process_id, Some(process_id));
+    .expect("subsequent same-process write should acquire the interaction lock")?;
+    assert_eq!(followup_write.process_id, Some(process_id));
     allow_terminate.notify_one();
     process.terminate_confirmed().await?;
     if let Some(output_task) = process.output_task_abort_handle() {

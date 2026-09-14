@@ -61,14 +61,18 @@ async fn zf_wakes_exactly_the_turn_that_consumes_or_inventories_accepted_mail(
         })
         .build_with_streaming_server_auto_env(&server)
         .await?;
-    let receiver_id = test
+    let receiver_spawn = test
         .codex
         .spawn_agent(UserAgentSpawnOptions {
             response_handling: UserAgentResponseHandling::Wake,
             ..Default::default()
         })
-        .await?
-        .target_thread_id;
+        .await?;
+    let receiver_id = receiver_spawn.target_thread_id;
+    let receiver_ref = receiver_spawn
+        .agent_ref
+        .expect("receiver should have a root-scoped reference")
+        .to_string();
     let receiver = test.thread_manager.get_thread(receiver_id).await?;
     test.codex
         .set_agent_reply_route(
@@ -370,7 +374,26 @@ async fn zf_wakes_exactly_the_turn_that_consumes_or_inventories_accepted_mail(
     )
     .await?;
     if empty_bound_final {
-        assert!(wake_request.body_contains_text("\"completed\":null"));
+        let wake_request_body = wake_request.body_json();
+        let notification = wake_request_body["input"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|item| item["content"].as_array().into_iter().flatten())
+            .filter_map(|content| content["text"].as_str())
+            .find(|text| text.contains("<subagent_notification>"))
+            .expect("empty final wake should contain the structured notification");
+        let notification_body = notification
+            .strip_prefix("<subagent_notification>")
+            .and_then(|body| body.strip_suffix("</subagent_notification>"))
+            .expect("notification should have canonical markers");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(notification_body)?,
+            json!({
+                "ref": receiver_ref,
+                "status": {"completed": null},
+            }),
+        );
     }
     timeout(
         Duration::from_secs(/*secs*/ 15),

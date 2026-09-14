@@ -2625,19 +2625,21 @@ impl AgentControl {
             None
         };
         let active_mailbox_final_subscription = if durable_v1 {
-            Some(
-                parent_thread
-                    .session
-                    .services
-                    .thread_store
-                    .lookup_active_mailbox_final_subscription(child_thread_id, parent.thread_id)
-                    .await
-                    .map_err(|error| {
-                        CodexErr::Fatal(format!(
-                            "failed to check active mailbox final subscription for {child_thread_id}: {error}"
-                        ))
-                    })?,
-            )
+            match parent_thread
+                .session
+                .services
+                .thread_store
+                .lookup_active_mailbox_final_subscription(child_thread_id, parent.thread_id)
+                .await
+            {
+                Ok(subscription) => Some(subscription),
+                Err(codex_thread_store::ThreadStoreError::Unsupported { .. }) => None,
+                Err(error) => {
+                    return Err(CodexErr::Fatal(format!(
+                        "failed to check active mailbox final subscription for {child_thread_id}: {error}"
+                    )));
+                }
+            }
         } else {
             None
         };

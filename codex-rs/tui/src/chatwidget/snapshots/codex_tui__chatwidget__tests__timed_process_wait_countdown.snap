@@ -2,8 +2,9 @@
 source: tui/src/chatwidget/tests/process_wait.rs
 expression: waiting
 ---
-• Waiting for timed process result (1m 00s left • esc to interrupt)
+• Waiting for timed process result (1m 00s left • esc to interrupt) · 1 background terminal running…
   └ Timed · cargo fmt --check · process p3 · wait w3
+
 
 › Ask Codex to do anything
 

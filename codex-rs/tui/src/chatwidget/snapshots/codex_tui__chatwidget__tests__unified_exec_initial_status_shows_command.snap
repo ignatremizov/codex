@@ -2,8 +2,9 @@
 source: tui/src/chatwidget/tests/exec_flow.rs
 expression: normalize_snapshot_paths(rendered)
 ---
-• Working (1m 00s left • esc to interrupt)
+• Working (1m 00s left • esc to interrupt) · 1 background terminal running · /p…
   └ sleep 60
+
 
 › Ask Codex to do anything
 

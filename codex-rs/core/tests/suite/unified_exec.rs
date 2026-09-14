@@ -1707,13 +1707,12 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
     );
     assert!(
         finished.iter().all(|(_, elapsed_ms, reason, _)| {
-            *elapsed_ms > 0
-                && matches!(
-                    *reason,
-                    TerminalWaitCompletionReason::Timeout | TerminalWaitCompletionReason::Exited
-                )
+            matches!(
+                *reason,
+                TerminalWaitCompletionReason::Timeout | TerminalWaitCompletionReason::Exited
+            ) && (*reason == TerminalWaitCompletionReason::Exited || *elapsed_ms > 0)
         }),
-        "timed wait completions should report elapsed time and their outcome: {finished:?}"
+        "timed wait completions should report their outcome, and non-exit waits should have elapsed: {finished:?}"
     );
 
     assert!(

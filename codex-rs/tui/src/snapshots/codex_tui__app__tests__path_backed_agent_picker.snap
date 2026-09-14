@@ -19,6 +19,7 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Queued: 0
   Children: 0
   Approval: pending
+  Pending mail: loading
 
 
 

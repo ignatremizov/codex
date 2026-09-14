@@ -110,6 +110,9 @@ mod mailbox_input_tests;
 #[path = "control/scoped_admission_tests.rs"]
 mod scoped_admission_tests;
 
+#[path = "control/unsupported_mailbox_subscription_tests.rs"]
+mod unsupported_mailbox_subscription_tests;
+
 #[test]
 fn internal_agent_input_provenance_is_not_inferred_from_user_text() {
     let route = AgentReplyRoute::new(AgentContextIdentity::Canonical {

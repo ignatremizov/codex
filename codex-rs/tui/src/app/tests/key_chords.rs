@@ -168,6 +168,13 @@ async fn tab_transcript_chord_inspects_agent_without_opening_controls() -> Resul
 
     assert!(matches!(
         app_events.try_recv(),
+        Ok(AppEvent::LoadAgentMailboxInventory {
+            receiver_thread_id,
+            ..
+        }) if receiver_thread_id == child_thread_id
+    ));
+    assert!(matches!(
+        app_events.try_recv(),
         Ok(AppEvent::InspectAgentTranscript(thread_id)) if thread_id == child_thread_id
     ));
     assert!(

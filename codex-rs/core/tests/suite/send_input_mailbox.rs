@@ -12,10 +12,8 @@ use codex_core::UserAgentReplyRouteMode;
 use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_features::Feature;
-use codex_history::RolloutItem;
 use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::TurnItem;
-use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -443,11 +441,15 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
         .spawn_agent(UserAgentSpawnOptions::default())
         .await?
         .target_thread_id;
-    let receiver_id = test
+    let receiver_spawn = test
         .codex
         .spawn_agent(UserAgentSpawnOptions::default())
-        .await?
-        .target_thread_id;
+        .await?;
+    let receiver_id = receiver_spawn.target_thread_id;
+    let receiver_ref = receiver_spawn
+        .agent_ref
+        .expect("receiver should have a root-scoped reference")
+        .to_string();
     let sender = test.thread_manager.get_thread(sender_id).await?;
     test.codex
         .set_agent_reply_route(
@@ -530,7 +532,6 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
         .final_subscription
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("conditional final subscription"))?;
-    let subscription_id = subscription.message_id.clone();
     assert_eq!(
         (subscription.state, subscription.bound_turn_id.as_deref()),
         (MailboxFinalSubscriptionState::Pending, None),
@@ -573,6 +574,12 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
             .map(|subscription| subscription.state),
         Some(MailboxFinalSubscriptionState::Superseded),
     );
+    assert_eq!(
+        test.thread_store
+            .lookup_active_mailbox_final_subscription(receiver_id, sender_id)
+            .await?,
+        None,
+    );
 
     sender.shutdown_and_wait().await?;
     test.thread_manager.remove_thread(&sender_id).await;
@@ -583,39 +590,104 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
             UserAgentResponseHandling::Presentation,
         )
         .await?;
-    let tombstone = timeout(Duration::from_secs(/*secs*/ 15), async {
-        loop {
-            let history = test
-                .thread_store
-                .load_rollback_history(LoadThreadHistoryParams {
-                    thread_id: sender_id,
-                    include_archived: false,
-                })
-                .await?;
-            if let Some(tombstone) = history.items.iter().rev().find_map(|item| {
-                let RolloutItem::AgentResponseObservation(observation) = item else {
-                    return None;
-                };
-                (observation.observer_thread_id == sender_id
-                    && observation.target_thread_id == receiver_id
-                    && observation
-                        .mailbox_final_subscription_suppressed_message_id
-                        .as_deref()
-                        == Some(subscription_id.as_str()))
-                .then_some(observation.clone())
-            }) {
-                return Ok::<_, anyhow::Error>(tombstone);
-            }
-            tokio::time::sleep(Duration::from_millis(/*millis*/ 25)).await;
-        }
-    })
-    .await??;
     assert_eq!(
-        (
-            tombstone.final_delivery,
-            tombstone.mailbox_final_subscription_message_id.as_deref(),
-        ),
-        (AgentResponseFinalDelivery::None, None),
+        test.thread_store
+            .lookup_active_mailbox_final_subscription(receiver_id, sender_id)
+            .await?,
+        None,
+    );
+
+    let mut receiver_response = server
+        .mount_response(
+            |request| request.body_contains_text("complete receiver after close and resume"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("receiver-after-close"),
+                    ev_completed("receiver-after-close"),
+                ]),
+            }],
+        )
+        .await;
+    let expected_receiver_ref = receiver_ref;
+    let mut stale_wake_response = server
+        .mount_response(
+            move |request| {
+                request.body_json()["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|item| item["content"].as_array().into_iter().flatten())
+                    .filter_map(|content| content["text"].as_str())
+                    .filter_map(|text| {
+                        text.strip_prefix("<subagent_notification>")
+                            .and_then(|body| body.strip_suffix("</subagent_notification>"))
+                            .and_then(|body| serde_json::from_str::<Value>(body).ok())
+                    })
+                    .any(|notification| {
+                        notification["ref"].as_str() == Some(expected_receiver_ref.as_str())
+                    })
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("stale-mailbox-final-wake"),
+                    ev_completed("stale-mailbox-final-wake"),
+                ]),
+            }],
+        )
+        .await;
+    let resumed_receiver = test.thread_manager.get_thread(receiver_id).await?;
+    let submission = resumed_receiver
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "complete receiver after close and resume".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let TurnInputSubmission::Started { turn_id } = submission else {
+        anyhow::bail!("resumed receiver should start a new turn");
+    };
+    timeout(
+        Duration::from_secs(/*secs*/ 15),
+        receiver_response.wait_for_request(),
+    )
+    .await?;
+    timeout(
+        Duration::from_secs(/*secs*/ 15),
+        receiver_response.wait_for_completion(),
+    )
+    .await?;
+    wait_for_event(
+        resumed_receiver.as_ref(),
+        |event| matches!(event, EventMsg::TurnComplete(event) if event.turn_id == turn_id),
+    )
+    .await;
+    let after_receiver_turn = test
+        .thread_store
+        .lookup_mailbox_input(receiver_id, &key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("mailbox row after receiver turn"))?;
+    assert_eq!(
+        after_receiver_turn
+            .final_subscription
+            .as_ref()
+            .map(|subscription| subscription.state),
+        Some(MailboxFinalSubscriptionState::Superseded),
+    );
+    assert_eq!(
+        test.thread_store
+            .lookup_active_mailbox_final_subscription(receiver_id, sender_id)
+            .await?,
+        None,
+    );
+    assert!(
+        timeout(
+            Duration::from_secs(/*secs*/ 2),
+            stale_wake_response.wait_for_request(),
+        )
+        .await
+        .is_err(),
+        "a superseded mailbox final subscription must not wake its former sender",
     );
     server.shutdown().await;
     Ok(())

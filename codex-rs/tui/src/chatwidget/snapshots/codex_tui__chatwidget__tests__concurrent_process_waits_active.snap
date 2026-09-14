@@ -2,9 +2,10 @@
 source: tui/src/chatwidget/tests/process_wait.rs
 expression: concurrent
 ---
-• Waiting on 2 processes (esc to interrupt)
+• Waiting on 2 processes (esc to interrupt) · 2 background terminals running · /ps to view · /stop …
   └ Timed · 12s left · cargo test · process p2 · wait w2
-  └ Until exit · 2m 13s elapsed · cargo build · process p1 · wait w1
+    Until exit · 2m 13s elapsed · cargo build · process p1 · wait w1
+
 
 › Ask Codex to do anything
 
