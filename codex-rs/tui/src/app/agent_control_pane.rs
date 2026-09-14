@@ -18,12 +18,15 @@ use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthStr;
 
 use codex_utils_elapsed::format_duration;
+use uuid::Uuid;
 
 use super::App;
 use super::agent_control_summary::AgentControlSummary;
 use super::agent_control_summary::SpawnedAgentSettings;
 use super::agent_control_summary::agent_fork_mode_label;
 use super::agent_control_summary::spawned_agent_settings;
+use super::agent_mailbox::AgentMailboxDetails;
+use super::agent_mailbox::AgentMailboxInventoryDisplay;
 use super::agent_navigation::AgentNavigationState;
 use super::agent_observation_display::AgentResponseObservationBinding;
 use super::agent_picker::AGENT_PICKER_VIEW_ID;
@@ -41,20 +44,37 @@ use crate::wrapping::word_wrap_lines;
 #[derive(Clone, Debug, Default)]
 pub(super) struct AgentControlPaneDetails {
     lines: Vec<Line<'static>>,
+    receiver_thread_id: Option<codex_protocol::ThreadId>,
+    mailbox: AgentMailboxDetails,
+    mailbox_request_id: Option<Uuid>,
 }
 
 impl AgentControlPaneDetails {
-    pub(super) fn new(lines: Vec<Line<'static>>) -> Self {
-        Self { lines }
+    fn for_receiver(
+        receiver_thread_id: codex_protocol::ThreadId,
+        lines: Vec<Line<'static>>,
+    ) -> Self {
+        Self {
+            lines,
+            receiver_thread_id: Some(receiver_thread_id),
+            mailbox: AgentMailboxDetails::Loading,
+            mailbox_request_id: None,
+        }
     }
 
     fn wrapped_lines(&self, width: u16) -> Vec<Line<'static>> {
-        word_wrap_lines(self.lines.clone(), RtOptions::new(width.max(1) as usize))
+        let mut lines = self.lines.clone();
+        let mailbox_lines = self.mailbox.lines();
+        if !mailbox_lines.is_empty() {
+            let insertion_index = lines.len().saturating_sub(2);
+            lines.splice(insertion_index..insertion_index, mailbox_lines);
+        }
+        word_wrap_lines(lines, RtOptions::new(width.max(1) as usize))
     }
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct AgentControlPanePreview {
+pub(crate) struct AgentControlPanePreview {
     selected: Arc<Mutex<AgentControlPaneDetails>>,
     revision: Arc<AtomicU64>,
 }
@@ -73,6 +93,48 @@ impl AgentControlPanePreview {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = selected;
         self.revision.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn begin_mailbox_read(&self) -> Option<(codex_protocol::ThreadId, Uuid)> {
+        let mut selected = self
+            .selected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let receiver_thread_id = selected.receiver_thread_id?;
+        let request_id = Uuid::new_v4();
+        selected.mailbox_request_id = Some(request_id);
+        selected.mailbox = AgentMailboxDetails::Loading;
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Some((receiver_thread_id, request_id))
+    }
+
+    pub(super) fn finish_mailbox_read(
+        &self,
+        receiver_thread_id: codex_protocol::ThreadId,
+        request_id: Uuid,
+        display: AgentMailboxInventoryDisplay,
+    ) -> bool {
+        let mut selected = self
+            .selected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if selected.receiver_thread_id != Some(receiver_thread_id)
+            || selected.mailbox_request_id != Some(request_id)
+        {
+            return false;
+        }
+        selected.mailbox = match display {
+            AgentMailboxInventoryDisplay::Unavailable => AgentMailboxDetails::Unavailable,
+            AgentMailboxInventoryDisplay::Available {
+                pending_total,
+                sender_counts,
+            } => AgentMailboxDetails::Inventory {
+                pending_total,
+                sender_counts,
+            },
+        };
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        true
     }
 
     pub(super) fn renderable(&self) -> AgentControlPanePreviewRenderable {
@@ -179,8 +241,6 @@ impl App {
                     self.agent_navigation
                         .response_observation(observer, thread_id)
                 });
-                let reply_route = displayed_thread_id
-                    .and_then(|observer| self.agent_navigation.reply_route(observer, thread_id));
                 let has_pending_approval =
                     self.thread_event_channels
                         .get(&thread_id)
@@ -221,16 +281,6 @@ impl App {
                 let mut state_labels = Vec::new();
                 if let Some(observation) = response_observation {
                     state_labels.push(observation.compact_label());
-                }
-                if let Some(reply_route) = reply_route {
-                    let recipient = displayed_thread_id
-                        .map(|id| self.agent_navigation.display_name(id, agent_root_thread_id))
-                        .unwrap_or_default();
-                    state_labels.push(if reply_route {
-                        format!("can message {recipient}")
-                    } else {
-                        format!("messages to {recipient} disabled")
-                    });
                 }
                 if has_pending_approval {
                     state_labels.push("approval".to_string());
@@ -357,11 +407,6 @@ impl App {
                 } else {
                     detail_lines.push(vec!["Response: ".bold(), "none".dim()].into());
                 }
-                detail_lines.extend(super::agent_messaging::permission_lines(
-                    &self.agent_navigation,
-                    thread_id,
-                    agent_root_thread_id,
-                ));
                 detail_lines.push(vec!["Queued: ".bold(), queued.to_string().into()].into());
                 if let Some(queue) = self.queued_agent_prompts.get(&thread_id) {
                     for (index, prompt) in queue.iter().take(3).enumerate() {
@@ -392,7 +437,10 @@ impl App {
                     detail_lines.push(vec!["Approval: ".bold(), "pending".magenta()].into());
                 }
                 detail_lines.extend(["".into(), enter_action.hint().dim().into()]);
-                details.push(AgentControlPaneDetails::new(detail_lines));
+                details.push(AgentControlPaneDetails::for_receiver(
+                    thread_id,
+                    detail_lines,
+                ));
                 let mut name_prefix_spans: Vec<Span<'static>> = agent_ref
                     .map(|agent_ref| vec![format!("{agent_ref} ").into()])
                     .unwrap_or_default();
@@ -469,6 +517,15 @@ impl App {
             .or_else(|| details.first().cloned())
             .unwrap_or_default();
         let detail_preview = AgentControlPanePreview::new(detail);
+        if initial_selected_idx.is_some()
+            && let Some((receiver_thread_id, request_id)) = detail_preview.begin_mailbox_read()
+        {
+            self.app_event_tx.send(AppEvent::LoadAgentMailboxInventory {
+                receiver_thread_id,
+                request_id,
+                preview: detail_preview.clone(),
+            });
+        }
         let selection_preview = detail_preview.clone();
         let requested_list_width = max_agent_name_width
             .saturating_add(2)
@@ -502,9 +559,17 @@ impl App {
             side_content_min_width: 48,
             global_shortcut_bindings: transcript_bindings,
             global_shortcut_action_id: transcript_action_id,
-            on_selection_changed: Some(Box::new(move |selected, _tx| {
-                if let Some(detail) = details.get(selected) {
+            on_selection_changed: Some(Box::new(move |selected, tx| {
+                let request = details.get(selected).and_then(|detail| {
                     selection_preview.select(detail.clone());
+                    selection_preview.begin_mailbox_read()
+                });
+                if let Some((receiver_thread_id, request_id)) = request {
+                    tx.send(AppEvent::LoadAgentMailboxInventory {
+                        receiver_thread_id,
+                        request_id,
+                        preview: selection_preview.clone(),
+                    });
                 }
             })),
             ..Default::default()

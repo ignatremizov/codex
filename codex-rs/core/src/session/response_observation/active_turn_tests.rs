@@ -24,7 +24,7 @@ async fn admission_binds_start_observers_before_reply_without_duplicating_the_li
                 .push((turn_id.to_owned(), sequence));
         },
         |_, _| {},
-        |_| {},
+        |_, _| {},
     );
     let admission = session.register_input_turn_admission("submission".to_owned());
     let resolution = session.capture_input_turn_admission_resolution(
@@ -133,4 +133,35 @@ async fn late_terminal_cannot_clear_the_current_live_turn() {
 
     session.publish_agent_response_terminal("current-turn".into(), AgentStatus::Completed(None));
     assert_eq!(session.active_agent_response_turn_id(), None);
+}
+
+#[tokio::test]
+async fn late_subscription_reads_exact_terminal_outcomes_after_next_turn_admission() {
+    let (session, _turn, _events) = make_session_and_context_with_rx().await;
+    let first = AgentStatus::Completed(Some("bound first result".into()));
+    assert!(session.begin_agent_response_turn("bound-turn"));
+    session.publish_agent_response_terminal("bound-turn".into(), first.clone());
+    assert!(session.begin_agent_response_turn("next-turn"));
+    let (snapshot, _subscription, previous) = session.subscribe_agent_responses_observing_turns(
+        |_, _| {},
+        |_, _| {},
+        |_, outcomes| outcomes.get("bound-turn").cloned(),
+    );
+    assert_eq!(snapshot.active_turn_id.as_deref(), Some("next-turn"));
+    assert_eq!(snapshot.last_terminal, None);
+    assert_eq!(previous, Some(first.clone().into()));
+
+    let second = AgentStatus::Completed(Some("unrelated second result".into()));
+    session.publish_agent_response_terminal("next-turn".into(), second.clone());
+    let (snapshot, _subscription, previous) = session.subscribe_agent_responses_observing_turns(
+        |_, _| {},
+        |_, _| {},
+        |_, outcomes| outcomes.get("bound-turn").cloned(),
+    );
+    assert_eq!(snapshot.active_turn_id, None);
+    assert_eq!(
+        snapshot.last_terminal,
+        Some(("next-turn".into(), second.into()))
+    );
+    assert_eq!(previous, Some(first.into()));
 }

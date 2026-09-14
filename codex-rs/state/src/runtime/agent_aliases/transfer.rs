@@ -131,6 +131,9 @@ impl StateRuntime {
                 "agent {thread_id} subtree changed while rollout writers were being reserved"
             );
         }
+        let lifecycle_authority_thread_ids = std::iter::once(thread_id)
+            .chain(expected_descendant_thread_ids.iter().copied())
+            .collect::<Vec<_>>();
         if members
             .iter()
             .skip(1)
@@ -198,6 +201,11 @@ impl StateRuntime {
             new_parent_thread_id,
             thread_id,
             DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await?;
+        super::advance_agent_thread_lifecycle_authority_epochs_in_transaction(
+            &mut tx,
+            &lifecycle_authority_thread_ids,
         )
         .await?;
         tx.commit().await?;

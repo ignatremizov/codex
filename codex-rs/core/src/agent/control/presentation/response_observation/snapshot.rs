@@ -136,6 +136,10 @@ impl LocalAgentControl {
                 ResponseObservationDeliveryKind::Final => Some(commit.response_item_id.clone()),
             },
             committed_delivery_response_item_ids: vec![commit.response_item_id.clone()],
+            mailbox_final_subscription_message_id: commit
+                .mailbox_final_subscription_message_id
+                .clone(),
+            mailbox_final_subscription_suppressed_message_id: None,
         }]
     }
 
@@ -181,7 +185,6 @@ pub(super) fn snapshots_for_relationship(
     admissions.sort_by_key(|(id, _)| **id);
     for (_, admission) in admissions {
         pending.final_response = pending.final_response.max(admission.final_response);
-        pending.target_messages |= admission.target_messages;
         pending.queue_delivery |= admission.queue_delivery;
         pending
             .commentary_admissions
@@ -193,10 +196,9 @@ pub(super) fn snapshots_for_relationship(
         target_turn_id: None,
         task_preview: pending.task_preview.clone(),
         promoted_task_context: pending.promoted_task_context.clone(),
-        target_messages: pending.target_messages,
-        reply_route_enabled: relationship
-            .reply_route
-            .map(TargetMessageRouteMode::is_enabled),
+        target_messages: false,
+        reply_route_enabled: None,
+        // Legacy wire field; new runtimes do not create route-context records.
         reply_route_context_installed: false,
         queue_delivery: pending.queue_delivery,
         message_wake_turn_id: None,
@@ -208,38 +210,50 @@ pub(super) fn snapshots_for_relationship(
         final_delivery: pending.final_response.into(),
         final_delivery_response_item_id: pending.final_delivery_response_item_id.clone(),
         committed_delivery_response_item_ids: pending.committed_delivery_response_item_ids.clone(),
+        mailbox_final_subscription_message_id: relationship
+            .mailbox_final_subscription_message_id
+            .clone(),
+        mailbox_final_subscription_suppressed_message_id: relationship
+            .mailbox_final_subscription_suppressed_message_id
+            .clone(),
     });
     let mut turns = relationship.turns.iter().collect::<Vec<_>>();
     turns.sort_by_key(|(turn_id, _)| *turn_id);
-    snapshots.extend(turns.into_iter().map(|(turn_id, observation)| {
-        AgentResponseObservation {
-            observer_thread_id: parent.thread_id,
-            target_thread_id: child.thread_id,
-            target_turn_id: Some(turn_id.clone()),
-            task_preview: observation.task_preview.clone(),
-            promoted_task_context: observation.promoted_task_context.clone(),
-            target_messages: observation.target_messages,
-            reply_route_enabled: relationship
-                .reply_route
-                .map(TargetMessageRouteMode::is_enabled),
-            reply_route_context_installed: false,
-            queue_delivery: observation.queue_delivery,
-            message_wake_turn_id: observation.message_wake_turn_id.clone(),
-            pending_commentary: !observation.commentary_admissions.is_empty(),
-            commentary_after_sequences: Vec::new(),
-            commentary_admissions: observation.commentary_admissions.clone(),
-            commentary_delivery: observation.commentary_delivery.clone(),
-            baseline_final_delivery: relationship.baseline_final_response.into(),
-            final_delivery: if relationship.revoked {
-                codex_protocol::protocol::AgentResponseFinalDelivery::None
-            } else {
-                observation.final_response.into()
-            },
-            final_delivery_response_item_id: observation.final_delivery_response_item_id.clone(),
-            committed_delivery_response_item_ids: observation
-                .committed_delivery_response_item_ids
-                .clone(),
-        }
-    }));
+    snapshots.extend(
+        turns
+            .into_iter()
+            .map(|(turn_id, observation)| AgentResponseObservation {
+                observer_thread_id: parent.thread_id,
+                target_thread_id: child.thread_id,
+                target_turn_id: Some(turn_id.clone()),
+                mailbox_final_subscription_message_id: observation
+                    .mailbox_final_subscription_message_id
+                    .clone(),
+                mailbox_final_subscription_suppressed_message_id: None,
+                task_preview: observation.task_preview.clone(),
+                promoted_task_context: observation.promoted_task_context.clone(),
+                target_messages: false,
+                reply_route_enabled: None,
+                reply_route_context_installed: false,
+                queue_delivery: observation.queue_delivery,
+                message_wake_turn_id: None,
+                pending_commentary: !observation.commentary_admissions.is_empty(),
+                commentary_after_sequences: Vec::new(),
+                commentary_admissions: observation.commentary_admissions.clone(),
+                commentary_delivery: observation.commentary_delivery.clone(),
+                baseline_final_delivery: relationship.baseline_final_response.into(),
+                final_delivery: if relationship.revoked {
+                    codex_protocol::protocol::AgentResponseFinalDelivery::None
+                } else {
+                    observation.final_response.into()
+                },
+                final_delivery_response_item_id: observation
+                    .final_delivery_response_item_id
+                    .clone(),
+                committed_delivery_response_item_ids: observation
+                    .committed_delivery_response_item_ids
+                    .clone(),
+            }),
+    );
     snapshots
 }

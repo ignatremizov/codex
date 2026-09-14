@@ -1963,6 +1963,16 @@ impl ThreadManagerState {
             })
     }
 
+    /// Revoke durable mailbox tokens after committed graph authority changes.
+    pub(crate) async fn supersede_mailbox_final_subscriptions_for_threads(
+        &self,
+        thread_ids: Vec<ThreadId>,
+    ) -> Result<(), ThreadStoreError> {
+        self.thread_store
+            .supersede_mailbox_final_subscriptions_for_threads(thread_ids)
+            .await
+    }
+
     /// Submit to the captured runtime without resolving its identifier again.
     pub(crate) async fn send_op_to_thread(
         &self,
@@ -2811,6 +2821,16 @@ impl ThreadManagerState {
                 ));
                 if registration == ThreadRegistration::Immediate {
                     e.insert(thread.clone());
+                    if self.agent_control_factory.is_none() {
+                        thread
+                            .session
+                            .services
+                            .local_agent_runtime
+                            .control(thread.session.session_id())
+                            .schedule_mailbox_final_subscription_recovery(
+                                thread.session.presentation_id(),
+                            );
+                    }
                 }
                 return Ok(ThreadSpawnResult {
                     thread_id,

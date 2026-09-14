@@ -1,6 +1,8 @@
 //! Process-local inventory parity under the mailbox's existing mutex.
 
 use super::InMemoryMailbox;
+use crate::MailboxFinalSubscription;
+use crate::MailboxFinalSubscriptionState;
 use crate::MailboxInventory;
 use crate::MailboxInventoryAcknowledgement;
 use crate::MailboxInventoryAcknowledgementOutcome;
@@ -121,36 +123,70 @@ impl InMemoryMailbox {
         notification: MailboxInventoryNotification,
         history: Option<&[RolloutItem]>,
     ) -> ThreadStoreResult<MailboxInventoryAcknowledgement> {
-        let (notified_through, outcome) = match self.recover_inventory(&notification, history)? {
-            MailboxInventoryRecovery::NotRecorded => return Err(recovery_error(&notification)),
-            MailboxInventoryRecovery::Recorded { .. } => {
-                let progress = self
-                    .inventory
-                    .progress
-                    .get_mut(&notification.receiver_thread_id)
-                    .ok_or_else(|| recovery_error(&notification))?;
-                if progress.active.as_ref() != Some(&notification) {
-                    return Err(recovery_error(&notification));
+        let (notified_through, outcome, bound_subscriptions) =
+            match self.recover_inventory(&notification, history)? {
+                MailboxInventoryRecovery::NotRecorded => return Err(recovery_error(&notification)),
+                MailboxInventoryRecovery::Recorded { .. } => {
+                    let notified_through = {
+                        let progress = self
+                            .inventory
+                            .progress
+                            .get_mut(&notification.receiver_thread_id)
+                            .ok_or_else(|| recovery_error(&notification))?;
+                        if progress.active.as_ref() != Some(&notification) {
+                            return Err(recovery_error(&notification));
+                        }
+                        progress.notified_through =
+                            progress.notified_through.max(notification.through_sequence);
+                        progress.active = None;
+                        progress.notified_through
+                    };
+                    let mut bound_subscriptions = Vec::new();
+                    for message in &mut self.messages {
+                        if message.receiver_thread_id == notification.receiver_thread_id
+                            && message.state == MailboxMessageState::Pending
+                            && message.acceptance_sequence <= notification.through_sequence
+                            && let Some(subscription) = message.final_subscription.as_mut()
+                            && subscription.state == MailboxFinalSubscriptionState::Pending
+                        {
+                            subscription.state = MailboxFinalSubscriptionState::Bound;
+                            subscription.bound_turn_id = Some(notification.id.clone());
+                            bound_subscriptions.push(subscription.clone());
+                        }
+                    }
+                    (
+                        notified_through,
+                        MailboxInventoryAcknowledgementOutcome::Acknowledged,
+                        bound_subscriptions,
+                    )
                 }
-                progress.notified_through =
-                    progress.notified_through.max(notification.through_sequence);
-                progress.active = None;
-                (
-                    progress.notified_through,
-                    MailboxInventoryAcknowledgementOutcome::Acknowledged,
-                )
-            }
-            MailboxInventoryRecovery::AlreadyCovered {
-                notified_through, ..
-            } => (
-                notified_through,
-                MailboxInventoryAcknowledgementOutcome::AlreadyCovered,
-            ),
-        };
+                MailboxInventoryRecovery::AlreadyCovered {
+                    notified_through, ..
+                } => {
+                    let bound_subscriptions = self
+                        .messages
+                        .iter()
+                        .filter_map(|message| message.final_subscription.as_ref())
+                        .filter(|subscription| {
+                            subscription.receiver_thread_id == notification.receiver_thread_id
+                                && subscription.bound_turn_id.as_deref()
+                                    == Some(notification.id.as_str())
+                                && subscription.state == MailboxFinalSubscriptionState::Bound
+                        })
+                        .cloned()
+                        .collect::<Vec<MailboxFinalSubscription>>();
+                    (
+                        notified_through,
+                        MailboxInventoryAcknowledgementOutcome::AlreadyCovered,
+                        bound_subscriptions,
+                    )
+                }
+            };
         Ok(MailboxInventoryAcknowledgement {
             notification_id: notification.id,
             notified_through,
             outcome,
+            bound_subscriptions,
         })
     }
 

@@ -75,6 +75,8 @@ async fn completed_terminal_checks_require_original_identity_and_preserve_other_
 
     terminal_interaction(&mut chat, "unknown", "123", "");
     assert!(drain_insert_history_transcript(&mut rx).is_empty());
+    terminal_interaction(&mut chat, "exec-old", "different-process", "");
+    assert!(drain_insert_history_transcript(&mut rx).is_empty());
     terminal_interaction(&mut chat, "exec-old", "123", "");
     let rendered = drain_insert_history_transcript(&mut rx)
         .iter()

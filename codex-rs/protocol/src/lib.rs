@@ -42,6 +42,7 @@ pub use tool_name::DEFAULT_FUNCTION_NAMESPACE;
 pub use tool_name::ToolName;
 pub use wake_event_flags::WakeEventFinalDelivery;
 pub use wake_event_flags::WakeEventFlags;
+pub use wake_event_flags::WakeEventMailboxSubscription;
 pub use wake_event_flags::WakeEventSurface;
 
 /// Reserved root-scoped nickname for the primary agent thread.

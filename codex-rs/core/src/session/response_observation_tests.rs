@@ -603,7 +603,7 @@ async fn response_subscription_is_serialized_with_terminal_publication() {
     let subscriber = std::thread::spawn(move || {
         started_tx.send(()).expect("subscription start signal");
         let (snapshot, _subscription, ()) = subscribing_session
-            .subscribe_agent_responses_observing_turns(|_, _| {}, |_, _| {}, |_| {});
+            .subscribe_agent_responses_observing_turns(|_, _| {}, |_, _| {}, |_, _| {});
         subscribed_tx
             .send(snapshot.status)
             .expect("subscription result");
@@ -827,7 +827,7 @@ async fn observer_registration_precedes_synchronous_start_and_terminal_callbacks
                 .expect("observed callbacks")
                 .push(format!("terminal:{turn_id}"));
         },
-        move |snapshot| {
+        move |snapshot, _| {
             registration
                 .lock()
                 .expect("observed callbacks")
