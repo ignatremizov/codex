@@ -28,9 +28,11 @@ fn explicit_next_turn_wake_suppresses_unclaimed_bound_mailbox_turn() {
             .response_observation_by_observer_child
             .entry((parent, child))
             .or_default();
-        let mut pending = ResponseTurnObservation::default();
-        pending.final_response = FinalResponseObservation::Wake;
-        pending.response_observation_selection_id = Some(selection_id);
+        let pending = ResponseTurnObservation {
+            final_response: FinalResponseObservation::Wake,
+            response_observation_selection_id: Some(selection_id),
+            ..ResponseTurnObservation::default()
+        };
         relationship.pending_next_turn = Some(pending);
     }
 

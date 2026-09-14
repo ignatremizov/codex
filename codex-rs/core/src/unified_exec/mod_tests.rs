@@ -341,28 +341,43 @@ async fn write_stdin(
     write_stdin_with_options(
         session,
         turn,
-        process_id,
-        input,
-        yield_time_ms,
-        false,
-        tokio_util::sync::CancellationToken::new(),
-        None,
-        None,
+        WriteStdinOptions {
+            process_id,
+            input,
+            yield_time_ms,
+            wait_until_exit: false,
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            user_input_wait: None,
+            interaction_id: None,
+        },
     )
     .await
+}
+
+pub(super) struct WriteStdinOptions<'a> {
+    pub process_id: i32,
+    pub input: &'a str,
+    pub yield_time_ms: u64,
+    pub wait_until_exit: bool,
+    pub cancellation_token: tokio_util::sync::CancellationToken,
+    pub user_input_wait: Option<UserInputWait>,
+    pub interaction_id: Option<&'a str>,
 }
 
 pub(super) async fn write_stdin_with_options(
     session: &Arc<Session>,
     turn: &Arc<TurnContext>,
-    process_id: i32,
-    input: &str,
-    yield_time_ms: u64,
-    wait_until_exit: bool,
-    cancellation_token: tokio_util::sync::CancellationToken,
-    user_input_wait: Option<UserInputWait>,
-    interaction_id: Option<&str>,
+    options: WriteStdinOptions<'_>,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
+    let WriteStdinOptions {
+        process_id,
+        input,
+        yield_time_ms,
+        wait_until_exit,
+        cancellation_token,
+        user_input_wait,
+        interaction_id,
+    } = options;
     let interaction_event = interaction_id.map(|interaction_id| WriteStdinInteractionEvent {
         session,
         turn,
@@ -884,13 +899,15 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
             write_stdin_with_options(
                 &session,
                 &turn,
-                process_id,
-                "blocked input",
-                /*yield_time_ms*/ 100,
-                /*wait_until_exit*/ false,
-                write_cancellation_token,
-                /*user_input_wait*/ None,
-                /*interaction_id*/ None,
+                WriteStdinOptions {
+                    process_id,
+                    input: "blocked input",
+                    yield_time_ms: 100,
+                    wait_until_exit: false,
+                    cancellation_token: write_cancellation_token,
+                    user_input_wait: None,
+                    interaction_id: None,
+                },
             )
             .await
         }

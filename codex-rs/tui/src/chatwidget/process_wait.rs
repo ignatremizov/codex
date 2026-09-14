@@ -405,7 +405,7 @@ impl ChatWidget {
                 }
                 self.on_async_agent_notice(history_cell::new_unified_exec_wait_result(
                     command_display,
-                    process_id.clone(),
+                    process_id,
                     wait_key.interaction_id,
                     elapsed_ms,
                     reason,

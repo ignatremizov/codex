@@ -17,23 +17,27 @@ async fn concurrent_process_waits_keep_identity_when_one_exits() {
     let now_ms = unix_timestamp_ms();
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w1",
-        "call-build",
-        "p1",
-        TerminalWaitMode::UntilExit,
-        now_ms.saturating_sub(133_000),
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w1",
+            item_id: "call-build",
+            process_id: "p1",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: now_ms.saturating_sub(133_000),
+            deadline_at_ms: None,
+        },
     );
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w2",
-        "call-test",
-        "p2",
-        TerminalWaitMode::Timed,
-        now_ms.saturating_sub(33_000),
-        Some(now_ms.saturating_add(12_000)),
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w2",
+            item_id: "call-test",
+            process_id: "p2",
+            mode: TerminalWaitMode::Timed,
+            started_at_ms: now_ms.saturating_sub(33_000),
+            deadline_at_ms: Some(now_ms.saturating_add(12_000)),
+        },
     );
     chat.refresh_unified_exec_wait_status_at(now_ms);
     chat.bottom_pane.reset_status_timer(Duration::ZERO);
@@ -101,13 +105,15 @@ async fn timed_process_wait_shows_countdown_then_elapsed_result() {
 
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w3",
-        "call-format",
-        "p3",
-        TerminalWaitMode::Timed,
-        now_ms,
-        Some(now_ms.saturating_add(60_000)),
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w3",
+            item_id: "call-format",
+            process_id: "p3",
+            mode: TerminalWaitMode::Timed,
+            started_at_ms: now_ms,
+            deadline_at_ms: Some(now_ms.saturating_add(60_000)),
+        },
     );
     chat.refresh_unified_exec_wait_status_at(now_ms);
     chat.bottom_pane.reset_status_timer(Duration::ZERO);
@@ -151,23 +157,27 @@ async fn concurrent_wait_invocations_for_one_process_remain_distinct() {
 
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w10",
-        "call-build",
-        "p10",
-        TerminalWaitMode::UntilExit,
-        now_ms.saturating_sub(10_000),
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w10",
+            item_id: "call-build",
+            process_id: "p10",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: now_ms.saturating_sub(10_000),
+            deadline_at_ms: None,
+        },
     );
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w11",
-        "call-build",
-        "p10",
-        TerminalWaitMode::UntilExit,
-        now_ms.saturating_sub(5_000),
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w11",
+            item_id: "call-build",
+            process_id: "p10",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: now_ms.saturating_sub(5_000),
+            deadline_at_ms: None,
+        },
     );
     chat.refresh_unified_exec_wait_status_at(now_ms);
     chat.bottom_pane.reset_status_timer(Duration::ZERO);
@@ -223,23 +233,27 @@ async fn process_wait_reports_input_release_and_cancellation() {
     let start_at_ms = unix_timestamp_ms().saturating_add(60_000);
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w4",
-        "call-one",
-        "p4",
-        TerminalWaitMode::UntilExit,
-        start_at_ms,
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w4",
+            item_id: "call-one",
+            process_id: "p4",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: start_at_ms,
+            deadline_at_ms: None,
+        },
     );
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w5",
-        "call-two",
-        "p5",
-        TerminalWaitMode::UntilExit,
-        start_at_ms,
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w5",
+            item_id: "call-two",
+            process_id: "p5",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: start_at_ms,
+            deadline_at_ms: None,
+        },
     );
 
     send_wait_finished(
@@ -293,13 +307,15 @@ async fn interrupted_turn_clears_a_wait_without_finish_metadata() {
     track_process(&mut chat, "call-build", "p6", "cargo build");
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w6",
-        "call-build",
-        "p6",
-        TerminalWaitMode::UntilExit,
-        unix_timestamp_ms(),
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w6",
+            item_id: "call-build",
+            process_id: "p6",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: unix_timestamp_ms(),
+            deadline_at_ms: None,
+        },
     );
 
     assert!(chat.unified_exec_wait_tracker.is_some());
@@ -324,23 +340,27 @@ async fn wait_events_are_identity_checked_idempotent_and_deferred_during_streami
     let now_ms = unix_timestamp_ms();
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w7",
-        "call-live",
-        "p7",
-        TerminalWaitMode::UntilExit,
-        now_ms.saturating_sub(133_000),
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w7",
+            item_id: "call-live",
+            process_id: "p7",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: now_ms.saturating_sub(133_000),
+            deadline_at_ms: None,
+        },
     );
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w7",
-        "call-live",
-        "p7",
-        TerminalWaitMode::UntilExit,
-        now_ms,
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w7",
+            item_id: "call-live",
+            process_id: "p7",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: now_ms,
+            deadline_at_ms: None,
+        },
     );
     chat.refresh_unified_exec_wait_status_at(now_ms);
     assert!(
@@ -408,13 +428,15 @@ async fn wait_events_are_identity_checked_idempotent_and_deferred_during_streami
     track_process(&mut chat, "call-old", "p8", "cargo build");
     send_wait_started(
         &mut chat,
-        "turn-1",
-        "w8",
-        "call-old",
-        "p8",
-        TerminalWaitMode::UntilExit,
-        unix_timestamp_ms(),
-        None,
+        WaitStart {
+            turn_id: "turn-1",
+            interaction_id: "w8",
+            item_id: "call-old",
+            process_id: "p8",
+            mode: TerminalWaitMode::UntilExit,
+            started_at_ms: unix_timestamp_ms(),
+            deadline_at_ms: None,
+        },
     );
     handle_turn_interrupted(&mut chat, "turn-1");
     handle_turn_started(&mut chat, "turn-2");
@@ -434,15 +456,18 @@ async fn wait_events_are_identity_checked_idempotent_and_deferred_during_streami
     );
 
     track_process(&mut chat, "call-stream", "p9", "cargo fmt");
+    let wait_started_at_ms = unix_timestamp_ms();
     send_wait_started(
         &mut chat,
-        "turn-2",
-        "w9",
-        "call-stream",
-        "p9",
-        TerminalWaitMode::Timed,
-        unix_timestamp_ms(),
-        Some(unix_timestamp_ms().saturating_add(30_000)),
+        WaitStart {
+            turn_id: "turn-2",
+            interaction_id: "w9",
+            item_id: "call-stream",
+            process_id: "p9",
+            mode: TerminalWaitMode::Timed,
+            started_at_ms: wait_started_at_ms,
+            deadline_at_ms: Some(wait_started_at_ms.saturating_add(30_000)),
+        },
     );
     chat.on_agent_message_delta("Assistant output is still streaming.\n".to_string());
     send_wait_finished(
@@ -472,26 +497,27 @@ async fn wait_events_are_identity_checked_idempotent_and_deferred_during_streami
     );
 }
 
-fn send_wait_started(
-    chat: &mut ChatWidget,
-    turn_id: &str,
-    interaction_id: &str,
-    item_id: &str,
-    process_id: &str,
+struct WaitStart<'a> {
+    turn_id: &'a str,
+    interaction_id: &'a str,
+    item_id: &'a str,
+    process_id: &'a str,
     mode: TerminalWaitMode,
     started_at_ms: i64,
     deadline_at_ms: Option<i64>,
-) {
+}
+
+fn send_wait_started(chat: &mut ChatWidget, start: WaitStart<'_>) {
     send_terminal_interaction(
         chat,
-        turn_id,
-        item_id,
-        process_id,
-        deadline_at_ms,
+        start.turn_id,
+        start.item_id,
+        start.process_id,
+        start.deadline_at_ms,
         Some(TerminalWait::Started {
-            interaction_id: interaction_id.to_string(),
-            started_at_ms,
-            mode,
+            interaction_id: start.interaction_id.to_string(),
+            started_at_ms: start.started_at_ms,
+            mode: start.mode,
         }),
     );
 }

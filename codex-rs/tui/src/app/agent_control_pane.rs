@@ -50,15 +50,6 @@ pub(super) struct AgentControlPaneDetails {
 }
 
 impl AgentControlPaneDetails {
-    pub(super) fn new(lines: Vec<Line<'static>>) -> Self {
-        Self {
-            lines,
-            receiver_thread_id: None,
-            mailbox: AgentMailboxDetails::NotShown,
-            mailbox_request_id: None,
-        }
-    }
-
     fn for_receiver(
         receiver_thread_id: codex_protocol::ThreadId,
         lines: Vec<Line<'static>>,

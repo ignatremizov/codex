@@ -34,13 +34,15 @@ async fn failure_before_wait_start_returns_an_error_without_a_lifecycle_pair() -
     let error = tests::write_stdin_with_options(
         &session,
         &turn,
-        /*process_id*/ 999_999,
-        "",
-        /*yield_time_ms*/ 1,
-        /*wait_until_exit*/ true,
-        CancellationToken::new(),
-        /*user_input_wait*/ None,
-        Some("missing-process-wait"),
+        tests::WriteStdinOptions {
+            process_id: 999_999,
+            input: "",
+            yield_time_ms: 1,
+            wait_until_exit: true,
+            cancellation_token: CancellationToken::new(),
+            user_input_wait: None,
+            interaction_id: Some("missing-process-wait"),
+        },
     )
     .await
     .expect_err("unknown process should remain a user-visible write_stdin error");
@@ -101,16 +103,18 @@ async fn independent_until_exit_waits_release_on_input_and_cancellation_without_
         tests::write_stdin_with_options(
             &input_session,
             &input_turn,
-            first_process_id,
-            "",
-            /*yield_time_ms*/ 1,
-            /*wait_until_exit*/ true,
-            input_cancellation,
-            Some(UserInputWait {
-                steer_activity_rx,
-                pending_steer: false,
-            }),
-            Some("wait-input"),
+            tests::WriteStdinOptions {
+                process_id: first_process_id,
+                input: "",
+                yield_time_ms: 1,
+                wait_until_exit: true,
+                cancellation_token: input_cancellation,
+                user_input_wait: Some(UserInputWait {
+                    steer_activity_rx,
+                    pending_steer: false,
+                }),
+                interaction_id: Some("wait-input"),
+            },
         )
         .await
     });
@@ -121,13 +125,15 @@ async fn independent_until_exit_waits_release_on_input_and_cancellation_without_
         tests::write_stdin_with_options(
             &exit_session,
             &exit_turn,
-            second_process_id,
-            "",
-            /*yield_time_ms*/ 1,
-            /*wait_until_exit*/ true,
-            CancellationToken::new(),
-            /*user_input_wait*/ None,
-            Some("wait-exit"),
+            tests::WriteStdinOptions {
+                process_id: second_process_id,
+                input: "",
+                yield_time_ms: 1,
+                wait_until_exit: true,
+                cancellation_token: CancellationToken::new(),
+                user_input_wait: None,
+                interaction_id: Some("wait-exit"),
+            },
         )
         .await
     });
@@ -194,13 +200,15 @@ async fn independent_until_exit_waits_release_on_input_and_cancellation_without_
         tests::write_stdin_with_options(
             &cancellation_session,
             &cancellation_turn,
-            first_process_id,
-            "",
-            /*yield_time_ms*/ 1,
-            /*wait_until_exit*/ true,
-            cancellation_for_wait,
-            /*user_input_wait*/ None,
-            Some("wait-cancel"),
+            tests::WriteStdinOptions {
+                process_id: first_process_id,
+                input: "",
+                yield_time_ms: 1,
+                wait_until_exit: true,
+                cancellation_token: cancellation_for_wait,
+                user_input_wait: None,
+                interaction_id: Some("wait-cancel"),
+            },
         )
         .await
     });
@@ -226,13 +234,15 @@ async fn independent_until_exit_waits_release_on_input_and_cancellation_without_
     let default_poll = tests::write_stdin_with_options(
         &session,
         &turn,
-        first_process_id,
-        "\n",
-        /*yield_time_ms*/ 250,
-        /*wait_until_exit*/ false,
-        CancellationToken::new(),
-        /*user_input_wait*/ None,
-        /*interaction_id*/ None,
+        tests::WriteStdinOptions {
+            process_id: first_process_id,
+            input: "\n",
+            yield_time_ms: 250,
+            wait_until_exit: false,
+            cancellation_token: CancellationToken::new(),
+            user_input_wait: None,
+            interaction_id: None,
+        },
     )
     .await
     .expect("default bounded poll should complete");

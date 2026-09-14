@@ -28,6 +28,13 @@ use ratatui::style::Modifier;
 use tokio::sync::mpsc::unbounded_channel;
 use unicode_width::UnicodeWidthStr;
 
+fn details_without_receiver(lines: Vec<ratatui::text::Line<'static>>) -> AgentControlPaneDetails {
+    AgentControlPaneDetails {
+        lines,
+        ..AgentControlPaneDetails::default()
+    }
+}
+
 async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> ListSelectionView {
     let mut app = super::super::test_support::make_test_app().await;
     let main_thread_id =
@@ -237,7 +244,7 @@ async fn current_agent_uses_markerless_name_emphasis() {
 
 #[test]
 fn agent_control_pane_details_snapshot() {
-    let details = AgentControlPaneDetails::new(vec![
+    let details = details_without_receiver(vec![
         "Anscombe [reviewer]".bold().into(),
         vec!["running 4m 12s".green(), " · ref 2".dim()].into(),
         vec![
@@ -303,11 +310,11 @@ fn agent_control_pane_details_snapshot() {
 
 #[test]
 fn selecting_agent_updates_shared_preview_revision() {
-    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::new(vec!["First".into()]));
+    let preview = AgentControlPanePreview::new(details_without_receiver(vec!["First".into()]));
     let renderable = preview.renderable();
     assert_eq!(renderable.layout_revision(), Some(0));
 
-    preview.select(AgentControlPaneDetails::new(vec!["Second".into()]));
+    preview.select(details_without_receiver(vec!["Second".into()]));
 
     assert_eq!(renderable.layout_revision(), Some(1));
     assert_eq!(
@@ -609,7 +616,7 @@ async fn child_primary_view_uses_durable_ref_one_as_agent_tree_main() {
 
 #[test]
 fn wide_agent_pane_renders_the_complete_side_detail_column() {
-    let details = AgentControlPaneDetails::new(vec![
+    let details = details_without_receiver(vec![
         "Hopper [reviewer]".bold().into(),
         "running · ref 2".into(),
         "".into(),
@@ -671,7 +678,7 @@ fn wide_agent_pane_renders_the_complete_side_detail_column() {
 
 #[test]
 fn wide_agent_pane_uses_side_panel_height_for_agent_rows() {
-    let preview = AgentControlPanePreview::new(AgentControlPaneDetails::new(
+    let preview = AgentControlPanePreview::new(details_without_receiver(
         (1..=20)
             .map(|row| format!("Detail row {row}").into())
             .collect(),

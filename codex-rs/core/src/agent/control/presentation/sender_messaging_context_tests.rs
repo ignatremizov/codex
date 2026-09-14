@@ -1,8 +1,3 @@
-#![expect(
-    clippy::await_holding_invalid_type,
-    reason = "parameterized read-only projection tests exclude lifecycle refreshes across awaits"
-)]
-
 use super::*;
 use crate::ThreadManager;
 use crate::UserAgentReplyRouteMode;
