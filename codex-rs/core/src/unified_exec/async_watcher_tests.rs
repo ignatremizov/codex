@@ -171,12 +171,14 @@ async fn completed_output_preserves_bytes_before_subscription(
         rx_event,
     } = streaming_output_harness(Some(b"early\n")).await?;
 
-    let model_output = UnifiedExecProcessManager::collect_output_until_deadline(
+    let model_output = super::super::output_collection::collect_output_until_deadline(
         process.output_handles(),
         /*pause_state*/ None,
         Some(Instant::now()),
+        /*interrupts*/ None,
     )
-    .await;
+    .await
+    .collected;
     assert_eq!(model_output.to_bytes(), b"early\n");
     #[allow(deprecated)]
     let cwd = context.step_context.turn.cwd.clone().into();

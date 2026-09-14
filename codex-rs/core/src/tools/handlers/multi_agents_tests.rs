@@ -85,10 +85,13 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_model_visibility_from_response_item_id;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_thread_store::LoadSubAgentCompletionContextItemParams;
+use codex_thread_store::PersistContext;
 use core_test_support::TempDirExt;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
@@ -315,33 +318,57 @@ async fn publish_agent_turn_started(
     .expect("child turn start delivery");
 }
 
-async fn wait_for_parent_completion_message(
-    manager: &ThreadManager,
-    parent_thread_id: ThreadId,
+async fn wait_for_parent_completion_messages(
+    parent: &crate::CodexThread,
     worker_path: &AgentPath,
-    expected: &str,
+    expected: &[String],
 ) {
-    timeout(Duration::from_secs(5), async {
+    let ids = timeout(Duration::from_secs(5), async {
         loop {
-            if manager.captured_ops().iter().any(|(id, op)| {
-                *id == parent_thread_id
-                    && matches!(
-                        op,
-                        Op::InterAgentCommunication { communication, .. }
-                            if &communication.author == worker_path
-                                && communication.recipient == AgentPath::root()
-                                && communication.other_recipients.is_empty()
-                                && communication.content == expected
-                                && !communication.trigger_turn
-                    )
-            }) {
-                break;
+            let ids = parent
+                .session
+                .input_queue
+                .pending_mailbox_response_item_ids(/*turn_state*/ None)
+                .await;
+            if ids.len() >= expected.len() {
+                break ids;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("parent completion notification");
+    assert_eq!(ids.len(), expected.len());
+    for (id, message) in ids.into_iter().zip(expected) {
+        assert!(is_sub_agent_completion_context_response_item_id(&id));
+        let mut communication = InterAgentCommunication::new(
+            worker_path.clone(),
+            AgentPath::root(),
+            Vec::new(),
+            message.clone(),
+            /*trigger_turn*/ false,
+        );
+        communication.id = Some(id.clone());
+        let stored = parent
+            .session
+            .services
+            .thread_store
+            .load_sub_agent_completion_context_item(LoadSubAgentCompletionContextItemParams {
+                thread_id: parent.session.thread_id(),
+                include_archived: false,
+                response_item_id: id,
+            })
+            .await
+            .expect("canonical completion exists before mailbox admission");
+        assert_eq!(stored, Some(communication.to_model_input_item()));
+    }
+    assert!(
+        !parent
+            .session
+            .input_queue
+            .has_trigger_turn_mailbox_items()
+            .await
+    );
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
@@ -2746,9 +2773,14 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
     // Production spawn_agent calls happen after the parent turn has resolved
     // and stored its runtime; mirror that before using the synthetic handler.
     root.thread.session.new_default_turn().await;
+    root.thread.ensure_rollout_materialized().await;
     set_agent_control(
         &mut session,
-        root.thread.session.services.local_agent_runtime.control(root.thread.session.session_id()),
+        root.thread
+            .session
+            .services
+            .local_agent_runtime
+            .control(root.thread.session.session_id()),
     );
     session.thread_id = root.thread_id;
     let session = Arc::new(session);
@@ -2804,8 +2836,12 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         &AgentStatus::Completed(Some("first done".to_string())),
     )
     .expect("completed status should render");
-    wait_for_parent_completion_message(&manager, root.thread_id, &worker_path, &first_notification)
-        .await;
+    wait_for_parent_completion_messages(
+        &root.thread,
+        &worker_path,
+        std::slice::from_ref(&first_notification),
+    )
+    .await;
 
     FollowupTaskHandlerV2::default()
         .handle(invocation(
@@ -2860,45 +2896,12 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         &AgentStatus::Completed(Some("second done".to_string())),
     )
     .expect("completed status should render");
-    wait_for_parent_completion_message(
-        &manager,
-        root.thread_id,
+    wait_for_parent_completion_messages(
+        &root.thread,
         &worker_path,
-        &second_notification,
+        &[first_notification, second_notification],
     )
     .await;
-
-    let notifications = timeout(Duration::from_secs(5), async {
-        loop {
-            let notifications = manager
-                .captured_ops()
-                .into_iter()
-                .filter_map(|(id, op)| {
-                    (id == root.thread_id)
-                        .then_some(op)
-                        .and_then(|op| match op {
-                            Op::InterAgentCommunication { communication, .. }
-                                if communication.author == worker_path
-                                    && communication.recipient == AgentPath::root()
-                                    && communication.other_recipients.is_empty()
-                                    && !communication.trigger_turn =>
-                            {
-                                Some(communication.content)
-                            }
-                            _ => None,
-                        })
-                })
-                .collect::<Vec<_>>();
-            if notifications.len() == 2 {
-                break notifications;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("parent should receive one completion notification per child turn");
-
-    assert_eq!(notifications, vec![first_notification, second_notification]);
 }
 
 #[tokio::test]
@@ -3697,6 +3700,121 @@ async fn send_input_accepts_structured_items() {
         .submit(Op::Shutdown {})
         .await
         .expect("shutdown should submit");
+}
+
+#[tokio::test]
+async fn send_input_mailbox_hints_when_receiver_is_unloaded() {
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = turn.config.as_ref().clone();
+    config
+        .features
+        .enable(Feature::Collab)
+        .expect("test config should allow V1 collaboration");
+    config
+        .features
+        .disable(Feature::MultiAgentV2)
+        .expect("test config should disable V2 collaboration");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow mailbox storage");
+    let state_db = init_state_db(&config).await;
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        state_db,
+    );
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent thread");
+    let agent_id = spawn_idle_v1_child(&parent.thread, config).await;
+    let child = manager
+        .get_thread(agent_id)
+        .await
+        .expect("child should be loaded before persistence");
+    child
+        .session
+        .abort_all_tasks(TurnAbortReason::Interrupted)
+        .await;
+    child
+        .session
+        .inject_no_new_turn(
+            vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "materialize mailbox receiver".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            None,
+        )
+        .await;
+    child
+        .session
+        .ensure_rollout_materialized(PersistContext::Standard)
+        .await;
+    child
+        .session
+        .flush_rollout()
+        .await
+        .expect("child rollout should flush");
+    let removed = manager
+        .remove_thread(&agent_id)
+        .await
+        .expect("child should be removable");
+    removed
+        .submit(Op::Shutdown {})
+        .await
+        .expect("removed child should shut down");
+    removed.wait_until_terminated().await;
+    assert_eq!(
+        manager.agent_control().get_status(agent_id).await,
+        AgentStatus::NotFound
+    );
+
+    let parent_session = Arc::clone(&parent.thread.session);
+    let parent_turn = parent_session.new_default_turn().await;
+    assert!(
+        parent_session.begin_agent_response_turn(&parent_turn.sub_id),
+        "parent turn should become active"
+    );
+    let output = SendInputHandler
+        .handle(invocation(
+            parent_session,
+            parent_turn,
+            "send_input",
+            function_payload(json!({
+                "target": agent_id.to_string(),
+                "message": "read this when resumed",
+                "w": "fz"
+            })),
+        ))
+        .await
+        .expect("mailbox acceptance should succeed");
+    let (content, success) = expect_text_output(output);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&content).expect("mailbox result should be json"),
+        json!({
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    );
+    assert_eq!(success, Some(true));
+    assert!(
+        manager.get_thread(agent_id).await.is_err(),
+        "mailbox acceptance must not load the receiver"
+    );
+
+    let _ = parent
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
 }
 
 #[tokio::test]

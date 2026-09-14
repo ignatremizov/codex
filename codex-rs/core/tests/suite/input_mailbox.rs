@@ -141,6 +141,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
                 input: input.clone(),
                 client_id: Some("user-client-id".to_string()),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let foreign = ThreadId::new();
@@ -169,6 +170,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
                     sender_turn_id: "stored-sender-turn".to_string(),
                 }),
             },
+            final_subscription: Default::default(),
         })
         .await?;
     let submission = test
@@ -277,6 +279,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
                         }],
                         client_id: None,
                     },
+                    final_subscription: Default::default(),
                 })
                 .await?,
         );
@@ -303,12 +306,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
         })
         .collect::<Vec<_>>();
     assert_eq!(outputs.len(), 1);
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(
-            outputs[0].1["output"].as_str().expect("metadata only")
-        )?,
-        json!({"status": "ok"}),
-    );
+    assert_eq!(outputs[0].1["output"], "");
     let user_content = model_items
         .iter()
         .enumerate()

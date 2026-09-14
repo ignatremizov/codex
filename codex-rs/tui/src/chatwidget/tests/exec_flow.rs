@@ -1432,13 +1432,15 @@ async fn unified_exec_completed_session_poll_snapshot() {
     );
     end_exec(&mut chat, completed, "", "", /*exit_code*/ 0);
     let mut cells = drain_insert_history_transcript(&mut rx);
-    chat.on_terminal_interaction(
-        "turn-1".to_string(),
-        "call-watch".to_string(),
-        "completed-proc".to_string(),
-        String::new(),
-        Some(future_deadline_at_ms(/*offset_ms*/ 60_000)),
-    );
+    chat.on_terminal_interaction(codex_app_server_protocol::TerminalInteractionNotification {
+        thread_id: chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+        turn_id: "turn-1".to_string(),
+        item_id: "call-watch".to_string(),
+        process_id: "completed-proc".to_string(),
+        stdin: String::new(),
+        deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+        wait: None,
+    });
     terminal_interaction(&mut chat, "call-watch", "completed-proc", "");
 
     cells.extend(drain_insert_history_transcript(&mut rx));
@@ -1455,7 +1457,7 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
     handle_turn_started(&mut chat, "turn-1");
 
     begin_unified_exec_startup(&mut chat, "call-wait", "proc-1", "cargo test -p codex-core");
-    terminal_interaction(&mut chat, "call-wait-stdin", "proc-1", "");
+    terminal_interaction(&mut chat, "call-wait", "proc-1", "");
 
     complete_assistant_message(&mut chat, "msg-1", "Final response.", /*phase*/ None);
     handle_turn_completed(&mut chat, "turn-1", /*duration_ms*/ None);
@@ -1479,7 +1481,7 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
         "proc-1",
         "cargo test -p codex-core",
     );
-    terminal_interaction(&mut chat, "call-wait-stream-stdin", "proc-1", "");
+    terminal_interaction(&mut chat, "call-wait-stream", "proc-1", "");
 
     handle_agent_message_delta(&mut chat, "Streaming response.");
     handle_turn_completed(&mut chat, "turn-wait-1", /*duration_ms*/ None);
@@ -1591,11 +1593,13 @@ async fn unified_exec_wait_status_renders_countdown() {
                 process_id: "proc-1".to_string(),
                 stdin: String::new(),
                 deadline_at_ms: Some(deadline_at_ms),
+                wait: None,
             },
         ),
         /*replay_kind*/ None,
     );
 
+    chat.bottom_pane.reset_status_timer(Duration::ZERO);
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
         rendered.contains("Waiting for background terminal (") && rendered.contains(" left"),
@@ -1607,6 +1611,7 @@ async fn unified_exec_wait_status_renders_countdown() {
 async fn unified_exec_initial_status_renders_countdown() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
+    chat.set_status_header("Analyzing the request".to_string());
     let command = vec![
         "bash".to_string(),
         "-lc".to_string(),
@@ -1640,10 +1645,23 @@ async fn unified_exec_initial_status_renders_countdown() {
         /*replay_kind*/ None,
     );
 
+    chat.bottom_pane.reset_status_timer(Duration::ZERO);
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
         rendered.contains("Working (") && rendered.contains(" left"),
         "expected initial unified exec countdown in status row, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("sleep 60"),
+        "expected active command in status row, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Analyzing the request"),
+        "stale reasoning header remained visible after command start:\n{rendered}"
+    );
+    assert_chatwidget_snapshot!(
+        "unified_exec_initial_status_shows_command",
+        normalize_snapshot_paths(rendered)
     );
 }
 
@@ -1668,6 +1686,7 @@ async fn unified_exec_wait_countdown_survives_status_refresh() {
                 process_id: "proc-1".to_string(),
                 stdin: String::new(),
                 deadline_at_ms: Some(future_deadline_at_ms(60_000)),
+                wait: None,
             },
         ),
         /*replay_kind*/ None,
@@ -1763,7 +1782,7 @@ async fn unified_exec_empty_poll_for_finished_process_does_not_show_waiting_stat
         .status_widget()
         .expect("task status indicator should remain visible");
     assert_eq!(status.header(), "Working");
-    assert!(chat.unified_exec_wait_streak.is_none());
+    assert!(chat.unified_exec_wait_tracker.is_none());
 }
 
 #[tokio::test]
@@ -1772,8 +1791,8 @@ async fn unified_exec_waiting_multiple_empty_snapshots() {
     chat.on_task_started();
     begin_unified_exec_startup(&mut chat, "call-wait-1", "proc-1", "just fix");
 
-    terminal_interaction(&mut chat, "call-wait-1a", "proc-1", "");
-    terminal_interaction(&mut chat, "call-wait-1b", "proc-1", "");
+    terminal_interaction(&mut chat, "call-wait-1", "proc-1", "");
+    terminal_interaction(&mut chat, "call-wait-1", "proc-1", "");
     assert_eq!(
         chat.status_state.current_status.header,
         "Waiting for background terminal"
@@ -1826,7 +1845,7 @@ async fn unified_exec_wait_status_renders_command_in_single_details_row_snapshot
         "cargo test -p codex-core -- --exact some::very::long::test::name",
     );
 
-    terminal_interaction(&mut chat, "call-wait-ui-stdin", "proc-ui", "");
+    terminal_interaction(&mut chat, "call-wait-ui", "proc-ui", "");
 
     let rendered = render_bottom_popup(&chat, /*width*/ 48);
     assert_chatwidget_snapshot!(
@@ -1841,8 +1860,8 @@ async fn unified_exec_empty_then_non_empty_snapshot() {
     chat.on_task_started();
     begin_unified_exec_startup(&mut chat, "call-wait-2", "proc-2", "just fix");
 
-    terminal_interaction(&mut chat, "call-wait-2a", "proc-2", "");
-    terminal_interaction(&mut chat, "call-wait-2b", "proc-2", "ls\n");
+    terminal_interaction(&mut chat, "call-wait-2", "proc-2", "");
+    terminal_interaction(&mut chat, "call-wait-2", "proc-2", "ls\n");
 
     let cells = drain_insert_history_transcript(&mut rx);
     let combined = cells
@@ -1858,8 +1877,8 @@ async fn unified_exec_non_empty_then_empty_snapshots() {
     chat.on_task_started();
     begin_unified_exec_startup(&mut chat, "call-wait-3", "proc-3", "just fix");
 
-    terminal_interaction(&mut chat, "call-wait-3a", "proc-3", "pwd\n");
-    terminal_interaction(&mut chat, "call-wait-3b", "proc-3", "");
+    terminal_interaction(&mut chat, "call-wait-3", "proc-3", "pwd\n");
+    terminal_interaction(&mut chat, "call-wait-3", "proc-3", "");
     assert_eq!(
         chat.status_state.current_status.header,
         "Waiting for background terminal"
@@ -2530,7 +2549,7 @@ async fn interrupt_preserves_unified_exec_wait_streak_snapshot() {
     handle_turn_started(&mut chat, "turn-1");
 
     let begin = begin_unified_exec_startup(&mut chat, "call-1", "process-1", "just fix");
-    terminal_interaction(&mut chat, "call-1a", "process-1", "");
+    terminal_interaction(&mut chat, "call-1", "process-1", "");
 
     handle_turn_interrupted(&mut chat, "turn-1");
 

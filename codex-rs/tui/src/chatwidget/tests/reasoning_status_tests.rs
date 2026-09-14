@@ -89,6 +89,10 @@ async fn reasoning_status_tracks_items_and_restores_after_tool_activity() {
     chat.bottom_pane.hide_status_indicator();
     begin_unified_exec_startup(&mut chat, "tool-1", "process-1", "sleep 2");
     capture(&chat, &mut headers);
+    assert_eq!(
+        chat.status_state.current_status.details.as_deref(),
+        Some("sleep 2")
+    );
 
     handle_agent_reasoning_started(&mut chat, "second");
     capture(&chat, &mut headers);

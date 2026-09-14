@@ -1,0 +1,7 @@
+---
+source: tui/src/chatwidget/tests/process_wait.rs
+expression: completed
+---
+• Waited 2m 13s · interrupted by input · make test (process p4)
+
+• Waited 9s · wait cancelled · make lint (process p5)

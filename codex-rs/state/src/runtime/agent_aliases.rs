@@ -4,6 +4,7 @@ use strum::AsRefStr;
 use strum::EnumString;
 
 use super::StateRuntime;
+pub(super) use super::lifecycle_authority::advance_agent_thread_lifecycle_authority_epochs_in_transaction;
 use super::threads::set_thread_spawn_edge_status_in_transaction;
 use super::threads::upsert_thread_spawn_edge_in_transaction;
 use namespace::ensure_agent_alias_namespace_in_transaction;
@@ -389,6 +390,25 @@ WHERE session_id = ?
         thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<bool> {
+        Ok(self
+            .set_agent_lifecycle_state_with_authority_revocations(
+                session_id,
+                thread_id,
+                status,
+                &[thread_id],
+            )
+            .await?
+            != crate::AgentLifecycleAuthorityUpdate::NotOwned)
+    }
+
+    /// Update an owned lifecycle edge and advance authority for its revoked subtree atomically.
+    pub async fn set_agent_lifecycle_state_with_authority_revocations(
+        &self,
+        session_id: SessionId,
+        thread_id: ThreadId,
+        status: crate::DirectionalThreadSpawnEdgeStatus,
+        revoked_thread_ids: &[ThreadId],
+    ) -> anyhow::Result<crate::AgentLifecycleAuthorityUpdate> {
         if thread_id == ThreadId::from(session_id) {
             anyhow::bail!("Main's root alias lifecycle cannot be changed");
         }
@@ -411,10 +431,34 @@ WHERE session_id = ?
         .is_some();
         if !owns_alias {
             tx.commit().await?;
-            return Ok(false);
+            return Ok(crate::AgentLifecycleAuthorityUpdate::NotOwned);
         }
+        let previous_edge_status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM thread_spawn_edges WHERE child_thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
         set_thread_spawn_edge_status_in_transaction(&mut tx, thread_id, status).await?;
+        let revoked = status == crate::DirectionalThreadSpawnEdgeStatus::Closed
+            && previous_edge_status.as_deref()
+                == Some(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref());
+        if revoked {
+            anyhow::ensure!(
+                revoked_thread_ids.contains(&thread_id),
+                "revoked subtree must contain its closed agent"
+            );
+            advance_agent_thread_lifecycle_authority_epochs_in_transaction(
+                &mut tx,
+                revoked_thread_ids,
+            )
+            .await?;
+        }
         tx.commit().await?;
-        Ok(true)
+        Ok(if revoked {
+            crate::AgentLifecycleAuthorityUpdate::Revoked
+        } else {
+            crate::AgentLifecycleAuthorityUpdate::Unchanged
+        })
     }
 }
