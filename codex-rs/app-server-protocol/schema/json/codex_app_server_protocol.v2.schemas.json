@@ -11163,6 +11163,65 @@
       "title": "LogoutAccountResponse",
       "type": "object"
     },
+    "MailboxReadSelector": {
+      "oneOf": [
+        {
+          "description": "The invocation selected every sender with pending mail.",
+          "properties": {
+            "type": {
+              "enum": [
+                "all"
+              ],
+              "title": "AllMailboxReadSelectorType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AllMailboxReadSelector",
+          "type": "object"
+        },
+        {
+          "description": "The invocation selected user-authored mail.",
+          "properties": {
+            "type": {
+              "enum": [
+                "user"
+              ],
+              "title": "UserMailboxReadSelectorType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "UserMailboxReadSelector",
+          "type": "object"
+        },
+        {
+          "description": "The invocation selected one sender by its canonical thread identity.",
+          "properties": {
+            "threadId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "agent"
+              ],
+              "title": "AgentMailboxReadSelectorType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "threadId",
+            "type"
+          ],
+          "title": "AgentMailboxReadSelector",
+          "type": "object"
+        }
+      ]
+    },
     "ManagedHooksRequirements": {
       "properties": {
         "Interrupt": {
@@ -18981,7 +19040,7 @@
       "properties": {
         "deadlineAtMs": {
           "default": null,
-          "description": "Unix timestamp (in milliseconds) when this background wait should report back.",
+          "description": "Unix timestamp (in milliseconds) when a bounded wait should report back. Until-exit waits and completed waits have no deadline.",
           "format": "int64",
           "type": [
             "integer",
@@ -19002,6 +19061,18 @@
         },
         "turnId": {
           "type": "string"
+        },
+        "wait": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalWait"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lifecycle metadata for a `write_stdin` wait. Null for legacy events."
         }
       },
       "required": [
@@ -19013,6 +19084,141 @@
       ],
       "title": "TerminalInteractionNotification",
       "type": "object"
+    },
+    "TerminalWait": {
+      "description": "Start or completion metadata for one `write_stdin` wait.",
+      "oneOf": [
+        {
+          "description": "A wait has started for the identified invocation.",
+          "properties": {
+            "interactionId": {
+              "description": "The `write_stdin` function-call ID, distinct from the command item ID.",
+              "type": "string"
+            },
+            "mode": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/TerminalWaitMode"
+                }
+              ],
+              "description": "Whether this wait has a deadline or continues until process exit."
+            },
+            "phase": {
+              "enum": [
+                "started"
+              ],
+              "type": "string"
+            },
+            "startedAtMs": {
+              "description": "Unix timestamp in milliseconds when the wait began.",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "interactionId",
+            "mode",
+            "phase",
+            "startedAtMs"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A wait has ended; the process may still be running for non-exit reasons.",
+          "properties": {
+            "elapsedMs": {
+              "description": "Actual elapsed wait time in milliseconds.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "interactionId": {
+              "description": "The `write_stdin` function-call ID matching the start event.",
+              "type": "string"
+            },
+            "phase": {
+              "enum": [
+                "finished"
+              ],
+              "type": "string"
+            },
+            "reason": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/TerminalWaitCompletionReason"
+                }
+              ],
+              "description": "Why the wait finished."
+            }
+          },
+          "required": [
+            "elapsedMs",
+            "interactionId",
+            "phase",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TerminalWaitCompletionReason": {
+      "description": "Reason a `write_stdin` wait stopped waiting.",
+      "oneOf": [
+        {
+          "description": "The associated process exited.",
+          "enum": [
+            "exited"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The bounded poll deadline elapsed while the process remained live.",
+          "enum": [
+            "timeout"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "New turn input released an until-exit wait.",
+          "enum": [
+            "input"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The tool invocation was cancelled.",
+          "enum": [
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The wait ended because process or approval handling failed.",
+          "enum": [
+            "failed"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "TerminalWaitMode": {
+      "description": "Duration policy for a `write_stdin` wait.",
+      "oneOf": [
+        {
+          "description": "Wait for the requested or resolved `yield_time_ms` deadline.",
+          "enum": [
+            "timed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Wait until the associated process exits or the waiter is released.",
+          "enum": [
+            "untilExit"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "TextElement": {
       "properties": {
@@ -20364,6 +20570,46 @@
           "type": "object"
         },
         {
+          "description": "Terminal, payload-free result of a direct `check_mail` invocation.",
+          "properties": {
+            "consumedCount": {
+              "description": "Number of messages terminally acknowledged as consumed.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "description": "The originating tool call ID, scoped by the containing turn.",
+              "type": "string"
+            },
+            "rejectedCount": {
+              "description": "Number of selected messages terminally rejected before consumption.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "selector": {
+              "$ref": "#/definitions/MailboxReadSelector"
+            },
+            "type": {
+              "enum": [
+                "mailboxRead"
+              ],
+              "title": "MailboxReadThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "consumedCount",
+            "id",
+            "rejectedCount",
+            "selector",
+            "type"
+          ],
+          "title": "MailboxReadThreadItem",
+          "type": "object"
+        },
+        {
           "properties": {
             "agentsStates": {
               "additionalProperties": {
@@ -21259,6 +21505,59 @@
         "rejected"
       ],
       "type": "string"
+    },
+    "ThreadMailboxPendingSender": {
+      "description": "Pending counts grouped by the canonical mailbox sender identity.",
+      "oneOf": [
+        {
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "user"
+              ],
+              "title": "UserThreadMailboxPendingSenderType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "count",
+            "type"
+          ],
+          "title": "UserThreadMailboxPendingSender",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "threadId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "agent"
+              ],
+              "title": "AgentThreadMailboxPendingSenderType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "count",
+            "threadId",
+            "type"
+          ],
+          "title": "AgentThreadMailboxPendingSender",
+          "type": "object"
+        }
+      ]
     },
     "ThreadMcpServerActivateOutcome": {
       "enum": [

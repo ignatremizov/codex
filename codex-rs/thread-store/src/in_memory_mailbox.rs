@@ -388,7 +388,7 @@ impl InMemoryMailbox {
             final_subscription,
         };
         let result = decode_message(message.clone())?;
-        if let Some(sender_thread_id) = sender_thread_id {
+        if sender_thread_id.is_some() {
             for previous in &mut self.messages {
                 if previous.receiver_thread_id == params.receiver_thread_id
                     && previous.sender_key == sender_key

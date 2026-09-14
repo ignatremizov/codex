@@ -773,6 +773,65 @@
     "LegacyAppPathString": {
       "type": "string"
     },
+    "MailboxReadSelector": {
+      "oneOf": [
+        {
+          "description": "The invocation selected every sender with pending mail.",
+          "properties": {
+            "type": {
+              "enum": [
+                "all"
+              ],
+              "title": "AllMailboxReadSelectorType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AllMailboxReadSelector",
+          "type": "object"
+        },
+        {
+          "description": "The invocation selected user-authored mail.",
+          "properties": {
+            "type": {
+              "enum": [
+                "user"
+              ],
+              "title": "UserMailboxReadSelectorType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "UserMailboxReadSelector",
+          "type": "object"
+        },
+        {
+          "description": "The invocation selected one sender by its canonical thread identity.",
+          "properties": {
+            "threadId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "agent"
+              ],
+              "title": "AgentMailboxReadSelectorType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "threadId",
+            "type"
+          ],
+          "title": "AgentMailboxReadSelector",
+          "type": "object"
+        }
+      ]
+    },
     "McpToolCallAppContext": {
       "properties": {
         "actionName": {
@@ -1593,6 +1652,46 @@
             "type"
           ],
           "title": "DynamicToolCallThreadItem",
+          "type": "object"
+        },
+        {
+          "description": "Terminal, payload-free result of a direct `check_mail` invocation.",
+          "properties": {
+            "consumedCount": {
+              "description": "Number of messages terminally acknowledged as consumed.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "description": "The originating tool call ID, scoped by the containing turn.",
+              "type": "string"
+            },
+            "rejectedCount": {
+              "description": "Number of selected messages terminally rejected before consumption.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "selector": {
+              "$ref": "#/definitions/MailboxReadSelector"
+            },
+            "type": {
+              "enum": [
+                "mailboxRead"
+              ],
+              "title": "MailboxReadThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "consumedCount",
+            "id",
+            "rejectedCount",
+            "selector",
+            "type"
+          ],
+          "title": "MailboxReadThreadItem",
           "type": "object"
         },
         {
