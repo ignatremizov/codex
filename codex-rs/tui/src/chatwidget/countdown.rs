@@ -15,7 +15,8 @@ impl ChatWidget {
         let turn_id = match &owner {
             StatusCountdownOwner::CollabWait { turn_id, .. }
             | StatusCountdownOwner::UnifiedExec { turn_id, .. }
-            | StatusCountdownOwner::UnifiedExecWaitInvocation { turn_id, .. } => turn_id,
+            | StatusCountdownOwner::UnifiedExecWaitInvocation { turn_id, .. }
+            | StatusCountdownOwner::Sleep { turn_id, .. } => turn_id,
         };
         if self
             .turn_lifecycle

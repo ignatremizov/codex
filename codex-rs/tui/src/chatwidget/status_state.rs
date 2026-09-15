@@ -53,6 +53,10 @@ pub(super) enum StatusCountdownOwner {
         turn_id: String,
         interaction_id: String,
     },
+    Sleep {
+        turn_id: String,
+        item_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

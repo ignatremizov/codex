@@ -456,7 +456,9 @@ fn item_to_cells(item: ThreadItem, context: ItemProjectionContext<'_>) -> Transc
                 metadata.get(&thread_id).cloned().unwrap_or_default()
             }),
         )),
-        ThreadItem::Sleep(_) => {}
+        ThreadItem::Sleep(item) => {
+            cells.push(Arc::new(crate::history_cell::new_compact_sleep_cell(item)))
+        }
         other => cells.extend(other_items::cells(
             other,
             cwd,
