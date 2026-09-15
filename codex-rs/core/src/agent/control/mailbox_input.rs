@@ -1,7 +1,9 @@
 //! V1 mailbox acceptance, separate from target lifecycle and response observation.
 
 use super::AgentControlInput;
+use super::AgentModelInputOrigin;
 use super::LocalAgentControl;
+#[cfg(test)]
 use super::SessionPresentationId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -21,7 +23,7 @@ impl LocalAgentControl {
     /// Accept user authorship from the client-facing Core boundary, never from agent input.
     ///
     /// An unloaded durable receiver retains pending mail until a compatible runtime resumes.
-    /// User mail neither uses nor creates agent send grants. Its retry namespace is distinct
+    /// User mail retains genuine user authorship. Its retry namespace is distinct
     /// from agent invocation keys, including when a client ID resembles an agent's entire key.
     pub(crate) async fn accept_mailbox_user_input(
         &self,
@@ -151,6 +153,7 @@ impl LocalAgentControl {
     /// After persistence, a loaded receiver receives an activity hint for later inventory
     /// scheduling, not a payload-bearing turn or a delivery receipt. Retried invocations recover
     /// the original attribution even when aliases, runtime metadata, or send settings changed.
+    #[cfg(test)]
     pub(crate) async fn accept_mailbox_agent_input(
         &self,
         sender: SessionPresentationId,
@@ -160,18 +163,41 @@ impl LocalAgentControl {
         input: Vec<UserInput>,
         final_subscription: MailboxFinalSubscriptionRequest,
     ) -> CodexResult<StoredMailboxInput> {
+        self.accept_mailbox_agent_input_with_batch(
+            AgentModelInputOrigin {
+                sender,
+                sender_turn_id: sender_turn_id.to_owned(),
+            },
+            call_id,
+            receiver,
+            input,
+            final_subscription,
+            /*batch_id*/ None,
+        )
+        .await
+    }
+
+    pub(crate) async fn accept_mailbox_agent_input_with_batch(
+        &self,
+        origin: AgentModelInputOrigin,
+        call_id: &str,
+        receiver: ThreadId,
+        input: Vec<UserInput>,
+        final_subscription: MailboxFinalSubscriptionRequest,
+        batch_id: Option<&str>,
+    ) -> CodexResult<StoredMailboxInput> {
         let control = self.clone();
-        let sender_turn_id = sender_turn_id.to_string();
         let call_id = call_id.to_string();
+        let batch_id = batch_id.map(str::to_string);
         tokio::spawn(async move {
             control
                 .accept_mailbox_agent_input_owned(
-                    sender,
-                    &sender_turn_id,
+                    origin,
                     &call_id,
                     receiver,
                     input,
                     final_subscription,
+                    batch_id.as_deref(),
                 )
                 .await
         })
@@ -185,13 +211,18 @@ impl LocalAgentControl {
 
     async fn accept_mailbox_agent_input_owned(
         &self,
-        sender: SessionPresentationId,
-        sender_turn_id: &str,
+        origin: AgentModelInputOrigin,
         call_id: &str,
         receiver: ThreadId,
         input: Vec<UserInput>,
         final_subscription: MailboxFinalSubscriptionRequest,
+        batch_id: Option<&str>,
     ) -> CodexResult<StoredMailboxInput> {
+        let AgentModelInputOrigin {
+            sender,
+            sender_turn_id,
+        } = origin;
+        let sender_turn_id = sender_turn_id.as_str();
         if sender.thread_id == receiver {
             return Err(CodexErr::InvalidRequest(
                 "an agent cannot send mailbox input to itself".to_string(),
@@ -217,9 +248,9 @@ impl LocalAgentControl {
         let manager = self.runtime.upgrade()?;
         manager.ensure_native_agent_control()?;
         // Adoption and close serialize on this UUID even when no recipient runtime is loaded.
-        // Take lifecycle before messaging, and retain it through attribution and persistence.
+        // Retain lifecycle ownership through attribution and persistence.
         // Unlike live-lifecycle admission, this lock neither loads nor validates a receiver:
-        // accepted retries still return their stored outcome without requiring a fresh grant.
+        // accepted retries still return their stored outcome without loading the receiver.
         let _recipient_lifecycle = manager.agent_lifecycle_lock(receiver).lock_owned().await;
         let sender_submission = self.runtime.registry.mailbox_submission(sender.thread_id);
         let _destination = if final_subscription == MailboxFinalSubscriptionRequest::Wake {
@@ -232,7 +263,6 @@ impl LocalAgentControl {
         } else {
             None
         };
-        let _permission = self.acquire_messaging_permission_transaction().await;
         let _observer = if final_subscription == MailboxFinalSubscriptionRequest::Wake {
             Some(self.acquire_response_observation_transaction(sender).await)
         } else {
@@ -280,6 +310,7 @@ impl LocalAgentControl {
                             && attribution.sender.thread_id == sender.thread_id
                             && attribution.recipient.thread_id == receiver
                             && attribution.sender_turn_id == sender_turn_id
+                            && attribution.batch_id.as_deref() == batch_id
                 );
             if !matches {
                 return Err(CodexErr::InvalidRequest(
@@ -287,10 +318,10 @@ impl LocalAgentControl {
                 ));
             }
             // An accepted retry is not a new send. Do not recapture mutable attribution,
-            // demand a new grant, or reset a consumed/rejected message to pending.
+            // or reset a consumed/rejected message to pending.
             if final_subscription == MailboxFinalSubscriptionRequest::Wake {
                 // Recovery reads canonical retirement/delivery proof before acquiring its
-                // observer transaction. The immutable acceptance row is not a fresh grant.
+                // observer transaction. The immutable acceptance row cannot renew a subscription.
                 self.schedule_mailbox_final_subscription_recovery(sender);
             }
             return Ok(existing);
@@ -322,14 +353,6 @@ impl LocalAgentControl {
                 ));
             }
         }
-        if !self
-            .mailbox_send_permission_locked(sender.thread_id, receiver)
-            .await?
-        {
-            return Err(CodexErr::UnsupportedOperation(
-                "mailbox send requires configured directed/subtree permission or downward ancestry; transient m grants do not authorize mail".to_string(),
-            ));
-        }
         // Existence is a storage read, not a request to load or resume the receiver.
         if let Ok(target) = manager.get_thread(receiver).await {
             target
@@ -353,7 +376,7 @@ impl LocalAgentControl {
             presentation,
             ..
         } = self
-            .attribute_model_input(sender, receiver, sender_turn_id, input)
+            .attribute_model_input(sender, receiver, sender_turn_id, batch_id, input)
             .await?
         else {
             return Err(CodexErr::Fatal(
@@ -403,7 +426,6 @@ impl LocalAgentControl {
         };
         drop(_observer);
         drop(_destination);
-        drop(_permission);
         drop(_recipient_lifecycle);
         // Only fresh durable acceptance produces this best-effort live sibling notice.
         // Retries returned above; neither receipt failure nor a missing Main undoes acceptance.

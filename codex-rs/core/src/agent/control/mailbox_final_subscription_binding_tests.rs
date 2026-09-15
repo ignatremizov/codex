@@ -112,6 +112,7 @@ async fn retrying_binding_releases_a_closing_observer_without_retiring_durable_i
                         sender: identity(root.thread_id),
                         recipient: identity(target.thread_id),
                         sender_turn_id: "sender-turn".into(),
+                        batch_id: None,
                     }),
                 },
                 final_subscription: MailboxFinalSubscriptionRequest::Wake,
