@@ -116,6 +116,8 @@ fn set_agent_control(
     session.services.local_agent_runtime = control.runtime.clone();
     session.services.agent_control = Arc::new(control);
 }
+#[path = "multi_agents/send_input_batch_handler_tests.rs"]
+mod send_input_batch;
 
 fn invocation(
     session: Arc<crate::session::session::Session>,
@@ -3598,7 +3600,7 @@ async fn send_input_interrupts_before_prompt() {
 }
 
 #[tokio::test]
-async fn send_input_reply_route_does_not_authorize_interrupting_parent() {
+async fn send_input_cannot_interrupt_parent() {
     let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let config = turn.config.as_ref().clone();
@@ -3623,13 +3625,12 @@ async fn send_input_reply_route_does_not_authorize_interrupting_parent() {
     );
 
     let Err(err) = SendInputHandler.handle(invocation).await else {
-        panic!("a reply route must not grant parent lifecycle authority");
+        panic!("sending must not grant parent lifecycle authority");
     };
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "an agent reply route authorizes input, not interruption of its parent or peer"
-                .to_string()
+            "an agent can interrupt only its descendants, not its parent or peers".to_string()
         )
     );
     assert!(

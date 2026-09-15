@@ -18,6 +18,7 @@ import type { AgentInputOutcome } from "./AgentInputOutcome";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
 import type { AgentTaskPathMapping } from "./AgentTaskPathMapping";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
+import type { CollabAgentInputBatch } from "./CollabAgentInputBatch";
 import type { CollabAgentRef } from "./CollabAgentRef";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
@@ -102,6 +103,10 @@ durationMs: number | null, } | { "type": "dynamicToolCall", id: string, namespac
  * The duration of the dynamic tool call in milliseconds.
  */
 durationMs: number | null, } | { "type": "mailboxRead" } & MailboxReadItem | { "type": "collabAgentToolCall",
+/**
+ * Per-recipient admission outcomes for array-target sends; errors may follow admission.
+ */
+inputBatch: CollabAgentInputBatch | null,
 /**
  * Unique identifier for this collab tool call.
  */
