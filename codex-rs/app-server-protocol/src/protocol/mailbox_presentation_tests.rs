@@ -84,9 +84,10 @@ fn array_send_outcomes_survive_transport_and_history_without_changing_old_items(
         serde_json::from_value::<ThreadItem>(serialized).unwrap(),
         expected
     );
+    let restored = serde_json::from_value::<TurnItem>(serde_json::to_value(item).unwrap()).unwrap();
     assert_eq!(
-        serde_json::from_value::<TurnItem>(serde_json::to_value(item).unwrap()).unwrap(),
-        TurnItem::CollabAgentToolCall(call),
+        serde_json::to_value(restored).unwrap(),
+        serde_json::to_value(TurnItem::CollabAgentToolCall(call)).unwrap(),
     );
     let old = send_item();
     let mut old_wire =
