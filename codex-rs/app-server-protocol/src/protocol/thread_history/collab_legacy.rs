@@ -24,6 +24,7 @@ impl ThreadHistoryBuilder {
                 target_messages: previous_target_messages,
                 queue_input: previous_queue_input,
                 mailbox_input: previous_mailbox_input,
+                input_batch: previous_input_batch,
                 ..
             }),
             ThreadItemPayload::CollabAgentToolCall {
@@ -34,6 +35,7 @@ impl ThreadHistoryBuilder {
                 target_messages,
                 queue_input,
                 mailbox_input,
+                input_batch,
                 ..
             },
         ) = (existing, &mut item)
@@ -54,6 +56,9 @@ impl ThreadHistoryBuilder {
             }
             if mailbox_input.is_none() {
                 *mailbox_input = *previous_mailbox_input;
+            }
+            if input_batch.is_none() {
+                *input_batch = previous_input_batch.clone();
             }
         }
         // This path is used only by legacy reducers. A later canonical lifecycle item

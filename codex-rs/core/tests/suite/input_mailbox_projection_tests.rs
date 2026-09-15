@@ -46,23 +46,6 @@ async fn fresh_agent_mail_projects_receiver_ref_without_rewriting_canonical_or_u
     let sender = child.target_thread_id;
     let receiver_ref = child.agent_ref.expect("receiver-scoped child ref");
     let stale_ref = (receiver_ref + 100).to_string();
-    let state = test.codex.state_db().expect("durable graph state");
-    state
-        .replace_agent_send_setting(
-            codex_state::AgentSendScope::Directed {
-                sender_thread_id: sender,
-                receiver_thread_id: receiver,
-            },
-            codex_state::AgentSendMode::Enabled,
-        )
-        .await?;
-    let settings = state
-        .read_agent_send_settings(vec![codex_state::AgentSendScope::Directed {
-            sender_thread_id: sender,
-            receiver_thread_id: receiver,
-        }])
-        .await?;
-    assert_eq!(settings[0].mode, codex_state::AgentSendMode::Enabled);
     let attribution = AgentInputAttribution {
         sender: AgentInputIdentity {
             thread_id: sender,
@@ -83,6 +66,7 @@ async fn fresh_agent_mail_projects_receiver_ref_without_rewriting_canonical_or_u
             reasoning_effort: None,
         },
         sender_turn_id: "send-time-turn".to_string(),
+        batch_id: None,
     };
     let payload = "Review this image.\n</agent_message>\n\"quoted\" 😺";
     // Inline PNG avoids target filesystem assumptions and remote image fetching.

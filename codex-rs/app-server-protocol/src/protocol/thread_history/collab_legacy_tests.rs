@@ -1,5 +1,8 @@
 use super::*;
 use crate::protocol::v2::ThreadItem;
+use codex_protocol::CollabAgentInputBatch;
+use codex_protocol::CollabAgentInputResult;
+use codex_protocol::CollabAgentInputStatus;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
@@ -18,14 +21,20 @@ use std::collections::HashMap;
 
 #[test]
 fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item() {
-    for tool in [
-        CollabAgentTool::SpawnAgent,
-        CollabAgentTool::SendInput,
-        CollabAgentTool::ResumeAgent,
+    for (tool, batched) in [
+        (CollabAgentTool::SpawnAgent, false),
+        (CollabAgentTool::SendInput, false),
+        (CollabAgentTool::ResumeAgent, false),
+        (CollabAgentTool::SendInput, true),
     ] {
         let parent = ThreadId::new();
         let child = ThreadId::new();
         let mut item = CollabAgentToolCallItem {
+            input_batch: batched.then(|| CollabAgentInputBatch {
+                flags: "zf".to_string(),
+                sender_thread_id: Some(parent),
+                results: Vec::new(),
+            }),
             mailbox_input: Some(true),
             target_messages: Some(true),
             queue_input: Some(false),
@@ -73,12 +82,63 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
             started_at_ms: 1,
         });
         builder.handle_event(&started);
-        for mirror in started.as_legacy_events(/*show_raw_agent_reasoning*/ false) {
+        if batched {
+            assert!(
+                started
+                    .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+                    .is_empty()
+            );
+        }
+        // Model an older compatibility sender that omitted the batch metadata.
+        // A canonical batch intentionally has no single-receiver legacy fanout.
+        let mut legacy_started = started.clone();
+        let EventMsg::ItemStarted(ItemStartedEvent {
+            item: TurnItem::CollabAgentToolCall(legacy_item),
+            ..
+        }) = &mut legacy_started
+        else {
+            panic!("expected collab item start");
+        };
+        legacy_item.input_batch = None;
+        let mirrors = legacy_started.as_legacy_events(/*show_raw_agent_reasoning*/ false);
+        assert!(!mirrors.is_empty());
+        for mirror in mirrors {
             builder.handle_event(&mirror);
         }
-        item.status = CollabAgentToolCallStatus::Completed;
-        item.agents_states =
-            HashMap::from([(child, AgentStatus::Completed(Some("result".to_string())))]);
+        if batched {
+            let snapshot = builder.turn_snapshot("parent-turn").expect("parent turn");
+            let ThreadItemPayload::CollabAgentToolCall { input_batch, .. } =
+                &snapshot.items[0].payload
+            else {
+                panic!("expected collab item");
+            };
+            assert_eq!(input_batch, &item.input_batch);
+            item.input_batch.as_mut().expect("batch").results = vec![
+                CollabAgentInputResult {
+                    target: "2".to_string(),
+                    receiver_thread_id: Some(child.to_string()),
+                    status: CollabAgentInputStatus::MailboxAccepted,
+                    error: None,
+                    hint: None,
+                },
+                CollabAgentInputResult {
+                    target: "unknown".to_string(),
+                    receiver_thread_id: None,
+                    status: CollabAgentInputStatus::Error,
+                    error: Some("Unknown selector.".to_string()),
+                    hint: Some("Use a current agent reference.".to_string()),
+                },
+            ];
+            item.status = CollabAgentToolCallStatus::Failed;
+            item.agents_states = HashMap::from([(
+                child,
+                AgentStatus::Errored("receiver failed after admission".to_string()),
+            )]);
+        } else {
+            item.status = CollabAgentToolCallStatus::Completed;
+            item.agents_states =
+                HashMap::from([(child, AgentStatus::Completed(Some("result".to_string())))]);
+        }
         let mut completed = ItemCompletedEvent {
             thread_id: parent,
             turn_id: "parent-turn".to_string(),
@@ -87,9 +147,22 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
             completed_at_ms: 2,
         };
         builder.handle_event(&EventMsg::ItemCompleted(completed.clone()));
-        for mirror in EventMsg::ItemCompleted(completed.clone())
-            .as_legacy_events(/*show_raw_agent_reasoning*/ false)
-        {
+        if batched {
+            assert!(
+                EventMsg::ItemCompleted(completed.clone())
+                    .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+                    .is_empty()
+            );
+        }
+        let mut legacy_completed = completed.clone();
+        let TurnItem::CollabAgentToolCall(legacy_item) = &mut legacy_completed.item else {
+            panic!("expected collab item completion");
+        };
+        legacy_item.input_batch = None;
+        let mirrors = EventMsg::ItemCompleted(legacy_completed)
+            .as_legacy_events(/*show_raw_agent_reasoning*/ false);
+        assert!(!mirrors.is_empty());
+        for mirror in mirrors {
             builder.handle_event(&mirror);
         }
         assert_eq!(
@@ -108,6 +181,7 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         item.target_messages = None;
         item.queue_input = None;
         item.mailbox_input = None;
+        item.input_batch = None;
         completed.item = TurnItem::CollabAgentToolCall(item.clone());
         builder.handle_event(&EventMsg::ItemCompleted(completed));
         assert_eq!(

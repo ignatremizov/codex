@@ -1470,6 +1470,7 @@ async fn unrelated_unified_exec_completion_preserves_collab_wait_countdown() {
                     wake_on_completion: None,
                     target_messages: None,
                     queue_input: None,
+                    input_batch: None,
                     sender_thread_id: sender_thread_id.to_string(),
                     receiver_thread_ids: vec![receiver_thread_id.to_string()],
                     receiver_agents: Vec::new(),

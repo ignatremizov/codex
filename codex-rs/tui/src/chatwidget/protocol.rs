@@ -741,6 +741,7 @@ impl ChatWidget {
                 target_messages,
                 queue_input,
                 mailbox_input,
+                input_batch,
                 sender_thread_id,
                 receiver_thread_ids,
                 receiver_agents,
@@ -758,6 +759,7 @@ impl ChatWidget {
                     target_messages,
                     queue_input,
                     mailbox_input,
+                    input_batch,
                     sender_thread_id,
                     receiver_thread_ids,
                     receiver_agents,
@@ -768,6 +770,10 @@ impl ChatWidget {
                 },
                 deadline_at_ms,
                 &notification.turn_id,
+                replay_kind.map_or(
+                    ThreadItemRenderSource::Live,
+                    ThreadItemRenderSource::ReplayedNotification,
+                ),
             ),
             item @ ThreadItemPayload::UserAgentControl { .. } => {
                 self.remember_user_agent_control_metadata(&item);

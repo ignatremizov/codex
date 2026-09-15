@@ -283,6 +283,10 @@ impl DynamicToolCallItem {
 
 impl CollabAgentToolCallItem {
     pub(crate) fn as_legacy_begin_event(&self, started_at_ms: i64) -> Option<EventMsg> {
+        // The single-receiver legacy projection cannot represent a batch truthfully.
+        if self.input_batch.is_some() {
+            return None;
+        }
         let receiver_thread_id = self.receiver_thread_ids.first().copied();
         match self.tool {
             // V2 records these tool items privately for analytics, not legacy UI events.
@@ -341,6 +345,9 @@ impl CollabAgentToolCallItem {
     }
 
     pub(crate) fn as_legacy_end_event(&self, completed_at_ms: i64) -> Option<EventMsg> {
+        if self.input_batch.is_some() {
+            return None;
+        }
         if matches!(self.status, CollabAgentToolCallStatus::InProgress) {
             return None;
         }

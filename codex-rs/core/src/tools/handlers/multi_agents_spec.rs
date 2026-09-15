@@ -24,7 +24,7 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
 const SPAWN_AGENT_REASONING_OVERRIDE_DESCRIPTION: &str = "Reasoning override for the resolved child model. Overrides selected role and configured defaults; an explicit model without this field uses that model's catalog default.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
-const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. m: let target send attributed input back during this turn; at most one message may wake you when idle, and later messages only steer that wake turn. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags accept any order and repetitions. Count f and x and cancel them pairwise: equal counts mean passive final delivery, more f means wake, and more x means presentation-only. c, m, and q are idempotent presence flags.";
+const RESPONSE_OBSERVATION_DESCRIPTION: &str = "Optional target-turn handling. Omit for passive final delivery. c: receive first commentary reply, such as acknowledgement or task interpretation. f: receive final reply automatically; continue parallel work or finish current turn instead of wait_agent. q: queue input as a separate target turn and deliver its final reply in your next turn instead of steering current work; idle turns start immediately. x: keep final reply presentation-only. Flags accept any order and repetitions. Count f and x and cancel them pairwise: equal counts mean passive final delivery, more f means wake, and more x means presentation-only. c and q are idempotent presence flags.";
 const RESPONSE_OBSERVATION_REFERENCE_DESCRIPTION: &str =
     "Same target-turn handling as send_input.w.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
@@ -183,10 +183,18 @@ pub fn create_spawn_agent_tool_v2(
 }
 
 pub fn create_send_input_tool_v1() -> ToolSpec {
+    let mut targets = JsonSchema::array(
+        JsonSchema::string(/*description*/ None),
+        /*description*/ None,
+    );
+    targets.min_items = Some(1);
     let properties = BTreeMap::from([
         (
             "target".to_string(),
-            JsonSchema::string(Some("Target agent.".to_string())),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(/*description*/ None), targets],
+                Some("Agent selector or nonempty array of selectors. Arrays return one result per canonical receiver; aliases of the same receiver are sent once. Shared input and flags apply to every receiver. Errors and cancellation may follow acceptance; do not automatically retry the batch.".to_string()),
+            ),
         ),
         (
             "message".to_string(),
@@ -215,7 +223,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "send_input".to_string(),
-            description: "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task."
+            description: "Send a message to any existing agent in the same owned tree, including parents and peers. Use interrupt=true only to redirect a descendant immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task."
                 .to_string(),
             strict: false,
             defer_loading: None,
@@ -532,7 +540,7 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
 }
 
 fn send_input_output_schema() -> Value {
-    json!({
+    let single = json!({
         "type": "object",
         "properties": {
             "status": {
@@ -547,6 +555,32 @@ fn send_input_output_schema() -> Value {
         },
         "required": ["status"],
         "additionalProperties": false
+    });
+    json!({
+        "anyOf": [
+            single,
+            {
+                "type": "object",
+                "properties": {
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "target": {"type": "string"},
+                                "status": {"type": "string", "enum": ["submitted", "queued", "mailboxAccepted", "error"]},
+                                "error": {"type": "string"},
+                                "hint": {"type": "string"}
+                            },
+                            "required": ["target", "status"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["results"],
+                "additionalProperties": false
+            }
+        ]
     })
 }
 

@@ -18,6 +18,11 @@ pub struct AgentInputAttribution {
     pub sender: AgentInputIdentity,
     pub recipient: AgentInputIdentity,
     pub sender_turn_id: String,
+    /// The sender's shared `send_input` tool-call ID when this input came from an array-target
+    /// batch. `None` identifies singleton sends and legacy records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub batch_id: Option<String>,
 }
 
 /// Identity and display metadata captured at send time, not re-resolved during replay.

@@ -134,6 +134,7 @@ async fn cancelled_user_operation_keeps_shutdown_pending_until_lifecycle_release
                                 reasoning_effort: None,
                             },
                             sender_turn_id: "source-turn".to_string(),
+                            batch_id: None,
                         }),
                         presentation: Vec::new(),
                     },
