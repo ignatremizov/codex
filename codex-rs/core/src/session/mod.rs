@@ -309,6 +309,7 @@ mod developer_instruction_projection;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+mod passive_final_activity;
 mod plugin_selection;
 mod prompt_input;
 mod realtime_history;
