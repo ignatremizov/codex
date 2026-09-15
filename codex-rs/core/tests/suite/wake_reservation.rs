@@ -128,6 +128,8 @@ impl TurnLifecycleContributor for SleepingTurn {
             input.thread_store.insert(SleepItem {
                 id: "sleep-before-mail".to_string(),
                 duration_ms: 60_000,
+                outcome: None,
+                elapsed_ms: None,
             });
             // This turn's context survives through the completion-triggered wake.
             // Its drop is a barrier after the entire wake attempt has returned.
