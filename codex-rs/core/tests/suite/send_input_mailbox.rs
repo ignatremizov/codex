@@ -259,7 +259,15 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
         .lookup_mailbox_input(receiver, &key)
         .await?
         .ok_or_else(|| anyhow::anyhow!("accepted mailbox row"))?;
-    assert_eq!(result, json!({"status": "mailboxAccepted"}));
+    let expected_result = if matches!(runtime, ReceiverRuntime::Unloaded) {
+        json!({
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    } else {
+        json!({"status": "mailboxAccepted"})
+    };
+    assert_eq!(result, expected_result);
     assert_eq!(accepted.state, MailboxMessageState::Pending);
     if expects_final_subscription {
         let subscription = accepted
@@ -871,7 +879,17 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
         .map_err(|_| anyhow::anyhow!("retry gate closed"))?;
     let retry_request =
         timeout(Duration::from_secs(/*secs*/ 15), changed.wait_for_request()).await?;
-    assert_eq!(call_output(&retry_request, "retry-mail")?, first_output);
+    assert_eq!(
+        serde_json::from_str::<Value>(&first_output)?,
+        json!({"status": "mailboxAccepted"})
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&call_output(&retry_request, "retry-mail")?)?,
+        json!({
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    );
     let changed_request =
         timeout(Duration::from_secs(/*secs*/ 15), denied.wait_for_request()).await?;
     assert!(call_output(&changed_request, "retry-mail")?.contains("different input"));
