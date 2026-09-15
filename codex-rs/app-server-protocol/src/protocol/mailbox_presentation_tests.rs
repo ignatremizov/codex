@@ -30,6 +30,7 @@ fn send_item() -> CollabAgentToolCallItem {
         wake_on_completion: None,
         target_messages: Some(false),
         queue_input: Some(false),
+        input_batch: None,
         mailbox_input: Some(true),
         deadline_at_ms: None,
         sender_thread_id: ThreadId::new(),
@@ -41,6 +42,61 @@ fn send_item() -> CollabAgentToolCallItem {
         agents_states: Default::default(),
         completion_presentation_agent_ids: None,
     }
+}
+
+#[test]
+fn array_send_outcomes_survive_transport_and_history_without_changing_old_items() {
+    let mut call = send_item();
+    call.input_batch = Some(codex_protocol::CollabAgentInputBatch {
+        flags: "zf".into(),
+        results: vec![
+            codex_protocol::CollabAgentInputResult {
+                target: "43".into(),
+                receiver_thread_id: Some(call.receiver_thread_ids[0].to_string()),
+                status: codex_protocol::CollabAgentInputStatus::MailboxAccepted,
+                error: None,
+                hint: None,
+            },
+            codex_protocol::CollabAgentInputResult {
+                target: "unknown".into(),
+                receiver_thread_id: None,
+                status: codex_protocol::CollabAgentInputStatus::Error,
+                error: Some("Unknown selector.".into()),
+                hint: None,
+            },
+        ],
+    });
+    call.status = CollabAgentToolCallStatus::Failed;
+    let item = TurnItem::CollabAgentToolCall(call.clone());
+    let expected = ThreadItem::from(item.clone());
+    let serialized = serde_json::to_value(&expected).unwrap();
+    assert_eq!(
+        serialized["inputBatch"],
+        serde_json::json!({
+            "flags": "zf",
+            "results": [
+                {"target":"43","receiverThreadId":call.receiver_thread_ids[0].to_string(),"status":"mailboxAccepted","error":null,"hint":null},
+                {"target":"unknown","receiverThreadId":null,"status":"error","error":"Unknown selector.","hint":null}
+            ]
+        }),
+    );
+    assert_eq!(
+        serde_json::from_value::<ThreadItem>(serialized).unwrap(),
+        expected
+    );
+    let restored = serde_json::from_value::<TurnItem>(serde_json::to_value(item).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored).unwrap(),
+        serde_json::to_value(TurnItem::CollabAgentToolCall(call)).unwrap(),
+    );
+    let old = send_item();
+    let mut old_wire =
+        serde_json::to_value(ThreadItem::from(TurnItem::CollabAgentToolCall(old.clone()))).unwrap();
+    old_wire.as_object_mut().unwrap().remove("inputBatch");
+    assert_eq!(
+        serde_json::from_value::<ThreadItem>(old_wire).unwrap(),
+        ThreadItem::from(TurnItem::CollabAgentToolCall(old)),
+    );
 }
 
 #[test]

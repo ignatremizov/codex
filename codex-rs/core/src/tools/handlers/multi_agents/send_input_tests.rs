@@ -3,6 +3,45 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[test]
+fn targets_preserve_string_and_array_call_shapes() {
+    for (value, batch) in [
+        (json!("43"), false),
+        (json!(["43"]), true),
+        (json!(["43", "44"]), true),
+    ] {
+        let args: SendInputArgs =
+            serde_json::from_value(json!({"target": value, "message": "hello"})).unwrap();
+        assert_eq!(matches!(args.target, SendInputTarget::Batch(_)), batch);
+    }
+    for value in [json!(43), json!([43]), json!(null), json!({})] {
+        assert!(serde_json::from_value::<SendInputArgs>(json!({"target": value})).is_err());
+    }
+}
+
+#[test]
+fn shared_batch_flags_keep_normalized_single_recipient_semantics() {
+    for (flags, expected) in [
+        ("cf", "cf"),
+        ("mmq", "mq"),
+        ("ffx", "f"),
+        ("fx", ""),
+        ("xxf", "x"),
+        ("z", "z"),
+        ("fz", "zf"),
+        ("zffx", "zf"),
+        ("zfx", "z"),
+        ("zfxx", "z"),
+        ("zz", "z"),
+    ] {
+        let mode: SendInputMode = serde_json::from_value(json!(flags)).unwrap();
+        assert_eq!(mode.normalized_flags(), expected);
+    }
+    for flags in ["", "zc", "zm", "zq", "unknown"] {
+        assert!(serde_json::from_value::<SendInputMode>(json!(flags)).is_err());
+    }
+}
+
+#[test]
 fn admission_projection_keeps_internal_identifiers_out_of_model_results() {
     for (status, expected) in [
         (SendInputAdmissionStatus::Submitted, "submitted"),

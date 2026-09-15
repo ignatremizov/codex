@@ -148,6 +148,10 @@ Resume reconciliation checks existing canonical delivery evidence for the exact 
 
 `send_input` returns an admission status: `submitted` for direct input, `queued` for FIFO input, or `mailboxAccepted` for a durable mailbox deposit. These are acceptance receipts, not claims that execution finished or the receiver model saw the input. Submission, queue, and mailbox identifiers remain internal and are not included in the model-facing tool result.
 
+`send_input.target` accepts a selector string or a nonempty array of selector strings, for example `{"target":["43","44"],"message":"Review the changes.","w":"cf"}`. Arrays share the message/items, interruption setting, and normalized handling flags. Selectors resolving to the same receiver are sent once, in first-occurrence order. Array calls, including arrays of length one, return `{"results":[{"target":"43","status":"submitted"},...]}` with optional `error` or `hint` per receiver. Unresolved selectors retain their authored value. A receiver error does not prevent attempts to the remaining receivers and does not roll back prior admissions. An `error` may occur after admission; it does not establish non-delivery. Cancellation retains the ordinary tool abort behavior and may leave partial admissions without a completed result. Do not automatically retry the entire batch. A new invocation sends again using the existing single-target semantics; mailbox retry identities remain scoped to the receiver and original sender turn/tool call.
+
+Array sends have one combined lifecycle item, receiver identities and handling labels on each outcome row, and the shared message once below. Mailbox acceptance is not a claim of consumption.
+
 ## Per-call semantics
 
 Each accepted call independently selects four policy axes:

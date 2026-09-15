@@ -343,6 +343,8 @@ The experimental `agentQueue/list` and `agentQueue/delete` methods expose and ca
 
 `thread/mailbox/read` returns a payload-free aggregate snapshot with `pendingTotal` and canonical `pendingSenders`. It does not load, claim, or consume messages; storage/backend unavailability is distinct from an empty mailbox.
 
+Array-target `send_input` calls expose nullable `inputBatch` metadata on the collab item: shared normalized flags and per-recipient results (`target`, canonical receiver thread, `submitted`/`queued`/`mailboxAccepted`/`error`, plus optional error and hint). Errors may follow earlier admissions, and cancellation can leave a partial accepted prefix without a completed aggregate. Singleton sends and older history omit this field; clients must not infer a batch or project a batch as a single-recipient legacy interaction.
+
 Collab-agent history may expose nullable `agentRef`, `taskPath`, and `mailboxInput` presentation metadata. `agentRef` is the trusted root-scoped numeric alias encoded as a string; task paths are assignment labels, not lifecycle ancestry. Clients must not infer missing refs from task paths, nicknames, prompts, or tool-output text, nor infer mailbox delivery, receiver consumption, or visibility from missing legacy fields.
 
 Direct `check_mail` completion is represented by a payload-free `mailboxRead` item containing the selector and acknowledged consumed/rejected counts. It is emitted only after the fixed batch acknowledgement and never includes message bodies; mailbox consumption from `wait_agent` does not emit this item.

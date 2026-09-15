@@ -64,6 +64,8 @@ mod list_agents;
 mod list_agents_spec;
 mod resume_agent;
 mod send_input;
+mod send_input_admission;
+mod send_input_batch;
 mod spawn;
 pub(crate) mod wait;
 

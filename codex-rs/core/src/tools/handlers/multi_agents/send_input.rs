@@ -1,7 +1,8 @@
+use super::send_input_admission::RecipientInput;
+use super::send_input_admission::admit_input;
+use super::send_input_admission::prepare_receiver;
+use super::send_input_admission::resolve_receiver;
 use super::*;
-use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
-use crate::agent::child_config::build_agent_resume_config;
-use crate::agent::control::QueuedInputObservationParams;
 use crate::agent::control::render_input_preview;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
@@ -10,10 +11,8 @@ use codex_protocol::WakeEventFinalDelivery;
 use codex_protocol::WakeEventFlags;
 use codex_protocol::WakeEventMailboxSubscription;
 use codex_protocol::WakeEventSurface;
-use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_thread_store::MailboxFinalSubscriptionRequest;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -47,101 +46,51 @@ impl Handler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            payload,
-            call_id,
-            ..
-        } = invocation;
-        let arguments = function_arguments(payload)?;
+        let arguments = function_arguments(invocation.payload.clone())?;
         let args: SendInputArgs = parse_arguments(&arguments)?;
         let input_items = parse_collab_input(args.message, args.items)?;
         let mailbox = matches!(args.w, SendInputMode::Mailbox(_));
-        let mailbox_final_subscription = match args.w {
-            SendInputMode::Mailbox(WakeEventMailboxSubscription::Wake) => {
-                MailboxFinalSubscriptionRequest::Wake
-            }
-            SendInputMode::Response(_)
-            | SendInputMode::Mailbox(WakeEventMailboxSubscription::None) => {
-                MailboxFinalSubscriptionRequest::None
-            }
-        };
         if mailbox && args.interrupt {
             return Err(FunctionCallError::RespondToModel(
                 "mailbox input cannot interrupt a receiver; omit interrupt when using w:z"
                     .to_string(),
             ));
         }
-        if mailbox && turn.multi_agent_version != MultiAgentVersion::V1 {
+        if mailbox && invocation.turn.multi_agent_version != MultiAgentVersion::V1 {
             return Err(FunctionCallError::RespondToModel(
                 "mailbox input is only supported by V1 send_input".to_string(),
             ));
         }
-        let response_observation = match args.w {
-            SendInputMode::Response(policy) => policy,
-            SendInputMode::Mailbox(_) => ResponseObservationPolicy::from_parts(
-                /*commentary*/ false,
-                FinalResponseObservation::None,
-            ),
-        };
-        let receiver_thread_id = if mailbox {
-            // Resolve identity only: mailbox acceptance must not load or adopt a runtime.
-            match ThreadId::from_string(args.target.strip_prefix("id:").unwrap_or(&args.target)) {
-                Ok(receiver) => receiver,
-                Err(_) => resolve_controlled_v1_agent_target(&session, &args.target).await?,
+        let target = match args.target {
+            SendInputTarget::Single(target) => target,
+            SendInputTarget::Batch(targets) => {
+                if targets.is_empty() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "target array must not be empty".to_string(),
+                    ));
+                }
+                return super::send_input_batch::handle_batch(
+                    invocation,
+                    targets,
+                    input_items,
+                    args.w,
+                    args.interrupt,
+                )
+                .await;
             }
-        } else {
-            resolve_controlled_v1_agent_target(&session, &args.target).await?
         };
-        if receiver_thread_id == session.thread_id {
-            return Err(FunctionCallError::RespondToModel(
-                "an agent cannot send input to itself; continue the current turn directly"
-                    .to_string(),
-            ));
-        }
+        let ToolInvocation {
+            session,
+            turn,
+            call_id,
+            ..
+        } = invocation;
+        let response_observation = args.w.response_observation();
+        let receiver_thread_id = resolve_receiver(&session, &target, args.w).await?;
         let prompt = render_input_preview(&input_items);
-        let receiver_agent = session
-            .services
-            .agent_control
-            .get_agent_metadata(receiver_thread_id);
-        if !mailbox
-            && receiver_agent.is_some()
-            && session.multi_agent_version() == Some(MultiAgentVersion::V2)
-        {
-            let resume_config = build_agent_resume_config(turn.as_ref())
-                .map_err(FunctionCallError::RespondToModel)?;
-            session
-                .services
-                .agent_control
-                .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
-                .await
-                .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-        }
-        let receiver_agent = session
-            .services
-            .agent_control
-            .get_agent_presentation_ref(receiver_thread_id)
-            .await
-            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-        let agent_control = session.services.agent_control.clone();
-        let sends_to_descendant = !mailbox
-            && agent_control
-                .is_live_agent_descendant(session.thread_id, receiver_thread_id)
-                .await
-                .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-        if args.interrupt && !sends_to_descendant {
-            return Err(FunctionCallError::RespondToModel(
-                "an agent reply route authorizes input, not interruption of its parent or peer"
-                    .to_string(),
-            ));
-        }
-        if args.interrupt {
-            agent_control
-                .interrupt_agent(receiver_thread_id)
-                .await
-                .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-        }
+        let prepared =
+            prepare_receiver(&session, &turn, receiver_thread_id, args.w, args.interrupt).await?;
+        let receiver_agent = prepared.agent.clone();
         session
             .emit_turn_item_started(
                 &turn,
@@ -153,6 +102,7 @@ impl Handler {
                     wake_on_completion: response_observation.wake_on_completion_item_value(),
                     target_messages: Some(response_observation.target_messages()),
                     queue_input: Some(response_observation.queue_input()),
+                    input_batch: None,
                     mailbox_input: mailbox.then_some(true),
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
@@ -166,116 +116,17 @@ impl Handler {
                 }),
             )
             .await;
-        let start_options = crate::TurnStartOptions {
-            parent_turn_id: Some(turn.sub_id.clone()),
-            root_turn_id: turn.turn_metadata_state.root_turn_id(),
-            cyber_access_program: turn.cyber_access_program,
-            ..Default::default()
-        };
-        let mut result = async {
-            if mailbox {
-                // Acceptance may hint a loaded receiver's inventory scheduler; this tool
-                // does not admit a payload-bearing turn or deliver the payload to its model.
-                agent_control
-                    .accept_mailbox_agent_input(
-                        session.presentation_id(),
-                        &turn.sub_id,
-                        &call_id,
-                        receiver_thread_id,
-                        input_items,
-                        mailbox_final_subscription,
-                    )
-                    .await
-                    .map(|accepted| SendInputResult {
-                        submission_id: accepted.id,
-                        status: SendInputAdmissionStatus::MailboxAccepted,
-                        hint: None,
-                    })
-            } else if sends_to_descendant {
-                let input = agent_control
-                    .attribute_model_input(
-                        session.presentation_id(),
-                        receiver_thread_id,
-                        &turn.sub_id,
-                        input_items,
-                    )
-                    .await?;
-                if response_observation.queue_input() {
-                    agent_control
-                        .queue_input_observing_response(QueuedInputObservationParams {
-                            agent_id: receiver_thread_id,
-                            input,
-                            start_options,
-                            observer: session.presentation_id(),
-                            response_observation,
-                            task_preview: None,
-                            authored_selector: None,
-                        })
-                        .await
-                        .map(|submission| SendInputResult {
-                            submission_id: submission.queue_id.to_string(),
-                            status: SendInputAdmissionStatus::Queued,
-                            hint: None,
-                        })
-                } else {
-                    agent_control
-                        .send_agent_input_observing_response(
-                            receiver_thread_id,
-                            input,
-                            start_options,
-                            session.presentation_id(),
-                            response_observation,
-                        )
-                        .await
-                        .map(|submission_id| SendInputResult {
-                            submission_id,
-                            status: SendInputAdmissionStatus::Submitted,
-                            hint: None,
-                        })
-                }
-            } else if response_observation.queue_input() {
-                agent_control
-                    .queue_scoped_agent_input_observing_response(
-                        session.presentation_id(),
-                        &turn.sub_id,
-                        receiver_thread_id,
-                        input_items,
-                        start_options,
-                        response_observation,
-                    )
-                    .await
-                    .map(|submission| SendInputResult {
-                        submission_id: submission.queue_id.to_string(),
-                        status: SendInputAdmissionStatus::Queued,
-                        hint: None,
-                    })
-            } else {
-                agent_control
-                    .send_scoped_agent_input_observing_response(
-                        session.presentation_id(),
-                        &turn.sub_id,
-                        receiver_thread_id,
-                        input_items,
-                        start_options,
-                        response_observation,
-                    )
-                    .await
-                    .map(|submission_id| SendInputResult {
-                        submission_id,
-                        status: SendInputAdmissionStatus::Submitted,
-                        hint: None,
-                    })
-            }
-        }
-        .await
-        .map_err(|err| {
-            // Mailbox admission reports actionable policy denials, not a missing manager.
-            if mailbox && let CodexErrorDetails::UnsupportedOperation(message) = err.details() {
-                FunctionCallError::RespondToModel(message.clone())
-            } else {
-                collab_agent_error(receiver_thread_id, err)
-            }
-        });
+        let mut result = admit_input(
+            &session,
+            &turn,
+            RecipientInput {
+                receiver: &prepared,
+                call_id: &call_id,
+                items: input_items,
+                mode: args.w,
+            },
+        )
+        .await;
         let status = session
             .services
             .agent_control
@@ -306,6 +157,7 @@ impl Handler {
                     wake_on_completion: response_observation.wake_on_completion_item_value(),
                     target_messages: Some(response_observation.target_messages()),
                     queue_input: Some(response_observation.queue_input()),
+                    input_batch: None,
                     mailbox_input: mailbox.then_some(true),
                     deadline_at_ms: None,
                     sender_thread_id: session.thread_id,
@@ -315,7 +167,6 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: if mailbox {
-                        // Successful deposit says nothing about execution or model visibility.
                         Default::default()
                     } else {
                         [(receiver_thread_id, status)].into_iter().collect()
@@ -336,7 +187,7 @@ impl CoreToolRuntime for Handler {
 
 #[derive(Debug, Deserialize)]
 struct SendInputArgs {
-    target: String,
+    target: SendInputTarget,
     message: Option<String>,
     items: Option<Vec<UserInput>>,
     #[serde(default)]
@@ -345,10 +196,54 @@ struct SendInputArgs {
     w: SendInputMode,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SendInputTarget {
+    Single(String),
+    Batch(Vec<String>),
+}
+
 #[derive(Clone, Copy, Debug)]
-enum SendInputMode {
+pub(super) enum SendInputMode {
     Response(ResponseObservationPolicy),
     Mailbox(WakeEventMailboxSubscription),
+}
+
+impl SendInputMode {
+    pub(super) fn response_observation(self) -> ResponseObservationPolicy {
+        match self {
+            Self::Response(policy) => policy,
+            Self::Mailbox(_) => ResponseObservationPolicy::from_parts(
+                /*commentary*/ false,
+                FinalResponseObservation::None,
+            ),
+        }
+    }
+
+    pub(super) fn normalized_flags(self) -> String {
+        match self {
+            Self::Mailbox(WakeEventMailboxSubscription::None) => "z".to_string(),
+            Self::Mailbox(WakeEventMailboxSubscription::Wake) => "zf".to_string(),
+            Self::Response(policy) => {
+                let mut flags = String::new();
+                if policy.commentary() {
+                    flags.push('c');
+                }
+                match policy.final_response() {
+                    FinalResponseObservation::None | FinalResponseObservation::Passive => {}
+                    FinalResponseObservation::Wake => flags.push('f'),
+                    FinalResponseObservation::PresentationOnly => flags.push('x'),
+                }
+                if policy.target_messages() {
+                    flags.push('m');
+                }
+                if policy.queue_input() {
+                    flags.push('q');
+                }
+                flags
+            }
+        }
+    }
 }
 
 impl Default for SendInputMode {
@@ -386,15 +281,15 @@ impl<'de> Deserialize<'de> for SendInputMode {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SendInputResult {
-    submission_id: String,
-    status: SendInputAdmissionStatus,
+    pub(super) submission_id: String,
+    pub(super) status: SendInputAdmissionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    hint: Option<String>,
+    pub(super) hint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-enum SendInputAdmissionStatus {
+pub(super) enum SendInputAdmissionStatus {
     Submitted,
     Queued,
     MailboxAccepted,

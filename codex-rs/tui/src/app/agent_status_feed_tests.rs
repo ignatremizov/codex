@@ -5,6 +5,38 @@ use codex_app_server_protocol::ItemCompletedNotification;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 #[test]
+fn batch_status_preview_does_not_claim_live_delivery() {
+    let item = ThreadItem::CollabAgentToolCall {
+        id: "batch".into(),
+        tool: CollabAgentTool::SendInput,
+        status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+        observe_commentary: Some(false),
+        wake_on_completion: None,
+        target_messages: Some(false),
+        queue_input: Some(false),
+        mailbox_input: Some(true),
+        input_batch: Some(codex_protocol::CollabAgentInputBatch {
+            flags: "z".into(),
+            results: vec![codex_protocol::CollabAgentInputResult {
+                target: "43".into(),
+                receiver_thread_id: None,
+                status: codex_protocol::CollabAgentInputStatus::MailboxAccepted,
+                error: None,
+                hint: None,
+            }],
+        }),
+        sender_thread_id: "sender".into(),
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: Some("Private input.".into()),
+        model: None,
+        reasoning_effort: None,
+        agents_states: Default::default(),
+    };
+    insta::assert_snapshot!(activity_summary(&item).unwrap(), @"Input batch: 1 receiver results");
+}
+
+#[test]
 fn agent_status_uses_bounded_buffered_activity() {
     let mut store = ThreadEventStore::new(/*capacity*/ 8);
     store.push_notification(ServerNotification::ItemCompleted(
