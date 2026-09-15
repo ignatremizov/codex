@@ -4,17 +4,13 @@ use super::*;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
-use codex_thread_store::LoadSubAgentCompletionContextItemParams;
 use codex_thread_store::LoadSubAgentCompletionPresentationParams;
+use codex_thread_store::StoredSubAgentCompletionPresentation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PrimaryEventEnqueue {
     Enqueued,
     Closed,
-}
-
-pub(super) struct CanonicalCompletionReceipt {
-    pub(super) primary_event: PrimaryEventEnqueue,
 }
 
 pub(crate) enum CompletionContextDelivery {
@@ -81,24 +77,16 @@ impl Session {
                     ));
                 }
                 let permit = session.acquire_history_publication_barrier().await?;
-                let stored = session
-                    .services
-                    .thread_store
-                    .load_sub_agent_completion_context_item(
-                        LoadSubAgentCompletionContextItemParams {
-                            thread_id: session.thread_id,
-                            include_archived: false,
-                            response_item_id: id.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+                let stored = session.load_completion_context_provenance(&id).await?;
                 if stored.as_ref() != Some(&response) {
                     return Err(CodexErr::InvalidRequest(
-                        "completion mailbox item has no matching canonical provenance".to_string(),
+                        "completion mailbox item has no matching publication provenance"
+                            .to_string(),
                     ));
                 }
                 let policy = model_info.truncation_policy.into();
+                let passive_final_activity = session.passive_final_delivery_activity.clone();
+                let is_passive = !communication.trigger_turn && !communication.defer_to_next_turn;
                 let receiver = session.dispatch_completion_publication(
                     permit,
                     Vec::new(),
@@ -106,6 +94,9 @@ impl Session {
                     move |state| {
                         if !state.history.raw_items().any(|item| item == &response) {
                             state.record_items(std::iter::once(&response), policy);
+                            if is_passive {
+                                passive_final_activity.send_replace(());
+                            }
                         }
                         if let Some(retained) = state
                             .acknowledged_completion_contexts
@@ -197,16 +188,7 @@ impl Session {
             .ok_or_else(|| {
                 CodexErr::InvalidRequest("completion has no trusted identity".to_string())
             })?;
-        let previous = self
-            .services
-            .thread_store
-            .load_sub_agent_completion_context_item(LoadSubAgentCompletionContextItemParams {
-                thread_id: self.thread_id,
-                include_archived: false,
-                response_item_id: id.clone(),
-            })
-            .await
-            .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+        let previous = self.load_completion_context_provenance(id).await?;
         if previous
             .as_ref()
             .is_some_and(|previous| previous != &response)
@@ -216,7 +198,7 @@ impl Session {
             ));
         }
         if previous.is_some() {
-            // The canonical worker retains this barrier through live installation.
+            // The publication worker retains this barrier through live installation.
             // Its publisher owns any remaining presentation/enqueue work.
             return Ok(CompletionContextPublication::AlreadyPublished);
         }
@@ -230,6 +212,7 @@ impl Session {
         let policy = turn.model_info().truncation_policy.into();
         let observations = Arc::clone(&self.response_observation_state);
         let settled = response.clone();
+        let passive_final_activity = self.passive_final_delivery_activity.clone();
         let receiver = self.dispatch_completion_publication(
             permit,
             items,
@@ -246,6 +229,10 @@ impl Session {
                     && !state.history.raw_items().any(|item| item == &response)
                 {
                     state.record_items(std::iter::once(&response), policy);
+                    // Persistent publication has its canonical ACK before this callback.
+                    // Runtime-only publication installs under the same owned barrier.
+                    // Queue-only publication is not live model-context delivery.
+                    passive_final_activity.send_replace(());
                 }
                 if let Some(retained) = state
                     .acknowledged_completion_contexts
@@ -305,17 +292,29 @@ impl Session {
                 },
                 None => (presentation.history_only_turn_id.clone(), true),
             };
-            let stored = self
-                .services
-                .thread_store
-                .load_sub_agent_completion_presentation(LoadSubAgentCompletionPresentationParams {
-                    thread_id: self.thread_id,
-                    include_archived: false,
-                    item_id: item.id(),
-                    turn_id: turn_id.clone(),
-                })
-                .await
-                .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+            let runtime_key = (item.id(), turn_id.clone());
+            let stored = if self.live_thread().is_some() {
+                self.services
+                    .thread_store
+                    .load_sub_agent_completion_presentation(
+                        LoadSubAgentCompletionPresentationParams {
+                            thread_id: self.thread_id,
+                            include_archived: false,
+                            item_id: runtime_key.0.clone(),
+                            turn_id: turn_id.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|error| CodexErr::Fatal(error.to_string()))?
+            } else {
+                self.response_observation_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .runtime_completion_presentations
+                    .get(&runtime_key)
+                    .cloned()
+                    .unwrap_or_default()
+            };
             if let Some(event) = &stored.item_completed
                 && (event.turn_id != turn_id
                     || serde_json::to_value(&event.item)
@@ -369,6 +368,15 @@ impl Session {
                     },
                 )));
             }
+            let runtime_receipt =
+                self.live_thread()
+                    .is_none()
+                    .then(|| StoredSubAgentCompletionPresentation {
+                        item_completed: Some(completed.clone()),
+                        turn_started: stored.turn_started || history_only,
+                        turn_completed: stored.turn_completed || history_only,
+                    });
+            let observations = Arc::clone(&self.response_observation_state);
             let events = vec![
                 Event {
                     id: turn_id.clone(),
@@ -384,8 +392,21 @@ impl Session {
                     msg: EventMsg::ItemCompleted(completed),
                 },
             ];
-            let receiver =
-                self.dispatch_completion_publication(permit, records, events, |_| {}, || {})?;
+            let receiver = self.dispatch_completion_publication(
+                permit,
+                records,
+                events,
+                move |_| {
+                    if let Some(receipt) = runtime_receipt {
+                        observations
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .runtime_completion_presentations
+                            .insert(runtime_key, receipt);
+                    }
+                },
+                || {},
+            )?;
             drop(order);
             let result = self.publication_result(receiver).await;
             drop(active);
@@ -424,16 +445,8 @@ impl Session {
             self.publication_result(receiver).await
         }
         .await;
-        match result {
-            Ok(CanonicalCompletionReceipt {
-                primary_event: PrimaryEventEnqueue::Enqueued,
-            }) => {}
-            Ok(CanonicalCompletionReceipt {
-                primary_event: PrimaryEventEnqueue::Closed,
-            }) => {}
-            Err(error) => {
-                self.quarantine_history(format!("wait completion publication failed: {error}"))
-            }
+        if let Err(error) = result {
+            self.quarantine_history(format!("wait completion publication failed: {error}"));
         }
     }
 }
