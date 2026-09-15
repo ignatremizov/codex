@@ -2085,7 +2085,9 @@ async fn passive_final_interrupts_active_sleep_and_continues_same_turn(
             });
             config.agent_allow_history_forks = true;
         });
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = builder
+        .build_with_streaming_server_auto_env(&server)
+        .await?;
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "spawn and sleep".to_string(),
