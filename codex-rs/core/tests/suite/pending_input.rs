@@ -10,6 +10,7 @@ use codex_core::TurnStartOptions;
 use codex_core::config::CurrentTimeReminderConfig;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::sleep::SleepItem;
+use codex_extension_items::sleep::SleepOutcome;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
@@ -558,11 +559,17 @@ async fn wait_for_sleep_item_started(codex: &CodexThread, call_id: &str, duratio
         SleepItem {
             id: call_id.to_string(),
             duration_ms,
+            outcome: None,
+            elapsed_ms: None,
         }
     );
 }
 
-async fn wait_for_sleep_item_completed(codex: &CodexThread, call_id: &str, duration_ms: u64) {
+async fn wait_for_sleep_item_completed(
+    codex: &CodexThread,
+    call_id: &str,
+    duration_ms: u64,
+) -> SleepItem {
     let event = wait_for_event(codex, |event| {
         matches!(
             event,
@@ -580,13 +587,19 @@ async fn wait_for_sleep_item_completed(codex: &CodexThread, call_id: &str, durat
     let TurnItem::Extension(ExtensionItem::Sleep(item)) = completed.item else {
         unreachable!("wait predicate only accepts sleep items");
     };
+    let elapsed_ms = item
+        .elapsed_ms
+        .expect("interrupted sleep reports elapsed time");
     assert_eq!(
         item,
         SleepItem {
             id: call_id.to_string(),
             duration_ms,
+            outcome: Some(SleepOutcome::Interrupted),
+            elapsed_ms: Some(elapsed_ms),
         }
     );
+    item
 }
 
 struct SleepingRootExtension;
@@ -602,6 +615,8 @@ impl codex_extension_api::ThreadLifecycleContributor<codex_core::config::Config>
             input.thread_store.insert(SleepItem {
                 id: "clock-wait-1".to_string(),
                 duration_ms: 60_000,
+                outcome: None,
+                elapsed_ms: None,
             });
         })
     }
@@ -798,11 +813,13 @@ async fn any_new_input_interrupts_sleep() {
     wait_for_sleep_item_started(&codex, FIRST_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
 
     steer_user_input(&codex, STEER_PROMPT).await;
-    wait_for_sleep_item_completed(&codex, FIRST_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
+    let first_sleep =
+        wait_for_sleep_item_completed(&codex, FIRST_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
     wait_for_sleep_item_started(&codex, SECOND_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
 
     submit_queue_only_agent_mail(&codex, "new mailbox input").await;
-    wait_for_sleep_item_completed(&codex, SECOND_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
+    let second_sleep =
+        wait_for_sleep_item_completed(&codex, SECOND_SLEEP_CALL_ID, SLEEP_DURATION_MS).await;
     wait_for_turn_complete(&codex).await;
 
     let requests = server.requests().await;
@@ -839,19 +856,7 @@ async fn any_new_input_interrupts_sleep() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        persisted_sleep_items,
-        vec![
-            SleepItem {
-                id: FIRST_SLEEP_CALL_ID.to_string(),
-                duration_ms: SLEEP_DURATION_MS,
-            },
-            SleepItem {
-                id: SECOND_SLEEP_CALL_ID.to_string(),
-                duration_ms: SLEEP_DURATION_MS,
-            },
-        ]
-    );
+    assert_eq!(persisted_sleep_items, vec![first_sleep, second_sleep]);
 
     server.shutdown().await;
 }
