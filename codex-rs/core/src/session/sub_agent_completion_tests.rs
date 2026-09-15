@@ -52,6 +52,7 @@ async fn unknown_completion_context_never_installs_or_retries_on_same_runtime() 
         let store =
             attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique")).await;
         let response = completion_context();
+        let passive_final_activity = session.subscribe_passive_final_delivery_activity();
         let accepted = session
             .submission_admission
             .try_accept_completion_delivery()
@@ -84,6 +85,11 @@ async fn unknown_completion_context_never_installs_or_retries_on_same_runtime() 
                 .any(|item| item.id() == response.id())
         );
         assert!(events.try_recv().is_err());
+        assert!(
+            !passive_final_activity
+                .has_changed()
+                .expect("live signal sender")
+        );
         let calls = store.calls().await.append_completion_items_and_flush;
         assert!(
             session
@@ -272,6 +278,7 @@ async fn queued_completion_context_is_installed_once_and_drained_on_healthy_shut
     );
     communication.id = Some(new_sub_agent_completion_context_response_item_id());
     let response = communication.to_model_input_item();
+    let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
     let accepted = session
         .submission_admission
         .try_accept_completion_delivery()
@@ -284,6 +291,20 @@ async fn queued_completion_context_is_installed_once_and_drained_on_healthy_shut
         )
         .await
         .expect("durable before mailbox");
+    assert!(
+        !passive_final_activity
+            .has_changed()
+            .expect("queue acceptance is not installation")
+    );
+    let canonical_envelope = session
+        .state
+        .lock()
+        .await
+        .completion_publication_receipts
+        .contexts
+        .get(response.id().expect("completion id"))
+        .expect("acknowledged source envelope")
+        .clone();
     session
         .input_queue
         .enqueue_mailbox_communication(communication.clone(), TurnStartOptions::default())
@@ -297,10 +318,25 @@ async fn queued_completion_context_is_installed_once_and_drained_on_healthy_shut
         .drain_completion_mailbox()
         .await
         .expect("drain before publication closure");
+    assert!(
+        passive_final_activity
+            .has_changed()
+            .expect("passive lease installed")
+    );
+    let _ = passive_final_activity.borrow_and_update();
     session
         .consume_completion_context(&communication, turn.model_info())
         .await
         .expect("idempotent consumption");
+    assert!(
+        !passive_final_activity
+            .has_changed()
+            .expect("same lease must not signal twice")
+    );
+    assert_eq!(
+        session.state.lock().await.history.annotated_items(),
+        &[canonical_envelope]
+    );
     assert_eq!(
         session
             .clone_history()
@@ -343,6 +379,7 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
         .submission_admission
         .try_accept_completion_delivery()
         .expect("accepted");
+    let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
     let response = completion_context();
     session
         .persist_completion_context(
@@ -352,6 +389,14 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
         )
         .await
         .expect("first canonical payload");
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 1),
+        passive_final_activity.changed(),
+    )
+    .await
+    .expect("new passive completion should signal after canonical publication")
+    .expect("passive final activity sender should remain open");
+    let mut retry_activity = session.subscribe_passive_final_delivery_activity();
     let calls = store.calls().await.append_completion_items_and_flush;
     assert_eq!(
         session
@@ -363,6 +408,15 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
             .await
             .expect("exact canonical identity is already owned"),
         CompletionContextPublication::AlreadyPublished,
+    );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(/*millis*/ 50),
+            retry_activity.changed()
+        )
+        .await
+        .is_err(),
+        "an idempotent completion retry must not signal a later sleep"
     );
     let mut changed = response.clone();
     if let ResponseItem::AgentMessage { content, .. } = &mut changed {

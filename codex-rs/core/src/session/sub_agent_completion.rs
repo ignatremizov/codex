@@ -97,9 +97,17 @@ impl Session {
                         .iter()
                         .find(|retained| retained.item.item == response)
                         .map(|retained| retained.item.clone())
-                        .or_else(|| state.completion_publication_receipts.contexts.get(&id).cloned())
+                        .or_else(|| {
+                            state
+                                .completion_publication_receipts
+                                .contexts
+                                .get(&id)
+                                .cloned()
+                        })
                         .unwrap_or_else(|| response.clone().into())
                 };
+                let passive_final_activity = session.passive_final_delivery_activity.clone();
+                let is_passive = !communication.trigger_turn && !communication.defer_to_next_turn;
                 let receiver = session.dispatch_completion_publication(
                     permit,
                     Vec::new(),
@@ -107,6 +115,9 @@ impl Session {
                     move |state| {
                         if !state.history.raw_items().any(|item| item == &response) {
                             state.history.replay_annotated_item(&envelope, policy);
+                            if is_passive {
+                                passive_final_activity.send_replace(());
+                            }
                         }
                         if let Some(retained) = state
                             .acknowledged_completion_contexts
@@ -229,10 +240,14 @@ impl Session {
             ));
         };
         let envelope = envelope.clone();
-        items.insert(0, RolloutItem::InterAgentCommunicationMetadata {
-            trigger_turn: false,
-        });
+        items.insert(
+            0,
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: false,
+            },
+        );
         let id = id.clone();
+        let passive_final_activity = self.passive_final_delivery_activity.clone();
         let receiver = self.dispatch_completion_publication(
             permit,
             items,
@@ -246,6 +261,9 @@ impl Session {
                     && !state.history.raw_items().any(|item| item == &response)
                 {
                     prepared.install(&mut state.history);
+                    // The owned worker has acknowledged canonical publication and installed
+                    // the original source envelope. Queue-only acceptance is not delivery.
+                    passive_final_activity.send_replace(());
                 }
                 if let Some(retained) = state
                     .acknowledged_completion_contexts

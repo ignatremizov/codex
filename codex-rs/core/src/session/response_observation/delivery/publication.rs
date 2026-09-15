@@ -28,6 +28,12 @@ impl Session {
                         "observed response belongs to another session instance".to_string(),
                     ));
                 }
+                let is_passive_final = matches!(
+                    &payload,
+                    Payload::Context { communication, .. }
+                        if !communication.trigger_turn && !communication.defer_to_next_turn
+                ) && commit.kind == crate::agent::control::ResponseObservationDeliveryKind::Final
+                    && commit.model_visibility == codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible;
                 let (response, presentation, trigger_turn, recording_turn_id, wait_turn) = match payload {
                     Payload::Context { communication, presentation, recording_turn_id } => {
                         let response = communication.to_model_input_item();
@@ -164,18 +170,28 @@ impl Session {
                     let runtime_only = session.live_thread().is_none();
                     let install_commit = commit.clone();
                     let executed_tool_calls = session.services.executed_tool_calls.clone();
+                    let passive_final_activity = session.passive_final_delivery_activity.clone();
                     let receiver = session.dispatch_completion_publication(
                         permit, records, events,
                         move |state| {
                             let _boundary = boundary;
                             if let Some((prepared, envelope)) = prepared {
+                                let is_completion_context = codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
+                                    install_commit.response_item_id.as_str(),
+                                );
+                                let newly_settled = is_completion_context
+                                    && !state.completion_publication_receipts.contexts
+                                        .contains_key(&install_commit.response_item_id);
                                 if !state.history.raw_items().any(|item| item == &envelope.item) {
                                     state.current_time_reminder.note_recorded_items(std::slice::from_ref(&envelope.item));
                                     prepared.install(&mut state.history);
+                                    if is_passive_final && newly_settled {
+                                        // Publication and source installation already succeeded.
+                                        // Caller cancellation or blocked presentation cannot lose the hint.
+                                        passive_final_activity.send_replace(());
+                                    }
                                 }
-                                if runtime_only || codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(
-                                    install_commit.response_item_id.as_str(),
-                                ) {
+                                if runtime_only || is_completion_context {
                                     state.completion_publication_receipts.contexts.insert(
                                         install_commit.response_item_id.clone(), envelope.clone(),
                                     );
