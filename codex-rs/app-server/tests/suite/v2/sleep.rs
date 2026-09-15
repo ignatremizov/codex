@@ -7,6 +7,7 @@ use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SleepItem;
+use codex_app_server_protocol::SleepOutcome;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -244,15 +245,23 @@ clock_source = "external"
     )
     .await??;
 
-    let expected_item = ThreadItem::Sleep(SleepItem {
+    let started_item = ThreadItem::Sleep(SleepItem {
         id: CALL_ID.to_string(),
         duration_ms: DURATION_MS,
+        outcome: None,
+        elapsed_ms: None,
     });
+    let ThreadItem::Sleep(completed_sleep) = &completed.item else {
+        panic!("expected completed sleep item");
+    };
+    let elapsed_ms = completed_sleep
+        .elapsed_ms
+        .expect("completed sleep should report elapsed time");
     assert!(completed.completed_at_ms >= started.started_at_ms);
     assert_eq!(
         started,
         ItemStartedNotification {
-            item: expected_item.clone(),
+            item: started_item,
             thread_id: thread.id.clone(),
             turn_id: turn.id.clone(),
             started_at_ms: started.started_at_ms,
@@ -262,7 +271,12 @@ clock_source = "external"
     assert_eq!(
         completed,
         ItemCompletedNotification {
-            item: expected_item,
+            item: ThreadItem::Sleep(SleepItem {
+                id: CALL_ID.to_string(),
+                duration_ms: DURATION_MS,
+                outcome: Some(SleepOutcome::Completed),
+                elapsed_ms: Some(elapsed_ms),
+            }),
             thread_id: thread.id,
             turn_id: turn.id,
             completed_at_ms: completed.completed_at_ms,

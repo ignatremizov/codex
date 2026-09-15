@@ -5,6 +5,7 @@ use ts_rs::TS;
 use super::ExtensionItem;
 use super::image_generation::ImageGenerationItem;
 use super::sleep::SleepItem;
+use super::sleep::SleepOutcome;
 use super::web_search::WebSearchAction;
 use super::web_search::WebSearchItem;
 
@@ -161,6 +162,8 @@ fn sleep_item_preserves_stable_wire_shape() {
     let item = ExtensionItem::Sleep(SleepItem {
         id: "sleep-1".to_string(),
         duration_ms: 1_000,
+        outcome: Some(SleepOutcome::Interrupted),
+        elapsed_ms: Some(250),
     });
     let value = serde_json::to_value(&item).expect("serialize extension item");
 
@@ -170,11 +173,27 @@ fn sleep_item_preserves_stable_wire_shape() {
             "kind": "clock.sleep",
             "id": "sleep-1",
             "durationMs": 1_000,
+            "outcome": "interrupted",
+            "elapsedMs": 250,
         })
     );
     assert_eq!(
         serde_json::from_value::<ExtensionItem>(value).expect("deserialize extension item"),
         item
+    );
+    assert_eq!(
+        serde_json::from_value::<ExtensionItem>(json!({
+            "kind": "clock.sleep",
+            "id": "sleep-legacy",
+            "durationMs": 2_000,
+        }))
+        .expect("deserialize legacy sleep item"),
+        ExtensionItem::Sleep(SleepItem {
+            id: "sleep-legacy".to_string(),
+            duration_ms: 2_000,
+            outcome: None,
+            elapsed_ms: None,
+        })
     );
 }
 

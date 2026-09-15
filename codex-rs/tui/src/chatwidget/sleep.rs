@@ -97,8 +97,7 @@ impl ChatWidget {
 
     /// Compact a still-active sleep when its turn ends before the item completion arrives.
     ///
-    /// The protocol item contains only the requested duration, so this records no completion
-    /// outcome and does not claim that the full duration elapsed.
+    /// The started item has no completion metadata, so this records no outcome or elapsed time.
     pub(super) fn compact_active_sleep(&mut self, defer_to_stream: bool) {
         let Some(active_sleep) = self.turn_lifecycle.active_sleep.take() else {
             return;

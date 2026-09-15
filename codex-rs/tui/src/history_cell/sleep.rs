@@ -3,6 +3,7 @@
 use super::HistoryCell;
 use super::plain_lines;
 use codex_app_server_protocol::SleepItem;
+use codex_app_server_protocol::SleepOutcome;
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
 
@@ -12,22 +13,31 @@ pub(crate) struct SleepCell {
 }
 
 impl SleepCell {
-    fn label_parts(&self) -> (&'static str, String) {
-        (
-            "Sleep",
-            format!("requested {}", format_sleep_duration(self.item.duration_ms)),
+    fn detail(&self) -> String {
+        let requested = format!("requested {}", format_sleep_duration(self.item.duration_ms));
+        let (Some(outcome), Some(elapsed_ms)) = (self.item.outcome, self.item.elapsed_ms) else {
+            return requested;
+        };
+        let outcome = match outcome {
+            SleepOutcome::Completed => "completed",
+            SleepOutcome::Interrupted => "interrupted",
+            SleepOutcome::Error => "error",
+        };
+        format!(
+            "{outcome} after {} · {requested}",
+            format_sleep_duration(elapsed_ms)
         )
     }
 }
 
 impl HistoryCell for SleepCell {
     fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
-        let (header, detail) = self.label_parts();
+        let detail = self.detail();
         vec![
             vec![
                 "•".dim(),
                 " ".into(),
-                header.bold(),
+                "Sleep".bold(),
                 " · ".dim(),
                 detail.dim(),
             ]
@@ -36,8 +46,7 @@ impl HistoryCell for SleepCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let (header, detail) = self.label_parts();
-        plain_lines(vec![Line::from(format!("{header} · {detail}"))])
+        plain_lines(vec![Line::from(format!("Sleep · {}", self.detail()))])
     }
 }
 

@@ -5,6 +5,22 @@ fn sleep_item(id: &str, duration_ms: u64) -> AppServerThreadItem {
     AppServerThreadItem::Sleep(codex_app_server_protocol::SleepItem {
         id: id.to_string(),
         duration_ms,
+        outcome: None,
+        elapsed_ms: None,
+    })
+}
+
+fn completed_sleep_item(
+    id: &str,
+    duration_ms: u64,
+    outcome: codex_app_server_protocol::SleepOutcome,
+    elapsed_ms: u64,
+) -> AppServerThreadItem {
+    AppServerThreadItem::Sleep(codex_app_server_protocol::SleepItem {
+        id: id.to_string(),
+        duration_ms,
+        outcome: Some(outcome),
+        elapsed_ms: Some(elapsed_ms),
     })
 }
 
@@ -85,14 +101,19 @@ async fn live_sleep_shows_active_duration_then_compact_requested_duration() {
             thread_id: String::new(),
             turn_id: "turn-1".to_string(),
             completed_at_ms: 1_250,
-            item: sleep_item("sleep-1", 60_000),
+            item: completed_sleep_item(
+                "sleep-1",
+                /*duration_ms*/ 60_000,
+                codex_app_server_protocol::SleepOutcome::Completed,
+                /*elapsed_ms*/ 1_250,
+            ),
         }),
         /*replay_kind*/ None,
     );
 
     assert_snapshot!(
         sleep_lines(drain_insert_history(&mut rx)).join("\n"),
-        @"• Sleep · requested 1m 00s"
+        @"• Sleep · completed after 1.25s · requested 1m 00s"
     );
     assert!(chat.transcript.active_cell.is_none());
 
@@ -182,6 +203,67 @@ async fn replayed_sleep_is_rendered_as_compact_history() {
     assert_eq!(
         sleep_lines(drain_insert_history(&mut rx)),
         vec!["• Sleep · requested 1m 00.025s"]
+    );
+    assert!(chat.transcript.active_cell.is_none());
+    assert!(chat.turn_lifecycle.active_sleep.is_none());
+}
+
+#[tokio::test]
+async fn replayed_interrupted_sleep_shows_actual_elapsed_time() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.replay_thread_item(
+        completed_sleep_item(
+            "sleep-interrupted",
+            /*duration_ms*/ 60_000,
+            codex_app_server_protocol::SleepOutcome::Interrupted,
+            /*elapsed_ms*/ 19_940,
+        ),
+        "turn-1".to_string(),
+        ReplayKind::ThreadSnapshot,
+    );
+
+    assert_snapshot!(
+        sleep_lines(drain_insert_history(&mut rx)).join("\n"),
+        @"• Sleep · interrupted after 19.94s · requested 1m 00s"
+    );
+    assert!(chat.transcript.active_cell.is_none());
+    assert!(chat.turn_lifecycle.active_sleep.is_none());
+}
+
+#[tokio::test]
+async fn replayed_sleep_error_and_partial_metadata_remain_distinct() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    for item in [
+        completed_sleep_item(
+            "sleep-error",
+            /*duration_ms*/ 60_000,
+            codex_app_server_protocol::SleepOutcome::Error,
+            /*elapsed_ms*/ 250,
+        ),
+        AppServerThreadItem::Sleep(codex_app_server_protocol::SleepItem {
+            id: "sleep-no-elapsed".to_string(),
+            duration_ms: 60_000,
+            outcome: Some(codex_app_server_protocol::SleepOutcome::Interrupted),
+            elapsed_ms: None,
+        }),
+        AppServerThreadItem::Sleep(codex_app_server_protocol::SleepItem {
+            id: "sleep-no-outcome".to_string(),
+            duration_ms: 60_000,
+            outcome: None,
+            elapsed_ms: Some(250),
+        }),
+    ] {
+        chat.replay_thread_item(item, "turn-1".to_string(), ReplayKind::ThreadSnapshot);
+    }
+
+    assert_snapshot!(
+        sleep_lines(drain_insert_history(&mut rx)).join("\n"),
+        @"
+    • Sleep · error after 250ms · requested 1m 00s
+    • Sleep · requested 1m 00s
+    • Sleep · requested 1m 00s
+    "
     );
     assert!(chat.transcript.active_cell.is_none());
     assert!(chat.turn_lifecycle.active_sleep.is_none());

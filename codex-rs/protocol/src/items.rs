@@ -1028,6 +1028,8 @@ mod tests {
         let item = TurnItem::Extension(ExtensionItem::Sleep(SleepItem {
             id: "sleep-1".to_string(),
             duration_ms: 1_000,
+            outcome: None,
+            elapsed_ms: None,
         }));
 
         assert_eq!(
@@ -1037,6 +1039,8 @@ mod tests {
                 "kind": "clock.sleep",
                 "id": "sleep-1",
                 "durationMs": 1_000,
+                "outcome": null,
+                "elapsedMs": null,
             })
         );
     }
