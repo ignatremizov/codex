@@ -519,7 +519,7 @@ struct WaitStart<'a> {
 
 #[tokio::test]
 async fn process_wait_refresh_preserves_foreground_status_owners() {
-    for foreground in ["guardian", "retry", "collaboration", "compaction"] {
+    for foreground in ["guardian", "retry", "collaboration", "compaction", "sleep"] {
         let (mut chat, _events, _operations) =
             make_chatwidget_manual(/*model_override*/ None).await;
         handle_turn_started(&mut chat, "turn-1");
@@ -563,6 +563,19 @@ async fn process_wait_refresh_preserves_foreground_status_owners() {
                     "compact".into(),
                     "turn-1".into(),
                     Duration::ZERO,
+                );
+            }
+            "sleep" => {
+                chat.on_sleep_started(
+                    codex_app_server_protocol::SleepItem {
+                        id: "foreground-sleep".into(),
+                        duration_ms: 60_000,
+                        outcome: None,
+                        elapsed_ms: None,
+                    },
+                    "turn-1".into(),
+                    now_ms,
+                    /*from_replay*/ false,
                 );
             }
             _ => unreachable!(),

@@ -653,7 +653,7 @@ impl ChatWidget {
                     self.on_async_agent_notice(cell);
                 }
             }
-            ThreadItemPayload::Sleep(item) => self.on_sleep_completed(item, &turn_id),
+            ThreadItemPayload::Sleep(item) => self.on_sleep_completed(item, &turn_id, from_replay),
         }
 
         if matches!(

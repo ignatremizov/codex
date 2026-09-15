@@ -9,6 +9,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::sleep::SleepItem;
+use codex_extension_items::sleep::SleepOutcome;
 use codex_features::Feature;
 use codex_protocol::items::TurnItem;
 use codex_tools::JsonSchema;
@@ -100,9 +101,11 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
             }
 
             let started = Instant::now();
-            let item = TurnItem::Extension(ExtensionItem::Sleep(SleepItem {
-                id: call_id,
+            let started_item = TurnItem::Extension(ExtensionItem::Sleep(SleepItem {
+                id: call_id.clone(),
                 duration_ms: args.duration_ms,
+                outcome: None,
+                elapsed_ms: None,
             }));
             let mut passive_final_delivery_rx = session.subscribe_passive_final_delivery_activity();
             let turn_state = session
@@ -113,7 +116,9 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
                 .input_queue
                 .subscribe_activity(turn_state.as_deref())
                 .await;
-            session.emit_turn_item_started(turn.as_ref(), &item).await;
+            session
+                .emit_turn_item_started(turn.as_ref(), &started_item)
+                .await;
             let sleep_result = if pending_activity.is_some() {
                 Ok(true)
             } else {
@@ -140,7 +145,22 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
                     }
                 }
             };
-            session.emit_turn_item_completed(turn.as_ref(), item).await;
+            let elapsed = started.elapsed();
+            let elapsed_ms = elapsed.as_millis().try_into().unwrap_or(u64::MAX);
+            let outcome = match &sleep_result {
+                Ok(false) => SleepOutcome::Completed,
+                Ok(true) => SleepOutcome::Interrupted,
+                Err(_) => SleepOutcome::Error,
+            };
+            let completed_item = TurnItem::Extension(ExtensionItem::Sleep(SleepItem {
+                id: call_id,
+                duration_ms: args.duration_ms,
+                outcome: Some(outcome),
+                elapsed_ms: Some(elapsed_ms),
+            }));
+            session
+                .emit_turn_item_completed(turn.as_ref(), completed_item)
+                .await;
             let interrupted = sleep_result.map_err(|err| {
                 if turn.config.features.enabled(Feature::NonfatalClockReadErrors) {
                     tracing::error!(
@@ -159,7 +179,7 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
             } else {
                 "Sleep completed."
             };
-            let wall_time_seconds = started.elapsed().as_secs_f64();
+            let wall_time_seconds = elapsed.as_secs_f64();
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
                 format!("Wall time: {wall_time_seconds:.4} seconds\n{message}"),
                 /*success*/ Some(true),

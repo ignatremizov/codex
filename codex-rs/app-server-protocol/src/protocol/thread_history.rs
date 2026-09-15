@@ -2520,6 +2520,8 @@ mod tests {
         ThreadItemPayload::Sleep(CoreSleepItem {
             id: id.to_string(),
             duration_ms,
+            outcome: None,
+            elapsed_ms: None,
         })
     }
 
@@ -3219,6 +3221,8 @@ mod tests {
         let sleep_item = CoreTurnItem::Extension(CoreExtensionItem::Sleep(CoreSleepItem {
             id: "sleep-1".to_string(),
             duration_ms: 1_000,
+            outcome: Some(codex_extension_items::sleep::SleepOutcome::Interrupted),
+            elapsed_ms: Some(250),
         }));
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
@@ -3262,6 +3266,8 @@ mod tests {
             [&ThreadItemPayload::Sleep(CoreSleepItem {
                 id: "sleep-1".to_string(),
                 duration_ms: 1_000,
+                outcome: Some(codex_extension_items::sleep::SleepOutcome::Interrupted),
+                elapsed_ms: Some(250),
             })]
         );
         assert_eq!(
