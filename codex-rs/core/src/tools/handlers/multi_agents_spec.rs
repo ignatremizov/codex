@@ -190,7 +190,7 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
         (
             "w".to_string(),
             response_observation_schema(&format!(
-                "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering or starting a payload-bearing turn. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. If normalized f/x flags leave an effective f, zf also subscribes to the receiver's exact final turn after check_mail consumes this message or an idle inventory advertises it. The subscription does not expose mail contents or wake on unrelated busy turns. z, zf, and fz are equivalent; zfx and zfxx remain ordinary mailbox admission after f/x cancellation. Repeated z and f flags follow their normal presence/count rules. z rejects c, m, and q. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
+                "{RESPONSE_OBSERVATION_DESCRIPTION} send_input only: z retains the payload in the receiver's mailbox for explicit check_mail consumption, without steering or starting a payload-bearing turn. Acceptance does not mean read or consumed. A later idle-boundary inventory may notify the receiver. If normalized f/x flags leave an effective f, zf also subscribes to the receiver's exact final turn after check_mail consumes this message or an idle inventory advertises it. The subscription does not expose mail contents or wake on unrelated busy turns. zf and fz are equivalent; plain z requests ordinary mailbox admission without a conditional final subscription, and zfx and zfxx remain ordinary mailbox admission after f/x cancellation. Repeated z and f flags follow their normal presence/count rules. z rejects c, m, and q. If the receiver is not loaded, the successful result includes a hint to use resume_agent first; this does not load the receiver or consume the mail. Currently requires same-root durable configured directed/subtree permission or downward ancestry; transient m grants and cross-root mail are unsupported."
             )),
         ),
     ]);
@@ -521,6 +521,10 @@ fn send_input_output_schema() -> Value {
                 "type": "string",
                 "enum": ["submitted", "queued", "mailboxAccepted"],
                 "description": "Input admission, not completion or model delivery: submitted directly, queued for its own turn, or accepted into the durable mailbox."
+            },
+            "hint": {
+                "type": "string",
+                "description": "Actionable mailbox guidance. Present when the receiver is not loaded and must be explicitly resumed before it can process the saved mail."
             }
         },
         "required": ["status"],

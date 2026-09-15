@@ -26,7 +26,10 @@ fn v1_result_schemas_preserve_projection_fields_in_code_mode() {
         ),
         (
             create_send_input_tool_v1(),
-            vec!["status: \"submitted\" | \"queued\" | \"mailboxAccepted\";"],
+            vec![
+                "status: \"submitted\" | \"queued\" | \"mailboxAccepted\";",
+                "hint?: string;",
+            ],
         ),
         (
             create_resume_agent_tool(),

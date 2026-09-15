@@ -10,6 +10,7 @@ use codex_protocol::WakeEventFlags;
 use codex_protocol::WakeEventMailboxSubscription;
 use codex_protocol::WakeEventSurface;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_thread_store::MailboxFinalSubscriptionRequest;
 use codex_tools::ToolSpec;
@@ -169,7 +170,7 @@ impl Handler {
             cyber_access_program: turn.cyber_access_program,
             ..Default::default()
         };
-        let result = async {
+        let mut result = async {
             if mailbox {
                 // Acceptance may hint a loaded receiver's inventory scheduler; this tool
                 // does not admit a payload-bearing turn or deliver the payload to its model.
@@ -186,6 +187,7 @@ impl Handler {
                     .map(|accepted| SendInputResult {
                         submission_id: accepted.id,
                         status: SendInputAdmissionStatus::MailboxAccepted,
+                        hint: None,
                     })
             } else if sends_to_descendant {
                 let input = agent_control
@@ -211,6 +213,7 @@ impl Handler {
                         .map(|submission| SendInputResult {
                             submission_id: submission.queue_id.to_string(),
                             status: SendInputAdmissionStatus::Queued,
+                            hint: None,
                         })
                 } else {
                     agent_control
@@ -225,6 +228,7 @@ impl Handler {
                         .map(|submission_id| SendInputResult {
                             submission_id,
                             status: SendInputAdmissionStatus::Submitted,
+                            hint: None,
                         })
                 }
             } else if response_observation.queue_input() {
@@ -241,6 +245,7 @@ impl Handler {
                     .map(|submission| SendInputResult {
                         submission_id: submission.queue_id.to_string(),
                         status: SendInputAdmissionStatus::Queued,
+                        hint: None,
                     })
             } else {
                 agent_control
@@ -256,6 +261,7 @@ impl Handler {
                     .map(|submission_id| SendInputResult {
                         submission_id,
                         status: SendInputAdmissionStatus::Submitted,
+                        hint: None,
                     })
             }
         }
@@ -273,6 +279,13 @@ impl Handler {
             .agent_control
             .get_status(receiver_thread_id)
             .await;
+        if mailbox
+            && matches!(&status, AgentStatus::NotFound)
+            && let Ok(result) = &mut result
+        {
+            result.hint =
+                Some("Mail saved; receiver not loaded. Use resume_agent first.".to_string());
+        }
         let tool_call_status = if result.is_ok() && mailbox {
             CollabAgentToolCallStatus::Completed
         } else if result.is_ok() {
@@ -373,6 +386,8 @@ impl<'de> Deserialize<'de> for SendInputMode {
 pub(crate) struct SendInputResult {
     submission_id: String,
     status: SendInputAdmissionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -386,6 +401,8 @@ enum SendInputAdmissionStatus {
 #[derive(Serialize)]
 struct SendInputModelResult<'a> {
     status: &'a SendInputAdmissionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -407,6 +424,7 @@ impl ToolOutput for SendInputResult {
             payload,
             &SendInputModelResult {
                 status: &self.status,
+                hint: self.hint.as_deref(),
             },
             Some(true),
             "send_input",
@@ -417,6 +435,7 @@ impl ToolOutput for SendInputResult {
         tool_output_code_mode_result(
             &SendInputModelResult {
                 status: &self.status,
+                hint: self.hint.as_deref(),
             },
             "send_input",
         )

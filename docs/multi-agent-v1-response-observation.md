@@ -929,6 +929,8 @@ single-owner acceptance serialization. These nonpersistent notices are best-effo
 exactly-once guarantee across processes; their stable IDs are presentation discriminators, not
 delivery proof. Requested hidden `x` output mirrors and ordinary completion behavior are unchanged.
 
+The successful `send_input` mailbox result reports `mailboxAccepted` for durable acceptance. When the receiver has no loaded runtime, it additionally returns the actionable hint `Mail saved; receiver not loaded. Use resume_agent first.` This hint does not distinguish a closed agent from another unloaded runtime state, does not implicitly resume the receiver, and does not claim or consume the message. A `zf`/`fz` conditional final subscription remains tied to the first receiver turn that consumes the message or advertises its idle inventory.
+
 During an authored answer stream, the TUI queues asynchronous agent presentation rows
 (commentary, visible or hidden completions, and peer/mail receipts) until that message finishes.
 The answer is consolidated before the queued notices are displayed. Interruption or terminal
