@@ -24,6 +24,7 @@ fn legacy_mirrors_preserve_live_policy_but_do_not_override_a_new_canonical_item(
         let parent = ThreadId::new();
         let child = ThreadId::new();
         let mut item = CollabAgentToolCallItem {
+            input_batch: None,
             mailbox_input: None,
             target_messages: Some(true),
             queue_input: Some(false),

@@ -83,7 +83,6 @@ mod presentation;
 mod presentation_ref;
 mod response_delivery;
 mod response_observer;
-mod scoped_messages;
 mod turn_queue;
 mod wait_commentary;
 pub(crate) use close_response::CloseAgentResponseDisposition;

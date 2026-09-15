@@ -16,6 +16,7 @@ fn mailbox_send_has_distinct_acceptance_and_failure_titles() {
         wake_on_completion: Some(false),
         target_messages: Some(false),
         queue_input: Some(false),
+        input_batch: None,
         mailbox_input: Some(true),
         sender_thread_id: ThreadId::new().to_string(),
         receiver_thread_ids: vec![receiver.to_string()],

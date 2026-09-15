@@ -1,6 +1,8 @@
 //! Helpers for deciding which buffered events to replay when switching threads.
 
 use codex_app_server_protocol::CodexErrorInfo;
+use codex_app_server_protocol::CollabAgentTool;
+use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadItem;
@@ -16,6 +18,28 @@ pub(super) fn mirrored_completion_item_id(notification: &ServerNotification) -> 
     let ServerNotification::ItemCompleted(event) = notification else {
         return None;
     };
+    if let ThreadItem::CollabAgentToolCall {
+        id,
+        tool: CollabAgentTool::SendInput,
+        status: CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed,
+        sender_thread_id,
+        input_batch: Some(batch),
+        ..
+    } = &event.item
+    {
+        // This is a live root-side copy, not the sender's canonical batch item. Keep
+        // its complete source tuple across refresh without treating an arbitrary
+        // prefixed item or a local batch as nonpersistent peer evidence.
+        let source = id.strip_prefix("agent-input-batch/")?;
+        let (sender, source_turn, call_id): (codex_protocol::ThreadId, String, String) =
+            serde_json::from_str(source).ok()?;
+        return (batch.sender_thread_id == Some(sender)
+            && sender_thread_id == &sender.to_string()
+            && sender_thread_id != &event.thread_id
+            && !source_turn.is_empty()
+            && !call_id.is_empty())
+        .then_some(id.as_str());
+    }
     let ThreadItem::AgentMessage {
         id,
         text,
@@ -131,3 +155,7 @@ pub(super) fn omit_completed_agent_deltas(events: &mut Vec<ThreadBufferedEvent>)
     });
     events.reverse();
 }
+
+#[cfg(test)]
+#[path = "replay_filter_batch_tests.rs"]
+mod batch_tests;

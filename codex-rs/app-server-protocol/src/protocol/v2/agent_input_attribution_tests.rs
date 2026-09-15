@@ -41,7 +41,24 @@ fn rich_agent_input_retains_exact_identity_and_payload_through_history() {
         sender,
         recipient,
         sender_turn_id: "sender-turn-exact".into(),
+        batch_id: Some("send-input-call".into()),
     };
+    let mut legacy_attribution = serde_json::to_value(&attribution).unwrap();
+    legacy_attribution
+        .as_object_mut()
+        .unwrap()
+        .remove("batchId");
+    let mut expected_legacy = attribution.clone();
+    expected_legacy.batch_id = None;
+    assert_eq!(
+        serde_json::from_value::<codex_protocol::AgentInputAttribution>(legacy_attribution.clone())
+            .unwrap(),
+        expected_legacy,
+    );
+    assert_eq!(
+        serde_json::from_value::<AgentInputAttribution>(legacy_attribution).unwrap(),
+        AgentInputAttribution::from(expected_legacy),
+    );
     let input = vec![
         CoreUserInput::Text {
             text: format!(

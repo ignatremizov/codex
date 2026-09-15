@@ -6,4 +6,8 @@ import type { AgentInputIdentity } from "./AgentInputIdentity";
 /**
  * Presentation-only provenance; the original message and attachments are in the item's input.
  */
-export type AgentInputAttribution = { sender: AgentInputIdentity, recipient: AgentInputIdentity, senderTurnId: string, };
+export type AgentInputAttribution = { sender: AgentInputIdentity, recipient: AgentInputIdentity, senderTurnId: string,
+/**
+ * Shared sender tool-call identity for an array-target `send_input` batch.
+ */
+batchId: string | null, };
