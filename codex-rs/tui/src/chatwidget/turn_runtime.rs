@@ -147,6 +147,7 @@ impl ChatWidget {
         // If a stream is currently active, finalize it.
         self.flush_answer_and_plan_streams();
         self.flush_async_agent_notices();
+        self.compact_active_sleep(/*defer_to_stream*/ false);
         self.flush_interrupt_activity();
         self.finish_dynamic_activity();
         self.flush_unified_exec_wait_streak();
@@ -336,16 +337,9 @@ impl ChatWidget {
         // Drop preview-only stream tail content on any termination path before
         // failed-cell finalization, so transient tail cells are never persisted.
         self.clear_active_stream_tail();
-        self.compact_active_sleep_for_turn_end();
+        self.compact_active_sleep(/*defer_to_stream*/ false);
         // A model failure does not terminate independently admitted user-shell work.
-        let live_user_shell_cell = self.transcript.active_cell.as_ref()
-            .and_then(|cell| cell.as_any().downcast_ref::<ExecCell>())
-            .is_some_and(|cell| cell.is_active() && cell.group.calls.iter().all(|call| {
-                call.source == ExecCommandSource::UserShell
-                    && self.running_commands.get(&call.call_id)
-                        .is_some_and(|command| command.source == ExecCommandSource::UserShell)
-            }));
-        if !live_user_shell_cell {
+        if !self.has_live_user_shell_cell() {
             self.finalize_active_cell_as_failed();
         }
         // Turn-scoped hook rows are transient live state; once the turn is over,

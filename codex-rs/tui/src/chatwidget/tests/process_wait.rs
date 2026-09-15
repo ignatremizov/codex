@@ -518,19 +518,28 @@ struct WaitStart<'a> {
 
 #[tokio::test]
 async fn process_wait_refresh_preserves_foreground_status_owners() {
-    for foreground in ["guardian", "retry", "collaboration", "compaction"] {
-        let (mut chat, _events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
+    for foreground in ["guardian", "retry", "collaboration", "compaction", "sleep"] {
+        let (mut chat, _events, _operations) =
+            make_chatwidget_manual(/*model_override*/ None).await;
         handle_turn_started(&mut chat, "turn-1");
         track_process(&mut chat, "command", "process", "sleep 60");
         let now_ms = unix_timestamp_ms();
-        send_wait_started(&mut chat, WaitStart {
-            turn_id: "turn-1", interaction_id: "wait", item_id: "command",
-            process_id: "process", mode: TerminalWaitMode::UntilExit,
-            started_at_ms: now_ms, deadline_at_ms: None,
-        });
+        send_wait_started(
+            &mut chat,
+            WaitStart {
+                turn_id: "turn-1",
+                interaction_id: "wait",
+                item_id: "command",
+                process_id: "process",
+                mode: TerminalWaitMode::UntilExit,
+                started_at_ms: now_ms,
+                deadline_at_ms: None,
+            },
+        );
         match foreground {
             "guardian" => {
-                chat.status_state.pending_guardian_review_status
+                chat.status_state
+                    .pending_guardian_review_status
                     .start_or_update("review".into(), "another command".into());
                 chat.set_status_header("Reviewing approval request".into());
             }
@@ -540,24 +549,54 @@ async fn process_wait_refresh_preserves_foreground_status_owners() {
             }
             "collaboration" => {
                 chat.set_status_header("Waiting for Ada".into());
-                chat.set_status_countdown_deadline_at_ms(StatusCountdownOwner::CollabWait {
-                    turn_id: "turn-1".into(), call_id: "agent-wait".into(),
-                }, now_ms.saturating_add(60_000));
+                chat.set_status_countdown_deadline_at_ms(
+                    StatusCountdownOwner::CollabWait {
+                        turn_id: "turn-1".into(),
+                        call_id: "agent-wait".into(),
+                    },
+                    now_ms.saturating_add(60_000),
+                );
             }
             "compaction" => {
-                chat.on_context_compaction_started("compact".into(), "turn-1".into(), Duration::ZERO);
+                chat.on_context_compaction_started(
+                    "compact".into(),
+                    "turn-1".into(),
+                    Duration::ZERO,
+                );
+            }
+            "sleep" => {
+                chat.on_sleep_started(
+                    codex_app_server_protocol::SleepItem {
+                        id: "foreground-sleep".into(),
+                        duration_ms: 60_000,
+                        outcome: None,
+                        elapsed_ms: None,
+                    },
+                    "turn-1".into(),
+                    now_ms,
+                    /*from_replay*/ false,
+                );
             }
             _ => unreachable!(),
         }
-        let expected = (chat.status_state.current_status.clone(), chat.status_state.countdown_owner.clone());
+        let expected = (
+            chat.status_state.current_status.clone(),
+            chat.status_state.countdown_owner.clone(),
+        );
         chat.refresh_unified_exec_wait_status_at(now_ms.saturating_add(1_000));
         assert_eq!(
-            (chat.status_state.current_status.clone(), chat.status_state.countdown_owner.clone()),
+            (
+                chat.status_state.current_status.clone(),
+                chat.status_state.countdown_owner.clone()
+            ),
             expected,
             "background wait redraw replaced {foreground} ownership",
         );
-        assert!(chat.unified_exec_wait_tracker.as_ref()
-            .is_some_and(UnifiedExecWaitTracker::has_active_process_waits));
+        assert!(
+            chat.unified_exec_wait_tracker
+                .as_ref()
+                .is_some_and(UnifiedExecWaitTracker::has_active_process_waits)
+        );
     }
 }
 

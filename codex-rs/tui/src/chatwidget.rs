@@ -1251,6 +1251,11 @@ impl ChatWidget {
         &mut self,
         cell: &dyn HistoryCell,
     ) -> Option<Box<dyn HistoryCell>> {
+        // Model sleep history does not settle an independently running user shell.
+        // Keep its live output owner for subsequent deltas and the real command completion.
+        if cell.as_any().is::<history_cell::SleepCell>() && self.has_live_user_shell_cell() {
+            return None;
+        }
         // Keep the placeholder session header as the active cell until real session info arrives,
         // so we can merge headers instead of committing a duplicate box to history.
         let keep_placeholder_header_active = !self.is_session_configured()
