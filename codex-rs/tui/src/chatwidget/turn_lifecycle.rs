@@ -7,6 +7,8 @@ use std::time::Instant;
 
 use codex_utils_sleep_inhibitor::SleepInhibitor;
 
+use super::sleep::ActiveSleep;
+
 const MAX_RECENTLY_HANDLED_SLEEP_ITEMS: usize = 32;
 
 #[derive(Debug)]
@@ -24,6 +26,7 @@ pub(super) struct TurnLifecycleState {
     /// False records an untimed turn boundary that may still receive a completion label.
     pub(super) rendered_completion_turn_ids: HashMap<String, bool>,
     pub(super) goal_status_active_turn_started_at: Option<Instant>,
+    pub(super) active_sleep: Option<ActiveSleep>,
     /// Recent completed sleep identities prevent late duplicate notifications from rendering twice.
     recently_handled_sleep_item_ids: VecDeque<(String, String)>,
 }
@@ -40,6 +43,7 @@ impl TurnLifecycleState {
             budget_limited_turn_ids: HashSet::new(),
             rendered_completion_turn_ids: HashMap::new(),
             goal_status_active_turn_started_at: None,
+            active_sleep: None,
             recently_handled_sleep_item_ids: VecDeque::new(),
         }
     }
@@ -87,6 +91,7 @@ impl TurnLifecycleState {
         self.budget_limited_turn_ids.clear();
         self.rendered_completion_turn_ids.clear();
         self.recently_handled_sleep_item_ids.clear();
+        self.active_sleep = None;
     }
 
     pub(super) fn set_prevent_idle_sleep(&mut self, enabled: bool) {
