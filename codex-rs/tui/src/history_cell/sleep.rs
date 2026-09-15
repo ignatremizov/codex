@@ -9,85 +9,30 @@ use ratatui::style::Stylize;
 #[derive(Debug)]
 pub(crate) struct SleepCell {
     item: SleepItem,
-    turn_id: String,
-    state: SleepCellState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SleepCellState {
-    Active,
-    Compact,
 }
 
 impl SleepCell {
-    fn new_active(item: SleepItem, turn_id: String) -> Self {
-        Self {
-            item,
-            turn_id,
-            state: SleepCellState::Active,
-        }
-    }
-
-    fn new_compact(item: SleepItem, turn_id: String) -> Self {
-        Self {
-            item,
-            turn_id,
-            state: SleepCellState::Compact,
-        }
-    }
-
-    pub(crate) fn call_id(&self) -> &str {
-        &self.item.id
-    }
-
-    pub(crate) fn item(&self) -> &SleepItem {
-        &self.item
-    }
-
-    pub(crate) fn turn_id(&self) -> &str {
-        &self.turn_id
-    }
-
-    fn is_active(&self) -> bool {
-        self.state == SleepCellState::Active
-    }
-
     fn label_parts(&self) -> (&'static str, String) {
-        let duration = format_sleep_duration(self.item.duration_ms);
-        if self.is_active() {
-            ("Sleeping", duration)
-        } else {
-            ("Sleep", format!("requested {duration}"))
-        }
+        (
+            "Sleep",
+            format!("requested {}", format_sleep_duration(self.item.duration_ms)),
+        )
     }
 }
 
 impl HistoryCell for SleepCell {
     fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
         let (header, detail) = self.label_parts();
-        if self.is_active() {
+        vec![
             vec![
-                vec![
-                    "•".cyan(),
-                    " ".into(),
-                    header.bold().cyan(),
-                    " · ".dim(),
-                    detail.cyan(),
-                ]
-                .into(),
+                "•".dim(),
+                " ".into(),
+                header.bold(),
+                " · ".dim(),
+                detail.dim(),
             ]
-        } else {
-            vec![
-                vec![
-                    "•".dim(),
-                    " ".into(),
-                    header.bold(),
-                    " · ".dim(),
-                    detail.dim(),
-                ]
-                .into(),
-            ]
-        }
+            .into(),
+        ]
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
@@ -96,12 +41,8 @@ impl HistoryCell for SleepCell {
     }
 }
 
-pub(crate) fn new_active_sleep_cell(item: SleepItem, turn_id: String) -> SleepCell {
-    SleepCell::new_active(item, turn_id)
-}
-
-pub(crate) fn new_compact_sleep_cell(item: SleepItem, turn_id: String) -> SleepCell {
-    SleepCell::new_compact(item, turn_id)
+pub(crate) fn new_compact_sleep_cell(item: SleepItem) -> SleepCell {
+    SleepCell { item }
 }
 
 fn format_sleep_duration(duration_ms: u64) -> String {

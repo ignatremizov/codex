@@ -416,7 +416,7 @@ impl ChatWidget {
                 }
             }
             ThreadItem::DynamicToolCall { .. } => {}
-            ThreadItem::Sleep(item) => self.on_sleep_completed(item, &turn_id),
+            ThreadItem::Sleep(item) => self.on_sleep_completed(item, &turn_id, from_replay),
         }
 
         if matches!(

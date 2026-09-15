@@ -418,6 +418,7 @@ impl ChatWidget {
     ) {
         let deadline_at_ms = notification.deadline_at_ms;
         let turn_id = notification.turn_id;
+        let started_at_ms = notification.started_at_ms;
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => {
                 self.on_command_execution_started(item, deadline_at_ms);
@@ -429,7 +430,9 @@ impl ChatWidget {
             ThreadItem::WebSearch(item) => {
                 self.on_web_search_begin(item.id);
             }
-            ThreadItem::Sleep(item) => self.on_sleep_started(item, turn_id),
+            ThreadItem::Sleep(item) => {
+                self.on_sleep_started(item, turn_id, started_at_ms, from_replay)
+            }
             ThreadItem::ImageGeneration(_) => {
                 self.on_image_generation_begin();
             }
@@ -510,11 +513,15 @@ impl ChatWidget {
         }
         let completed_context_compaction =
             matches!(&notification.item, ThreadItem::ContextCompaction { .. });
+        let turn_id = notification.turn_id;
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => self.on_command_execution_completed(item),
+            ThreadItem::Sleep(item) => {
+                self.on_sleep_completed(item, &turn_id, replay_kind.is_some())
+            }
             item => self.handle_thread_item(
                 item,
-                notification.turn_id,
+                turn_id,
                 replay_kind.map_or(
                     ThreadItemRenderSource::Live,
                     ThreadItemRenderSource::ReplayedNotification,

@@ -130,6 +130,7 @@ impl ChatWidget {
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
         self.flush_async_agent_notices();
+        self.compact_active_sleep(/*defer_to_stream*/ false);
         if let Some(mut controller) = self.plan_stream_controller.take() {
             let had_live_tail = controller.has_live_tail();
             self.clear_active_stream_tail();
@@ -318,7 +319,7 @@ impl ChatWidget {
         // failed-cell finalization, so transient tail cells are never persisted.
         self.clear_active_stream_tail();
         // Ensure any spinner is replaced by a red ✗ and flushed into history.
-        self.compact_active_sleep_for_turn_end();
+        self.compact_active_sleep(/*defer_to_stream*/ false);
         self.finalize_active_cell_as_failed();
         // Turn-scoped hook rows are transient live state; once the turn is over,
         // do not leave an orphaned running row behind if no matching completion
