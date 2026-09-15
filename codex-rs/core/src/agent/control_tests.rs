@@ -140,8 +140,13 @@ impl LocalAgentControl {
 
 #[path = "control/directory_tests.rs"]
 mod directory_tests;
+#[path = "control/input_batch_audit_tests.rs"]
+mod input_batch_audit_tests;
+#[path = "control/mailbox_batch_cancellation_tests.rs"]
+mod mailbox_batch_cancellation_tests;
 #[path = "control/mailbox_input_tests.rs"]
 mod mailbox_input_tests;
+
 #[path = "control/scoped_admission_tests.rs"]
 mod scoped_admission_tests;
 #[path = "control/task_path_control_tests.rs"]
@@ -6543,7 +6548,6 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
         harness.control.get_status(grandchild_thread_id).await,
         AgentStatus::NotFound
     );
-
     let _ = harness
         .control
         .shutdown_agent_tree(parent_thread_id)

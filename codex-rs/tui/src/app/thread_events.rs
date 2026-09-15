@@ -1154,6 +1154,7 @@ mod tests {
             sender: identity,
             recipient: recipient_identity,
             sender_turn_id: "mail-source".to_string(),
+            batch_id: None,
         });
         acceptance.input = Some(vec![codex_protocol::user_input::UserInput::Text {
             text: "Accepted, not consumed".to_string(),
@@ -1161,7 +1162,34 @@ mod tests {
         }]);
         let acceptance =
             ThreadItem::from(codex_protocol::items::TurnItem::AgentMessage(acceptance));
-        for item in [item, acceptance] {
+        let batch_sender = ThreadId::new();
+        let batch = ThreadItem::CollabAgentToolCall {
+            id: format!(
+                "agent-input-batch/{}",
+                serde_json::to_string(&(batch_sender, "source-turn", "source-call"))
+                    .expect("source tuple")
+            ),
+            tool: codex_app_server_protocol::CollabAgentTool::SendInput,
+            status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
+            input_batch: Some(codex_protocol::CollabAgentInputBatch {
+                flags: "z".to_string(),
+                sender_thread_id: Some(batch_sender),
+                results: Vec::new(),
+            }),
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
+            mailbox_input: Some(true),
+            sender_thread_id: batch_sender.to_string(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("Shared batch input".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: Default::default(),
+        };
+        for item in [item, acceptance, batch] {
             let notification = ServerNotification::ItemCompleted(
                 codex_app_server_protocol::ItemCompletedNotification {
                     thread_id: sender.to_string(),

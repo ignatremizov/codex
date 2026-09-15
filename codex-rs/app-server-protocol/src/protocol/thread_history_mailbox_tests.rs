@@ -84,6 +84,7 @@ fn deliveries(receiver: ThreadId, turn_id: &str) -> Vec<ItemCompletedEvent> {
         sender: identity(ThreadId::new()),
         recipient: identity(receiver),
         sender_turn_id: "sender-turn".into(),
+        batch_id: Some("original-batch".into()),
     });
     agent.input = Some(input.clone());
     vec![

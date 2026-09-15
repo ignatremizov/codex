@@ -115,6 +115,8 @@ fn set_agent_control(
     session.services.local_agent_runtime = control.runtime.clone();
     session.services.agent_control = Arc::new(control);
 }
+#[path = "multi_agents/send_input_batch_handler_tests.rs"]
+mod send_input_batch;
 
 fn invocation(
     session: Arc<crate::session::session::Session>,

@@ -10,11 +10,15 @@ use codex_protocol::AgentInputIdentity;
 
 impl LocalAgentControl {
     /// Capture trusted send-time attribution without changing admission or reply permission.
+    ///
+    /// `batch_id` is the sender's canonical shared tool-call identity for an array-target send;
+    /// it is absent for singleton sends and older callers.
     pub(crate) async fn attribute_model_input(
         &self,
         sender: SessionPresentationId,
         recipient: ThreadId,
         sender_turn_id: &str,
+        batch_id: Option<&str>,
         input: Vec<UserInput>,
     ) -> CodexResult<AgentControlInput> {
         let state = self.runtime.upgrade()?;
@@ -43,6 +47,7 @@ impl LocalAgentControl {
                 sender: sender_identity,
                 recipient: recipient_identity,
                 sender_turn_id: sender_turn_id.to_string(),
+                batch_id: batch_id.map(str::to_string),
             }),
             presentation: input,
         })

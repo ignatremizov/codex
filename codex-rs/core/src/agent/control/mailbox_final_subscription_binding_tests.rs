@@ -97,35 +97,74 @@ async fn retrying_binding_releases_a_closing_observer_without_retiring_durable_i
         model: None,
         reasoning_effort: None,
     };
-    let accepted = store.accept_mailbox_input_with_authority(AcceptMailboxInputParams {
-        receiver_thread_id: target.thread_id,
-        submission_key: "retry-until-observer-closes".into(),
-        payload: MailboxPayload::Agent {
-            input: vec![UserInput::Text { text: "retained intent".into(), text_elements: Vec::new() }],
-            attribution: Box::new(AgentInputAttribution {
-                sender: identity(root.thread_id),
-                recipient: identity(target.thread_id),
-                sender_turn_id: "sender-turn".into(),
-            }),
-        },
-        final_subscription: MailboxFinalSubscriptionRequest::Wake,
-    }, MailboxFinalSubscriptionAuthority {
-        receiver_lifecycle_epoch: 0,
-        sender_lifecycle_epoch: 0,
-    }).await.expect("store immutable acceptance");
+    let accepted = store
+        .accept_mailbox_input_with_authority(
+            AcceptMailboxInputParams {
+                receiver_thread_id: target.thread_id,
+                submission_key: "retry-until-observer-closes".into(),
+                payload: MailboxPayload::Agent {
+                    input: vec![UserInput::Text {
+                        text: "retained intent".into(),
+                        text_elements: Vec::new(),
+                    }],
+                    attribution: Box::new(AgentInputAttribution {
+                        sender: identity(root.thread_id),
+                        recipient: identity(target.thread_id),
+                        sender_turn_id: "sender-turn".into(),
+                        batch_id: None,
+                    }),
+                },
+                final_subscription: MailboxFinalSubscriptionRequest::Wake,
+            },
+            MailboxFinalSubscriptionAuthority {
+                receiver_lifecycle_epoch: 0,
+                sender_lifecycle_epoch: 0,
+            },
+        )
+        .await
+        .expect("store immutable acceptance");
     let subscription = accepted.final_subscription.expect("pending final token");
     let mut binding = Box::pin(control.bind_mailbox_final_subscription(
-        target.thread.session.presentation_id(), subscription.clone(),
+        target.thread.session.presentation_id(),
+        subscription.clone(),
     ));
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(/*millis*/ 25), &mut binding)
-        .await.is_err(), "missing graph authority must not be treated as a successful binding");
-    root.thread.session.submission_admission.close_completion_admission();
-    assert!(root.thread.session.submission_admission.check_ready().is_ok());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(/*millis*/ 25),
+            &mut binding
+        )
+        .await
+        .is_err(),
+        "missing graph authority must not be treated as a successful binding"
+    );
+    root.thread
+        .session
+        .submission_admission
+        .close_completion_admission();
+    assert!(
+        root.thread
+            .session
+            .submission_admission
+            .check_ready()
+            .is_ok()
+    );
     tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 3), binding)
-        .await.expect("retry loop must release the closed observer");
-    assert_eq!(store.lookup_active_mailbox_final_subscription(target.thread_id, root.thread_id)
-        .await.expect("durable token remains available for later exact-instance recovery"),
-        Some(subscription));
-    target.thread.shutdown_and_wait().await.expect("shutdown receiver");
-    root.thread.shutdown_and_wait().await.expect("shutdown observer");
+        .await
+        .expect("retry loop must release the closed observer");
+    assert_eq!(
+        store
+            .lookup_active_mailbox_final_subscription(target.thread_id, root.thread_id)
+            .await
+            .expect("durable token remains available for later exact-instance recovery"),
+        Some(subscription)
+    );
+    target
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown receiver");
+    root.thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown observer");
 }

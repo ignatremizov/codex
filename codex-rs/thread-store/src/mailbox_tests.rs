@@ -143,6 +143,7 @@ async fn typed_acceptance_is_immutable_receiver_scoped_and_preserves_authorship(
                 sender: identity(sender),
                 recipient: identity(receiver),
                 sender_turn_id: "sender-turn".to_string(),
+                batch_id: None,
             }),
         };
         let agent = store
@@ -191,6 +192,7 @@ async fn final_subscription_retries_keep_the_original_generation_and_fresh_accep
                     sender: identity(sender),
                     recipient: identity(receiver),
                     sender_turn_id: "sender-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: MailboxFinalSubscriptionRequest::Wake,
@@ -394,6 +396,7 @@ async fn sender_selection_uses_uuid_and_retains_acceptance_order_without_consumi
                             sender: identity(sender),
                             recipient: identity(receiver),
                             sender_turn_id: "sender-turn".to_string(),
+                            batch_id: None,
                         }),
                     },
                     final_subscription: MailboxFinalSubscriptionRequest::None,
@@ -489,6 +492,7 @@ async fn reconciliation_requires_durable_context_and_typed_agent_presentation() 
             sender: identity(ThreadId::new()),
             recipient: identity(receiver),
             sender_turn_id: "sender-turn".to_string(),
+            batch_id: None,
         };
         let input = vec![UserInput::Image {
             image: ImageReference::Inline {
@@ -784,6 +788,7 @@ async fn submission_lookup_preserves_frozen_attribution_and_returns_current_stat
                     sender: identity(ThreadId::new()),
                     recipient: identity(receiver),
                     sender_turn_id: "original-sender-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: MailboxFinalSubscriptionRequest::None,
