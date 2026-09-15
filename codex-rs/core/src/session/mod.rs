@@ -318,6 +318,7 @@ mod mcp_refresh;
 mod mcp_runtime;
 mod model_catalog_settings;
 pub(crate) mod multi_agents;
+mod passive_final_activity;
 mod plugin_selection;
 mod prompt_input;
 mod realtime_history;
