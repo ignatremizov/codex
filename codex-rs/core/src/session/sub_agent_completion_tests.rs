@@ -340,6 +340,7 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
         .submission_admission
         .try_accept_completion_delivery()
         .expect("accepted");
+    let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
     let response = completion_context();
     session
         .persist_completion_context(
@@ -349,6 +350,14 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
         )
         .await
         .expect("first canonical payload");
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 1),
+        passive_final_activity.changed(),
+    )
+    .await
+    .expect("new passive completion should signal after canonical publication")
+    .expect("passive final activity sender should remain open");
+    let mut retry_activity = session.subscribe_passive_final_delivery_activity();
     let calls = store.calls().await.append_completion_items_and_flush;
     assert_eq!(
         session
@@ -360,6 +369,15 @@ async fn existing_context_identity_rejects_changed_payload_without_another_write
             .await
             .expect("exact canonical identity is already owned"),
         CompletionContextPublication::AlreadyPublished,
+    );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(/*millis*/ 50),
+            retry_activity.changed()
+        )
+        .await
+        .is_err(),
+        "an idempotent completion retry must not signal a later sleep"
     );
     let mut changed = response.clone();
     if let ResponseItem::AgentMessage { content, .. } = &mut changed {

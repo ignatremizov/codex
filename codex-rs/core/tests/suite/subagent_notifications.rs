@@ -19,6 +19,7 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadIdleCause;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_items::ExtensionItem;
 use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
@@ -2040,6 +2041,159 @@ async fn subagent_notification_is_included_without_wait(
         "passive completion context should retain its reserved identity: {completion_context_id}"
     );
     assert_input_item_ids_are_provider_compatible_json(&notification_request_body);
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passive_final_interrupts_active_sleep_and_continues_same_turn(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+    }))?;
+    let mut parent_spawn = server
+        .mount_response(
+            |request| request.body_contains_text("spawn and sleep"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-sleep-spawn"),
+                    ev_function_call_with_namespace(
+                        "sleep-spawn-call",
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "spawn_agent",
+                        &spawn_args,
+                    ),
+                    ev_completed("resp-sleep-spawn"),
+                ]),
+            }],
+        )
+        .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let mut child_response = server
+        .mount_response(
+            |request| {
+                request.body_contains_text(CHILD_PROMPT)
+                    && !request.body_contains_text("sleep-spawn-call")
+            },
+            vec![StreamingSseChunk {
+                gate: Some(child_gate_rx),
+                body: sse(vec![
+                    ev_response_created("resp-sleep-child"),
+                    ev_assistant_message("msg-sleep-child", "child done"),
+                    ev_completed("resp-sleep-child"),
+                ]),
+            }],
+        )
+        .await;
+    let mut parent_sleep = server
+        .mount_response(
+            |request| request.body_contains_text("sleep-spawn-call"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-parent-sleep"),
+                    ev_function_call_with_namespace(
+                        "sleep-call",
+                        "clock",
+                        "sleep",
+                        r#"{"duration_ms":120000}"#,
+                    ),
+                    ev_completed("resp-parent-sleep"),
+                ]),
+            }],
+        )
+        .await;
+    let mut parent_continuation = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("<subagent_notification>")
+                    && request.body_contains_text("Sleep interrupted by new input.")
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-sleep-continuation"),
+                    ev_assistant_message("msg-sleep-continuation", "continued"),
+                    ev_completed("resp-sleep-continuation"),
+                ]),
+            }],
+        )
+        .await;
+
+    let mut builder = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::CurrentTimeReminder)
+                .expect("test config should allow feature update");
+            config.current_time_reminder = Some(CurrentTimeReminderConfig {
+                sleep_tool: true,
+                ..CurrentTimeReminderConfig::default()
+            });
+            config.agent_allow_history_forks = true;
+        });
+    let test = builder
+        .build_with_streaming_server_auto_env(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "spawn and sleep".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+
+    let initial_request = wait_for_streaming_request(&mut parent_spawn).await?;
+    let initial_turn_id = initial_request.body_json()["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("initial request should include a turn ID")
+        .to_string();
+    let _ = wait_for_streaming_request(&mut child_response).await?;
+    let _ = wait_for_streaming_request(&mut parent_sleep).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ItemStarted(started)
+                if matches!(
+                    &started.item,
+                    TurnItem::Extension(ExtensionItem::Sleep(item)) if item.id == "sleep-call"
+                ) && started.turn_id == initial_turn_id.as_str()
+        )
+    })
+    .await;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+
+    let continuation_request = wait_for_streaming_request(&mut parent_continuation).await?;
+    assert_eq!(
+        continuation_request.body_json()["client_metadata"]["turn_id"].as_str(),
+        Some(initial_turn_id.as_str()),
+        "passive completion should continue the active parent turn"
+    );
+    assert!(
+        continuation_request.body_contains_text("<subagent_notification>"),
+        "passive completion should be model-visible in the continuation"
+    );
+    assert!(
+        continuation_request.body_contains_text("Sleep interrupted by new input."),
+        "passive completion should interrupt clock sleep"
+    );
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     Ok(())
 }

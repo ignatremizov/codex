@@ -379,6 +379,12 @@ impl Session {
                 let permit = session.acquire_history_publication_barrier().await?;
                 let turn = session.new_history_only_turn().await;
                 let mut policy = turn.model_info().truncation_policy.into();
+                let is_passive_final = matches!(
+                    &payload,
+                    Payload::Context { communication, .. }
+                        if !communication.trigger_turn && !communication.defer_to_next_turn
+                ) && commit.kind == crate::agent::control::ResponseObservationDeliveryKind::Final
+                    && commit.model_visibility == codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible;
                 let (response, presentation, trigger_turn, wait_turn) = match payload {
                     Payload::Context {
                         communication,
@@ -441,20 +447,28 @@ impl Session {
                 let install_control = control.clone();
                 let install_commit = commit.clone();
                 let observations = Arc::clone(&session.response_observation_state);
+                let passive_final_activity = session.passive_final_delivery_activity.clone();
                 let receiver = session.dispatch_completion_publication(
                     permit,
                     records,
                     events,
                     move |state| {
                         if let Some(response) = response {
-                            if let Some(id) = response.id()
+                            let newly_settled = if let Some(id) = response.id()
                                 && codex_protocol::protocol::is_sub_agent_completion_context_response_item_id(id.as_str())
                             {
                                 observations.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .settled_completion_contexts.insert(id.clone(), response.clone());
-                            }
+                                    .settled_completion_contexts.insert(id.clone(), response.clone()).is_none()
+                            } else {
+                                false
+                            };
                             if !state.history.raw_items().any(|item| item == &response) {
                                 state.record_items(std::iter::once(&response), policy);
+                                if is_passive_final && newly_settled {
+                                    // Inside the owned canonical worker: caller cancellation or
+                                    // presentation backpressure cannot lose this committed hint.
+                                    passive_final_activity.send_replace(());
+                                }
                             }
                             if !state
                                 .acknowledged_completion_contexts

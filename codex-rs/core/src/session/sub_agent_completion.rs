@@ -99,6 +99,8 @@ impl Session {
                     ));
                 }
                 let policy = model_info.truncation_policy.into();
+                let passive_final_activity = session.passive_final_delivery_activity.clone();
+                let is_passive = !communication.trigger_turn && !communication.defer_to_next_turn;
                 let receiver = session.dispatch_completion_publication(
                     permit,
                     Vec::new(),
@@ -106,6 +108,9 @@ impl Session {
                     move |state| {
                         if !state.history.raw_items().any(|item| item == &response) {
                             state.record_items(std::iter::once(&response), policy);
+                            if is_passive {
+                                passive_final_activity.send_replace(());
+                            }
                         }
                         if let Some(retained) = state
                             .acknowledged_completion_contexts
@@ -231,6 +236,7 @@ impl Session {
         let policy = turn.model_info().truncation_policy.into();
         let observations = Arc::clone(&self.response_observation_state);
         let settled = response.clone();
+        let passive_final_activity = self.passive_final_delivery_activity.clone();
         let receiver = self.dispatch_completion_publication(
             permit,
             items,
@@ -247,6 +253,9 @@ impl Session {
                     && !state.history.raw_items().any(|item| item == &response)
                 {
                     state.record_items(std::iter::once(&response), policy);
+                    // This callback runs after canonical ACK, before any presentation awaits.
+                    // Queue-only publication is not live model-context delivery.
+                    passive_final_activity.send_replace(());
                 }
                 if let Some(retained) = state
                     .acknowledged_completion_contexts

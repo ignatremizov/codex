@@ -21,7 +21,8 @@ fn observed_communication(
         "complete commentary".to_string(),
         /*trigger_turn*/ false,
     );
-    let response_item_id = ResponseItemId::new("amsg");
+    let response_item_id =
+        codex_protocol::protocol::new_sub_agent_completion_context_response_item_id();
     communication.id = Some(response_item_id.clone());
     let commit = ResponseObservationDeliveryCommit {
         parent: session.presentation_id(),
@@ -200,6 +201,56 @@ async fn cancelled_direct_waiter_does_not_abandon_the_canonical_worker() {
     .expect("owned publication completed");
     assert_eq!(store.calls().await.append_completion_items_and_flush, 1);
     assert!(!session.submission_admission.requires_reload());
+}
+
+#[tokio::test]
+async fn passive_final_signal_follows_the_canonical_worker_after_caller_cancellation() {
+    let (mut session, _, _) = make_session_and_context_with_rx().await;
+    let store = attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique")).await;
+    let session = Arc::new(session);
+    let (communication, mut commit) = observed_communication(&session);
+    commit.kind = ResponseObservationDeliveryKind::Final;
+    let accepted = session
+        .submission_admission
+        .try_accept_completion_delivery()
+        .expect("accepted");
+    let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
+    let permit = session.reserve_history_publication().await;
+    {
+        let publication = persist_context(&session, communication, commit, accepted);
+        tokio::pin!(publication);
+        assert!(futures::poll!(publication.as_mut()).is_pending());
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(/*millis*/ 50),
+                passive_final_activity.changed(),
+            )
+            .await
+            .is_err()
+        );
+    }
+    drop(permit);
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        passive_final_activity.changed(),
+    )
+    .await
+    .expect("canonical worker should signal after commit")
+    .expect("passive final activity sender should remain open");
+    assert_eq!(store.calls().await.append_completion_items_and_flush, 1);
+    let evidence = store
+        .load_canonical_artifact_segments(LoadThreadHistoryParams {
+            thread_id: session.thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("canonical evidence");
+    assert!(evidence.segments.iter().any(|segment| {
+        segment
+            .iter()
+            .enumerate()
+            .any(|(index, _)| codex_history::is_committed_observed_response(segment, index))
+    }));
 }
 
 #[tokio::test]

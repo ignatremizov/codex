@@ -21,6 +21,7 @@ async fn accepted_transcript_publication_enqueues_after_flush_even_without_recei
             .expect("no accepted worker yet")
             .tx_event = sender;
         let turn = session.new_default_turn().await;
+        let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
         let item = codex_protocol::models::ResponseItem::AgentMessage {
             id: Some(codex_protocol::ResponseItemId::with_suffix(
                 "amsg", "accepted",
@@ -76,6 +77,12 @@ async fn accepted_transcript_publication_enqueues_after_flush_even_without_recei
         tokio::time::timeout(Duration::from_secs(5), session.await_history_publication())
             .await
             .expect("accepted publication finishes without a waiter");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), passive_final_activity.changed())
+                .await
+                .is_err(),
+            "ordinary publication must not signal passive-final sleep activity"
+        );
         let succeeded = !matches!(
             phase,
             AppendGate::AmbiguousFailure | AppendGate::FlushFailure
