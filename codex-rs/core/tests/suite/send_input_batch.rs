@@ -2,6 +2,8 @@
 
 use super::*;
 use codex_protocol::CollabAgentInputStatus;
+use pretty_assertions::assert_eq;
+use test_case::test_case;
 
 #[test_case("z", false, false; "plain")]
 #[test_case("zf", true, false; "conditional")]
