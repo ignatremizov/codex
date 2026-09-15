@@ -90,7 +90,24 @@ Spawn and resume results hydrate the ref, nickname, and task path together. Rece
 
 The example is illustrative, not permission to concatenate arbitrary text into delimiters. Use reversible escaping or structured serialization for header values and payload text so embedded `<agent_message>`/`</agent_message>` strings, newlines in labels, or fabricated sender headers remain data rather than additional envelope structure. Preserve the original payload in audit storage and recover it exactly for human presentation. This prevents structural ambiguity; it is not a claim that serialization alone prevents model confusion or prompt injection.
 
+Once a complete mapping is retained, ordinary updates append only changed/new
+entries and removed refs. Unchanged mappings add nothing; prior prompt content and
+annotations stay intact. Missing or malformed bases, and changes to the omission
+boundary, require a fresh full mapping. Empty authority explicitly clears earlier
+refs. World-state checkpoints still retain full bounded snapshots, so missing
+hydration after compaction or resume does not depend on keeping every old delta.
+Neither these discovery deltas nor compact mailbox inventories grant messaging
+permissions or change canonical sender/receiver attribution.
+
 Core supplies trusted sender/recipient identity; names embedded in payload text do not establish attribution. Preserve the payload completely.
+
+Array-target `send_input` admissions also retain the sender's shared tool-call ID as an optional
+typed batch correlation. Main receives one live-only consolidated batch presentation with the
+individual recipient outcomes and handling policy; it does not receive one duplicated full payload
+per recipient. Singleton sends and older records have no batch correlation and retain their
+existing presentation. The consolidated Main copy is not persisted or added to model context;
+the sender's canonical lifecycle and each recipient's durable attributed input remain authoritative
+for replay.
 
 Human `/agent <target> <prompt>` input remains an ordinary `UserMessage` in the target thread, with the same user styling and input semantics as typing directly in that thread. Do not wrap it in `<agent_message>` or attribute it to the agent whose TUI the user happened to use. Preserve that distinction in model context, transcript rendering, persisted rollout history, and resumed/reconstructed history. User-authored spawn and queued prompts follow the same authorship rule; queueing changes admission timing, not authorship. Keep the issuing thread's user-control audit presentation separate from the target's user message.
 

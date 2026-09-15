@@ -531,6 +531,7 @@ impl ThreadHistoryBuilder {
                 .non_paginated_exec_history
                 .record_turn_context(context, self.current_rollout_index),
             RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::RealtimeItem(_)
@@ -602,10 +603,10 @@ impl ThreadHistoryBuilder {
             self.current_rollout_index,
             &fallback_turn_id,
         ) {
-            if !self
+            if self
                 .current_turn
                 .as_ref()
-                .is_some_and(|turn| turn.id == update.turn_id)
+                .is_none_or(|turn| turn.id != update.turn_id)
                 && !self.turns.iter().any(|turn| turn.id == update.turn_id)
             {
                 self.finish_current_turn();
@@ -838,19 +839,20 @@ impl ThreadHistoryBuilder {
             .as_ref()
             .is_some_and(|turn| turn.id == turn_id)
             || self.turns.iter().any(|turn| turn.id == turn_id);
+        let standalone_completion = is_completion_presentation
+            && (!turn_exists
+                || self
+                    .turns
+                    .iter()
+                    .any(|turn| turn.id == turn_id && turn.standalone_activity));
         if let codex_protocol::items::TurnItem::CommandExecution(command) = item {
             self.non_paginated_exec_history
                 .mark_authoritative(&command.id, turn_id);
         }
-        let is_orphaned_standalone_item =
-            (is_durable_agent_presentation || is_user_agent_control) && !turn_exists;
-        if is_detached_user_shell && !turn_exists {
+        if !turn_exists
+            && (is_detached_user_shell || is_durable_agent_presentation || is_user_agent_control)
+        {
             self.insert_completed_standalone_turn(turn_id);
-        } else if is_orphaned_standalone_item {
-            self.finish_current_turn();
-            let turn = self.new_turn(Some(turn_id.to_string()));
-            self.record_changed_pending_turn(&turn);
-            self.current_turn = Some(turn);
         }
         let is_review_mode_item = matches!(
             item,
@@ -860,7 +862,7 @@ impl ThreadHistoryBuilder {
         let should_upsert = match item {
             codex_protocol::items::TurnItem::Plan(plan) => !plan.text.is_empty(),
             codex_protocol::items::TurnItem::AgentMessage(_) => {
-                is_completion_presentation
+                is_durable_agent_presentation
                     && (self
                         .current_turn
                         .as_ref()
@@ -874,6 +876,7 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::MailboxRead(_)
             | codex_protocol::items::TurnItem::CollabAgentToolCall(_)
             | codex_protocol::items::TurnItem::SubAgentActivity(_)
+            | codex_protocol::items::TurnItem::UserAgentControl(_)
             | codex_protocol::items::TurnItem::Extension(_)
             | codex_protocol::items::TurnItem::EnteredReviewMode(_)
             | codex_protocol::items::TurnItem::ExitedReviewMode(_) => true,
@@ -888,7 +891,19 @@ impl ThreadHistoryBuilder {
         };
 
         if should_upsert {
-            let item = ThreadItem::from(item.clone());
+            let mut item = item.clone();
+            if standalone_completion
+                && let codex_protocol::items::TurnItem::CollabAgentToolCall(wait) = &mut item
+                && let Some(owned) = &wait.completion_presentation_agent_ids
+            {
+                // An orphan wait is retained only as durable completion presentation. Other
+                // queried targets belong to the original tool result, not this synthetic turn.
+                wait.receiver_thread_ids.retain(|id| owned.contains(id));
+                wait.receiver_agents
+                    .retain(|agent| owned.contains(&agent.thread_id));
+                wait.agents_states.retain(|id, _| owned.contains(id));
+            }
+            let item = ThreadItem::from(item);
             if is_review_mode_item {
                 self.upsert_review_mode_item(Some(turn_id), item);
             } else {
@@ -1171,6 +1186,7 @@ impl ThreadHistoryBuilder {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
@@ -1208,8 +1224,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
@@ -1229,8 +1248,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
@@ -1257,8 +1279,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id.clone()],
@@ -1291,8 +1316,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: payload
@@ -1334,8 +1362,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
@@ -1355,8 +1386,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
@@ -1385,8 +1419,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
@@ -1406,8 +1443,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
@@ -1439,8 +1479,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
@@ -1573,14 +1616,13 @@ impl ThreadHistoryBuilder {
 
     fn handle_turn_started(&mut self, payload: &TurnStartedEvent) {
         self.finish_current_turn();
-        if let Some(index) = self
-            .turns
-            .iter()
-            .position(|turn| turn.id == payload.turn_id && turn.inter_agent_placeholder)
-        {
+        if let Some(index) = self.turns.iter().position(|turn| {
+            turn.id == payload.turn_id && (turn.inter_agent_placeholder || turn.standalone_activity)
+        }) {
             let mut turn = self.turns.remove(index);
             turn.status = TurnStatus::InProgress;
             turn.inter_agent_placeholder = false;
+            turn.standalone_activity = false;
             turn.started_at = payload.started_at;
             turn.root_turn_id = payload.root_turn_id.clone();
             turn.opened_explicitly = true;
@@ -1662,8 +1704,11 @@ impl ThreadHistoryBuilder {
     /// This keeps compaction-only legacy turns from being dropped by
     /// `finish_current_turn` when they have no renderable items and were not
     /// explicitly opened.
-    fn handle_compacted(&mut self, _payload: &CompactedItem) {
-        self.ensure_turn().saw_compaction = true;
+    fn handle_compacted(&mut self, payload: &CompactedItem) {
+        // Storage-only media repair is not a new conversational compaction.
+        if !payload.replacement_history_media_repair {
+            self.ensure_turn().saw_compaction = true;
+        }
     }
 
     fn handle_thread_rollback(&mut self, payload: &ThreadRolledBackEvent) {
@@ -1687,7 +1732,7 @@ impl ThreadHistoryBuilder {
         let removed_turn_ids = self.turns[first_removed..]
             .iter()
             .map(|turn| turn.id.clone())
-            .collect();
+            .collect::<Vec<_>>();
         let cutoff = exact_cutoff.unwrap_or_else(|| {
             self.turns
                 .get(first_removed)
@@ -1738,19 +1783,19 @@ impl ThreadHistoryBuilder {
             saw_compaction: false,
             rollout_start_index: self.current_rollout_index,
             inter_agent_placeholder: false,
+            standalone_activity: false,
         }
     }
 
     /// Inserts a completed activity turn without disturbing concurrently active model work.
     ///
-    /// Detached user-shell commands have item lifecycle events but deliberately do not own the
-    /// session's turn lifecycle. Keeping their activity in a separate completed turn lets a later
+    /// Detached user-shell commands and standalone agent audit items do not own the session's
+    /// turn lifecycle. Keeping their activity in a separate completed turn lets a later
     /// completion update the same row while ordinary user input continues in `current_turn`.
     fn insert_completed_standalone_turn(&mut self, turn_id: &str) {
-        let turn = self.new_turn(Some(turn_id.to_string()));
+        let mut turn = self.new_turn(Some(turn_id.to_string()));
+        turn.standalone_activity = true;
         self.record_changed_pending_turn(&turn);
-        self.turn_rollout_start_indices
-            .push(turn.rollout_start_index);
         self.turns.push(turn);
     }
 
@@ -2038,6 +2083,8 @@ struct PendingTurn {
     rollout_start_index: usize,
     /// An item-only turn awaiting its first canonical lifecycle event.
     inter_agent_placeholder: bool,
+    /// Activity created without an authored turn; paired item events must retain that origin.
+    standalone_activity: bool,
 }
 
 impl PendingTurn {
@@ -2663,7 +2710,7 @@ mod tests {
             }
         );
         assert_eq!(
-            builder.current_turn_snapshot(),
+            builder.active_turn_snapshot(),
             Some(Turn {
                 id: active_turn_id.to_string(),
                 items: Vec::new(),
@@ -2949,6 +2996,7 @@ mod tests {
                 source: ExecCommandSource::Agent,
                 user_shell_response_handling: None,
                 interaction_input: None,
+                deadline_at_ms: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -5216,8 +5264,11 @@ mod tests {
                 id: "resume-1".into(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
@@ -5280,8 +5331,11 @@ mod tests {
                 id: "spawn-1".into(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
@@ -5356,8 +5410,11 @@ mod tests {
                 id: "send-1".into(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender.to_string(),
                 receiver_thread_ids: vec![receiver.to_string()],
@@ -5681,6 +5738,12 @@ mod tests {
             deadline_at_ms: None,
             tool: codex_protocol::items::CollabAgentTool::Wait,
             status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
+            input_batch: None,
+            mailbox_input: None,
             sender_thread_id: parent,
             receiver_thread_ids: vec![owner, other],
             receiver_agents: vec![
@@ -5732,6 +5795,16 @@ mod tests {
                 agent_queue: None,
             }));
             let mut expected_active = builder.active_turn_snapshot().expect("active turn");
+            builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id: parent,
+                turn_id: "orphan-b".into(),
+                item: item.clone(),
+                started_at_ms: 11_000,
+            }));
+            assert_eq!(
+                builder.active_turn_snapshot(),
+                Some(expected_active.clone())
+            );
             builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id: parent,
                 turn_id: "orphan-b".into(),

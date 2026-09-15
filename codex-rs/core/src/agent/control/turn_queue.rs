@@ -81,13 +81,18 @@ impl LocalAgentControl {
 
     pub(crate) async fn queue_scoped_agent_input_observing_response(
         &self,
-        sender: SessionPresentationId,
-        sender_turn_id: &str,
+        origin: AgentModelInputOrigin,
+        batch_id: Option<&str>,
         receiver_thread_id: ThreadId,
         input: Vec<UserInput>,
         start_options: TurnStartOptions,
         response_observation: ResponseObservationPolicy,
     ) -> CodexResult<QueuedResponseObservationSubmission> {
+        let AgentModelInputOrigin {
+            sender,
+            sender_turn_id,
+        } = origin;
+        let sender_turn_id = sender_turn_id.as_str();
         if !response_observation.queue_input() {
             return Err(CodexErr::InvalidRequest(
                 "queued input requires q response handling".to_string(),
@@ -115,7 +120,7 @@ impl LocalAgentControl {
             .refresh_subtree_messaging(receiver_thread_id)
             .await?;
         let attributed_input = receiver_control
-            .attribute_model_input(sender, receiver_thread_id, sender_turn_id, input)
+            .attribute_model_input(sender, receiver_thread_id, sender_turn_id, batch_id, input)
             .await?;
         let admission = receiver_control
             .acquire_target_message_admission_after_binding(

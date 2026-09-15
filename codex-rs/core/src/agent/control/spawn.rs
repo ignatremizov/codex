@@ -627,6 +627,7 @@ impl LocalAgentControl {
                                             origin.sender,
                                             new_thread.thread_id,
                                             &origin.sender_turn_id,
+                                            /*batch_id*/ None,
                                             input,
                                         )
                                         .await?

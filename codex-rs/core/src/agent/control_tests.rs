@@ -81,7 +81,6 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::TurnStartedEvent;
-use codex_protocol::protocol::is_sub_agent_completion_context_response_item_id;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LoadThreadHistoryParams;
@@ -104,6 +103,12 @@ use toml::Value as TomlValue;
 mod directory_tests;
 #[path = "control/mailbox_input_tests.rs"]
 mod mailbox_input_tests;
+#[path = "control/v2_completion_watcher_tests.rs"]
+mod v2_completion_watcher_tests;
+
+#[path = "control/mailbox_batch_cancellation_tests.rs"]
+mod mailbox_batch_cancellation_tests;
+
 #[path = "control/scoped_admission_tests.rs"]
 mod scoped_admission_tests;
 #[path = "control/task_path_control_tests.rs"]
@@ -186,37 +191,6 @@ fn assistant_message(text: &str, phase: Option<MessagePhase>) -> ResponseItem {
         phase,
         internal_chat_message_metadata_passthrough: None,
     }
-}
-
-fn is_expected_completion_communication(entry: &(ThreadId, Op), expected: &(ThreadId, Op)) -> bool {
-    let (
-        entry_thread_id,
-        Op::InterAgentCommunication {
-            communication: entry_communication,
-            ..
-        },
-    ) = entry
-    else {
-        return false;
-    };
-    let (
-        expected_thread_id,
-        Op::InterAgentCommunication {
-            communication: expected_communication,
-            ..
-        },
-    ) = expected
-    else {
-        return false;
-    };
-    let Some(id) = entry_communication.id.as_ref() else {
-        return false;
-    };
-    let mut entry_communication = entry_communication.clone();
-    entry_communication.id = None;
-    entry_thread_id == expected_thread_id
-        && is_sub_agent_completion_context_response_item_id(id)
-        && &entry_communication == expected_communication
 }
 
 #[test]
@@ -1620,30 +1594,42 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
 
     if nested {
         let turn = resumed_parent.thread.session.new_default_turn().await;
-        resumed_parent
-            .thread
-            .session
-            .services
-            .agent_control
-            .send(crate::SendRequest {
-                caller: parent_thread_id,
-                target: crate::AgentTarget::Id(target_thread_id),
-                resume_config: crate::agent::child_config::build_agent_resume_config(&turn)
-                    .expect("capture resume config"),
-                input: crate::AgentInput::Message {
-                    message: AgentMessage::Plaintext("hello after resume".to_string()),
-                    mode: MessageDeliveryMode::QueueOnly,
-                },
-                start_options: TurnStartOptions {
-                    root_turn_id: turn.turn_metadata_state.root_turn_id(),
-                    turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
-                    cyber_access_program: turn.cyber_access_program,
-                    ..Default::default()
-                },
-            })
+        let request = || crate::SendRequest {
+            caller: parent_thread_id,
+            target: crate::AgentTarget::Id(target_thread_id),
+            resume_config: crate::agent::child_config::build_agent_resume_config(&turn)
+                .expect("capture resume config"),
+            input: crate::AgentInput::Message {
+                message: AgentMessage::Plaintext("hello after resume".to_string()),
+                mode: MessageDeliveryMode::QueueOnly,
+            },
+            start_options: TurnStartOptions {
+                root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+                cyber_access_program: turn.cyber_access_program,
+                ..Default::default()
+            },
+        };
+        let control = &resumed_parent.thread.session.services.agent_control;
+        let error = control
+            .send(request())
             .await
-            .expect("message should reload the grandchild");
+            .err()
+            .expect("grandchild restoration requires its direct parent");
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::ThreadNotFound(id) if *id == worker_thread_id
+        ));
         assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
+        assert_thread_not_loaded(&resumed_manager, target_thread_id).await;
+        resumed_manager
+            .ensure_multi_agent_v2_child_loaded(worker_thread_id)
+            .await
+            .expect("restore the owning parent before its child");
+        control
+            .send(request())
+            .await
+            .expect("retry reloads the grandchild through its live owner");
     } else {
         resumed_manager
             .ensure_multi_agent_v2_child_loaded(worker_thread_id)
@@ -1670,16 +1656,13 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
                 .is_some_and(|root| Arc::ptr_eq(inherited, root))),
         shared.then_some(true),
     );
-    assert_eq!(
-        inherited.thread,
-        (!nested || shared).then_some(thread_instructions),
-    );
+    assert_eq!(inherited.thread, Some(thread_instructions),);
 }
 
 #[test_case::test_case(false; "snapshot_is_not_shared")]
 #[test_case::test_case(true; "shared_provider_survives")]
 #[tokio::test]
-async fn v2_sibling_reload_preserves_shared_instructions_after_root_unloads(shared: bool) {
+async fn v2_sibling_reload_preserves_instructions_after_parent_first_recovery(shared: bool) {
     let (home, mut config) = test_config().await;
     config
         .features
@@ -1732,6 +1715,23 @@ async fn v2_sibling_reload_preserves_shared_instructions_after_root_unloads(shar
     persist_thread_for_tree_resume(&target, "target persisted").await;
     target.shutdown_and_wait().await.expect("shut down target");
     assert!(harness.manager.remove_thread(&target_id).await.is_some());
+    root.thread
+        .shutdown_durably_and_wait()
+        .await
+        .expect("release the old owner writer before cold recovery");
+    let stored_root = root
+        .thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("read canonical owner history");
+    let root_id = root.thread_id;
+    let initial_history = InitialHistory::Resumed(ResumedHistory {
+        conversation_id: root_id,
+        history: Arc::new(stored_root.history.expect("owner history").items),
+        rollout_path: stored_root.rollout_path,
+    });
     assert!(
         harness
             .manager
@@ -1746,28 +1746,51 @@ async fn v2_sibling_reload_preserves_shared_instructions_after_root_unloads(shar
     *provider.text.write().expect("update thread instructions") =
         "updated while target was unloaded";
     let sender_turn = sender.session.new_default_turn().await;
-    sender
-        .session
-        .services
-        .agent_control
-        .send(crate::SendRequest {
-            caller: sender_id,
-            target: crate::AgentTarget::Id(target_id),
-            resume_config: crate::agent::child_config::build_agent_resume_config(&sender_turn)
-                .expect("capture resume config"),
-            input: crate::AgentInput::Message {
-                message: AgentMessage::Plaintext("wake the sibling".to_string()),
-                mode: MessageDeliveryMode::QueueOnly,
-            },
-            start_options: TurnStartOptions {
-                root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
-                turn_trigger: sender_turn.turn_metadata_state.current_turn_trigger(),
-                cyber_access_program: sender_turn.cyber_access_program,
-                ..Default::default()
-            },
+    let request = || crate::SendRequest {
+        caller: sender_id,
+        target: crate::AgentTarget::Id(target_id),
+        resume_config: crate::agent::child_config::build_agent_resume_config(&sender_turn)
+            .expect("capture resume config"),
+        input: crate::AgentInput::Message {
+            message: AgentMessage::Plaintext("wake the sibling".to_string()),
+            mode: MessageDeliveryMode::QueueOnly,
+        },
+        start_options: TurnStartOptions {
+            root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
+            turn_trigger: sender_turn.turn_metadata_state.current_turn_trigger(),
+            cyber_access_program: sender_turn.cyber_access_program,
+            ..Default::default()
+        },
+    };
+    let control = &sender.session.services.agent_control;
+    let error = control
+        .send(request())
+        .await
+        .err()
+        .expect("a surviving sibling cannot substitute for the absent direct owner");
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::ThreadNotFound(id) if *id == root_id
+    ));
+    assert_thread_not_loaded(&harness.manager, target_id).await;
+    let recovered_root = harness
+        .manager
+        .start_thread(StartThreadOptions {
+            initial_history,
+            thread_instructions_provider: Some(provider.clone()),
+            ..StartThreadOptions::new(harness.config.clone())
         })
         .await
-        .expect("reload target from its sibling");
+        .expect("recover the recorded owner first");
+    assert_eq!(recovered_root.thread_id, root_id);
+    assert!(Arc::ptr_eq(
+        &recovered_root.thread.session.services.agent_control.state,
+        &sender.session.services.agent_control.state,
+    ));
+    control
+        .send(request())
+        .await
+        .expect("reload the target through its recovered owner");
     let resumed = harness
         .manager
         .get_thread(target_id)
@@ -1785,7 +1808,7 @@ async fn v2_sibling_reload_preserves_shared_instructions_after_root_unloads(shar
     );
     assert_eq!(
         inherited.thread.map(|instructions| instructions.text),
-        shared.then(|| "updated while target was unloaded".to_string())
+        Some("updated while target was unloaded".to_string())
     );
 
     *provider.text.write().expect("update thread instructions") =
@@ -1805,7 +1828,11 @@ async fn v2_sibling_reload_preserves_shared_instructions_after_root_unloads(shar
             .await
             .thread
             .map(|instructions| instructions.text),
-        shared.then(|| "updated after target was reloaded".to_string())
+        Some(if shared {
+            "updated after target was reloaded".to_string()
+        } else {
+            "updated while target was unloaded".to_string()
+        })
     );
 }
 
@@ -3221,8 +3248,10 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(
     let parent_audit_before = tokio::fs::read(&parent_rollout_path)
         .await
         .expect("read original parent audit");
-    let child_thread_id = harness
-        .control
+    let child_thread_id = parent_thread
+        .session
+        .services
+        .agent_control
         .spawn_agent_with_metadata(
             child_config,
             text_input("child task"),
@@ -4402,281 +4431,13 @@ async fn spawn_child_completion_notifies_parent_history() {
         .get_thread(child_thread_id)
         .await
         .expect("child thread should exist");
+    wait_for_recorded_user_message(&child_thread, "hello child").await;
     let _ = child_thread
         .submit(Op::Shutdown {})
         .await
         .expect("child shutdown should submit");
 
     assert_eq!(wait_for_subagent_notification(&parent_thread).await, true);
-}
-
-#[tokio::test]
-async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
-    let mut harness = AgentControlHarness::new().await;
-    let mut config = harness.config.clone();
-    let _ = config.features.enable(Feature::MultiAgentV2);
-    let root = harness
-        .manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("root thread should start");
-    let root_thread_id = root.thread_id;
-    let root_thread = root.thread;
-    harness.control = root_thread.session.services.agent_control.clone();
-    let worker_path = AgentPath::root().join("worker_a").expect("worker path");
-    let worker_thread_id = harness
-        .control
-        .spawn_agent(
-            config.clone(),
-            text_input("hello worker"),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: root_thread_id,
-                depth: 1,
-                agent_path: Some(worker_path.clone()),
-                agent_nickname: None,
-                agent_role: Some("explorer".to_string()),
-            })),
-        )
-        .await
-        .expect("worker spawn should succeed");
-    let tester_path = worker_path.join("tester").expect("tester path");
-    let tester_thread_id = harness
-        .control
-        .spawn_agent(
-            config,
-            text_input("hello tester"),
-            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: worker_thread_id,
-                depth: 2,
-                agent_path: Some(tester_path.clone()),
-                agent_nickname: None,
-                agent_role: Some("explorer".to_string()),
-            })),
-        )
-        .await
-        .expect("tester spawn should succeed");
-    harness
-        .control
-        .shutdown_live_agent(worker_thread_id)
-        .await
-        .expect("worker shutdown should succeed");
-
-    let tester_thread = harness
-        .manager
-        .get_thread(tester_thread_id)
-        .await
-        .expect("tester thread should exist");
-    let tester_turn = tester_thread.session.new_default_turn().await;
-    tester_thread
-        .session
-        .send_event(
-            tester_turn.as_ref(),
-            EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: tester_turn.sub_id.clone(),
-                started_at: None,
-                last_agent_message: Some("done".to_string()),
-                error: None,
-                completed_at: None,
-                duration_ms: None,
-                time_to_first_token_ms: None,
-            }),
-        )
-        .await;
-
-    sleep(Duration::from_millis(100)).await;
-
-    assert!(
-        !harness
-            .manager
-            .captured_ops()
-            .into_iter()
-            .any(|(thread_id, op)| {
-                thread_id == worker_thread_id
-                    && matches!(
-                        op,
-                        Op::InterAgentCommunication { communication, .. }
-                            if communication.author == tester_path
-                                && communication.recipient == worker_path
-                                && communication.content == "done"
-                    )
-            })
-    );
-
-    let root_history = root_thread.session.clone_history().await;
-    assert!(!history_contains_assistant_inter_agent_communication(
-        root_history.raw_items(),
-        &InterAgentCommunication::new(
-            tester_path,
-            AgentPath::root(),
-            Vec::new(),
-            "done".to_string(),
-            /*trigger_turn*/ true,
-        )
-    ));
-    assert!(!has_subagent_notification(root_history.raw_items()));
-}
-
-#[tokio::test]
-async fn multi_agent_v2_shutdown_watcher_queues_message_for_direct_parent() {
-    let harness = AgentControlHarness::new().await;
-    let (_root_thread_id, root_thread) = harness.start_thread().await;
-    let (worker_thread_id, _worker_thread) = harness.start_thread().await;
-    let mut tester_config = harness.config.clone();
-    let _ = tester_config.features.enable(Feature::MultiAgentV2);
-    let worker_path = AgentPath::root().join("worker_a").expect("worker path");
-    let tester_path = worker_path.join("tester").expect("tester path");
-    let tester_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: worker_thread_id,
-        depth: 2,
-        agent_path: Some(tester_path.clone()),
-        agent_nickname: None,
-        agent_role: Some("explorer".to_string()),
-    });
-    let (_tester_thread_id, tester_thread) = harness
-        .start_thread_with_source(tester_config.clone(), tester_source.clone())
-        .await;
-    harness
-        .control
-        .maybe_start_completion_watcher(
-            &tester_thread,
-            Some(tester_source),
-            tester_path.to_string(),
-            Some(tester_path.clone()),
-            MultiAgentVersion::V2,
-        )
-        .await;
-    let tester_turn = tester_thread.session.new_default_turn().await;
-    tester_thread
-        .session
-        .send_event(tester_turn.as_ref(), EventMsg::ShutdownComplete)
-        .await;
-
-    let expected_message = crate::session_prefix::format_inter_agent_completion_message(
-        worker_path.clone(),
-        tester_path.clone(),
-        &AgentStatus::Shutdown,
-    )
-    .expect("shutdown status should render");
-    let expected = (
-        worker_thread_id,
-        Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                tester_path.clone(),
-                worker_path.clone(),
-                Vec::new(),
-                expected_message.clone(),
-                /*trigger_turn*/ false,
-            ),
-            start_options: Default::default(),
-        },
-    );
-
-    timeout(Duration::from_secs(5), async {
-        loop {
-            let captured = harness
-                .manager
-                .captured_ops()
-                .into_iter()
-                .any(|entry| is_expected_completion_communication(&entry, &expected));
-            if captured {
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("completion watcher should queue a direct-parent message");
-
-    let root_history = root_thread.session.clone_history().await;
-    assert!(!history_contains_assistant_inter_agent_communication(
-        root_history.raw_items(),
-        &InterAgentCommunication::new(
-            tester_path,
-            AgentPath::root(),
-            Vec::new(),
-            expected_message,
-            /*trigger_turn*/ false,
-        )
-    ));
-}
-
-#[tokio::test]
-async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
-    let harness = AgentControlHarness::new().await;
-    let (worker_thread_id, _worker_thread) = harness.start_thread().await;
-    let worker_path = AgentPath::root().join("worker_a").expect("worker path");
-    let tester_path = worker_path.join("tester").expect("tester path");
-    let tester_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: worker_thread_id,
-        depth: 2,
-        agent_path: Some(tester_path.clone()),
-        agent_nickname: None,
-        agent_role: Some("explorer".to_string()),
-    });
-    let mut tester_config = harness.config.clone();
-    let _ = tester_config.features.enable(Feature::MultiAgentV2);
-    let (_tester_thread_id, tester_thread) = harness
-        .start_thread_with_source(tester_config, tester_source.clone())
-        .await;
-    harness
-        .control
-        .maybe_start_completion_watcher(
-            &tester_thread,
-            Some(tester_source),
-            tester_path.to_string(),
-            Some(tester_path.clone()),
-            MultiAgentVersion::V2,
-        )
-        .await;
-
-    let error = "invalid thread settings";
-    tester_thread
-        .session
-        .send_event_raw(Event {
-            id: uuid::Uuid::now_v7().to_string(),
-            msg: EventMsg::Error(ErrorEvent {
-                misalignment: None,
-                message: error.to_string(),
-                codex_error_info: Some(CodexErrorInfo::BadRequest),
-            }),
-        })
-        .await;
-
-    let expected_message = crate::session_prefix::format_inter_agent_completion_message(
-        worker_path.clone(),
-        tester_path.clone(),
-        &AgentStatus::Errored(error.to_string()),
-    )
-    .expect("errored status should render");
-    let expected = (
-        worker_thread_id,
-        Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                tester_path,
-                worker_path,
-                Vec::new(),
-                expected_message,
-                /*trigger_turn*/ false,
-            ),
-            start_options: Default::default(),
-        },
-    );
-
-    timeout(Duration::from_secs(5), async {
-        loop {
-            if harness
-                .manager
-                .captured_ops()
-                .into_iter()
-                .any(|entry| is_expected_completion_communication(&entry, &expected))
-            {
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("raw error watcher should queue a direct-parent message");
 }
 
 #[test_case::test_case(true; "unfinished_turn")]
@@ -4944,7 +4705,7 @@ async fn completed_wait_suppresses_v1_background_watcher() {
 }
 
 #[tokio::test]
-async fn late_wait_does_not_suppress_v1_background_watcher() {
+async fn wait_after_background_delivery_does_not_republish_v1_completion() {
     let mut harness = AgentControlHarness::new().await;
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
     harness.control = parent_thread.session.services.agent_control.clone();
@@ -5004,15 +4765,26 @@ async fn late_wait_does_not_suppress_v1_background_watcher() {
         child_thread.agent_status().await,
         AgentStatus::Errored("child failed".to_string())
     );
+    // A merely terminal status is still claimable by a wait until background
+    // presentation wins. Observe that actual boundary before creating a late wait.
+    assert!(wait_for_subagent_completion_item(&parent_thread).await);
     let wait = harness.control.register_targeted_wait_agent_presentation(
         parent_thread.session.presentation_id(),
         &[child_thread_id],
     );
     let commit = wait.freeze_for_children([child_thread_id]);
+    assert_eq!(commit.completion_presentation_agent_ids(), None);
     commit.commit();
 
     assert!(wait_for_subagent_notification(&parent_thread).await);
-    assert!(wait_for_subagent_completion_item(&parent_thread).await);
+    assert!(
+        timeout(
+            Duration::from_millis(/*millis*/ 100),
+            wait_for_subagent_completion_item(&parent_thread)
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -6024,6 +5796,7 @@ async fn resume_closed_child_reopens_open_descendants() {
 #[tokio::test]
 async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdown() {
     let mut harness = AgentControlHarness::new().await;
+    harness.config.agent_max_threads = Some(2);
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
     harness.control = parent_thread.session.services.agent_control.clone();
 
@@ -6076,6 +5849,29 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
     wait_for_live_thread_spawn_children(&harness.control, child_thread_id, &[grandchild_thread_id])
         .await;
 
+    let metadata_snapshot = || {
+        [child_thread_id, grandchild_thread_id].map(|thread_id| {
+            let AgentMetadata {
+                agent_id,
+                agent_path,
+                agent_nickname,
+                agent_role,
+                last_task_message,
+            } = harness
+                .control
+                .get_agent_metadata(thread_id)
+                .expect("registered descendant");
+            (
+                agent_id,
+                agent_path,
+                agent_nickname,
+                agent_role,
+                last_task_message,
+            )
+        })
+    };
+    let metadata_before = metadata_snapshot();
+    let child_submission = harness.control.state.mailbox_submission(child_thread_id);
     let report = harness
         .manager
         .shutdown_all_threads_bounded(Duration::from_secs(5))
@@ -6105,6 +5901,11 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
         harness.control.get_status(grandchild_thread_id).await,
         AgentStatus::NotFound
     );
+    assert_eq!(metadata_snapshot(), metadata_before);
+    assert!(Arc::ptr_eq(
+        &harness.control.state.mailbox_submission(child_thread_id),
+        &child_submission,
+    ));
 
     let _ = harness
         .control

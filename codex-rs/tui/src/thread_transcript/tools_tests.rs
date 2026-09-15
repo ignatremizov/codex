@@ -1,5 +1,6 @@
 use super::*;
 use crate::exec_cell::OutputPreviewLineLimits;
+use crate::history_cell::HistoryCell;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use crate::thread_transcript::RawReasoningVisibility;
@@ -24,6 +25,7 @@ fn command_item(status: CommandExecutionStatus) -> ThreadItem {
         cwd: LegacyAppPathString::from_string("/tmp/project"),
         process_id: None,
         source: CommandExecutionSource::Agent,
+        user_shell_response_handling: None,
         status,
         command_actions: vec![CommandAction::Unknown {
             command: "cargo check".to_string(),
@@ -463,6 +465,8 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
+            mailbox_input: None,
             sender_thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
             receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".to_string()],
             receiver_agents: Vec::new(),

@@ -165,6 +165,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
                     sender: identity(foreign),
                     recipient: identity(receiver),
                     sender_turn_id: "stored-sender-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: Default::default(),

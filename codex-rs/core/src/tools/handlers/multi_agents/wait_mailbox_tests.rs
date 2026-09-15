@@ -49,6 +49,7 @@ async fn accept_agent_mail(session: &Session, sender: ThreadId) -> anyhow::Resul
                     sender: identity(sender),
                     recipient: identity(session.thread_id),
                     sender_turn_id: "sender-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: Default::default(),

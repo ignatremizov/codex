@@ -1,6 +1,35 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+#[tokio::test]
+async fn unchanged_countdown_deadlines_do_not_schedule_another_frame() {
+    let (frame_requester, mut draw_rx) = FrameRequester::test_channel();
+    let (mut chat, _rx, _ops) = make_chatwidget_manual_with_auth(
+        /*model_override*/ None,
+        /*has_chatgpt_account*/ false,
+        /*has_codex_backend_auth*/ false,
+        frame_requester,
+    )
+    .await;
+    chat.on_task_started();
+    while draw_rx.try_recv().is_ok() {}
+    let deadline = Instant::now() + Duration::from_secs(/*secs*/ 10);
+    for (next, changed) in [
+        (None, false),
+        (Some(deadline), true),
+        (Some(deadline), false),
+        (None, true),
+        (None, false),
+    ] {
+        chat.bottom_pane.update_status_countdown_deadline(next);
+        assert_eq!(draw_rx.try_recv().is_ok(), changed);
+        assert!(matches!(
+            draw_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+}
+
 fn poll(chat: &mut ChatWidget, item_id: &str, process_id: &str, deadline_at_ms: Option<i64>) {
     chat.handle_server_notification(
         ServerNotification::TerminalInteraction(
@@ -30,7 +59,12 @@ async fn poll_clear_and_old_process_completion_cannot_clear_new_incarnation() {
     poll(&mut chat, "old-item", "proc", Some(future_deadline()));
     begin_unified_exec_startup(&mut chat, "new-item", "proc", "sleep 120");
     poll(&mut chat, "new-item", "proc", Some(future_deadline()));
-    let expected = chat.status_state.countdown_owner.clone();
+    let expected = Some(StatusCountdownOwner::UnifiedExec {
+        turn_id: "turn-1".to_string(),
+        item_id: "new-item".to_string(),
+        process_id: "proc".to_string(),
+    });
+    assert_eq!(chat.status_state.countdown_owner, expected);
     let header = chat.status_state.current_status.clone();
     poll(&mut chat, "old-item", "proc", /*deadline_at_ms*/ None);
     if let AppServerThreadItem::CommandExecution { status, .. } = &mut old {
@@ -118,12 +152,14 @@ async fn replay_and_stale_turn_notifications_never_arm_countdown() {
         wait: None,
     });
     let owner = chat.status_state.countdown_owner.clone();
+    let status = chat.status_state.current_status.clone();
     poll(&mut chat, "item", "proc", Some(future_deadline()));
     chat.handle_server_notification(
         ServerNotification::ItemStarted(start),
         /*replay_kind*/ None,
     );
     assert_eq!(chat.status_state.countdown_owner, owner);
+    assert_eq!(chat.status_state.current_status, status);
 }
 
 #[tokio::test]
@@ -185,8 +221,10 @@ async fn live_start_without_estimate_replaces_countdown_but_unrelated_terminal_c
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 observe_commentary: None,
                 wake_on_completion: None,
+                mailbox_input: None,
                 target_messages: None,
                 queue_input: None,
+                input_batch: None,
                 sender_thread_id: ThreadId::new().to_string(),
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
@@ -234,8 +272,10 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         status,
         observe_commentary: None,
         wake_on_completion: None,
+        mailbox_input: None,
         target_messages: None,
         queue_input: None,
+        input_batch: None,
         sender_thread_id: ThreadId::new().to_string(),
         receiver_thread_ids: Vec::new(),
         receiver_agents: Vec::new(),
@@ -248,11 +288,13 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         wait("A", AppServerCollabAgentToolCallStatus::InProgress),
         Some(future_deadline()),
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     chat.on_collab_agent_tool_call(
         wait("B", AppServerCollabAgentToolCallStatus::InProgress),
         Some(future_deadline()),
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     let owner = chat.status_state.countdown_owner.clone();
     let status = chat.status_state.current_status.clone();
@@ -260,6 +302,7 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         wait("A", AppServerCollabAgentToolCallStatus::Completed),
         /*deadline_at_ms*/ None,
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     assert_eq!(chat.status_state.countdown_owner, owner);
     assert_eq!(chat.status_state.current_status, status);
@@ -267,6 +310,7 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         wait("B", AppServerCollabAgentToolCallStatus::Completed),
         /*deadline_at_ms*/ None,
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     assert_eq!(chat.status_state.countdown_owner, None);
 }

@@ -45,6 +45,7 @@ fn spawned_identity_survives_live_wire_and_replay() {
         wake_on_completion: None,
         target_messages: Some(false),
         queue_input: Some(false),
+        input_batch: None,
         mailbox_input: None,
         deadline_at_ms: None,
         sender_thread_id: sender,

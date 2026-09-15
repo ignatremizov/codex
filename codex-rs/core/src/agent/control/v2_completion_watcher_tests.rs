@@ -6,7 +6,7 @@ use codex_thread_store::LoadSubAgentCompletionContextItemParams;
 use pretty_assertions::assert_eq;
 
 struct CompletionFixture {
-    _harness: AgentControlHarness,
+    harness: AgentControlHarness,
     root: Arc<CodexThread>,
     worker: Arc<CodexThread>,
     tester: Arc<CodexThread>,
@@ -62,7 +62,7 @@ impl CompletionFixture {
         root.ensure_rollout_materialized().await;
         worker.ensure_rollout_materialized().await;
         Self {
-            _harness: harness,
+            harness,
             root,
             worker,
             tester,
@@ -174,4 +174,97 @@ async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
             AgentStatus::Errored(message.to_string()),
         )
         .await;
+}
+
+#[tokio::test]
+async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
+    let fixture = CompletionFixture::new().await;
+    let turn = fixture.tester.session.new_history_only_turn().await;
+    fixture
+        .tester
+        .session
+        .send_event(
+            turn.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn.sub_id.clone(),
+                root_turn_id: None,
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+                agent_queue: None,
+            }),
+        )
+        .await;
+    let worker_id = fixture.worker.session.thread_id();
+    fixture
+        .harness
+        .control
+        .shutdown_live_agent(worker_id)
+        .await
+        .expect("direct parent shuts down before the child completes");
+    assert!(fixture.harness.manager.get_thread(worker_id).await.is_err());
+    let previous_root = fixture
+        .root
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .cloned()
+        .collect::<Vec<_>>();
+    let previous_worker = fixture
+        .worker
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    fixture
+        .tester
+        .session
+        .send_event(
+            turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    // Terminal capture checks the closed parent's admission synchronously before
+    // publishing status. No delayed Op adapter or model-input observer is involved.
+    assert_eq!(
+        fixture.tester.agent_status().await,
+        AgentStatus::Completed(Some("done".to_string()))
+    );
+    for (thread, previous) in [
+        (&fixture.root, previous_root),
+        (&fixture.worker, previous_worker),
+    ] {
+        assert_eq!(
+            thread
+                .session
+                .clone_history()
+                .await
+                .raw_items()
+                .cloned()
+                .collect::<Vec<_>>(),
+            previous,
+        );
+        assert_eq!(
+            thread
+                .session
+                .input_queue
+                .pending_mailbox_response_item_ids(/*turn_state*/ None)
+                .await,
+            Vec::<codex_protocol::ResponseItemId>::new(),
+        );
+    }
 }

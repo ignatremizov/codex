@@ -1,6 +1,7 @@
 use super::*;
 use crate::ServerNotification;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use codex_protocol::config_types::MultiAgentMode;
@@ -186,7 +187,9 @@ fn user_authored_agent_marker_remains_a_user_message() {
                 text_elements: Vec::new(),
             },
             CoreUserInput::Image {
-                image_url: "data:image/png;base64,AA==".to_string(),
+                image: CoreImageReference::Inline {
+                    image_url: "data:image/png;base64,AA==".to_string(),
+                },
                 detail: None,
             },
         ],
@@ -203,7 +206,9 @@ fn user_authored_agent_marker_remains_a_user_message() {
                     text_elements: Vec::new(),
                 },
                 UserInput::Image {
-                    url: "data:image/png;base64,AA==".to_string(),
+                    image: ImageReference::Inline {
+                        url: "data:image/png;base64,AA==".to_string(),
+                    },
                     detail: None,
                 },
             ],
@@ -622,6 +627,7 @@ fn thread_items_list_round_trips() {
                     "id": "item_1",
                     "summary": "compact summary",
                     "message": "full compacted prompt",
+                    "decodeError": null,
                     "availableSkills": ["test-tui"],
                 },
             }],
@@ -3442,7 +3448,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         json!({
             "type": "agentMessage", "id": "async-1", "text": "Which?", "phase": "final_answer",
             "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}],
-            "attribution": null, "input": null
+            "attribution": null, "input": null, "interAgentSource": null
         })
     );
     let old_item: ThreadItem = serde_json::from_value(json!({
@@ -3583,8 +3589,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         id: "collab-1".to_string(),
         tool: CoreCollabAgentTool::SendInput,
         status: CoreCollabAgentToolCallStatus::Completed,
+        observe_commentary: None,
+        wake_on_completion: None,
         target_messages: None,
         queue_input: None,
+        input_batch: None,
         mailbox_input: None,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
@@ -3609,6 +3618,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],

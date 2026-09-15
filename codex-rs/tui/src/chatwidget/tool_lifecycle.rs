@@ -137,6 +137,7 @@ impl ChatWidget {
         item: ThreadItem,
         deadline_at_ms: Option<i64>,
         turn_id: &str,
+        render_source: ThreadItemRenderSource,
     ) {
         let ThreadItem::CollabAgentToolCall {
             id,
@@ -144,6 +145,7 @@ impl ChatWidget {
             status,
             receiver_thread_ids,
             receiver_agents,
+            input_batch,
             ..
         } = &item
         else {
@@ -221,7 +223,15 @@ impl ChatWidget {
             self.local_settings.tui.agent_response_preview_lines,
             |thread_id| self.collab_agent_metadata(thread_id),
         ) {
-            self.on_collab_event(cell);
+            let is_foreign_batch = input_batch
+                .as_ref()
+                .and_then(|batch| batch.sender_thread_id)
+                .is_some_and(|sender| self.thread_id != Some(sender));
+            if !render_source.is_replay() && is_foreign_batch {
+                self.on_async_agent_notice(cell);
+            } else {
+                self.on_collab_event(cell);
+            }
         }
 
         if let Some(wait_status) = wait_status {

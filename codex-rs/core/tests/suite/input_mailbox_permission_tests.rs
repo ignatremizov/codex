@@ -66,6 +66,7 @@ async fn mixed_receipt_is_lean_without_hiding_rejection_or_reordering_delivery(
                     sender: identity(sender),
                     recipient: identity(receiver),
                     sender_turn_id: "sender-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: Default::default(),
@@ -243,6 +244,7 @@ async fn revoked_permission_repairs_admitted_context_but_rejects_undelivered_mai
         sender: identity(sender),
         recipient: identity(receiver),
         sender_turn_id: "admission-turn".to_string(),
+        batch_id: None,
     };
     let original = vec![UserInput::Text {
         text: "Previously admitted agent context.".to_string(),

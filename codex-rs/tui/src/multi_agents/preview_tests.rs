@@ -3,6 +3,7 @@ use super::tests::cell_to_text;
 use super::tests::line_to_text;
 use super::tests::metadata_for;
 use super::*;
+use crate::history_cell::HistoryCell;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
@@ -233,8 +234,10 @@ fn wait_completion_preserves_multiline_agent_response_snapshot() {
         status: CollabAgentToolCallStatus::Completed,
         observe_commentary: None,
         wake_on_completion: None,
+        mailbox_input: None,
         target_messages: None,
         queue_input: None,
+        input_batch: None,
         sender_thread_id: sender_thread_id.to_string(),
         receiver_thread_ids: vec![robie_id.to_string()],
         receiver_agents: Vec::new(),
@@ -300,8 +303,10 @@ fn spawn_prompt_preview_preserves_multiline_prompt_snapshot() {
         status: CollabAgentToolCallStatus::Completed,
         observe_commentary: None,
         wake_on_completion: None,
+        mailbox_input: None,
         target_messages: None,
         queue_input: None,
+        input_batch: None,
         sender_thread_id: sender_thread_id.to_string(),
         receiver_thread_ids: vec![robie_id.to_string()],
         receiver_agents: Vec::new(),
@@ -367,8 +372,10 @@ fn preview_caps_wrapped_rows_for_long_single_lines() {
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,
             wake_on_completion: None,
+            mailbox_input: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
             receiver_agents: Vec::new(),
@@ -394,8 +401,10 @@ fn preview_caps_wrapped_rows_for_long_single_lines() {
             status: CollabAgentToolCallStatus::Completed,
             observe_commentary: None,
             wake_on_completion: None,
+            mailbox_input: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
             receiver_agents: Vec::new(),
