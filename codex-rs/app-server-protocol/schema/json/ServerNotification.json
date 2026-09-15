@@ -4176,6 +4176,15 @@
       "description": "Notification emitted when watched local skill files change.\n\nTreat this as an invalidation signal and re-run `skills/list` with the client's current parameters when refreshed skill metadata is needed.",
       "type": "object"
     },
+    "SleepOutcome": {
+      "description": "Terminal outcome of an interruptible `clock.sleep` tool call.",
+      "enum": [
+        "completed",
+        "interrupted",
+        "error"
+      ],
+      "type": "string"
+    },
     "SpendControlLimitSnapshot": {
       "properties": {
         "limit": {
@@ -5905,8 +5914,26 @@
               "minimum": 0.0,
               "type": "integer"
             },
+            "elapsedMs": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
+            },
+            "outcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SleepOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "enum": [

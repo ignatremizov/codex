@@ -1087,6 +1087,15 @@
       "minLength": 1,
       "type": "string"
     },
+    "SleepOutcome": {
+      "description": "Terminal outcome of an interruptible `clock.sleep` tool call.",
+      "enum": [
+        "completed",
+        "interrupted",
+        "error"
+      ],
+      "type": "string"
+    },
     "SubAgentActivityKind": {
       "enum": [
         "started",
@@ -2120,8 +2129,26 @@
               "minimum": 0.0,
               "type": "integer"
             },
+            "elapsedMs": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
+            },
+            "outcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SleepOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "enum": [
