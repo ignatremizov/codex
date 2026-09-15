@@ -232,8 +232,10 @@ impl ChatWidget {
             || self.status_state.retry_status_header.is_some()
             || !self.status_state.pending_guardian_review_status.is_empty()
             || self.safety_buffering_is_waiting()
-            || matches!(self.status_state.countdown_owner.as_ref(),
-                Some(StatusCountdownOwner::CollabWait { .. }))
+            || matches!(
+                self.status_state.countdown_owner.as_ref(),
+                Some(StatusCountdownOwner::CollabWait { .. } | StatusCountdownOwner::Sleep { .. })
+            )
         {
             return;
         }
@@ -527,7 +529,9 @@ impl ChatWidget {
             | Some(StatusCountdownOwner::UnifiedExecWaitInvocation { .. }) => {
                 self.clear_status_countdown();
             }
-            Some(StatusCountdownOwner::CollabWait { .. }) | None => {}
+            Some(StatusCountdownOwner::CollabWait { .. })
+            | Some(StatusCountdownOwner::Sleep { .. })
+            | None => {}
         }
         self.bottom_pane.set_global_status_timer_visible(false);
     }

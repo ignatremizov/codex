@@ -156,6 +156,39 @@ fn mailbox_read_retains_order_between_complete_computer_groups() {
 }
 
 #[test]
+fn sleep_projection_preserves_outcomes_and_unknown_legacy_elapsed_time() {
+    use codex_app_server_protocol::SleepOutcome;
+
+    for (elapsed_ms, outcome) in [
+        (Some(1_000), Some(SleepOutcome::Completed)),
+        (Some(150), Some(SleepOutcome::Interrupted)),
+        (Some(50), Some(SleepOutcome::Error)),
+        (None, None),
+    ] {
+        let item = codex_app_server_protocol::SleepItem {
+            id: "sleep-history".to_string(),
+            duration_ms: 1_000,
+            elapsed_ms,
+            outcome,
+        };
+        let projected = project(&[ThreadItem::Sleep(item.clone())]);
+        let [actual] = projected.as_slice() else {
+            panic!("one preserved sleep item");
+        };
+        let expected = crate::history_cell::new_compact_sleep_cell(item);
+        assert_eq!(
+            actual.display_hyperlink_lines(/*width*/ 80),
+            expected.display_hyperlink_lines(/*width*/ 80)
+        );
+        assert_eq!(
+            actual.transcript_hyperlink_lines(/*width*/ 80),
+            expected.transcript_hyperlink_lines(/*width*/ 80)
+        );
+        assert_eq!(actual.raw_lines(), expected.raw_lines());
+    }
+}
+
+#[test]
 fn joins_respect_actual_turns_and_intervening_items() {
     let first = computer("first");
     let last = computer("last");
@@ -166,20 +199,32 @@ fn joins_respect_actual_turns_and_intervening_items() {
         turn("last-turn", vec![last.clone()]),
     ];
     assert!(join_computer_groups(&older[0], &newer[0], &turns).is_none());
+    let sleep = codex_app_server_protocol::SleepItem {
+        id: "sleep".into(),
+        duration_ms: 10,
+        elapsed_ms: Some(10),
+        outcome: Some(codex_app_server_protocol::SleepOutcome::Completed),
+    };
     let grouped = project(&[
         first.clone(),
-        ThreadItem::Sleep(codex_app_server_protocol::SleepItem {
-            id: "sleep".into(),
-            duration_ms: 10,
-        }),
+        ThreadItem::Sleep(sleep.clone()),
         last.clone(),
     ]);
-    let adjacent = project(&[first.clone(), last.clone()]);
-    assert_eq!(grouped.len(), 1);
-    assert_eq!(
-        grouped[0].transcript_lines(/*width*/ 80),
-        adjacent[0].transcript_lines(/*width*/ 80)
-    );
+    let mut expected = project(std::slice::from_ref(&first));
+    expected.push(Arc::new(crate::history_cell::new_compact_sleep_cell(sleep)));
+    expected.extend(project(std::slice::from_ref(&last)));
+    assert_eq!(grouped.len(), 3);
+    for (actual, expected) in grouped.iter().zip(&expected) {
+        assert_eq!(
+            actual.display_hyperlink_lines(/*width*/ 80),
+            expected.display_hyperlink_lines(/*width*/ 80)
+        );
+        assert_eq!(
+            actual.transcript_hyperlink_lines(/*width*/ 80),
+            expected.transcript_hyperlink_lines(/*width*/ 80)
+        );
+        assert_eq!(actual.raw_lines(), expected.raw_lines());
+    }
     let mut turns = vec![turn(
         "turn",
         vec![
