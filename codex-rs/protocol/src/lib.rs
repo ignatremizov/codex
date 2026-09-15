@@ -3,6 +3,7 @@ mod agent_input_attribution;
 mod agent_path;
 mod agent_subtree_policy;
 pub mod auth;
+mod collab_input;
 mod context_window_id;
 mod item_id_generator;
 mod mailbox_delivery;
@@ -21,6 +22,9 @@ pub use agent_input_attribution::AgentTaskPathMapping;
 pub use agent_path::AgentPath;
 pub use agent_subtree_policy::inherited_subtree_policy;
 pub use agent_subtree_policy::is_agent_descendant;
+pub use collab_input::CollabAgentInputBatch;
+pub use collab_input::CollabAgentInputResult;
+pub use collab_input::CollabAgentInputStatus;
 pub use context_window_id::ContextWindowId;
 pub use item_id_generator::ItemIdGenerator;
 #[cfg(test)]

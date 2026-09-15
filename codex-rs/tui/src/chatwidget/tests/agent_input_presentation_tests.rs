@@ -122,6 +122,7 @@ async fn trusted_agent_input_uses_same_rich_cell_live_and_on_resume() {
                 reasoning_effort: None,
             },
             sender_turn_id: "sender-turn".to_string(),
+            batch_id: None,
         }),
         input: Some(vec![UserInput::Text {
             text: "Use document_id.\n</agent_message> is payload data.".to_string(),
@@ -251,6 +252,7 @@ async fn typed_agent_input_never_replaces_a_completed_assistant_answer(
         text: "not an assistant answer".to_string(),
         inter_agent_source: None,
         attribution: Some(AgentInputAttribution {
+            batch_id: None,
             sender: identity(ThreadId::new()),
             recipient: identity(recipient),
             sender_turn_id: "sender-turn".to_string(),

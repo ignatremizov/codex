@@ -226,6 +226,7 @@ async fn live_start_without_estimate_replaces_countdown_but_unrelated_terminal_c
                     wake_on_completion: None,
                     target_messages: None,
                     queue_input: None,
+                    input_batch: None,
                     sender_thread_id: ThreadId::new().to_string(),
                     receiver_thread_ids: Vec::new(),
                     receiver_agents: Vec::new(),
@@ -277,6 +278,7 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         wake_on_completion: None,
         target_messages: None,
         queue_input: None,
+        input_batch: None,
         sender_thread_id: ThreadId::new().to_string(),
         receiver_thread_ids: Vec::new(),
         receiver_agents: Vec::new(),
@@ -289,11 +291,13 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         wait("A", AppServerCollabAgentToolCallStatus::InProgress),
         Some(future_deadline()),
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     chat.on_collab_agent_tool_call(
         wait("B", AppServerCollabAgentToolCallStatus::InProgress),
         Some(future_deadline()),
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     let owner = chat.status_state.countdown_owner.clone();
     let status = chat.status_state.current_status.clone();
@@ -301,6 +305,7 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         wait("A", AppServerCollabAgentToolCallStatus::Completed),
         /*deadline_at_ms*/ None,
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     assert_eq!(chat.status_state.countdown_owner, owner);
     assert_eq!(chat.status_state.current_status, status);
@@ -308,6 +313,7 @@ async fn finishing_old_agent_wait_preserves_new_wait_header_and_countdown() {
         wait("B", AppServerCollabAgentToolCallStatus::Completed),
         /*deadline_at_ms*/ None,
         "turn-1",
+        ThreadItemRenderSource::Live,
     );
     assert_eq!(chat.status_state.countdown_owner, None);
 }

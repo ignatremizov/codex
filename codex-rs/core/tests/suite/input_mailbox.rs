@@ -47,8 +47,8 @@ use tokio::sync::oneshot;
 
 #[path = "input_mailbox_inventory_projection.rs"]
 mod inventory_projection;
-#[path = "input_mailbox_permission_tests.rs"]
-mod permission_tests;
+#[path = "input_mailbox_ownership_tests.rs"]
+mod ownership_tests;
 
 #[path = "input_mailbox_authority_tests.rs"]
 mod authority_tests;
@@ -167,6 +167,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
                     sender: identity(foreign),
                     recipient: identity(receiver),
                     sender_turn_id: "stored-sender-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: Default::default(),

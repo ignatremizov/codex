@@ -1,7 +1,6 @@
 //! Fresh mailbox delivery retains rich input without elevating agent-authored content.
 
 use super::*;
-use codex_core::UserAgentReplyRouteMode;
 use codex_core::UserAgentSpawnOptions;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
@@ -28,13 +27,6 @@ async fn consumed_agent_text_and_image_do_not_acquire_user_authority() -> Result
         .spawn_agent(UserAgentSpawnOptions::default())
         .await?
         .target_thread_id;
-    test.codex
-        .set_agent_reply_route(
-            &sender.to_string(),
-            /*recipient*/ None,
-            UserAgentReplyRouteMode::Enabled,
-        )
-        .await?;
     let identity = |thread_id| AgentInputIdentity {
         thread_id,
         nickname: None,
@@ -48,6 +40,7 @@ async fn consumed_agent_text_and_image_do_not_acquire_user_authority() -> Result
         sender: identity(sender),
         recipient: identity(receiver),
         sender_turn_id: "original-agent-turn".to_string(),
+        batch_id: None,
     };
     let original = vec![
         UserInput::Text {
