@@ -3623,18 +3623,15 @@ async fn send_input_mailbox_hints_when_receiver_is_unloaded() {
     child
         .session
         .inject_no_new_turn(
-            vec![
-                ResponseItem::Message {
-                    id: None,
-                    role: "user".to_string(),
-                    content: vec![ContentItem::InputText {
-                        text: "materialize mailbox receiver".to_string(),
-                    }],
-                    phase: None,
-                    internal_chat_message_metadata_passthrough: None,
-                }
-                .into(),
-            ],
+            vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "materialize mailbox receiver".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
             None,
         )
         .await;
