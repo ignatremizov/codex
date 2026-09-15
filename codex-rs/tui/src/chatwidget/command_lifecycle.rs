@@ -8,6 +8,26 @@ use crate::bottom_pane::BackgroundTerminalCompletion;
 use crate::exec_cell::CommandOutput;
 
 impl ChatWidget {
+    /// The active cell still belongs to independently running user-shell work.
+    pub(super) fn has_live_user_shell_cell(&self) -> bool {
+        self.transcript
+            .active_cell
+            .as_ref()
+            .and_then(|cell| cell.as_any().downcast_ref::<ExecCell>())
+            .is_some_and(|cell| {
+                cell.is_active()
+                    && cell.group.calls.iter().all(|call| {
+                        call.source == ExecCommandSource::UserShell
+                            && self
+                                .running_commands
+                                .get(&call.call_id)
+                                .is_some_and(|command| {
+                                    command.source == ExecCommandSource::UserShell
+                                })
+                    })
+            })
+    }
+
     pub(super) fn on_command_execution_started(
         &mut self,
         item: ThreadItem,
