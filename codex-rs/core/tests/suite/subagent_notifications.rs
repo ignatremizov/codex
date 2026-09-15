@@ -6,7 +6,6 @@ use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_core::UserAgentForkMode;
 use codex_core::UserAgentInputOutcome;
-use codex_core::UserAgentReplyRouteMode;
 use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_core::config::AgentRoleConfig;
@@ -19,6 +18,7 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadIdleCause;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_items::ExtensionItem;
 use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
@@ -128,9 +128,6 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use super::direct_tool_metadata::tool_call_metadata;
-
-#[path = "subagent_reply_route_tests.rs"]
-mod reply_route_tests;
 
 #[path = "spawn_settings_tests.rs"]
 mod spawn_settings_tests;
@@ -2054,6 +2051,159 @@ async fn subagent_notification_is_included_without_wait(
         "passive completion context should retain its reserved identity: {completion_context_id}"
     );
     assert_input_item_ids_are_provider_compatible_json(&notification_request_body);
+
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passive_final_interrupts_active_sleep_and_continues_same_turn(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let (server, _) = start_streaming_sse_server(Vec::new()).await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+    }))?;
+    let mut parent_spawn = server
+        .mount_response(
+            |request| request.body_contains_text("spawn and sleep"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-sleep-spawn"),
+                    ev_function_call_with_namespace(
+                        "sleep-spawn-call",
+                        MULTI_AGENT_V1_NAMESPACE,
+                        "spawn_agent",
+                        &spawn_args,
+                    ),
+                    ev_completed("resp-sleep-spawn"),
+                ]),
+            }],
+        )
+        .await;
+    let (child_gate_tx, child_gate_rx) = oneshot::channel();
+    let mut child_response = server
+        .mount_response(
+            |request| {
+                request.body_contains_text(CHILD_PROMPT)
+                    && !request.body_contains_text("sleep-spawn-call")
+            },
+            vec![StreamingSseChunk {
+                gate: Some(child_gate_rx),
+                body: sse(vec![
+                    ev_response_created("resp-sleep-child"),
+                    ev_assistant_message("msg-sleep-child", "child done"),
+                    ev_completed("resp-sleep-child"),
+                ]),
+            }],
+        )
+        .await;
+    let mut parent_sleep = server
+        .mount_response(
+            |request| request.body_contains_text("sleep-spawn-call"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-parent-sleep"),
+                    ev_function_call_with_namespace(
+                        "sleep-call",
+                        "clock",
+                        "sleep",
+                        r#"{"duration_ms":120000}"#,
+                    ),
+                    ev_completed("resp-parent-sleep"),
+                ]),
+            }],
+        )
+        .await;
+    let mut parent_continuation = server
+        .mount_response(
+            |request| {
+                request.body_contains_text("<subagent_notification>")
+                    && request.body_contains_text("Sleep interrupted by new input.")
+            },
+            vec![StreamingSseChunk {
+                gate: None,
+                body: sse(vec![
+                    ev_response_created("resp-sleep-continuation"),
+                    ev_assistant_message("msg-sleep-continuation", "continued"),
+                    ev_completed("resp-sleep-continuation"),
+                ]),
+            }],
+        )
+        .await;
+
+    let mut builder = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::CurrentTimeReminder)
+                .expect("test config should allow feature update");
+            config.current_time_reminder = Some(CurrentTimeReminderConfig {
+                sleep_tool: true,
+                ..CurrentTimeReminderConfig::default()
+            });
+            config.agent_allow_history_forks = true;
+        });
+    let test = builder
+        .build_with_streaming_server_auto_env(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "spawn and sleep".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+
+    let initial_request = wait_for_streaming_request(&mut parent_spawn).await?;
+    let initial_turn_id = initial_request.body_json()["client_metadata"]["turn_id"]
+        .as_str()
+        .expect("initial request should include a turn ID")
+        .to_string();
+    let _ = wait_for_streaming_request(&mut child_response).await?;
+    let _ = wait_for_streaming_request(&mut parent_sleep).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ItemStarted(started)
+                if matches!(
+                    &started.item,
+                    TurnItem::Extension(ExtensionItem::Sleep(item)) if item.id == "sleep-call"
+                ) && started.turn_id == initial_turn_id.as_str()
+        )
+    })
+    .await;
+    child_gate_tx
+        .send(())
+        .map_err(|_| anyhow::anyhow!("child response gate closed"))?;
+
+    let continuation_request = wait_for_streaming_request(&mut parent_continuation).await?;
+    assert_eq!(
+        continuation_request.body_json()["client_metadata"]["turn_id"].as_str(),
+        Some(initial_turn_id.as_str()),
+        "passive completion should continue the active parent turn"
+    );
+    assert!(
+        continuation_request.body_contains_text("<subagent_notification>"),
+        "passive completion should be model-visible in the continuation"
+    );
+    assert!(
+        continuation_request.body_contains_text("Sleep interrupted by new input."),
+        "passive completion should interrupt clock sleep"
+    );
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     Ok(())
 }
@@ -4618,7 +4768,7 @@ async fn v1_max_depth_child_can_send_input_to_main_by_reserved_nickname() -> Res
 
     let spawn_args = serde_json::to_string(&json!({
         "message": MAX_DEPTH_CHILD_PROMPT,
-        "w": "mx",
+        "w": "x",
     }))?;
     mount_sse_once_match(
         &server,
@@ -5496,16 +5646,16 @@ async fn v1_lifecycle_tools_resolve_durable_ref_and_nickname_targets() -> Result
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_input_m_grants_one_turn_an_attributed_reply_route(
+async fn child_can_reply_to_same_root_input_without_a_grant(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    const PARENT_PROMPT: &str = "grant the child a scoped reply route";
+    const PARENT_PROMPT: &str = "send the child work";
     const CHILD_TASK: &str = "inspect the API contract and ask Main for context";
     const CHILD_MESSAGE: &str = "Which compatibility boundary should I preserve?";
-    const PARENT_SEND_CALL_ID: &str = "grant-scoped-reply";
-    const CHILD_REPLY_CALL_ID: &str = "use-scoped-reply";
+    const PARENT_SEND_CALL_ID: &str = "same-root-send";
+    const CHILD_REPLY_CALL_ID: &str = "same-root-reply";
 
     let server = start_mock_server().await;
     let (test, spawned_id, initial_child_request) = setup_turn_one_with_custom_spawned_child(
@@ -5528,20 +5678,19 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
     let parent_send_args = serde_json::to_string(&json!({
         "target": spawned_id,
         "message": CHILD_TASK,
-        "w": "m",
     }))?;
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, PARENT_PROMPT),
         sse(vec![
-            ev_response_created("resp-grant-scoped-reply"),
+            ev_response_created("resp-same-root-send"),
             ev_function_call_with_namespace(
                 PARENT_SEND_CALL_ID,
                 MULTI_AGENT_V1_NAMESPACE,
                 "send_input",
                 &parent_send_args,
             ),
-            ev_completed("resp-grant-scoped-reply"),
+            ev_completed("resp-same-root-send"),
         ]),
     )
     .await;
@@ -5552,12 +5701,12 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
                 && !body_contains(request, "<agent_message>")
         },
         sse_response(sse(vec![
-            ev_response_created("resp-parent-before-scoped-reply"),
+            ev_response_created("resp-parent-before-reply"),
             ev_assistant_message(
-                "msg-parent-before-scoped-reply",
+                "msg-parent-before-reply",
                 "continuing while the child works",
             ),
-            ev_completed("resp-parent-before-scoped-reply"),
+            ev_completed("resp-parent-before-reply"),
         ]))
         .set_delay(Duration::from_secs(1)),
     )
@@ -5568,20 +5717,20 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
         "message": CHILD_MESSAGE,
         "w": "x",
     }))?;
-    let child_with_route = mount_response_once_match(
+    let child_with_task = mount_response_once_match(
         &server,
         |request: &wiremock::Request| {
             body_contains(request, CHILD_TASK) && !body_contains(request, PARENT_SEND_CALL_ID)
         },
         sse_response(sse(vec![
-            ev_response_created("resp-child-with-scoped-route"),
+            ev_response_created("resp-child-with-task"),
             ev_function_call_with_namespace(
                 CHILD_REPLY_CALL_ID,
                 MULTI_AGENT_V1_NAMESPACE,
                 "send_input",
                 &child_reply_args,
             ),
-            ev_completed("resp-child-with-scoped-route"),
+            ev_completed("resp-child-with-task"),
         ]))
         .set_delay(Duration::from_millis(250)),
     )
@@ -5590,9 +5739,9 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
         &server,
         |request: &wiremock::Request| body_contains(request, CHILD_REPLY_CALL_ID),
         sse(vec![
-            ev_response_created("resp-child-after-scoped-reply"),
-            ev_assistant_message("msg-child-after-scoped-reply", "child done"),
-            ev_completed("resp-child-after-scoped-reply"),
+            ev_response_created("resp-child-after-reply"),
+            ev_assistant_message("msg-child-after-reply", "child done"),
+            ev_completed("resp-child-after-reply"),
         ]),
     )
     .await;
@@ -5613,8 +5762,8 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
 
     test.submit_turn(PARENT_PROMPT).await?;
 
-    let child_request = wait_for_request_containing_text(&child_with_route, CHILD_TASK).await?;
-    assert!(!child_request.body_contains_text("<agent_reply_route>"));
+    let child_request = wait_for_request_containing_text(&child_with_task, CHILD_TASK).await?;
+    assert!(child_request.body_contains_text("<agent_identity_context>"));
     let parent_request =
         wait_for_request_containing_text(&parent_with_message, CHILD_MESSAGE).await?;
     let envelopes = parent_request
@@ -5684,25 +5833,25 @@ async fn send_input_m_grants_one_turn_an_attributed_reply_route(
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn user_reply_route_survives_rollback_and_persists_across_turns(
+async fn repeated_child_to_parent_sends_survive_rollback_without_a_grant(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    const INITIAL_TASK: &str = "initialize the user-controlled reply-route child";
-    const BLOCKED_PROMPT: &str = "try the disabled reply route";
-    const BLOCKED_MESSAGE: &str = "this disabled reply must not reach Main";
-    const BLOCKED_CALL_ID: &str = "use-disabled-user-reply-route";
-    const REENABLED_PROMPT: &str = "confirm replies are enabled again";
+    const INITIAL_TASK: &str = "initialize the same-root messaging child";
+    const BLOCKED_PROMPT: &str = "send another same-root reply";
+    const BLOCKED_MESSAGE: &str = "this repeated reply must reach Main";
+    const BLOCKED_CALL_ID: &str = "use-repeated-same-root-reply";
+    const REENABLED_PROMPT: &str = "confirm the child remains available";
 
     let server = start_mock_server().await;
     let initial_child = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, INITIAL_TASK),
         sse(vec![
-            ev_response_created("resp-user-reply-route-initial"),
-            ev_assistant_message("msg-user-reply-route-initial", "ready"),
-            ev_completed("resp-user-reply-route-initial"),
+            ev_response_created("resp-same-root-reply-initial"),
+            ev_assistant_message("msg-same-root-reply-initial", "ready"),
+            ev_completed("resp-same-root-reply-initial"),
         ]),
     )
     .await;
@@ -5737,66 +5886,6 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
     let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
 
-    assert_eq!(
-        test.codex
-            .set_agent_reply_route(
-                &child_thread_id.to_string(),
-                /*recipient*/ None,
-                UserAgentReplyRouteMode::Enabled,
-            )
-            .await?,
-        (child_thread_id, test.session_configured.thread_id, None)
-    );
-    assert_eq!(
-        test.codex
-            .set_agent_reply_route(
-                &child_thread_id.to_string(),
-                /*recipient*/ None,
-                UserAgentReplyRouteMode::Enabled,
-            )
-            .await?,
-        (
-            child_thread_id,
-            test.session_configured.thread_id,
-            Some(UserAgentReplyRouteMode::Enabled)
-        ),
-        "repeating enable should remain idempotent"
-    );
-    child_thread.flush_rollout().await?;
-    let child_history = test
-        .thread_store
-        .load_canonical_artifact_segments(LoadThreadHistoryParams {
-            thread_id: child_thread_id,
-            include_archived: false,
-        })
-        .await?;
-    assert_eq!(
-        child_history
-            .segments
-            .iter()
-            .flatten()
-            .filter(|item| {
-                matches!(
-                    item,
-                    RolloutItem::ResponseItem(envelope)
-                        if matches!(
-                            &envelope.item,
-                            ResponseItem::Message { content, .. }
-                                if content.iter().any(|item| {
-                                    matches!(
-                                        item,
-                                        ContentItem::InputText { text }
-                                            if text.contains("<agent_reply_route>")
-                                    )
-                                })
-                        )
-                )
-            })
-            .count(),
-        0,
-        "permission enables must not write route notices into canonical child history"
-    );
-
     child_thread
         .submit(Op::ThreadRollback { num_turns: 1 })
         .await?;
@@ -5806,9 +5895,9 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
     .await;
 
     for index in 1..=2 {
-        let prompt = format!("use the persistent reply route on child turn {index}");
-        let message = format!("persistent child reply {index}");
-        let call_id = format!("use-persistent-user-reply-route-{index}");
+        let prompt = format!("send a same-root reply on child turn {index}");
+        let message = format!("same-root child reply {index}");
+        let call_id = format!("use-same-root-reply-{index}");
         let child_prompt = prompt.clone();
         let child_call_id = call_id.clone();
         let child_turn = mount_response_once_match(
@@ -5817,7 +5906,7 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
                 body_contains(request, &child_prompt) && !body_contains(request, &child_call_id)
             },
             sse_response(sse(vec![
-                ev_response_created(&format!("resp-user-reply-route-child-{index}")),
+                ev_response_created(&format!("resp-same-root-reply-child-{index}")),
                 ev_function_call_with_namespace(
                     &call_id,
                     MULTI_AGENT_V1_NAMESPACE,
@@ -5828,7 +5917,7 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
                         "w": "x",
                     }))?,
                 ),
-                ev_completed(&format!("resp-user-reply-route-child-{index}")),
+                ev_completed(&format!("resp-same-root-reply-child-{index}")),
             ])),
         )
         .await;
@@ -5837,12 +5926,12 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
             &server,
             move |request: &wiremock::Request| body_contains(request, &child_after_call_id),
             sse(vec![
-                ev_response_created(&format!("resp-user-reply-route-child-done-{index}")),
+                ev_response_created(&format!("resp-same-root-reply-child-done-{index}")),
                 ev_assistant_message(
-                    &format!("msg-user-reply-route-child-done-{index}"),
+                    &format!("msg-same-root-reply-child-done-{index}"),
                     &format!("child reply {index} sent"),
                 ),
-                ev_completed(&format!("resp-user-reply-route-child-done-{index}")),
+                ev_completed(&format!("resp-same-root-reply-child-done-{index}")),
             ]),
         )
         .await;
@@ -5853,12 +5942,12 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
                 body_contains(request, "<agent_message>") && body_contains(request, &root_message)
             },
             sse(vec![
-                ev_response_created(&format!("resp-user-reply-route-root-{index}")),
+                ev_response_created(&format!("resp-same-root-reply-root-{index}")),
                 ev_assistant_message(
-                    &format!("msg-user-reply-route-root-{index}"),
+                    &format!("msg-same-root-reply-root-{index}"),
                     &format!("root received reply {index}"),
                 ),
-                ev_completed(&format!("resp-user-reply-route-root-{index}")),
+                ev_completed(&format!("resp-same-root-reply-root-{index}")),
             ]),
         )
         .await;
@@ -5874,36 +5963,12 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
             )
             .await?;
 
-        let child_request = wait_for_request_containing_text(&child_turn, &prompt).await?;
-        assert_eq!(
-            child_request
-                .message_input_texts("user")
-                .iter()
-                .filter(|text| text.contains("<agent_reply_route>"))
-                .count(),
-            0,
-            "persistent permission still works without a model-visible route"
-        );
+        wait_for_request_containing_text(&child_turn, &prompt).await?;
         let _ = wait_for_request_containing_text(&child_after_reply, &call_id).await?;
         let _ = wait_for_request_containing_text(&root_wake, &message).await?;
         let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
         let _ = wait_for_terminal_status(test.codex.as_ref()).await?;
     }
-
-    assert_eq!(
-        test.codex
-            .set_agent_reply_route(
-                &child_thread_id.to_string(),
-                /*recipient*/ None,
-                UserAgentReplyRouteMode::Disabled,
-            )
-            .await?,
-        (
-            child_thread_id,
-            test.session_configured.thread_id,
-            Some(UserAgentReplyRouteMode::Enabled)
-        )
-    );
 
     let blocked_turn = mount_response_once_match(
         &server,
@@ -5911,7 +5976,7 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
             body_contains(request, BLOCKED_PROMPT) && !body_contains(request, BLOCKED_CALL_ID)
         },
         sse_response(sse(vec![
-            ev_response_created("resp-disabled-user-reply-route"),
+            ev_response_created("resp-repeated-same-root-reply"),
             ev_function_call_with_namespace(
                 BLOCKED_CALL_ID,
                 MULTI_AGENT_V1_NAMESPACE,
@@ -5922,7 +5987,7 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
                     "w": "x",
                 }))?,
             ),
-            ev_completed("resp-disabled-user-reply-route"),
+            ev_completed("resp-repeated-same-root-reply"),
         ])),
     )
     .await;
@@ -5930,23 +5995,20 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
         &server,
         |request: &wiremock::Request| body_contains(request, BLOCKED_CALL_ID),
         sse(vec![
-            ev_response_created("resp-disabled-user-reply-route-result"),
-            ev_assistant_message(
-                "msg-disabled-user-reply-route-result",
-                "reply route was disabled",
-            ),
-            ev_completed("resp-disabled-user-reply-route-result"),
+            ev_response_created("resp-repeated-same-root-reply-result"),
+            ev_assistant_message("msg-repeated-same-root-reply-result", "reply was sent"),
+            ev_completed("resp-repeated-same-root-reply-result"),
         ]),
     )
     .await;
-    let unexpected_root_wake = mount_sse_once_match(
+    let root_wake = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             body_contains(request, "<agent_message>") && body_contains(request, BLOCKED_MESSAGE)
         },
         sse(vec![
-            ev_response_created("resp-unexpected-disabled-user-reply"),
-            ev_completed("resp-unexpected-disabled-user-reply"),
+            ev_response_created("resp-repeated-same-root-reply-root"),
+            ev_completed("resp-repeated-same-root-reply-root"),
         ]),
     )
     .await;
@@ -5961,48 +6023,33 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
             UserAgentResponseHandling::Presentation,
         )
         .await?;
-    let blocked_request = wait_for_request_containing_text(&blocked_turn, BLOCKED_PROMPT).await?;
-    assert_eq!(
-        blocked_request
-            .message_input_texts("user")
-            .iter()
-            .filter(|text| text.contains("<agent_reply_route>"))
-            .count(),
-        0,
-        "disabling the route should not add a model-context fragment"
-    );
+    wait_for_request_containing_text(&blocked_turn, BLOCKED_PROMPT).await?;
     let blocked_result = wait_for_request_containing_text(&blocked_result, BLOCKED_CALL_ID).await?;
-    assert!(blocked_result.body_contains_text("disabled by the user"));
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            &blocked_result
+                .function_call_output_text(BLOCKED_CALL_ID)
+                .expect("send result"),
+        )?,
+        json!({"status": "submitted"}),
+    );
+    wait_for_request_containing_text(&root_wake, BLOCKED_MESSAGE).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
-    assert!(unexpected_root_wake.requests().is_empty());
+    let _ = wait_for_terminal_status(test.codex.as_ref()).await?;
 
     let reenabled_turn = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, REENABLED_PROMPT),
         sse(vec![
-            ev_response_created("resp-reenabled-user-reply-route"),
+            ev_response_created("resp-same-root-child-still-available"),
             ev_assistant_message(
-                "msg-reenabled-user-reply-route",
-                "reply route remains available",
+                "msg-same-root-child-still-available",
+                "child remains available",
             ),
-            ev_completed("resp-reenabled-user-reply-route"),
+            ev_completed("resp-same-root-child-still-available"),
         ]),
     )
     .await;
-    assert_eq!(
-        test.codex
-            .set_agent_reply_route(
-                &child_thread_id.to_string(),
-                /*recipient*/ None,
-                UserAgentReplyRouteMode::Enabled,
-            )
-            .await?,
-        (
-            child_thread_id,
-            test.session_configured.thread_id,
-            Some(UserAgentReplyRouteMode::Disabled)
-        )
-    );
     test.codex
         .prompt_live_agent(
             &child_thread_id.to_string(),
@@ -6013,17 +6060,7 @@ async fn user_reply_route_survives_rollback_and_persists_across_turns(
             UserAgentResponseHandling::Presentation,
         )
         .await?;
-    let reenabled_request =
-        wait_for_request_containing_text(&reenabled_turn, REENABLED_PROMPT).await?;
-    assert_eq!(
-        reenabled_request
-            .message_input_texts("user")
-            .iter()
-            .filter(|text| text.contains("<agent_reply_route>"))
-            .count(),
-        0,
-        "disable and re-enable must not expose the persistent evidence to the model"
-    );
+    wait_for_request_containing_text(&reenabled_turn, REENABLED_PROMPT).await?;
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
     Ok(())
 }
@@ -6109,7 +6146,6 @@ async fn send_input_q_waits_for_a_distinct_target_turn(
             queued.prompt_preview.as_str(),
             queued.response_handling.commentary(),
             queued.response_handling.final_response(),
-            queued.response_handling.target_messages(),
             queued.response_handling.queue_input(),
             queued.authored_selector.as_deref(),
         ),
@@ -6119,7 +6155,6 @@ async fn send_input_q_waits_for_a_distinct_target_turn(
             QUEUED_TASK,
             false,
             codex_core::UserAgentFinalResponseHandling::Passive,
-            false,
             true,
             None,
         )
@@ -12380,5 +12415,5 @@ async fn spawn_agent_tool_description_mentions_role_default_settings() -> Result
 #[path = "subagent_v1_attribution.rs"]
 mod attribution;
 
-#[path = "subagent_permission_context.rs"]
-mod subagent_permission_context;
+#[path = "subagent_queue_context.rs"]
+mod subagent_queue_context;
