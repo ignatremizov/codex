@@ -8,7 +8,6 @@
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
-use codex_core::UserAgentReplyRouteMode;
 use codex_core::UserAgentResponseHandling;
 use codex_core::UserAgentSpawnOptions;
 use codex_features::Feature;
@@ -46,6 +45,9 @@ use std::time::Duration;
 use test_case::test_case;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+
+#[path = "send_input_batch.rs"]
+mod batch;
 
 #[derive(Clone, Copy)]
 enum ReceiverRuntime {
@@ -349,7 +351,6 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
 }
 
 #[test_case("zc", false; "commentary")]
-#[test_case("zm", false; "transient_reply_grant")]
 #[test_case("zq", false; "queued_turn")]
 #[test_case("z", true; "interrupt")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -457,18 +458,6 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
         .expect("receiver should have a root-scoped reference")
         .to_string();
     let sender = test.thread_manager.get_thread(sender_id).await?;
-    test.codex
-        .state_db()
-        .expect("durable graph state")
-        .replace_agent_send_setting(
-            codex_state::AgentSendScope::Directed {
-                sender_thread_id: sender_id,
-                receiver_thread_id: receiver_id,
-            },
-            codex_state::AgentSendMode::Enabled,
-        )
-        .await?;
-
     let arguments = serde_json::to_string(&json!({
         "target": receiver_id.to_string(),
         "message": "conditional response mail",
@@ -704,7 +693,8 @@ async fn close_and_resume_do_not_restore_pending_mailbox_final_subscription(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation() -> Result<()> {
+async fn mailbox_retry_reuses_attribution_and_allows_new_same_root_mail_after_unload() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
     let (server, _) = start_streaming_sse_server(Vec::new()).await;
     let test = test_codex()
@@ -730,17 +720,6 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
     let source = test.thread_manager.get_thread(sender).await?;
     let target = test.thread_manager.get_thread(receiver).await?;
     target.flush_rollout().await?;
-    test.codex
-        .state_db()
-        .expect("durable graph state")
-        .replace_agent_send_setting(
-            codex_state::AgentSendScope::Directed {
-                sender_thread_id: sender,
-                receiver_thread_id: receiver,
-            },
-            codex_state::AgentSendMode::Enabled,
-        )
-        .await?;
     let input = vec![
         UserInput::Text {
             text: "immutable accepted message".to_string(),
@@ -873,17 +852,6 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
         serde_json::to_value(&receipt)?,
         serde_json::to_value(TurnItem::AgentMessage(expected_receipt))?
     );
-    test.codex
-        .state_db()
-        .expect("durable graph state")
-        .replace_agent_send_setting(
-            codex_state::AgentSendScope::Directed {
-                sender_thread_id: sender,
-                receiver_thread_id: receiver,
-            },
-            codex_state::AgentSendMode::Disabled,
-        )
-        .await?;
     target.shutdown_and_wait().await?;
     test.thread_manager.remove_thread(&receiver).await;
     release
@@ -910,7 +878,13 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
         final_response.wait_for_request(),
     )
     .await?;
-    assert!(call_output(&final_request, "new-mail-call")?.contains("configured"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&call_output(&final_request, "new-mail-call")?)?,
+        json!({
+            "status": "mailboxAccepted",
+            "hint": "Mail saved; receiver not loaded. Use resume_agent first."
+        })
+    );
     wait_for_event(source.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -923,15 +897,24 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
     );
     let new_key =
         serde_json::to_string(&("v1-send-input-mailbox", sender, &turn_id, "new-mail-call"))?;
-    assert_eq!(
-        test.thread_store
-            .lookup_mailbox_input(receiver, &new_key)
-            .await?,
-        None
-    );
+    let new_mail = test
+        .thread_store
+        .lookup_mailbox_input(receiver, &new_key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("new same-root mail"))?;
+    let new_receipt_id = codex_protocol::mailbox_acceptance_receipt_id(&new_mail.id)
+        .ok_or_else(|| anyhow::anyhow!("new acceptance identity"))?;
     assert!(test.thread_manager.get_thread(receiver).await.is_err());
-    // All acceptance attempts have returned: drain queued Main events to reject retry or
-    // inventory notices without assuming parent completion synchronizes child work.
+    let new_receipt = wait_for_event_match(test.codex.as_ref(), |event| match event {
+        EventMsg::ItemCompleted(event) if event.item.id() == new_receipt_id.as_str() => {
+            Some(event.item.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(new_receipt.id(), new_receipt_id.as_str());
+    // All acceptance attempts have returned: drain queued Main events to reject duplicate
+    // receipts or inventory notices without assuming parent completion synchronizes child work.
     while let Ok(event) = timeout(
         Duration::from_millis(/*millis*/ 100),
         test.codex.next_event(),
@@ -951,31 +934,28 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
             include_archived: false,
         })
         .await?;
-    assert!(
-        !serde_json::to_string(&root_history.segments)?.contains(receipt_id.as_str()),
-        "the live notice must not enter Main's canonical history or model context",
-    );
+    let root_history = serde_json::to_string(&root_history.segments)?;
+    for receipt_id in [&receipt_id, &new_receipt_id] {
+        assert!(
+            !root_history.contains(receipt_id.as_str()),
+            "the live notice must not enter Main's canonical history or model context",
+        );
+    }
     assert_eq!(server.requests().await.len(), 5);
     server.shutdown().await;
     Ok(())
 }
 
 #[derive(Clone, Copy)]
-enum SendAuthority {
-    UnconfiguredPeer,
-    ConfiguredSubtree,
-    DirectedDisable,
+enum OwnershipBoundary {
+    SameRoot,
     ForeignRoot,
 }
 
-#[test_case(SendAuthority::UnconfiguredPeer; "unconfigured_peer")]
-#[test_case(SendAuthority::ConfiguredSubtree; "configured_subtree")]
-#[test_case(SendAuthority::DirectedDisable; "directed_disable_overrides_subtree")]
-#[test_case(SendAuthority::ForeignRoot; "foreign_uuid_without_adoption")]
+#[test_case(OwnershipBoundary::SameRoot; "same_root")]
+#[test_case(OwnershipBoundary::ForeignRoot; "foreign_uuid_without_adoption")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mailbox_acceptance_uses_durable_same_root_send_authority(
-    authority: SendAuthority,
-) -> Result<()> {
+async fn mailbox_acceptance_uses_same_root_ownership(boundary: OwnershipBoundary) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let (server, _) = start_streaming_sse_server(Vec::new()).await;
     let test = test_codex()
@@ -993,16 +973,14 @@ async fn mailbox_acceptance_uses_durable_same_root_send_authority(
         .spawn_agent(UserAgentSpawnOptions::default())
         .await?
         .target_thread_id;
-    let receiver = match authority {
-        SendAuthority::ForeignRoot => {
+    let receiver = match boundary {
+        OwnershipBoundary::ForeignRoot => {
             test.thread_manager
                 .start_thread(StartThreadOptions::new(test.config.clone()))
                 .await?
                 .thread_id
         }
-        SendAuthority::UnconfiguredPeer
-        | SendAuthority::ConfiguredSubtree
-        | SendAuthority::DirectedDisable => {
+        OwnershipBoundary::SameRoot => {
             test.codex
                 .spawn_agent(UserAgentSpawnOptions::default())
                 .await?
@@ -1012,23 +990,6 @@ async fn mailbox_acceptance_uses_durable_same_root_send_authority(
     let source = test.thread_manager.get_thread(sender).await?;
     let target = test.thread_manager.get_thread(receiver).await?;
     target.flush_rollout().await?;
-    if matches!(
-        authority,
-        SendAuthority::ConfiguredSubtree | SendAuthority::DirectedDisable
-    ) {
-        test.codex
-            .set_agent_subtree_messaging(UserAgentReplyRouteMode::Enabled)
-            .await?;
-    }
-    if matches!(authority, SendAuthority::DirectedDisable) {
-        test.codex
-            .set_agent_reply_route(
-                &sender.to_string(),
-                Some(&receiver.to_string()),
-                UserAgentReplyRouteMode::Disabled,
-            )
-            .await?;
-    }
     server.mount_response(
         |_| true,
         vec![StreamingSseChunk { gate: None, body: sse(vec![
@@ -1079,19 +1040,15 @@ async fn mailbox_acceptance_uses_durable_same_root_send_authority(
         .thread_store
         .lookup_mailbox_input(receiver, &key)
         .await?;
-    match authority {
-        SendAuthority::ConfiguredSubtree => {
-            assert!(accepted.is_some(), "configured mail accepted");
+    match boundary {
+        OwnershipBoundary::SameRoot => {
+            assert!(accepted.is_some(), "same-root mail accepted");
             assert_eq!(
                 serde_json::from_str::<Value>(&result)?,
                 json!({"status": "mailboxAccepted"})
             );
         }
-        SendAuthority::UnconfiguredPeer | SendAuthority::DirectedDisable => {
-            assert!(result.contains("configured"));
-            assert_eq!(accepted, None);
-        }
-        SendAuthority::ForeignRoot => {
+        OwnershipBoundary::ForeignRoot => {
             assert!(result.contains("cross-root"));
             assert_eq!(accepted, None);
         }

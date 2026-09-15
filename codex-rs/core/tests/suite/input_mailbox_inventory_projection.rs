@@ -76,17 +76,6 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
         .await?;
     let sender = spawned.target_thread_id;
     let sender_ref = spawned.agent_ref.expect("advertised child ref").to_string();
-    test.codex
-        .state_db()
-        .expect("durable graph state")
-        .replace_agent_send_setting(
-            codex_state::AgentSendScope::Directed {
-                sender_thread_id: sender,
-                receiver_thread_id: receiver,
-            },
-            codex_state::AgentSendMode::Enabled,
-        )
-        .await?;
     let foreign = ThreadId::new();
     let identity = |thread_id| AgentInputIdentity {
         thread_id,
@@ -111,6 +100,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
                         sender: identity(author),
                         recipient: identity(receiver),
                         sender_turn_id: "author-turn".to_string(),
+                        batch_id: None,
                     }),
                 },
                 final_subscription: Default::default(),

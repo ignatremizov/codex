@@ -6,7 +6,6 @@ use super::user_dispatch::UserObservation;
 use super::*;
 use crate::agent::turn_queue::QueuedAgentTurn;
 use crate::agent::turn_queue::QueuedAgentTurnView;
-use crate::agent::turn_queue::QueuedTargetMessageWake;
 use codex_protocol::turn_input::NotSubmittedReason;
 
 pub(crate) struct QueuedResponseObservationSubmission {
@@ -51,7 +50,6 @@ impl LocalAgentControl {
         let _lifecycle_guard = lifecycle_lock.lock_owned().await;
         self.require_current_agent_ownership(agent_id).await?;
         let thread = state.get_thread(agent_id).await?;
-        self.ensure_target_message_route_allowed(&thread, observer, response_observation)?;
         let observer_thread = state.get_thread(observer.thread_id).await?;
         if observer_thread.session.presentation_id() != observer {
             return Err(CodexErr::ThreadNotFound(observer.thread_id));
@@ -76,90 +74,6 @@ impl LocalAgentControl {
                 response_observation,
                 task_preview,
                 authored_selector,
-                target_message_wake: None,
-            },
-        );
-        Ok(QueuedResponseObservationSubmission { queue_id })
-    }
-
-    pub(crate) async fn queue_scoped_agent_input_observing_response(
-        &self,
-        sender: SessionPresentationId,
-        sender_turn_id: &str,
-        receiver_thread_id: ThreadId,
-        input: Vec<UserInput>,
-        start_options: TurnStartOptions,
-        response_observation: ResponseObservationPolicy,
-    ) -> CodexResult<QueuedResponseObservationSubmission> {
-        if !response_observation.queue_input() {
-            return Err(CodexErr::InvalidRequest(
-                "queued input requires q response handling".to_string(),
-            ));
-        }
-        let state = self.runtime.upgrade()?;
-        let receiver_lifecycle_lock = state.agent_lifecycle_lock(receiver_thread_id);
-        let _receiver_lifecycle_guard = receiver_lifecycle_lock.lock_owned().await;
-        let receiver_thread = state.get_thread(receiver_thread_id).await?;
-        let receiver = receiver_thread.session.presentation_id();
-        let receiver_control = receiver_thread
-            .session
-            .services
-            .local_agent_runtime
-            .control(receiver_thread.session.session_id());
-        receiver_control
-            .require_current_agent_ownership(receiver_thread_id)
-            .await?;
-        receiver_control
-            .ensure_scoped_reply_route_supported(&receiver_thread, response_observation)?;
-        let membership = receiver_control.runtime.admit_start()?;
-        let sender_thread = state.get_thread(sender.thread_id).await?;
-        let _source_guard = state
-            .agent_turn_queue
-            .acquire_source_admission(sender.thread_id)
-            .await;
-        sender_thread.session.submission_admission.check_ready()?;
-        receiver_thread.session.submission_admission.check_ready()?;
-        receiver_control
-            .refresh_subtree_messaging(receiver_thread_id)
-            .await?;
-        let attributed_input = receiver_control
-            .attribute_model_input(sender, receiver_thread_id, sender_turn_id, input)
-            .await?;
-        let admission = receiver_control
-            .acquire_target_message_admission_after_binding(
-                &receiver_thread,
-                receiver,
-                &sender_thread,
-                sender,
-                sender_turn_id,
-                TargetMessageAdmissionMode::SeparateTurn,
-            )
-            .await?;
-        let TargetMessageAdmission::Wake(reservation_id) = admission else {
-            return Err(CodexErr::InvalidRequest(
-                "agent message route already reserved or consumed its idle wake".to_string(),
-            ));
-        };
-        let queue_id = uuid::Uuid::now_v7();
-        Self::enqueue_agent_turn(
-            &state,
-            membership,
-            QueuedAgentTurn {
-                id: queue_id,
-                control: receiver_control,
-                source: sender,
-                target_thread_id: receiver_thread_id,
-                input: attributed_input,
-                start_options,
-                response_observation,
-                task_preview: None,
-                authored_selector: None,
-                target_message_wake: Some(QueuedTargetMessageWake {
-                    observer: receiver,
-                    target: sender,
-                    target_turn_id: sender_turn_id.to_string(),
-                    reservation_id,
-                }),
             },
         );
         Ok(QueuedResponseObservationSubmission { queue_id })
@@ -240,7 +154,6 @@ impl LocalAgentControl {
                     .await
                     .is_ok_and(|current| Arc::ptr_eq(&current, &target))
                 {
-                    entry.rollback_target_message_wake();
                     state
                         .agent_turn_queue
                         .finish_front(target_thread_id, entry.id);
@@ -265,7 +178,6 @@ impl LocalAgentControl {
                         .await
                         .is_err()
                 {
-                    entry.rollback_target_message_wake();
                     state
                         .agent_turn_queue
                         .finish_front(target_thread_id, entry.id);
@@ -299,7 +211,6 @@ impl LocalAgentControl {
                             () = target.io.session_loop_termination.clone() => {}
                         }
                     } else {
-                        entry.rollback_target_message_wake();
                         state
                             .agent_turn_queue
                             .finish_front(target_thread_id, entry.id);
@@ -317,7 +228,6 @@ impl LocalAgentControl {
                     .dispatch_user_input_locked(
                         &target,
                         ObservedUserInputRequest {
-                            target_message_wake: entry.target_message_wake.clone(),
                             input: entry.input.clone(),
                             start_options: entry.start_options.clone(),
                             observer: entry.source,
@@ -333,14 +243,13 @@ impl LocalAgentControl {
                     )
                     .await;
                 match result {
-                    Ok(ObservedInputResult::PermissionRejected(reason)) => {
-                        entry.rollback_target_message_wake();
+                    Ok(ObservedInputResult::OriginRejected(reason)) => {
                         state
                             .agent_turn_queue
                             .finish_front(target_thread_id, entry.id);
                         drop(source_guard);
                         drop(lifecycle);
-                        publish_queued_turn_warning(&state, &entry, "permission", reason).await;
+                        publish_queued_turn_warning(&state, &entry, "admission", reason).await;
                     }
                     Ok(ObservedInputResult::NotSubmitted(NotSubmittedReason::NotIdle)) => {
                         state
@@ -362,7 +271,6 @@ impl LocalAgentControl {
                         continue;
                     }
                     Ok(ObservedInputResult::NotSubmitted(reason)) => {
-                        entry.rollback_target_message_wake();
                         state
                             .agent_turn_queue
                             .finish_front(target_thread_id, entry.id);
@@ -380,53 +288,6 @@ impl LocalAgentControl {
                         mut submission,
                         input_persisted,
                     }) => {
-                        if let Some(reservation) = &entry.target_message_wake {
-                            match submission.target_turn_id.as_deref() {
-                                Some(turn_id) => {
-                                    entry.control.commit_target_message_wake(
-                                        reservation.observer,
-                                        reservation.target,
-                                        &reservation.target_turn_id,
-                                        reservation.reservation_id,
-                                        turn_id,
-                                    );
-                                    let (snapshot, _) = target.session.subscribe_agent_responses();
-                                    if snapshot.active_turn_id.as_deref() != Some(turn_id)
-                                        && snapshot
-                                            .last_terminal
-                                            .as_ref()
-                                            .is_some_and(|(completed, _)| completed == turn_id)
-                                    {
-                                        entry.control.finish_target_message_wake(
-                                            reservation.observer,
-                                            turn_id,
-                                        );
-                                    }
-                                    if let Err(error) = entry
-                                        .control
-                                        .persist_response_observation_snapshot(
-                                            reservation.observer,
-                                            reservation.target,
-                                        )
-                                        .await
-                                    {
-                                        entry.control.abandon_response_observer(
-                                            reservation.observer,
-                                            reservation.target,
-                                            &error.to_string(),
-                                        );
-                                        submission.post_admission_warning = Some(format!(
-                                            "input was admitted but one-wake publication failed: {error}; do not resend"
-                                        ));
-                                    }
-                                }
-                                None => entry.control.abandon_response_observer(
-                                    reservation.observer,
-                                    reservation.target,
-                                    "queued reverse-message admission is unknown",
-                                ),
-                            }
-                        }
                         state
                             .agent_turn_queue
                             .finish_front(target_thread_id, entry.id);
@@ -439,13 +300,6 @@ impl LocalAgentControl {
                     }
                     Err(error) => {
                         // Do not restore the entry based on error text or an absent receipt.
-                        if let Some(reservation) = &entry.target_message_wake {
-                            entry.control.abandon_response_observer(
-                                reservation.observer,
-                                reservation.target,
-                                &error.to_string(),
-                            );
-                        }
                         state
                             .agent_turn_queue
                             .finish_front(target_thread_id, entry.id);

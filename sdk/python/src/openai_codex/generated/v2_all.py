@@ -744,6 +744,19 @@ class CodexResponseHandoffMode(Enum):
     bem_tags = "bemTags"
 
 
+class CollabAgentInputStatusValue(Enum):
+    submitted = "submitted"
+    queued = "queued"
+    mailbox_accepted = "mailboxAccepted"
+
+
+class CollabAgentInputStatus(RootModel[CollabAgentInputStatusValue | Literal["error"]]):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: CollabAgentInputStatusValue | Literal["error"]
+
+
 class CollabAgentRef(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8700,6 +8713,28 @@ class CodexErrorInfo(
     ]
 
 
+class CollabAgentInputResult(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    error: str | None = None
+    hint: str | None = None
+    receiver_thread_id: Annotated[
+        str | None,
+        Field(
+            alias="receiverThreadId",
+            description="Joins the parent item's receiver metadata; absent for unresolved selectors.",
+        ),
+    ] = None
+    status: CollabAgentInputStatus
+    target: Annotated[
+        str,
+        Field(
+            description="Canonical ref when available, otherwise UUID or the unresolved authored selector."
+        ),
+    ]
+
+
 class CollabAgentState(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11025,95 +11060,6 @@ class FileChangeThreadItem(BaseModel):
     type: Annotated[Literal["fileChange"], Field(title="FileChangeThreadItemType")]
 
 
-class CollabAgentToolCallThreadItem(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    agents_states: Annotated[
-        dict[str, CollabAgentState],
-        Field(
-            alias="agentsStates",
-            description="Last known status of the target agents, when available.",
-        ),
-    ]
-    id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
-    mailbox_input: Annotated[
-        bool | None,
-        Field(
-            alias="mailboxInput",
-            description="Whether this V1 send explicitly requested mailbox delivery (`send_input` with `w:z`). This is presentation metadata, not evidence of receiver execution or visibility.",
-        ),
-    ] = None
-    model: Annotated[
-        str | None, Field(description="Model requested for the spawned agent, when applicable.")
-    ] = None
-    observe_commentary: Annotated[
-        bool | None,
-        Field(
-            alias="observeCommentary",
-            description="Whether commentary from the receiver is requested.",
-        ),
-    ] = None
-    prompt: Annotated[
-        str | None,
-        Field(description="Prompt text sent as part of the collab tool call, when available."),
-    ] = None
-    queue_input: Annotated[
-        bool | None,
-        Field(
-            alias="queueInput",
-            description="Whether input waits in the target-owned queue instead of steering active work.",
-        ),
-    ] = None
-    reasoning_effort: Annotated[
-        ReasoningEffort | None,
-        Field(
-            alias="reasoningEffort",
-            description="Reasoning effort requested for the spawned agent, when applicable.",
-        ),
-    ] = None
-    receiver_agents: Annotated[
-        list[CollabAgentRef] | None,
-        Field(
-            alias="receiverAgents",
-            description="Receiver metadata, when available. Absent in older history and populated for new collab tool calls.",
-        ),
-    ] = []
-    receiver_thread_ids: Annotated[
-        list[str],
-        Field(
-            alias="receiverThreadIds",
-            description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
-        ),
-    ]
-    sender_thread_id: Annotated[
-        str,
-        Field(
-            alias="senderThreadId", description="Thread ID of the agent issuing the collab request."
-        ),
-    ]
-    status: Annotated[
-        CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
-    ]
-    target_messages: Annotated[
-        bool | None,
-        Field(
-            alias="targetMessages",
-            description="Whether this call grants replies scoped to the target's admitted turn.",
-        ),
-    ] = None
-    tool: Annotated[CollabAgentTool, Field(description="Name of the collab tool that was invoked.")]
-    type: Annotated[
-        Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
-    ]
-    wake_on_completion: Annotated[
-        bool | None,
-        Field(
-            alias="wakeOnCompletion",
-            description="Whether the receiver's terminal response should wake the sender.",
-        ),
-    ] = None
-
 class UserAgentControlThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11675,6 +11621,13 @@ class AgentInputAttribution(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    batch_id: Annotated[
+        str | None,
+        Field(
+            alias="batchId",
+            description="Shared sender tool-call identity for an array-target `send_input` batch.",
+        ),
+    ] = None
     recipient: AgentInputIdentity
     sender: AgentInputIdentity
     sender_turn_id: Annotated[str, Field(alias="senderTurnId")]
@@ -11872,6 +11825,31 @@ class ConfigValueWriteRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["config/value/write"], Field(title="Config/value/writeRequestMethod")]
     params: ConfigValueWriteParams
+
+
+class CollabAgentInputBatch(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    flags: Annotated[
+        str,
+        Field(
+            description="Shared, normalized handling flags. Empty means default passive handling."
+        ),
+    ]
+    results: Annotated[
+        list[CollabAgentInputResult],
+        Field(
+            description="Empty while the batch is in progress; populated only on normal completion."
+        ),
+    ]
+    sender_thread_id: Annotated[
+        ThreadId | None,
+        Field(
+            alias="senderThreadId",
+            description="Sender identity for a child-originated live/replayed batch presentation.",
+        ),
+    ] = None
 
 
 class ComputerUseConfig(BaseModel):
@@ -12662,6 +12640,103 @@ class FunctionCallOutputThreadItem(BaseModel):
     namespace: str | None = None
     output: FunctionCallOutputBody
     type: Annotated[Literal["functionCallOutput"], Field(title="FunctionCallOutputThreadItemType")]
+
+
+class CollabAgentToolCallThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agents_states: Annotated[
+        dict[str, CollabAgentState],
+        Field(
+            alias="agentsStates",
+            description="Last known status of the target agents, when available.",
+        ),
+    ]
+    id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
+    input_batch: Annotated[
+        CollabAgentInputBatch | None,
+        Field(
+            alias="inputBatch",
+            description="Per-recipient admission outcomes for array-target sends; errors may follow admission.",
+        ),
+    ] = None
+    mailbox_input: Annotated[
+        bool | None,
+        Field(
+            alias="mailboxInput",
+            description="Whether this V1 send explicitly requested mailbox delivery (`send_input` with `w:z`). This is presentation metadata, not evidence of receiver execution or visibility.",
+        ),
+    ] = None
+    model: Annotated[
+        str | None, Field(description="Model requested for the spawned agent, when applicable.")
+    ] = None
+    observe_commentary: Annotated[
+        bool | None,
+        Field(
+            alias="observeCommentary",
+            description="Whether commentary from the receiver is requested.",
+        ),
+    ] = None
+    prompt: Annotated[
+        str | None,
+        Field(description="Prompt text sent as part of the collab tool call, when available."),
+    ] = None
+    queue_input: Annotated[
+        bool | None,
+        Field(
+            alias="queueInput",
+            description="Whether input waits in the target-owned queue instead of steering active work.",
+        ),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Reasoning effort requested for the spawned agent, when applicable.",
+        ),
+    ] = None
+    receiver_agents: Annotated[
+        list[CollabAgentRef] | None,
+        Field(
+            alias="receiverAgents",
+            description="Receiver metadata, when available. Absent in older history and populated for new collab tool calls.",
+        ),
+    ] = []
+    receiver_thread_ids: Annotated[
+        list[str],
+        Field(
+            alias="receiverThreadIds",
+            description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
+        ),
+    ]
+    sender_thread_id: Annotated[
+        str,
+        Field(
+            alias="senderThreadId", description="Thread ID of the agent issuing the collab request."
+        ),
+    ]
+    status: Annotated[
+        CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
+    ]
+    target_messages: Annotated[
+        bool | None,
+        Field(
+            alias="targetMessages",
+            description="Whether this call grants replies scoped to the target's admitted turn.",
+        ),
+    ] = None
+    tool: Annotated[CollabAgentTool, Field(description="Name of the collab tool that was invoked.")]
+    type: Annotated[
+        Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
+    ]
+    wake_on_completion: Annotated[
+        bool | None,
+        Field(
+            alias="wakeOnCompletion",
+            description="Whether the receiver's terminal response should wake the sender.",
+        ),
+    ] = None
 
 
 class ThreadItem(
