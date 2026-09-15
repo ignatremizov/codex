@@ -66,6 +66,7 @@ async fn durable_context_ack_observes_the_complete_rollout_and_history_batch() {
     let (mut session, turn_context) = make_session_and_context().await;
     let rollout_path = attach_thread_persistence(&mut session).await;
     let session = Arc::new(session);
+    let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
     let session_at_ack = Arc::clone(&session);
     let rollout_path_at_ack = rollout_path.clone();
     let acknowledgement_count = Arc::new(AtomicUsize::new(0));
@@ -101,6 +102,12 @@ async fn durable_context_ack_observes_the_complete_rollout_and_history_batch() {
     assert_eq!(
         COMPLETE_BATCH,
         persisted_marker_presence(&rollout_path).await
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), passive_final_activity.changed())
+            .await
+            .is_err(),
+        "ordinary durable context must not signal active sleep"
     );
 }
 

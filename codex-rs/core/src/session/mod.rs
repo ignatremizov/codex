@@ -254,6 +254,7 @@ mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+mod passive_final_activity;
 mod realtime_history;
 mod response_observation;
 mod review;
@@ -268,6 +269,23 @@ mod sub_agent_completion;
 mod thread_settings;
 pub(crate) use sub_agent_completion::TerminalStatusEvent;
 pub(crate) use sub_agent_completion::TerminalStatusSubscription;
+
+#[derive(Clone, Copy)]
+enum DurableContextRecordingMode {
+    Ordinary,
+    PassiveFinal,
+}
+
+struct DurableContextRecordingOptions {
+    image_preparations: Vec<ImagePreparationMetadata>,
+    mode: DurableContextRecordingMode,
+}
+
+#[derive(Clone, Copy)]
+enum DurableContextRecordingOutcome {
+    NewlyRecorded,
+    AlreadyRecorded,
+}
 pub(crate) mod time_reminder;
 mod token_budget;
 pub(crate) mod turn;
@@ -5062,9 +5080,13 @@ impl Session {
             acknowledgement,
             Vec::new(),
             rollout_suffix,
-            image_preparations,
+            DurableContextRecordingOptions {
+                image_preparations,
+                mode: DurableContextRecordingMode::Ordinary,
+            },
         )
         .await
+        .map(|_| ())
     }
 
     async fn record_prepared_durable_context_items_with_rollout_suffix(
@@ -5074,10 +5096,14 @@ impl Session {
         acknowledgement: Option<TurnInputContributionAcknowledgement>,
         rollout_prefix: Vec<RolloutItem>,
         rollout_suffix: Vec<RolloutItem>,
-        image_preparations: Vec<ImagePreparationMetadata>,
-    ) -> Result<(), ThreadStoreError> {
+        recording_options: DurableContextRecordingOptions,
+    ) -> Result<DurableContextRecordingOutcome, ThreadStoreError> {
         let sess = Arc::clone(self);
         tokio::spawn(async move {
+            let DurableContextRecordingOptions {
+                image_preparations,
+                mode: recording_mode,
+            } = recording_options;
             let _permit = sess.durable_context_lock.acquire().await.map_err(|err| {
                 ThreadStoreError::Internal {
                     message: format!("failed to lock durable context recording: {err}"),
@@ -5158,7 +5184,7 @@ impl Session {
                 .iter()
                 .map(|envelope| envelope.item.clone())
                 .collect::<Vec<_>>();
-            let response_already_recorded = {
+            let recording_outcome = {
                 let mut state = sess.state.lock().await;
                 let already_recorded = response_delivery_id
                     .as_ref()
@@ -5172,9 +5198,26 @@ impl Session {
                         turn_context.model_info().truncation_policy.into(),
                     );
                 }
-                already_recorded
+                if already_recorded {
+                    DurableContextRecordingOutcome::AlreadyRecorded
+                } else {
+                    DurableContextRecordingOutcome::NewlyRecorded
+                }
             };
-            if !response_already_recorded {
+            if matches!(
+                (recording_mode, recording_outcome),
+                (
+                    DurableContextRecordingMode::PassiveFinal,
+                    DurableContextRecordingOutcome::NewlyRecorded
+                )
+            ) && response_delivery_id.is_some()
+            {
+                sess.notify_passive_final_delivery_activity();
+            }
+            if matches!(
+                recording_outcome,
+                DurableContextRecordingOutcome::NewlyRecorded
+            ) {
                 sess.send_raw_response_items(turn_context.as_ref(), &response_items)
                     .await;
             }
@@ -5189,7 +5232,7 @@ impl Session {
             if let Some(acknowledgement) = acknowledgement {
                 acknowledgement.acknowledge();
             }
-            Ok(())
+            Ok(recording_outcome)
         })
         .await
         .map_err(|err| ThreadStoreError::Internal {

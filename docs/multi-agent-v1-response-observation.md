@@ -25,6 +25,8 @@ The model-facing flags are:
 The field is additive. Omitting it preserves each tool's current behavior for the selected target
 turn: the final response is delivered passively, but it does not wake an idle observer.
 
+Committed passive finals interrupt active `clock.sleep` without waking idle agents. Presentation-only completions and unread mailbox arrivals do not.
+
 This is a compatible v1 extension, not a new multi-agent v3 contract. It keeps the existing
 lifecycle tools, `wait_agent`, canonical thread UUIDs, and default active-turn steering behavior.
 It adds no second model-facing message or task API: `send_input` remains the single operation for

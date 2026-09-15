@@ -152,9 +152,13 @@ impl Session {
                 .into_iter()
                 .map(RolloutItem::AgentResponseObservation)
                 .collect(),
-            image_preparations,
+            super::DurableContextRecordingOptions {
+                image_preparations,
+                mode: super::DurableContextRecordingMode::PassiveFinal,
+            },
         )
         .await
+        .map(|_| ())
     }
 
     pub(super) async fn persisted_sub_agent_completion_context_item(

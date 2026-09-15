@@ -2861,12 +2861,89 @@ async fn completion_communication_commit_survives_caller_cancellation() {
 }
 
 #[tokio::test]
+async fn cancelling_passive_completion_caller_preserves_sleep_signal() {
+    let (mut session, _turn_context) = make_session_and_context().await;
+    attach_in_memory_thread_store(&mut session).await;
+    let session = Arc::new(session);
+    let response_item_id = new_sub_agent_completion_context_response_item_id();
+    let target_thread_id = ThreadId::new();
+    let observation = codex_protocol::protocol::AgentResponseObservation {
+        observer_thread_id: session.thread_id,
+        target_thread_id,
+        target_turn_id: Some("child-turn".to_string()),
+        task_preview: None,
+        promoted_task_context: None,
+        pending_commentary: false,
+        commentary_after_sequences: Vec::new(),
+        commentary_admissions: Vec::new(),
+        commentary_delivery: None,
+        target_messages: false,
+        reply_route_enabled: None,
+        reply_route_context_installed: false,
+        queue_delivery: false,
+        message_wake_turn_id: None,
+        baseline_final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::Passive,
+        final_delivery: codex_protocol::protocol::AgentResponseFinalDelivery::None,
+        final_delivery_response_item_id: Some(response_item_id.clone()),
+        committed_delivery_response_item_ids: vec![response_item_id.clone()],
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
+    };
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    communication.id = Some(response_item_id);
+    let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
+    let durable_context_permit = session
+        .acquire_durable_context_permit()
+        .await
+        .expect("durable context permit");
+    let session_ref_count = Arc::strong_count(&session);
+    let recording_session = Arc::clone(&session);
+    let recording = tokio::spawn(async move {
+        recording_session
+            .record_sub_agent_notification_with_observation_commit(
+                communication,
+                CompletionSubmissionAdmission::Ordinary,
+                vec![observation],
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while Arc::strong_count(&session) < session_ref_count.saturating_add(2) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("passive completion recording should start");
+
+    recording.abort();
+    assert!(
+        recording
+            .await
+            .expect_err("caller should be cancelled")
+            .is_cancelled()
+    );
+    drop(durable_context_permit);
+
+    timeout(Duration::from_secs(1), passive_final_activity.changed())
+        .await
+        .expect("detached passive completion should signal after commit")
+        .expect("passive final activity sender should remain open");
+}
+
+#[tokio::test]
 async fn passive_observed_completion_retry_reconciles_an_append_after_commit_failure() {
     let (mut session, _turn_context) = make_session_and_context().await;
     let store = attach_in_memory_thread_store(&mut session).await;
     let session = Arc::new(session);
     let response_item_id = new_sub_agent_completion_context_response_item_id();
     let child_thread_id = ThreadId::new();
+    let mut passive_final_activity = session.subscribe_passive_final_delivery_activity();
     let observation = codex_protocol::protocol::AgentResponseObservation {
         observer_thread_id: session.thread_id,
         target_thread_id: child_thread_id,
@@ -2911,6 +2988,25 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
         )
         .await
         .expect_err("first append should report its injected post-commit failure");
+    assert!(
+        timeout(Duration::from_millis(50), passive_final_activity.changed())
+            .await
+            .is_err(),
+        "failed durable commit must not signal active sleep"
+    );
+    session
+        .record_sub_agent_notification_with_observation_commit(
+            communication.clone(),
+            CompletionSubmissionAdmission::Ordinary,
+            vec![observation.clone()],
+        )
+        .await
+        .expect("retry should reconcile the committed delivery");
+    timeout(Duration::from_secs(1), passive_final_activity.changed())
+        .await
+        .expect("new durable passive completion should signal active sleep")
+        .expect("passive final activity sender should remain open");
+    let mut retry_activity = session.subscribe_passive_final_delivery_activity();
     session
         .record_sub_agent_notification_with_observation_commit(
             communication,
@@ -2918,8 +3014,13 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
             vec![observation.clone()],
         )
         .await
-        .expect("retry should reconcile the committed delivery");
-
+        .expect("same completion retry should remain idempotent");
+    assert!(
+        timeout(Duration::from_millis(50), retry_activity.changed())
+            .await
+            .is_err(),
+        "same durable completion must not signal a later sleep"
+    );
     let history = session
         .services
         .thread_store
@@ -2971,6 +3072,30 @@ async fn passive_observed_completion_retry_reconciles_an_append_after_commit_fai
             .count(),
         1
     );
+    let second_response_item_id = new_sub_agent_completion_context_response_item_id();
+    let mut second_communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "second child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    second_communication.id = Some(second_response_item_id.clone());
+    let mut second_observation = observation;
+    second_observation.final_delivery_response_item_id = Some(second_response_item_id.clone());
+    second_observation.committed_delivery_response_item_ids = vec![second_response_item_id];
+    session
+        .record_sub_agent_notification_with_observation_commit(
+            second_communication,
+            CompletionSubmissionAdmission::Ordinary,
+            vec![second_observation],
+        )
+        .await
+        .expect("distinct passive completion should persist");
+    timeout(Duration::from_secs(1), retry_activity.changed())
+        .await
+        .expect("distinct durable completion should signal active sleep")
+        .expect("passive final activity sender should remain open");
 }
 
 #[tokio::test]
@@ -8251,6 +8376,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         async_hook_results,
         active_turn_transition: Notify::new(),
         mailbox_activity: watch::channel(()).0,
+        passive_final_delivery_activity: watch::channel(()).0,
         input_queue: super::input_queue::InputQueue::new(),
         idle_pending_mcp_server_use: Mutex::new(Vec::new()),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
@@ -11128,6 +11254,7 @@ where
         async_hook_results,
         active_turn_transition: Notify::new(),
         mailbox_activity: watch::channel(()).0,
+        passive_final_delivery_activity: watch::channel(()).0,
         input_queue: super::input_queue::InputQueue::new(),
         idle_pending_mcp_server_use: Mutex::new(Vec::new()),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),

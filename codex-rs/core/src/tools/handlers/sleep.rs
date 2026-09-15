@@ -102,7 +102,7 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
                 id: call_id,
                 duration_ms: args.duration_ms,
             }));
-            session.emit_turn_item_started(turn.as_ref(), &item).await;
+            let mut passive_final_delivery_rx = session.subscribe_passive_final_delivery_activity();
             let turn_state = session
                 .input_queue
                 .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
@@ -111,6 +111,7 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
                 .input_queue
                 .subscribe_activity(turn_state.as_deref())
                 .await;
+            session.emit_turn_item_started(turn.as_ref(), &item).await;
             let sleep_result: Result<bool, FunctionCallError> = if pending_activity.is_some() {
                 Ok(true)
             } else {
@@ -136,7 +137,19 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
                                     FunctionCallError::Fatal(format!("failed to sleep: {err:#}"))
                                 })
                         }
-                    }
+                    },
+                    result = passive_final_delivery_rx.changed() => {
+                        if result.is_ok() {
+                            Ok(true)
+                        } else {
+                            sleep
+                                .await
+                                .map(|()| false)
+                                .map_err(|err| {
+                                    FunctionCallError::Fatal(format!("failed to sleep: {err:#}"))
+                                })
+                        }
+                    },
                 }
             };
             session.emit_turn_item_completed(turn.as_ref(), item).await;

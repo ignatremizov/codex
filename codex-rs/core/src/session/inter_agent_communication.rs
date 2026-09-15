@@ -65,9 +65,13 @@ impl Session {
                 trigger_turn: communication.trigger_turn,
             }],
             rollout_suffix,
-            image_preparations,
+            super::DurableContextRecordingOptions {
+                image_preparations,
+                mode: super::DurableContextRecordingMode::Ordinary,
+            },
         )
         .await
+        .map(|_| ())
     }
 
     pub(crate) async fn persist_inter_agent_completion_context_without_turn(
