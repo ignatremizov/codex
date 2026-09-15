@@ -11939,6 +11939,8 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn(
             .insert(codex_extension_items::sleep::SleepItem {
                 id: "peer-worker-sleep".to_string(),
                 duration_ms: 60_000,
+                outcome: None,
+                elapsed_ms: None,
             });
         let wake_request = mount_sse_once_match(
             &server,

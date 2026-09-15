@@ -5228,6 +5228,12 @@ class SkillsListParams(BaseModel):
     ] = None
 
 
+class SleepOutcome(Enum):
+    completed = "completed"
+    interrupted = "interrupted"
+    error = "error"
+
+
 class SortDirection(Enum):
     asc = "asc"
     desc = "desc"
@@ -5761,7 +5767,9 @@ class SleepThreadItem(BaseModel):
         populate_by_name=True,
     )
     duration_ms: Annotated[int, Field(alias="durationMs", ge=0)]
+    elapsed_ms: Annotated[int | None, Field(alias="elapsedMs", ge=0)] = None
     id: str
+    outcome: SleepOutcome | None = None
     type: Annotated[Literal["sleep"], Field(title="SleepThreadItemType")]
 
 
