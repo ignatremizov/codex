@@ -357,6 +357,8 @@ Commands emit `item/started`, optional `item/commandExecution/outputDelta` notif
 
 `item/commandExecution/terminalInteraction` may include a `wait` lifecycle object for `write_stdin`. Started waits identify the interaction, start time, and mode (`timed` or `untilExit`); finished waits include elapsed time and a reason such as `exited`, `timeout`, `input`, `cancelled`, or `failed`. Older events may omit this metadata.
 
+Sleep items may include optional `outcome` and monotonic `elapsedMs` completion metadata; legacy history may omit both fields.
+
 Passive and wake results enter a continuable active turn's message stream. Otherwise passive delivery records the result without starting a turn, while wake delivery requests a model turn through ordinary admission after publishing the completed activity. Presentation-only results remain visible in thread history without entering model context or starting a turn. Stopping a wake-enabled command downgrades its result delivery to passive.
 
 ```json

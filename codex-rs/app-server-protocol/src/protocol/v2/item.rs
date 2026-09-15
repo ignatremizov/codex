@@ -20,6 +20,7 @@ use codex_extension_items::ExtensionItem;
 pub use codex_extension_items::image_generation::ImageGenerationFailure;
 pub use codex_extension_items::image_generation::ImageGenerationItem;
 pub use codex_extension_items::sleep::SleepItem;
+pub use codex_extension_items::sleep::SleepOutcome;
 pub use codex_extension_items::web_search::WebSearchAction;
 pub use codex_extension_items::web_search::WebSearchItem;
 use codex_protocol::approvals::ExecApprovalKind as CoreExecApprovalKind;

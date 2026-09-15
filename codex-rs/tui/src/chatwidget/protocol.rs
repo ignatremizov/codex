@@ -591,6 +591,8 @@ impl ChatWidget {
         }
         self.restore_realtime_transcripts_before_turn(&notification.turn_id);
         let turn_id = notification.turn_id.clone();
+        let started_at_ms = notification.started_at_ms;
+        let from_replay = replay_kind.is_some();
         match notification.item {
             ThreadItem::UserMessage { content, .. } if replay_kind.is_none() => {
                 self.note_realtime_user_item_started(&notification.turn_id, &content);
@@ -651,7 +653,9 @@ impl ChatWidget {
             ThreadItem::WebSearch(item) => {
                 self.on_web_search_begin(item.id);
             }
-            ThreadItem::Sleep(item) => self.on_sleep_started(item, turn_id),
+            ThreadItem::Sleep(item) => {
+                self.on_sleep_started(item, turn_id, started_at_ms, from_replay)
+            }
             ThreadItem::ImageGeneration(_) => {
                 self.on_image_generation_begin();
             }
@@ -759,17 +763,20 @@ impl ChatWidget {
         {
             return;
         }
+        let from_replay = replay_kind.is_some();
+        let turn_id = notification.turn_id;
         match notification.item {
             item @ ThreadItem::CommandExecution { .. } => {
                 if replay_kind.is_some_and(|kind| !kind.preserves_live_processes()) {
                     self.handle_command_execution_completed_now(item);
                 } else {
-                    self.on_command_execution_completed(item, &notification.turn_id);
+                    self.on_command_execution_completed(item, &turn_id);
                 }
             }
+            ThreadItem::Sleep(item) => self.on_sleep_completed(item, &turn_id, from_replay),
             item => self.handle_thread_item(
                 item,
-                notification.turn_id,
+                turn_id,
                 replay_kind.map_or(
                     ThreadItemRenderSource::Live,
                     ThreadItemRenderSource::ReplayedNotification,
