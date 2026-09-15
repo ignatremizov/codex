@@ -16,22 +16,39 @@ async fn consumed_agent_text_and_image_do_not_acquire_user_authority() -> Result
     let server = start_mock_server().await;
     let mut builder = test_codex().with_config(|config| {
         config.features.enable(Feature::Collab).expect("enable V1");
-        config.features.disable(Feature::MultiAgentV2).expect("disable V2");
+        config
+            .features
+            .disable(Feature::MultiAgentV2)
+            .expect("disable V2");
     });
     let test = builder.build_with_auto_env(&server).await?;
     let receiver = test.session_configured.thread_id;
-    let sender = test.codex.spawn_agent(UserAgentSpawnOptions::default()).await?
+    let sender = test
+        .codex
+        .spawn_agent(UserAgentSpawnOptions::default())
+        .await?
         .target_thread_id;
-    test.codex.set_agent_reply_route(
-        &sender.to_string(), /*recipient*/ None, UserAgentReplyRouteMode::Enabled,
-    ).await?;
+    test.codex
+        .set_agent_reply_route(
+            &sender.to_string(),
+            /*recipient*/ None,
+            UserAgentReplyRouteMode::Enabled,
+        )
+        .await?;
     let identity = |thread_id| AgentInputIdentity {
-        thread_id, nickname: None, agent_ref: None, task_path: None,
-        role: None, model: None, reasoning_effort: None,
+        thread_id,
+        nickname: None,
+        agent_ref: None,
+        task_path: None,
+        role: None,
+        model: None,
+        reasoning_effort: None,
     };
     let attribution = AgentInputAttribution {
-        sender: identity(sender), recipient: identity(receiver),
+        sender: identity(sender),
+        recipient: identity(receiver),
         sender_turn_id: "original-agent-turn".to_string(),
+        batch_id: None,
     };
     let original = vec![
         UserInput::Text {

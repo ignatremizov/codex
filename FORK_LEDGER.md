@@ -27,6 +27,7 @@ This checkpoint inventories the integrated owners through payload-free mailbox a
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
+| Batch agent input with shared presentation | Capability | Send one typed input to a nonempty array of canonicalized recipients, deduplicating aliases in first-seen order and retaining independent direct, queued, mailbox, and failure outcomes. Preserve partial admissions on cancellation and show the shared input once, without a second retry ledger or a false delivery guarantee. | `codex-rs/core/src/tools/handlers/multi_agents/send_input_batch.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents/send_input_admission.rs`<br>`codex-rs/core/src/agent/control/message_audit.rs`<br>`codex-rs/protocol/src/collab_input.rs`<br>`codex-rs/tui/src/multi_agents/send_input_batch.rs`<br>`codex-rs/tui/src/app/replay_filter.rs` | Native attribution, shared interrupt facade, retained admission workers, canonical recipient history, typed legacy/API conversion, and source-owned live/replay presentation | `feat(agents): support batch send_input with shared lifecycle presentation` |
 | Exact delivered-final recovery | Compatibility | On resume suppress only an existing completed reconciliation candidate proven delivered by original-coordinate, rollback-filtered canonical evidence for the exact receiver, child, target turn, and response identity. Without that proof, preserve unseen, conflicting, empty, and later same-text results; errors remain eligible, and history never creates a subscription. Durable model-hidden root oversight remains separate from nonpersistent peer receipts. | `codex-rs/core/src/agent/control/resume_delivery.rs`<br>`codex-rs/core/src/agent/control/response_observer.rs`<br>`codex-rs/core/src/agent/control/presentation/root_completion_audit.rs` | Strict receiver-owned history, original adjacency, exact-instance observation, terminal reconciliation, and canonical root-oversight ownership | `fix(agents): prevent duplicate finals across delivery, sampling, and resume`, `feat(multi-agent): surface unobserved child conclusions in Main` |
 | Shared rich agent identity headers | Observability | Render confirmed nicknames, roles, task paths, numeric refs, and partial model/reasoning settings consistently across live and cold presentation; retain independently authoritative task-path clears and successful control mappings. Terminal-adapted nickname colors remain decorative rather than identity or authority. | `codex-rs/tui/src/multi_agents/identity_header.rs`<br>`codex-rs/tui/src/agent_color.rs`<br>`codex-rs/tui/src/chatwidget/collab_metadata.rs`<br>`codex-rs/tui/src/thread_transcript/agent_metadata.rs` | Trusted alias snapshots, fresh-spawn settings, partial metadata, client-local rendering, and terminal capabilities | `feat(tui): unify agent identity styling and fresh spawn references` |
 | Live sibling and mailbox acceptance receipts | Observability | Present fresh sibling acceptance independently of payload delivery or model visibility, retain root-side mirrors through in-process refresh without canonical root writes, and place asynchronous notices after complete authored answer/plan source while preserving explicit communication provenance and notice FIFO. | `codex-rs/core/src/agent/control/mailbox_input.rs`<br>`codex-rs/core/src/agent/control/message_audit.rs`<br>`codex-rs/protocol/src/mailbox_delivery.rs`<br>`codex-rs/tui/src/app/replay_filter.rs`<br>`codex-rs/tui/src/chatwidget/inter_agent_transcript.rs`<br>`codex-rs/tui/src/chatwidget/interrupts.rs` | Immutable acceptance retries, exact live root ownership, reserved-ID sanitization, typed attachment conversion, source consolidation, and live-versus-cold history boundaries | `feat(tui): distinguish sibling sends and mailbox acceptance receipts` |
@@ -716,6 +717,30 @@ list-voices barrier cannot swallow the sleep completion. Public-RPC, persisted e
 partial-metadata, state-priority, and independent-shell regressions remain source coverage pending
 remote execution and complete snapshot/schema generation. Earlier full-transcript projection
 and premature fixture-field ownership debts remain explicitly assigned to their original owners.
+
+### Batch input admission and root presentation
+
+Ownership anchor: `feat(agents): support batch send_input with shared lifecycle presentation`.
+Array targets, including a single-element array, keep their per-recipient result contract;
+the scalar target retains its existing output. Shared preparation preserves exact native
+ownership, current interruption APIs, captured turn metadata, retained mailbox workers, and
+the same scoped-reply and target-queue admission machinery used by scalar input. An error
+may follow acceptance, so neither cancellation nor an aggregate failure authorizes resending
+already attempted recipients. The current handler abort path remains authoritative.
+
+Typed `batch_id` attribution accompanies each recipient's own canonical input. A normally
+completed child batch produces one live-only root mirror keyed by the encoded sender UUID,
+originating turn, and call ID; reused or slash-containing IDs cannot alias another copy.
+That mirror creates no root context, canonical write, wake, or routing authority. Source
+provenance keeps it in the in-process replay buffer across disk refresh while hydrated copies
+are suppressed once. Cold history still comes from the sender's canonical lifecycle, not
+a fabricated root receipt. Foreign live batch rows wait behind an authored answer; the
+sender's own tool lifecycle and pure replay retain their current ordering.
+
+Core, public DTO, legacy conversion, mailbox cancellation, source isolation, and complete
+TUI snapshot coverage are retained or authored. Earlier fixture repairs discovered during
+integration remain assigned to their original owners for the final history pass. Static
+inspection and parsing do not establish executable, schema, or snapshot qualification.
 
 ## Integration boundaries and deferred work
 

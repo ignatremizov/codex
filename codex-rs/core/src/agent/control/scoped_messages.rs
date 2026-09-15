@@ -174,15 +174,19 @@ impl LocalAgentControl {
 
     pub(crate) async fn send_scoped_agent_input_observing_response(
         &self,
-        sender: SessionPresentationId,
-        sender_turn_id: &str,
+        origin: AgentModelInputOrigin,
+        batch_id: Option<&str>,
         receiver_thread_id: ThreadId,
         input: Vec<UserInput>,
         start_options: TurnStartOptions,
         response_observation: ResponseObservationPolicy,
     ) -> CodexResult<String> {
         let control = self.clone();
-        let sender_turn_id = sender_turn_id.to_string();
+        let AgentModelInputOrigin {
+            sender,
+            sender_turn_id,
+        } = origin;
+        let batch_id = batch_id.map(str::to_string);
         tokio::spawn(async move {
             let state = control.runtime.upgrade()?;
             let lifecycle = state.acquire_live_agent_lifecycle(receiver_thread_id).await?;
@@ -195,7 +199,15 @@ impl LocalAgentControl {
             let sender_thread = state.get_thread(sender.thread_id).await?;
             sender_thread.session.submission_admission.check_ready()?;
             receiver_control.refresh_subtree_messaging(receiver_thread_id).await?;
-            let input = receiver_control.attribute_model_input(sender, receiver_thread_id, &sender_turn_id, input).await?;
+            let input = receiver_control
+                .attribute_model_input(
+                    sender,
+                    receiver_thread_id,
+                    &sender_turn_id,
+                    batch_id.as_deref(),
+                    input,
+                )
+                .await?;
             let admission = receiver_control.acquire_target_message_admission_after_binding(
                 &receiver_thread, receiver, &sender_thread, sender, &sender_turn_id,
                 TargetMessageAdmissionMode::SteerOrWake,

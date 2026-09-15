@@ -591,7 +591,7 @@ impl LocalAgentControl {
                     }
                     let input = match &model_input_origin {
                         Some(origin) => self.attribute_model_input(
-                            origin.sender, new_thread.thread_id, &origin.sender_turn_id, input,
+                            origin.sender, new_thread.thread_id, &origin.sender_turn_id, /*batch_id*/ None, input,
                         ).await?,
                         None => super::AgentControlInput::User(input),
                     };

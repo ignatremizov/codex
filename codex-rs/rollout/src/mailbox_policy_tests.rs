@@ -51,6 +51,7 @@ fn mailbox_original_input_and_prepared_model_envelope_survive_both_history_modes
             sender: identity(ThreadId::new()),
             recipient: identity(receiver),
             sender_turn_id: "sender-turn".to_string(),
+            batch_id: None,
         }),
         input: Some(input),
         content: Vec::new(),

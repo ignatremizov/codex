@@ -187,6 +187,7 @@ async fn acceptance_recovery_releases_closed_sender_without_rewriting_or_retirin
                     sender: identity(source.session.thread_id()),
                     recipient: identity(receiver),
                     sender_turn_id: "origin".into(),
+                    batch_id: None,
                 }),
             },
         };

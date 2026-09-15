@@ -37,15 +37,18 @@ async fn canonical_wait_preserves_start_timing_item_hooks_and_legacy_delivery(
     observed_wait: bool,
 ) -> anyhow::Result<()> {
     let (mut session, turn, events) = make_session_and_context_with_rx().await;
-    let store = attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session"))
-        .await;
+    let store =
+        attach_in_memory_thread_store(Arc::get_mut(&mut session).expect("unique session")).await;
     let observed = Arc::new(Mutex::new(Vec::new()));
     let mut extensions = ExtensionRegistryBuilder::<crate::config::Config>::new();
     extensions.turn_lifecycle_contributor(Arc::new(ItemRecorder(Arc::clone(&observed))));
-    Arc::get_mut(&mut session).expect("unique session").services.extensions =
-        Arc::new(extensions.build());
+    Arc::get_mut(&mut session)
+        .expect("unique session")
+        .services
+        .extensions = Arc::new(extensions.build());
     let child_id = ThreadId::new();
     let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        input_batch: None,
         mailbox_input: None,
         target_messages: None,
         queue_input: None,
