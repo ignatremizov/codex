@@ -32,6 +32,7 @@ mod background_completion;
 mod identity_header;
 mod mailbox_read;
 mod mailbox_send;
+mod send_input_batch;
 
 #[cfg(test)]
 #[path = "multi_agents/resume_ready_tests.rs"]
@@ -520,6 +521,7 @@ pub(crate) fn tool_call_history_cell(
         target_messages,
         queue_input,
         mailbox_input,
+        input_batch,
         receiver_thread_ids,
         prompt,
         agents_states,
@@ -562,6 +564,16 @@ pub(crate) fn tool_call_history_cell(
             ))
         }
         CollabAgentTool::SendInput => {
+            if let Some(batch) = input_batch {
+                return send_input_batch::history_cell(
+                    batch,
+                    status,
+                    prompt,
+                    response_observation,
+                    agent_prompt_preview_lines,
+                    &mut agent_metadata,
+                );
+            }
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
                 return None;
             }
@@ -1341,6 +1353,7 @@ mod tests {
                 wake_on_completion: Some(true),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1369,6 +1382,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(true),
                 queue_input: Some(true),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1397,6 +1411,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: Some(false),
                 queue_input: Some(false),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1425,6 +1440,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1450,6 +1466,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string(), bob_id.to_string()],
@@ -1484,6 +1501,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(true),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1512,6 +1530,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: Some(false),
                 queue_input: Some(false),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1580,6 +1599,7 @@ mod tests {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
@@ -1649,6 +1669,7 @@ mod tests {
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![robie_id.to_string()],
@@ -1717,6 +1738,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1745,6 +1767,7 @@ mod tests {
                 wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1858,6 +1881,7 @@ mod tests {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
@@ -1906,6 +1930,7 @@ mod tests {
                 wake_on_completion: Some(true),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                input_batch: None,
                 mailbox_input: None,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],

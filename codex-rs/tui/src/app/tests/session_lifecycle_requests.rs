@@ -3224,6 +3224,7 @@ async fn transcript_home_loads_every_older_history_page() -> Result<()> {
                 wake_on_completion: Some(false),
                 target_messages: Some(false),
                 queue_input: Some(false),
+                input_batch: None,
                 mailbox_input: None,
                 deadline_at_ms: None,
                 sender_thread_id: thread_id,

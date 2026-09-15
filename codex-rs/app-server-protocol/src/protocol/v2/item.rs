@@ -24,6 +24,7 @@ pub use codex_extension_items::sleep::SleepItem;
 pub use codex_extension_items::sleep::SleepOutcome;
 pub use codex_extension_items::web_search::WebSearchAction;
 pub use codex_extension_items::web_search::WebSearchItem;
+pub use codex_protocol::CollabAgentInputBatch;
 use codex_protocol::approvals::ExecApprovalKind as CoreExecApprovalKind;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
@@ -451,6 +452,9 @@ pub enum ThreadItem {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     CollabAgentToolCall {
+        /// Per-recipient admission outcomes for array-target sends; errors may follow admission.
+        #[serde(default)]
+        input_batch: Option<CollabAgentInputBatch>,
         /// Unique identifier for this collab tool call.
         id: String,
         /// Name of the collab tool that was invoked.
@@ -1194,6 +1198,7 @@ impl From<CoreTurnItem> for ThreadItem {
             },
             CoreTurnItem::MailboxRead(item) => ThreadItem::MailboxRead(MailboxReadItem::from(item)),
             CoreTurnItem::CollabAgentToolCall(call) => ThreadItem::CollabAgentToolCall {
+                input_batch: call.input_batch,
                 id: call.id,
                 tool: call.tool.into(),
                 status: call.status.into(),

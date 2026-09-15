@@ -168,10 +168,18 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
 }
 
 pub fn create_send_input_tool_v1() -> ToolSpec {
+    let mut targets = JsonSchema::array(
+        JsonSchema::string(/*description*/ None),
+        /*description*/ None,
+    );
+    targets.min_items = Some(1);
     let properties = BTreeMap::from([
         (
             "target".to_string(),
-            JsonSchema::string(Some("Target agent.".to_string())),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(/*description*/ None), targets],
+                Some("Agent selector or nonempty array of selectors. Arrays return one result per canonical receiver; aliases of the same receiver are sent once. Shared input and flags apply to every receiver. Errors and cancellation may follow acceptance; do not automatically retry the batch.".to_string()),
+            ),
         ),
         (
             "message".to_string(),
@@ -514,7 +522,7 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
 }
 
 fn send_input_output_schema() -> Value {
-    json!({
+    let single = json!({
         "type": "object",
         "properties": {
             "status": {
@@ -529,6 +537,32 @@ fn send_input_output_schema() -> Value {
         },
         "required": ["status"],
         "additionalProperties": false
+    });
+    json!({
+        "anyOf": [
+            single,
+            {
+                "type": "object",
+                "properties": {
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "target": {"type": "string"},
+                                "status": {"type": "string", "enum": ["submitted", "queued", "mailboxAccepted", "error"]},
+                                "error": {"type": "string"},
+                                "hint": {"type": "string"}
+                            },
+                            "required": ["target", "status"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["results"],
+                "additionalProperties": false
+            }
+        ]
     })
 }
 

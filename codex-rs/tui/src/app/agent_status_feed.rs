@@ -157,7 +157,16 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
                 .unwrap_or_else(|| tool.clone());
             return bounded_summary(&format!("Tool {tool}"));
         }
-        ThreadItem::CollabAgentToolCall { tool, .. } => {
+        ThreadItem::CollabAgentToolCall {
+            tool, input_batch, ..
+        } => {
+            if let Some(batch) = input_batch {
+                // Admission can mean mailbox storage, and an error may follow acceptance.
+                return Some(format!(
+                    "Input batch: {} receiver results",
+                    batch.results.len()
+                ));
+            }
             let action = match tool {
                 CollabAgentTool::SendMessage
                 | CollabAgentTool::FollowupTask

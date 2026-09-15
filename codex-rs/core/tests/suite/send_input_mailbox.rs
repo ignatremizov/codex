@@ -46,6 +46,9 @@ use test_case::test_case;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
+#[path = "send_input_batch.rs"]
+mod batch;
+
 #[derive(Clone, Copy)]
 enum ReceiverRuntime {
     Idle,

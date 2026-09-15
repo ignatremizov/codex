@@ -490,6 +490,10 @@ pub enum CollabAgentToolCallStatus {
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CollabAgentToolCallItem {
+    /// Present only for array-target send_input calls, including arrays of length one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub input_batch: Option<crate::CollabAgentInputBatch>,
     pub id: String,
     pub tool: CollabAgentTool,
     pub status: CollabAgentToolCallStatus,

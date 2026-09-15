@@ -379,6 +379,7 @@ async fn own_collab_tool_lifecycle_is_not_queued_as_an_async_notice() {
             wake_on_completion: None,
             target_messages: None,
             queue_input: None,
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: ThreadId::new().to_string(),
             receiver_thread_ids: vec![child.to_string()],

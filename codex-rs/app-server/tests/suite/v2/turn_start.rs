@@ -4218,6 +4218,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             wake_on_completion: Some(false),
             target_messages: Some(false),
             queue_input: Some(false),
+            input_batch: None,
             mailbox_input: None,
             sender_thread_id: thread.id.clone(),
             receiver_thread_ids: Vec::new(),
