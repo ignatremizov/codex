@@ -77,6 +77,9 @@ export type { ChatgptAuthTokensRefreshReason } from "./ChatgptAuthTokensRefreshR
 export type { ChatgptAuthTokensRefreshResponse } from "./ChatgptAuthTokensRefreshResponse";
 export type { CliAuthCredentialsStoreMode } from "./CliAuthCredentialsStoreMode";
 export type { CodexErrorInfo } from "./CodexErrorInfo";
+export type { CollabAgentInputBatch } from "./CollabAgentInputBatch";
+export type { CollabAgentInputResult } from "./CollabAgentInputResult";
+export type { CollabAgentInputStatus } from "./CollabAgentInputStatus";
 export type { CollabAgentRef } from "./CollabAgentRef";
 export type { CollabAgentState } from "./CollabAgentState";
 export type { CollabAgentStatus } from "./CollabAgentStatus";

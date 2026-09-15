@@ -5319,6 +5319,80 @@
       ],
       "type": "string"
     },
+    "CollabAgentInputBatch": {
+      "properties": {
+        "flags": {
+          "description": "Shared, normalized handling flags. Empty means default passive handling.",
+          "type": "string"
+        },
+        "results": {
+          "description": "Empty while the batch is in progress; populated only on normal completion.",
+          "items": {
+            "$ref": "#/definitions/CollabAgentInputResult"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "flags",
+        "results"
+      ],
+      "type": "object"
+    },
+    "CollabAgentInputResult": {
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receiverThreadId": {
+          "description": "Joins the parent item's receiver metadata; absent for unresolved selectors.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/CollabAgentInputStatus"
+        },
+        "target": {
+          "description": "Canonical ref when available, otherwise UUID or the unresolved authored selector.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "target"
+      ],
+      "type": "object"
+    },
+    "CollabAgentInputStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "submitted",
+            "queued",
+            "mailboxAccepted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The operation returned an error, potentially after admission.",
+          "enum": [
+            "error"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "CollabAgentRef": {
       "properties": {
         "agentNickname": {
@@ -20630,6 +20704,18 @@
             "id": {
               "description": "Unique identifier for this collab tool call.",
               "type": "string"
+            },
+            "inputBatch": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CollabAgentInputBatch"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Per-recipient admission outcomes for array-target sends; errors may follow admission."
             },
             "mailboxInput": {
               "default": null,
