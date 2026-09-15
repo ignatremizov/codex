@@ -64,7 +64,7 @@ async fn concurrent_process_waits_keep_identity_when_one_exits() {
         "w1",
         "call-build",
         "p1",
-        138_000,
+        /*elapsed_ms*/ 138_240,
         TerminalWaitCompletionReason::Exited,
     );
     chat.refresh_unified_exec_wait_status_at(now_ms);
@@ -85,11 +85,11 @@ async fn concurrent_process_waits_keep_identity_when_one_exits() {
 
     let completed = inserted_history_text(drain_insert_history(&mut rx));
     assert!(
-        completed.contains("Waited 2m 18s")
+        completed.contains("Waited 2m 18.24s")
             && completed.contains("process exited")
             && completed.contains("cargo build")
             && completed.contains("process p1")
-            && completed.contains("wait w1"),
+            && !completed.contains("wait w1"),
         "expected the matching process exit result, got:\n{completed}"
     );
     assert_chatwidget_snapshot!("process_wait_process_exited_history", completed);
@@ -133,15 +133,16 @@ async fn timed_process_wait_shows_countdown_then_elapsed_result() {
         "w3",
         "call-format",
         "p3",
-        60_000,
+        /*elapsed_ms*/ 60_240,
         TerminalWaitCompletionReason::Timeout,
     );
 
     let completed = inserted_history_text(drain_insert_history(&mut rx));
     assert!(
-        completed.contains("Waited 1m 00s")
+        completed.contains("Waited 1m 00.24s")
             && completed.contains("timed wait ended")
-            && completed.contains("cargo fmt --check"),
+            && completed.contains("cargo fmt --check")
+            && !completed.contains("wait w3"),
         "expected timed wait elapsed result, got:\n{completed}"
     );
     assert_chatwidget_snapshot!("timed_process_wait_elapsed_history", completed);
@@ -219,7 +220,11 @@ async fn concurrent_wait_invocations_for_one_process_remain_distinct() {
         TerminalWaitCompletionReason::Exited,
     );
     let completed = inserted_history_text(drain_insert_history(&mut rx));
-    assert!(completed.contains("wait w10") && completed.contains("wait w11"));
+    assert_eq!(
+        completed,
+        "• Waited 10s · process exited · cargo build (process p10)\n\n\
+• Waited 5s · process exited · cargo build (process p10)"
+    );
 }
 
 #[tokio::test]
@@ -296,6 +301,10 @@ async fn process_wait_reports_input_release_and_cancellation() {
             && completed.contains("wait cancelled")
             && completed.contains("make lint"),
         "expected accurate per-invocation wait outcomes, got:\n{completed}"
+    );
+    assert!(
+        !completed.contains("wait w4") && !completed.contains("wait w5"),
+        "completion correlation IDs must remain internal:\n{completed}"
     );
     assert_chatwidget_snapshot!("process_wait_input_release_and_cancel", completed);
 }

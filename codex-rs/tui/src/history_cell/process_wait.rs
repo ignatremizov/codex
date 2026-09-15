@@ -1,14 +1,15 @@
 //! Completion history for explicit unified-exec process waits.
 
 use super::*;
-use crate::status_indicator_widget::fmt_elapsed_compact;
 use codex_app_server_protocol::TerminalWaitCompletionReason;
 
 #[derive(Debug)]
 pub(crate) struct UnifiedExecWaitResultCell {
     command_display: Option<String>,
     process_id: String,
-    interaction_id: String,
+    // Keep the correlation ID with the completed result for internal identity preservation, but
+    // do not expose it in transcript text intended for users.
+    _interaction_id: String,
     elapsed_ms: u64,
     reason: TerminalWaitCompletionReason,
 }
@@ -24,7 +25,7 @@ impl UnifiedExecWaitResultCell {
         Self {
             command_display,
             process_id,
-            interaction_id,
+            _interaction_id: interaction_id,
             elapsed_ms,
             reason,
         }
@@ -41,7 +42,7 @@ impl UnifiedExecWaitResultCell {
     }
 
     fn result_line(&self) -> Line<'static> {
-        let elapsed = fmt_elapsed_compact(self.elapsed_ms / 1_000);
+        let elapsed = format_wait_duration(self.elapsed_ms);
         let reason = match self.reason {
             TerminalWaitCompletionReason::Exited => self.reason_label().green(),
             TerminalWaitCompletionReason::Input => self.reason_label().cyan(),
@@ -60,13 +61,7 @@ impl UnifiedExecWaitResultCell {
             spans.push(command.to_string().dim());
         }
         if !self.process_id.is_empty() {
-            spans.push(
-                format!(
-                    " (process {}; wait {})",
-                    self.process_id, self.interaction_id
-                )
-                .dim(),
-            );
+            spans.push(format!(" (process {})", self.process_id).dim());
         }
         Line::from(spans)
     }
@@ -85,7 +80,7 @@ impl HistoryCell for UnifiedExecWaitResultCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let elapsed = fmt_elapsed_compact(self.elapsed_ms / 1_000);
+        let elapsed = format_wait_duration(self.elapsed_ms);
         let command = self
             .command_display
             .as_deref()
@@ -98,10 +93,49 @@ impl HistoryCell for UnifiedExecWaitResultCell {
             format!(" · process {}", self.process_id)
         };
         vec![Line::from(format!(
-            "Waited {elapsed} · {}{command}{process} [wait {}]",
-            self.reason_label(),
-            self.interaction_id
+            "Waited {elapsed} · {}{command}{process}",
+            self.reason_label()
         ))]
+    }
+}
+
+/// Format the authoritative backend wait duration without discarding subsecond precision.
+///
+/// The backend measures from a monotonic clock and serializes whole milliseconds. A zero value
+/// therefore means the measured interval was shorter than one millisecond, not that a one-second
+/// wait occurred.
+fn format_wait_duration(elapsed_ms: u64) -> String {
+    if elapsed_ms == 0 {
+        return String::from("<1ms");
+    }
+    if elapsed_ms < 1_000 {
+        return format!("{elapsed_ms}ms");
+    }
+
+    let seconds = elapsed_ms / 1_000;
+    let milliseconds = elapsed_ms % 1_000;
+    let display_seconds = seconds % 60;
+    let fractional_seconds = if milliseconds == 0 {
+        format!("{display_seconds:02}s")
+    } else {
+        let fraction = format!("{milliseconds:03}");
+        let fraction = fraction.trim_end_matches('0');
+        format!("{display_seconds:02}.{fraction}s")
+    };
+
+    if seconds >= 3_600 {
+        let hours = seconds / 3_600;
+        let minutes = (seconds % 3_600) / 60;
+        format!("{hours}h {minutes:02}m {fractional_seconds}")
+    } else if seconds >= 60 {
+        let minutes = seconds / 60;
+        format!("{minutes}m {fractional_seconds}")
+    } else if milliseconds == 0 {
+        format!("{seconds}s")
+    } else {
+        let fraction = format!("{milliseconds:03}");
+        let fraction = fraction.trim_end_matches('0');
+        format!("{seconds}.{fraction}s")
     }
 }
 

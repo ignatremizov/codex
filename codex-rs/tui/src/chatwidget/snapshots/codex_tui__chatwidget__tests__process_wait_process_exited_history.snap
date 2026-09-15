@@ -2,4 +2,4 @@
 source: tui/src/chatwidget/tests/process_wait.rs
 expression: completed
 ---
-• Waited 2m 18s · process exited · cargo build (process p1; wait w1)
+• Waited 2m 18.24s · process exited · cargo build (process p1)
