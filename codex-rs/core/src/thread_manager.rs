@@ -1,4 +1,7 @@
+mod loaded_subtree;
 mod managed;
+pub use loaded_subtree::LoadedSubtree;
+pub(crate) use loaded_subtree::ThreadRemovalAuthority;
 mod observation;
 mod owned_resume;
 mod restoration_fence;
@@ -1391,6 +1394,9 @@ impl ThreadManager {
                 "live internal threads can only be removed by their owner".to_owned(),
             ));
         }
+        if let Some(thread) = threads.get(thread_id) {
+            thread.ensure_not_unloading()?;
+        }
         let removed = threads.remove(thread_id);
         if let Some(thread) = &removed {
             thread.session.prepare_for_thread_removal();
@@ -1433,22 +1439,22 @@ impl ThreadManager {
                     Ok(Err(_)) => ShutdownOutcome::SubmitFailed,
                     Err(_) => ShutdownOutcome::TimedOut,
                 };
-                (thread_id, outcome)
+                (thread_id, thread, outcome)
             })
             .collect::<FuturesUnordered<_>>();
         let mut report = ThreadShutdownReport::default();
 
-        while let Some((thread_id, outcome)) = shutdowns.next().await {
+        while let Some((thread_id, thread, outcome)) = shutdowns.next().await {
             match outcome {
-                ShutdownOutcome::Complete => report.completed.push(thread_id),
+                ShutdownOutcome::Complete => {
+                    self.state
+                        .remove_thread_if_matches(&thread_id, &thread)
+                        .await;
+                    report.completed.push(thread_id);
+                }
                 ShutdownOutcome::SubmitFailed => report.submit_failed.push(thread_id),
                 ShutdownOutcome::TimedOut => report.timed_out.push(thread_id),
             }
-        }
-
-        let mut tracked_threads = self.state.threads.write().await;
-        for thread_id in &report.completed {
-            tracked_threads.remove(thread_id);
         }
 
         report
@@ -1778,6 +1784,9 @@ impl ThreadManagerState {
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get(thread_id) {
+            if thread.ensure_not_unloading().is_err() {
+                return None;
+            }
             thread.session.prepare_for_thread_removal();
         }
         threads.remove(thread_id)
@@ -2205,6 +2214,7 @@ impl ThreadManagerState {
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
+                thread.ensure_not_unloading()?;
                 if registration == ThreadRegistration::Deferred {
                     return Err(CodexErr::InvalidRequest(format!(
                         "thread {} changed while preparing its restoration",
@@ -2330,7 +2340,7 @@ impl ThreadManagerState {
         let attachment_source =
             forked_from_thread_id.filter(|_| matches!(&initial_history, InitialHistory::Forked(_)));
         let (session, io) = Session::spawn(SessionSpawnArgs {
-            startup,
+            startup: startup.clone(),
             config,
             allow_provider_model_fallback,
             instructions,
@@ -2418,7 +2428,13 @@ impl ThreadManagerState {
             session.services.mcp_runtime.enable_full_access_form_input();
         }
         let new_thread = self
-            .finalize_thread_spawn(session, io, tracked_session_source, registration)
+            .finalize_thread_spawn(
+                session,
+                io,
+                tracked_session_source,
+                registration,
+                startup.as_deref(),
+            )
             .await?;
         new_thread.thread.emit_thread_ready_lifecycle().await;
         if source_changed_during_startup.load(Ordering::Acquire) {
@@ -2436,6 +2452,7 @@ impl ThreadManagerState {
         io: SessionIo,
         session_source: SessionSource,
         registration: ThreadRegistration,
+        startup: Option<&crate::session::startup::SessionStartup>,
     ) -> CodexResult<ThreadSpawnResult> {
         let thread_id = session.thread_id();
         let event = io.next_event().await?;
@@ -2456,7 +2473,12 @@ impl ThreadManagerState {
                 .restore_agent_send_settings(session.presentation_id())
                 .await
         {
-            if let Err(shutdown_error) = io.shutdown_and_wait().await {
+            // A managed startup has already captured this exact actor. Its lifetime task
+            // owns durable cleanup and retries; an inline legacy stop would destroy the
+            // actor before that owner can obtain its writer-release acknowledgement.
+            if startup.is_none()
+                && let Err(shutdown_error) = io.shutdown_and_wait().await
+            {
                 warn!(%shutdown_error, "settings restoration shutdown failed");
                 io.session_loop_termination.clone().await;
             }
@@ -2490,7 +2512,9 @@ impl ThreadManagerState {
                 });
             }
         }
-        if let Err(err) = io.shutdown_and_wait().await {
+        if startup.is_none()
+            && let Err(err) = io.shutdown_and_wait().await
+        {
             warn!("failed to shut down duplicate thread {thread_id}: {err}");
         }
         Err(CodexErr::InvalidRequest(format!(

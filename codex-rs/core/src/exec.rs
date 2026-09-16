@@ -988,30 +988,34 @@ async fn consume_output(
     // above, therefore `take()` should normally return `Some`.  If it doesn't
     // we treat it as an exceptional I/O error
 
-    let stdout_reader = child.stdout.take().ok_or_else(|| {
-        CodexErr::Io(io::Error::other(
-            "stdout pipe was unexpectedly not available",
-        ))
-    })?;
-    let stderr_reader = child.stderr.take().ok_or_else(|| {
-        CodexErr::Io(io::Error::other(
-            "stderr pipe was unexpectedly not available",
-        ))
-    })?;
+    let stdout_reader = child.stdout.take();
+    let stderr_reader = child.stderr.take();
+    let missing_pipe = stdout_reader.is_none() || stderr_reader.is_none();
 
     let retained_bytes_cap = capture_policy.retained_bytes_cap();
-    let stdout_handle = tokio::spawn(read_output(
-        BufReader::new(stdout_reader),
-        stdout_stream.clone(),
-        /*is_stderr*/ false,
-        retained_bytes_cap,
-    ));
-    let stderr_handle = tokio::spawn(read_output(
-        BufReader::new(stderr_reader),
-        stdout_stream.clone(),
-        /*is_stderr*/ true,
-        retained_bytes_cap,
-    ));
+    let stream = stdout_stream.clone();
+    let stdout_handle = tokio::spawn(async move {
+        let reader = stdout_reader
+            .ok_or_else(|| io::Error::other("stdout pipe was unexpectedly not available"))?;
+        read_output(
+            BufReader::new(reader),
+            stream,
+            /*is_stderr*/ false,
+            retained_bytes_cap,
+        )
+        .await
+    });
+    let stderr_handle = tokio::spawn(async move {
+        let reader = stderr_reader
+            .ok_or_else(|| io::Error::other("stderr pipe was unexpectedly not available"))?;
+        read_output(
+            BufReader::new(reader),
+            stdout_stream,
+            /*is_stderr*/ true,
+            retained_bytes_cap,
+        )
+        .await
+    });
 
     let expiration_wait = async {
         if capture_policy.uses_expiration() {
@@ -1023,7 +1027,17 @@ async fn consume_output(
     tokio::pin!(expiration_wait);
     let process_group_id = child.id();
     let mut expiration_resolved = false;
-    let (mut exit_status, mut timed_out) = tokio::select! {
+    let outcome: Result<_> = async {
+        if missing_pipe {
+            // Even exceptional capture setup must keep ownership until the child is
+            // reaped and any reader that did start has finished.
+            let _ = kill_child_process_group(&mut child);
+            let _ = child.start_kill();
+            return Err(CodexErr::Io(io::Error::other(
+                "execution output pipe was unexpectedly not available",
+            )));
+        }
+        let outcome = tokio::select! {
         status_result = child.wait() => {
             let exit_status = status_result?;
             (exit_status, false)
@@ -1079,7 +1093,31 @@ async fn consume_output(
             child.start_kill()?;
             (synthetic_exit_status(EXIT_CODE_SIGNAL_BASE + SIGKILL_CODE), false)
         }
-    };
+        };
+        Ok(outcome)
+    }
+    .await;
+
+    // A kill request or synthetic timeout status is not an exit acknowledgement. Retain
+    // the child and retry termination until it can actually be reaped, including when the
+    // initial termination attempt failed. Session shutdown can time out while this owned
+    // execution task keeps responsibility for the child and its final output.
+    loop {
+        tokio::select! {
+            status = child.wait() => {
+                match status {
+                    Ok(_) => break,
+                    Err(error) => {
+                        tracing::warn!(%error, "waiting to confirm execution process exit");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+        let _ = kill_child_process_group(&mut child);
+        let _ = child.start_kill();
+    }
 
     // We need mutable bindings so we can `abort()` them on timeout.
     use tokio::task::JoinHandle;
@@ -1096,6 +1134,7 @@ async fn consume_output(
             Err(_elapsed) => {
                 // Timeout: abort the task to avoid hanging on open pipes.
                 handle.abort();
+                let _ = handle.await;
                 Ok(StreamOutput {
                     text: Vec::new(),
                     truncated_after_lines: None,
@@ -1107,6 +1146,16 @@ async fn consume_output(
     let mut stdout_handle = stdout_handle;
     let mut stderr_handle = stderr_handle;
 
+    let (mut exit_status, mut timed_out) = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            stdout_handle.abort();
+            stderr_handle.abort();
+            let _ = stdout_handle.await;
+            let _ = stderr_handle.await;
+            return Err(error);
+        }
+    };
     let (stdout, stderr) = if matches!(
         capture_policy,
         ExecCapturePolicy::FullBufferWithExpiration | ExecCapturePolicy::SensitiveFullBuffer
@@ -1175,9 +1224,9 @@ async fn consume_output(
             }
         }
     } else {
-        let stdout = await_output(&mut stdout_handle, capture_policy.io_drain_timeout()).await?;
-        let stderr = await_output(&mut stderr_handle, capture_policy.io_drain_timeout()).await?;
-        (stdout, stderr)
+        let stdout = await_output(&mut stdout_handle, capture_policy.io_drain_timeout()).await;
+        let stderr = await_output(&mut stderr_handle, capture_policy.io_drain_timeout()).await;
+        (stdout?, stderr?)
     };
     let aggregated_output = aggregate_output(&stdout, &stderr, retained_bytes_cap);
 

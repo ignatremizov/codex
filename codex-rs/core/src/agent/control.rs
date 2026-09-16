@@ -144,6 +144,7 @@ mod residency;
 mod resume_role;
 mod sender_context;
 mod spawn;
+mod spawn_ownership;
 mod target;
 mod user_authorization;
 

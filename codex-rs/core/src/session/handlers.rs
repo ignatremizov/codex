@@ -138,18 +138,28 @@ pub async fn run_user_shell_command(
         .reserve_user_shell_submission(response_handling.final_delivery)
         .await;
     let session = Arc::clone(sess);
-    tokio::spawn(async move {
-        execute_user_shell_command(
-            session,
-            turn_context,
-            command,
-            timeout_ms,
-            placement,
-            response_handling,
-            submission_id,
-        )
-        .await;
-    });
+    let execution = sess
+        .services
+        .unified_exec_manager
+        .start_execution(async move {
+            execute_user_shell_command(
+                session,
+                turn_context,
+                command,
+                timeout_ms,
+                placement,
+                response_handling,
+                submission_id,
+            )
+            .await;
+        });
+    if let Err(error) = execution {
+        sess.services
+            .unified_exec_manager
+            .release_user_shell_submission(submission_id)
+            .await;
+        warn!(%error, "user shell command rejected during shutdown");
+    }
 }
 
 pub async fn resolve_elicitation(
@@ -334,6 +344,24 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+    stop_session_execution(sess).await;
+    sess.services
+        .unified_exec_manager
+        .terminate_all_processes()
+        .await;
+    if let Err(err) = sess.services.code_mode_service.shutdown().await {
+        warn!("failed to shutdown code mode session: {err}");
+    }
+    if let Err(error) = persist_completion_mailbox_before_shutdown(sess).await {
+        sess.quarantine_history(format!("completion shutdown drain failed: {error}"));
+        sess.close_history_publication().await;
+    }
+    shutdown_session_services(sess).await;
+    crate::hook_runtime::run_session_end_hooks(sess).await;
+    emit_thread_stop_lifecycle(sess).await;
+}
+
+pub(super) async fn stop_session_execution(sess: &Arc<Session>) {
     sess.services
         .unified_exec_manager
         .shutdown_user_shell_commands()
@@ -343,41 +371,37 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     }
     let _ = sess.conversation.shutdown().await;
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
-    sess.drain_observed_communications().await;
-    sess.submission_admission.drain_accepted_completions().await;
-    if !sess.submission_admission.requires_reload()
-        && let Err(error) = sess.drain_completion_mailbox().await
-    {
-        sess.quarantine_history(format!("completion shutdown drain failed: {error}"));
-    }
-    sess.close_history_publication().await;
     let shell_snapshot_prewarm = sess.state.lock().await.shell_snapshot_prewarm.take();
     if let Some(shell_snapshot_prewarm) = shell_snapshot_prewarm {
         shell_snapshot_prewarm.abort();
         let _ = shell_snapshot_prewarm.await;
     }
+}
+
+pub(super) async fn persist_completion_mailbox_before_shutdown(
+    sess: &Arc<Session>,
+) -> CodexResult<()> {
+    sess.drain_observed_communications().await;
+    sess.submission_admission.drain_accepted_completions().await;
+    sess.check_history_publication()?;
+    sess.drain_completion_mailbox().await?;
+    sess.close_history_publication().await;
+    Ok(())
+}
+
+pub(super) async fn shutdown_session_services(sess: &Arc<Session>) {
     sess.hooks().shutdown().await;
     sess.async_hook_results.close();
     while sess.async_hook_results.try_recv().is_ok() {}
-    sess.services
-        .unified_exec_manager
-        .terminate_all_processes()
-        .await;
-    if let Err(err) = sess.services.code_mode_service.shutdown().await {
-        warn!("failed to shutdown code mode session: {err}");
-    }
     sess.stop_mcp_prewarm_worker().await;
     {
         let _refresh = sess.mcp_refresh.acquire().await;
         sess.mcp_refresh.close();
         sess.services.mcp_runtime.shutdown().await;
     }
-
-    crate::hook_runtime::run_session_end_hooks(sess).await;
-    emit_thread_stop_lifecycle(sess).await;
 }
 
-async fn emit_thread_stop_lifecycle(sess: &Session) {
+pub(super) async fn emit_thread_stop_lifecycle(sess: &Session) {
     for contributor in sess.services.extensions.thread_lifecycle_contributors() {
         contributor
             .on_thread_stop(codex_extension_api::ThreadStopInput {
@@ -480,6 +504,7 @@ pub(super) async fn submission_loop(
 ) {
     // To break out of this loop, send Op::Shutdown.
     let mut shutdown_received = false;
+    let mut durable_shutdown = super::durable_shutdown::DurableShutdown::default();
     while let Ok(QueuedSubmission {
         submission: sub,
         approval,
@@ -488,7 +513,10 @@ pub(super) async fn submission_loop(
         if sess.submission_admission.requires_reload()
             && !matches!(
                 &sub.op,
-                Op::Shutdown | Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
+                Op::Shutdown
+                    | Op::ShutdownDurably { .. }
+                    | Op::ThreadRollback { .. }
+                    | Op::ThreadRollbackMaterialized { .. }
             )
         {
             rx_sub.close();
@@ -697,7 +725,25 @@ pub(super) async fn submission_loop(
                         .await;
                     false
                 }
-                Op::Shutdown => shutdown(&sess, sub.id.clone()).await,
+                Op::Shutdown => {
+                    if durable_shutdown.has_started() {
+                        match durable_shutdown.run(&sess, sub.id.clone()).await {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "durable shutdown remains pending");
+                                false
+                            }
+                        }
+                    } else {
+                        shutdown(&sess, sub.id.clone()).await
+                    }
+                }
+                Op::ShutdownDurably { reply } => {
+                    let result = durable_shutdown.run(&sess, sub.id.clone()).await;
+                    let complete = result.is_ok();
+                    let _ = reply.send(result);
+                    complete
+                }
                 Op::Review { review_request } => {
                     review(&sess, &config, sub.id.clone(), review_request).await;
                     false

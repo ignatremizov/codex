@@ -113,24 +113,22 @@ async fn exec_command_with_tty(
     let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
     let request = test_exec_request(turn, command.clone(), cwd.clone(), shell_env());
 
-    let process = Arc::new(
-        manager
-            .open_session_with_prepared_exec_env(
-                process_id,
-                &request,
-                /*tool_ctx*/ None,
-                codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
-                /*network_policy_decider*/ None,
-                tty,
-                Box::new(NoopSpawnLifecycle),
-                turn.initial_environments
-                    .primary()
-                    .expect("turn environment")
-                    .environment
-                    .as_ref(),
-            )
-            .await?,
-    );
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            process_id,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            tty,
+            Box::new(NoopSpawnLifecycle),
+            turn.initial_environments
+                .primary()
+                .expect("turn environment")
+                .environment
+                .as_ref(),
+        )
+        .await?;
     let context = UnifiedExecContext::new(
         Arc::clone(session),
         crate::session::step_context::StepContext::for_test(Arc::clone(turn)),

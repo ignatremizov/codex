@@ -59,6 +59,9 @@ mod live_revert_messaging_tests;
 #[path = "thread_manager/models_cache_selection_tests.rs"]
 mod models_cache_selection_tests;
 
+#[path = "thread_manager/subtree_spawn_ownership_tests.rs"]
+mod subtree_spawn_ownership_tests;
+
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
 struct ParentInstructionsProvider(codex_extension_api::Instructions);
@@ -957,21 +960,15 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
         .expect("resume replacement thread");
     assert_eq!(replacement.thread_id, old.thread_id);
     assert!(!Arc::ptr_eq(&replacement.thread, &old.thread));
-    let cleanup_called = Arc::new(AtomicBool::new(false));
-    let cleanup_called_for_removal = Arc::clone(&cleanup_called);
-
     let removed = manager
         .state
-        .remove_thread_if_current(&old.thread, move || {
-            cleanup_called_for_removal.store(true, Ordering::Release);
-        })
+        .remove_thread_if_matches(&old.thread_id, &old.thread)
         .await;
 
     assert!(removed.is_none());
-    assert!(!cleanup_called.load(Ordering::Acquire));
     assert!(
         manager
-            .remove_thread_if_current(&old.thread)
+            .remove_thread_if_matches(&old.thread_id, &old.thread)
             .await
             .is_none()
     );

@@ -20,6 +20,9 @@ pub(crate) struct SubmissionAdmission {
     pub(super) send_lock: Mutex<()>,
     pub(super) state: StdMutex<State>,
     writer_closed: AtomicBool,
+    pub(super) subtree_unload_pending: AtomicBool,
+    pub(super) durable_shutdown_complete: AtomicBool,
+    pub(super) durable_shutdown_target: Option<Arc<super::SessionIo>>,
     pub(super) completion_closed: AtomicBool,
     pub(super) completion_sealed: AtomicBool,
     pub(super) accepted_completions: std::sync::atomic::AtomicUsize,
@@ -37,6 +40,11 @@ pub(super) enum State {
 
 impl SubmissionAdmission {
     pub(crate) fn check_ready(&self) -> CodexResult<()> {
+        if self.is_sealed_for_unload() {
+            return Err(CodexErr::InvalidRequest(
+                "thread is sealed for durable unload; retry thread/unload".to_string(),
+            ));
+        }
         match &*self.state.lock().unwrap_or_else(PoisonError::into_inner) {
             State::Ready => Ok(()),
             State::RollbackPending(_) => Err(CodexErr::InvalidRequest(
@@ -159,7 +167,12 @@ impl SubmissionAdmission {
 
     /// The caller owns send order; only an unaccepted matching rollback may release this guard.
     fn reserve(self: &Arc<Self>, submission: &Submission) -> CodexResult<Option<Reservation>> {
-        let shutdown = matches!(&submission.op, Op::Shutdown);
+        let shutdown = matches!(&submission.op, Op::Shutdown | Op::ShutdownDurably { .. });
+        if self.is_sealed_for_unload() && !matches!(&submission.op, Op::ShutdownDurably { .. }) {
+            return Err(CodexErr::InvalidRequest(
+                "thread is sealed for durable unload; retry thread/unload".to_string(),
+            ));
+        }
         if !shutdown {
             if self.completion_closed.load(Ordering::Acquire)
                 || self.completion_sealed.load(Ordering::Acquire)

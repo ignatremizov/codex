@@ -6239,3 +6239,9 @@ mod response_observation_tests;
 
 #[path = "control_user_observation_tests.rs"]
 mod user_observation_tests;
+
+#[path = "control/spawn_handoff_tests.rs"]
+mod spawn_handoff_tests;
+
+#[path = "control/subtree_unload_completion_tests.rs"]
+mod subtree_unload_completion_tests;

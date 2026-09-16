@@ -738,6 +738,24 @@ pub enum ThreadUnsubscribeStatus {
     Unsubscribed,
 }
 
+/// Stop and unload the owning root and its loaded spawn descendants.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadUnloadParams {
+    /// Any thread in the owning spawn subtree, including the root.
+    pub thread_id: String,
+}
+
+/// Acknowledges durable shutdown and removal of the captured runtime instances.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadUnloadResponse {
+    pub root_thread_id: String,
+    pub unloaded_thread_ids: Vec<String>,
+}
+
 /// Parameters for `thread/increment_elicitation`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

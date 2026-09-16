@@ -41,6 +41,7 @@ mod callbacks;
 mod completion;
 mod conversion;
 mod deadline;
+mod durable_shutdown;
 mod generation;
 mod operations;
 mod reconnect;
@@ -98,6 +99,8 @@ impl GrpcCodeModeSessionProvider {
     async fn open_binding(
         &self,
         limits: CodeModeSessionCellExecutionLimits,
+        unidentified_backend: &AtomicBool,
+        register: impl FnOnce(Arc<GrpcCodeModeSession>) + Send,
     ) -> Result<Arc<GrpcCodeModeSession>, String> {
         let mut client = deadline::startup("transport connection", self.transport.client()).await?;
         let limits = grpc::SessionCellExecutionLimits {
@@ -116,6 +119,7 @@ impl GrpcCodeModeSessionProvider {
             cell_execution_limits,
         });
         inject_span_traceparent(&mut open_session_request, &open_session_span);
+        unidentified_backend.store(true, Ordering::Release);
         let (lease, first) = async {
             let mut lease =
                 deadline::startup("session opening", client.open_session(open_session_request))
@@ -141,10 +145,19 @@ impl GrpcCodeModeSessionProvider {
             wait_slots: Mutex::new(HashMap::new()),
             shutdown_requested: AtomicBool::new(false),
             shutdown_result: Mutex::new(None),
+            durable_result: Mutex::new(None),
+            close_confirmed: AtomicBool::new(false),
+            callback_panicked: AtomicBool::new(false),
+            durable_requested: AtomicBool::new(false),
             stopped: CancellationToken::new(),
             stream_tasks: TaskTracker::new(),
+            callback_tasks: TaskTracker::new(),
             _transport: Arc::clone(&self.transport),
         });
+        let session = Arc::new(GrpcCodeModeSession {
+            inner: Arc::clone(&inner),
+        });
+        register(Arc::clone(&session));
         let mut opening = OpeningSession {
             inner: Some(Arc::clone(&inner)),
         };
@@ -174,11 +187,20 @@ impl GrpcCodeModeSessionProvider {
         inner.spawn_tool_subscription(response.into_inner());
         inner.require_open()?;
         opening.inner = None;
-        Ok(Arc::new(GrpcCodeModeSession { inner }))
+        Ok(session)
     }
 }
 
 impl CodeModeSessionProvider for GrpcCodeModeSessionProvider {
+    fn create_owned_session(&self) -> CodeModeSessionProviderFuture<'_> {
+        Box::pin(async move {
+            Ok(Arc::new(reconnect::ReconnectableSession::new(
+                self.clone(),
+                CodeModeSessionCellExecutionLimits::default(),
+            )) as Arc<dyn CodeModeSession>)
+        })
+    }
+
     fn create_session(&self) -> CodeModeSessionProviderFuture<'_> {
         self.create_session_with_limits(CodeModeSessionCellExecutionLimits::default())
     }
@@ -236,6 +258,10 @@ impl CodeModeSession for GrpcCodeModeSession {
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
         Box::pin(wait_for_watch(self.inner.request_shutdown()))
     }
+
+    fn shutdown_durably<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(wait_for_watch(self.inner.request_durable_shutdown()))
+    }
 }
 
 impl Drop for GrpcCodeModeSession {
@@ -252,8 +278,13 @@ pub(super) struct SessionInner {
     wait_slots: Mutex<HashMap<CellId, Weak<WaitSlot>>>,
     shutdown_requested: AtomicBool,
     shutdown_result: Mutex<Option<ShutdownResultReceiver>>,
+    durable_result: Mutex<Option<ShutdownResultReceiver>>,
+    close_confirmed: AtomicBool,
+    callback_panicked: AtomicBool,
+    durable_requested: AtomicBool,
     pub(super) stopped: CancellationToken,
     stream_tasks: TaskTracker,
+    callback_tasks: TaskTracker,
     _transport: Arc<SharedTransport>,
 }
 
@@ -279,9 +310,13 @@ impl SessionInner {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&cell_id);
-            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            if std::panic::catch_unwind(AssertUnwindSafe(|| {
                 delegate.cell_closed(&cell_id);
-            }));
+            }))
+            .is_err()
+            {
+                self.callback_panicked.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -343,6 +378,9 @@ impl SessionInner {
         } else {
             Ok(())
         };
+        if is_open && result.is_ok() {
+            self.close_confirmed.store(true, Ordering::Release);
+        }
         self.close_state(/*failure*/ None);
         self.stream_tasks.wait().await;
         result

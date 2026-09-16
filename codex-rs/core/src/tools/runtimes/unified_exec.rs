@@ -58,6 +58,7 @@ use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -110,7 +111,7 @@ pub struct UnifiedExecRuntime<'a> {
 }
 
 pub(crate) struct UnifiedExecAttempt {
-    pub(crate) process: UnifiedExecProcess,
+    pub(crate) process: Arc<UnifiedExecProcess>,
     pub(crate) metrics_sidecar: Option<PluginMetricsSidecar>,
     pub(crate) permissions: TerminalPermissions,
 }

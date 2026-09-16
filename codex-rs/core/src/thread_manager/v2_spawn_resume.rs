@@ -119,6 +119,8 @@ impl ThreadManagerState {
         };
         let resume_lock = self.v2_spawn_resume_lock(initial_resume.child_thread_id);
         let _resume_guard = resume_lock.lock_owned().await;
+        self.ensure_membership_mutation_allowed(initial_resume.child_thread_id)
+            .await?;
         self.check_restoration_fence(initial_resume.child_thread_id)?;
         let Some(resume) = self.persisted_v2_spawn_resume(initial_history).await? else {
             return Ok(None);
@@ -133,6 +135,7 @@ impl ThreadManagerState {
                     resume.child_thread_id, resume.parent_thread_id
                 ))
             })?;
+        parent_thread.ensure_not_unloading()?;
         if parent_thread.multi_agent_version() != Some(MultiAgentVersion::V2) {
             return Err(CodexErr::InvalidRequest(format!(
                 "cannot resume spawned V2 child {} through parent {} because the parent is not running Multi-Agent V2",
@@ -220,7 +223,30 @@ impl ThreadManagerState {
         expected: &Arc<CodexThread>,
         on_remove: impl FnOnce() + Send,
     ) -> Option<Arc<CodexThread>> {
+        self.remove_thread_with_authority(
+            thread_id,
+            expected,
+            super::loaded_subtree::ThreadRemovalAuthority::Ordinary,
+            on_remove,
+        )
+        .await
+    }
+
+    pub(crate) async fn remove_thread_with_authority(
+        &self,
+        thread_id: &ThreadId,
+        expected: &Arc<CodexThread>,
+        authority: super::loaded_subtree::ThreadRemovalAuthority,
+        on_remove: impl FnOnce() + Send,
+    ) -> Option<Arc<CodexThread>> {
         let mut threads = self.threads.write().await;
+        if matches!(
+            authority,
+            super::loaded_subtree::ThreadRemovalAuthority::Ordinary
+        ) && expected.ensure_not_unloading().is_err()
+        {
+            return None;
+        }
         if threads
             .get(thread_id)
             .is_some_and(|thread| Arc::ptr_eq(thread, expected))

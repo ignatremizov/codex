@@ -152,6 +152,14 @@ impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
 /// must keep those values isolated. Implementations may execute cells
 /// in-process or remotely.
 pub trait CodeModeSession: Send + Sync {
+    /// Initializes the backend without executing a cell, after its cleanup owner is retained.
+    ///
+    /// Eager providers need no additional work. Lazy implementations must retain accepted
+    /// initialization independently of this waiter so shutdown can still account for it.
+    fn prewarm<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,
@@ -163,6 +171,12 @@ pub trait CodeModeSession: Send + Sync {
     fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome>;
 
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()>;
+
+    /// Fences execution and waits for confirmed provider closure and accepted callbacks.
+    /// Failed attempts must retain their cleanup ownership so callers can retry safely.
+    fn shutdown_durably<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async { Err("provider does not support durable code-mode shutdown".to_string()) })
+    }
 }
 
 /// Creates code-mode sessions for Codex threads.
@@ -176,6 +190,15 @@ pub trait CodeModeSessionProvider: Send + Sync {
     }
 
     fn create_session(&self) -> CodeModeSessionProviderFuture<'_>;
+
+    /// Returns a logical cleanup owner before starting backend initialization.
+    ///
+    /// Built-in providers defer backend opening until the first session operation. The
+    /// compatibility default preserves existing providers; an error from that default
+    /// does not prove that partially created backend resources have been cleaned up.
+    fn create_owned_session(&self) -> CodeModeSessionProviderFuture<'_> {
+        self.create_session()
+    }
 
     /// Creates a session whose cells share the supplied execution limits.
     ///

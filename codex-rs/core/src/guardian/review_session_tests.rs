@@ -3,6 +3,7 @@ use crate::agents_md_manager::AgentsMdManager;
 use crate::context::ContextualUserFragment;
 use crate::context_manager::ContextManager;
 use codex_guardian_reviewer::ReviewerRequest;
+use codex_guardian_reviewer::ReviewerSession;
 use codex_guardian_reviewer::guardian_output_contract_prompt;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
@@ -17,6 +18,13 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn reviewer_actor_exit_without_writer_acknowledgement_is_a_failure() {
+    let (reviewer, _events, _submissions) = test_review_session().await;
+    assert!(reviewer.shutdown_durably().await.is_err());
+    assert!(!reviewer.durable_shutdown_complete());
+}
 
 #[tokio::test]
 async fn run_review_preserves_evidence_during_parent_compaction() {

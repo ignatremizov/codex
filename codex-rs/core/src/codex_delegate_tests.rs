@@ -67,6 +67,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
         Arc::clone(&io),
         tx_out.clone(),
         cancel.clone(),
+        DelegateShutdown::BestEffort,
     ));
 
     for msg in [

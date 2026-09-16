@@ -232,6 +232,7 @@ mod compacted_media_repair;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod durable_context;
+mod durable_shutdown;
 mod request_command_approval;
 pub(crate) mod rollback;
 mod submission_admission;

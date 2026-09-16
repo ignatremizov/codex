@@ -50,6 +50,9 @@ impl UnifiedExecProcessManager {
             context.call_id.clone(),
         );
         let _cancel_on_drop = context.cancellation_token.clone().drop_guard();
+        let session = Arc::clone(&context.session);
+        let process_id = request.process_id;
+        let manager = &session.services.unified_exec_manager;
         let task = async move {
             let manager = &context.session.services.unified_exec_manager;
             let process_id = request.process_id;
@@ -83,8 +86,10 @@ impl UnifiedExecProcessManager {
                             }
                             let _ = execution.await;
                         } else {
-                            drop(execution);
-                            manager.release_process_id(process_id).await;
+                            // A backend start may already have accepted the process.
+                            // Keep owning launch until it publishes the exact handle;
+                            // exec_command_inner observes cancellation after publication.
+                            let _ = execution.await;
                         }
                         return (
                             Err(UnifiedExecError::process_failed("command cancelled".into())),
@@ -110,7 +115,15 @@ impl UnifiedExecProcessManager {
             });
             (result, outcome)
         };
-        let (result, outcome) = match tokio::spawn(task.in_current_span()).await {
+        let execution = match manager.start_execution(task.in_current_span()) {
+            Ok(execution) => execution,
+            Err(error) => {
+                manager.release_process_id(process_id).await;
+                tracing::Span::current().record("outcome", "failed");
+                return Err(error);
+            }
+        };
+        let (result, outcome) = match execution.await {
             Ok(result) => result,
             Err(err) => (
                 Err(UnifiedExecError::process_failed(err.to_string())),

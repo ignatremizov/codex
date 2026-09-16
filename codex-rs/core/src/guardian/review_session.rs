@@ -914,6 +914,15 @@ impl codex_guardian_reviewer::ReviewerSession for GuardianReviewSession {
             last_admitted_node_repl_response_sequence,
         });
     }
+
+    async fn shutdown_durably(&self) -> anyhow::Result<()> {
+        self.io.shutdown_durably_and_wait().await?;
+        Ok(())
+    }
+
+    fn durable_shutdown_complete(&self) -> bool {
+        self.io.durable_shutdown_succeeded()
+    }
 }
 
 impl GuardianReviewSession {

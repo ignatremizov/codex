@@ -483,6 +483,19 @@ are never inferred from tools or copied from a shared catalog cache.
 
 The response's `outcome` is `activated` when the operation is accepted, `alreadyActivated` when explicit-use context already exists, or `alreadyImplicitlyAvailable` when the current inventory is already covered directly. `activated` acknowledges admission, not completed startup or durable context insertion. Inventory capture runs at the appropriate actor boundary, and an unavailable inventory can be represented by an empty array. Clients must not interpret any of these outcomes as new tool-call authorization.
 
+# Durable thread unload
+
+`thread/unload` accepts a `threadId` identifying any member of an owning spawn subtree. The server resolves the owning root from spawn relationships, not ordinary fork ancestry, and fences runtime membership and new subscriptions before stopping anything. Another connection's subscription to the root or any captured member rejects the request without stopping work. Ordinary `thread/unsubscribe` remains a connection-level operation with its existing idle grace period.
+
+```json
+{ "method": "thread/unload", "id": 21, "params": { "threadId": "thr_child" } }
+{ "id": 21, "result": { "rootThreadId": "thr_root", "unloadedThreadIds": ["thr_root", "thr_child"] } }
+```
+
+Success acknowledges final persistence, writer-lease release, and removal of the exact loaded runtime instances. It does not close durable agent aliases or delete history. The server emits `thread/closed` for removed runtimes, which can subsequently be resumed. A known already-unloaded subtree succeeds with an empty `unloadedThreadIds`; an unknown thread is an invalid request. The response lists runtimes unloaded by this attempt, not all historical subtree members.
+
+The accepted operation continues if the requesting connection disappears. A failed durable drain returns an error and retains all captured runtime entries, including actors already stopped by that attempt. The retained instances reject ordinary input, spawn, reopening, close, eviction, and removal; retry `thread/unload` to finish cleanup. Accepted completion delivery remains able to acquire lifecycle locks while shutdown drains. A cancelled, never-acknowledged spawn also retains any failed alias rollback until retry finishes it; ordinary unloaded aliases stay open. A client must not report successful shutdown or silently exit after such an error.
+
 # Thread rollback
 
 `thread/rollback` is retained as a Legacy-history compatibility route. Paginated threads continue to use `thread/revert`; rollback rejects them rather than changing their history mode. Neither operation undoes filesystem changes.

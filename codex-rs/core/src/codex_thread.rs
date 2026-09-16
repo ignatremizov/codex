@@ -182,7 +182,10 @@ pub struct GuardianRootSnapshot {
     pub trusted_skill_paths: Vec<String>,
 }
 
+mod unload_lifecycle;
+
 pub struct CodexThread {
+    pub(crate) cancelled_spawn_alias_cleanup_pending: std::sync::atomic::AtomicBool,
     pub(crate) session: Arc<Session>,
     pub(crate) io: SessionIo,
     // Registration source controls live access and lifecycle hooks. Managed Guardian
@@ -220,6 +223,7 @@ impl CodexThread {
         session_source: SessionSource,
     ) -> Self {
         Self {
+            cancelled_spawn_alias_cleanup_pending: std::sync::atomic::AtomicBool::new(false),
             session,
             io,
             session_source,
@@ -267,6 +271,11 @@ impl CodexThread {
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
         self.io.shutdown_and_wait().await
+    }
+
+    /// Stop the actor only after its owned work and durable writer acknowledge shutdown.
+    pub async fn shutdown_durably_and_wait(&self) -> CodexResult<()> {
+        self.io.shutdown_durably_and_wait().await
     }
 
     /// Wait until the underlying session loop has terminated.

@@ -366,6 +366,14 @@ impl ThreadManager {
             InitialHistory::Resumed(history) => Some(history.conversation_id),
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
+        let _target_guard = match thread_id {
+            Some(id) => {
+                let guard = self.state.agent_lifecycle_lock(id).lock_owned().await;
+                self.state.ensure_membership_mutation_allowed(id).await?;
+                Some(guard)
+            }
+            None => None,
+        };
         if let Some(id) = thread_id
             && let Some(graph) = self
                 .state
@@ -380,10 +388,6 @@ impl ThreadManager {
             )
             .await?;
         }
-        let _target_guard = match thread_id {
-            Some(id) => Some(self.state.agent_lifecycle_lock(id).lock_owned().await),
-            None => None,
-        };
         let alias = match thread_id {
             Some(id) => {
                 self.state.check_restoration_fence(id)?;
@@ -408,6 +412,9 @@ impl ThreadManager {
             ),
             None => None,
         };
+        if let Some(owner) = owner_id {
+            self.state.ensure_membership_mutation_allowed(owner).await?;
+        }
         let control = if let Some(messaging) = &live_revert_messaging {
             let control = messaging.control_for_resume(thread_id.ok_or_else(|| {
                 CodexErr::InvalidRequest("live revert requires resumed history".into())

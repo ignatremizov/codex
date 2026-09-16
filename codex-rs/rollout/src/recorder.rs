@@ -12,6 +12,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use chrono::SecondsFormat;
 use codex_protocol::RolloutId;
@@ -157,8 +159,9 @@ enum RolloutCmd {
 struct RolloutWriterTask {
     // The task, not just its caller, owns the lock until queued file writes finish.
     _writer_lock: Option<Arc<crate::WriterLockGuard>>,
-    handle: Mutex<Option<JoinHandle<()>>>,
+    handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     terminal_failure: Mutex<Option<Arc<IoError>>>,
+    shutdown_complete: AtomicBool,
 }
 
 impl RolloutWriterTask {
@@ -166,17 +169,15 @@ impl RolloutWriterTask {
     fn new(writer_lock: Option<Arc<crate::WriterLockGuard>>) -> Self {
         Self {
             _writer_lock: writer_lock,
-            handle: Mutex::new(None),
+            handle: tokio::sync::Mutex::new(None),
             terminal_failure: Mutex::new(None),
+            shutdown_complete: AtomicBool::new(false),
         }
     }
 
     /// Store the spawned task handle so it remains owned for the lifetime of recorder clones.
-    fn set_handle(&self, handle: JoinHandle<()>) {
-        let mut guard = self
-            .handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    async fn set_handle(&self, handle: JoinHandle<()>) {
+        let mut guard = self.handle.lock().await;
         *guard = Some(handle);
     }
 
@@ -999,7 +1000,7 @@ impl RolloutRecorder {
         let writer_task_for_spawn = Arc::clone(&writer_task);
         let rollout_path_for_spawn = rollout_path.clone();
         let handle = tokio::task::spawn(async move {
-            let result = rollout_writer(state, rx).await;
+            let result = rollout_writer(state, rx, &writer_task_for_spawn).await;
             if let Err(err) = result {
                 // This is the terminal background-task failure path. Normal I/O failures stay inside
                 // `rollout_writer`, are reported through command acks, and leave items buffered for retry.
@@ -1012,7 +1013,7 @@ impl RolloutRecorder {
                 writer_task_for_spawn.mark_failed(&err);
             }
         });
-        writer_task.set_handle(handle);
+        writer_task.set_handle(handle).await;
 
         Ok(Self {
             tx,
@@ -1219,14 +1220,24 @@ impl RolloutRecorder {
     ///
     /// If draining fails, the writer stays alive so callers can continue retrying flush/shutdown.
     pub async fn shutdown(&self) -> std::io::Result<()> {
+        if self.writer_task.shutdown_complete.load(Ordering::Acquire) {
+            return self.wait_for_exit().await;
+        }
         let (tx_done, rx_done) = oneshot::channel();
         match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
-            Ok(_) => rx_done.await.map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed waiting for rollout shutdown: {e}"))
-                })
-            })??,
+            Ok(_) => match rx_done.await {
+                Ok(result) => result?,
+                Err(_) if self.writer_task.shutdown_complete.load(Ordering::Acquire) => {}
+                Err(error) => {
+                    return Err(self.writer_task.terminal_failure().unwrap_or_else(|| {
+                        IoError::other(format!("failed waiting for rollout shutdown: {error}"))
+                    }));
+                }
+            },
             Err(e) => {
+                if self.writer_task.shutdown_complete.load(Ordering::Acquire) {
+                    return self.wait_for_exit().await;
+                }
                 if let Some(err) = self.writer_task.terminal_failure() {
                     warn!(
                         "failed to send rollout shutdown command because writer task failed: {err}"
@@ -1252,16 +1263,17 @@ impl RolloutRecorder {
     }
 
     async fn wait_for_exit(&self) -> std::io::Result<()> {
-        let handle = self
-            .writer_task
-            .handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(handle) = handle {
-            handle.await.map_err(IoError::other)?;
+        // Keep the handle in shared ownership while awaiting it. Cancelling one waiter must
+        // not let another observe an empty slot before the task releases its writer lease.
+        let mut handle = self.writer_task.handle.lock().await;
+        if let Some(task) = handle.as_mut() {
+            let result = task.await;
+            handle.take();
+            if let Err(error) = result {
+                self.writer_task.mark_failed(&IoError::other(error));
+            }
         }
-        Ok(())
+        self.writer_task.terminal_failure().map_or(Ok(()), Err)
     }
 }
 
@@ -1905,6 +1917,7 @@ impl RolloutWriterState {
 async fn rollout_writer(
     mut state: RolloutWriterState,
     mut rx: mpsc::Receiver<RolloutCmd>,
+    writer_task: &RolloutWriterTask,
 ) -> std::io::Result<()> {
     // Process rollout commands
     while let Some(cmd) = rx.recv().await {
@@ -1928,6 +1941,9 @@ async fn rollout_writer(
             }
             RolloutCmd::Shutdown { ack } => match state.shutdown().await {
                 Ok(()) => {
+                    // The writer owns this acknowledgement: dropping the requesting future
+                    // cannot lose a successful stop or make a later cleanup retry fail.
+                    writer_task.shutdown_complete.store(true, Ordering::Release);
                     let _ = ack.send(Ok(()));
                     break;
                 }
@@ -2234,3 +2250,7 @@ mod tests;
 #[cfg(test)]
 #[path = "mailbox_recovery_tests.rs"]
 mod mailbox_recovery_tests;
+
+#[cfg(test)]
+#[path = "recorder_shutdown_tests.rs"]
+mod shutdown_tests;

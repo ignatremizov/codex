@@ -1,4 +1,6 @@
 use super::residency::is_v2_resident_session_source;
+use super::spawn_ownership::PreparedAgentSpawn;
+use super::spawn_ownership::SpawnCleanup;
 use super::*;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
@@ -257,29 +259,6 @@ impl LocalAgentControl {
         .await
     }
 
-    async fn spawn_agent_internal(
-        &self,
-        config: Config,
-        initial_input: SpawnInitialInput,
-        session_source: Option<SessionSource>,
-        options: SpawnAgentOptions,
-    ) -> CodexResult<LiveAgent> {
-        let control = self.clone();
-        tokio::spawn(async move {
-            Box::pin(control.spawn_agent_owned(config, initial_input, session_source, options))
-                .await
-                .and_then(|spawned| match spawned.post_admission_warning {
-                    Some(warning) => Err(CodexErr::InvalidRequest(format!(
-                        "agent {} exists and its input must not be resent: {warning}",
-                        spawned.agent.thread_id,
-                    ))),
-                    None => Ok(spawned.agent),
-                })
-        })
-        .await
-        .map_err(|error| CodexErr::Fatal(format!("agent spawn worker failed: {error}")))?
-    }
-
     pub(super) async fn spawn_agent_owned(
         &self,
         config: Config,
@@ -287,6 +266,30 @@ impl LocalAgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<SpawnedAgent> {
+        Ok(self
+            .spawn_agent_prepared(
+                config,
+                initial_input,
+                session_source,
+                options,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?
+            .commit())
+    }
+
+    pub(super) async fn spawn_agent_prepared(
+        &self,
+        config: Config,
+        initial_input: SpawnInitialInput,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> CodexResult<PreparedAgentSpawn> {
+        let preserve_admitted_input = matches!(
+            &initial_input,
+            SpawnInitialInput::UserControlled { input: Some(_), .. }
+        );
         let (model_input_origin, initial_input) = match initial_input {
             SpawnInitialInput::ModelInput { input, origin } => {
                 (Some(origin), SpawnInitialInput::UserInput(input))
@@ -322,6 +325,9 @@ impl LocalAgentControl {
             ),
             None => None,
         };
+        if let Some(parent) = &parent {
+            parent.ensure_not_unloading()?;
+        }
         let task_path = match options.task.as_deref() {
             Some(task) => {
                 let parent = parent.as_ref().ok_or_else(|| {
@@ -396,6 +402,11 @@ impl LocalAgentControl {
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();
+        let close_cancelled_alias = !config.ephemeral
+            && matches!(
+                notification_source.as_ref(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+            );
 
         // The same `LocalAgentControl` is sent to spawn the thread.
         let new_thread = match (session_source, options.fork_mode.as_ref(), inheritance) {
@@ -440,6 +451,25 @@ impl LocalAgentControl {
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
+        let child_guard = state
+            .agent_lifecycle_lock(new_thread.thread_id)
+            .lock_owned()
+            .await;
+        let mut cleanup = SpawnCleanup::new(
+            self.clone(),
+            Arc::clone(&state),
+            Arc::clone(&new_thread.thread),
+            _parent_guard,
+            child_guard,
+        );
+        let preparation = async {
+        if close_cancelled_alias {
+            new_thread.thread.cancelled_spawn_alias_cleanup_pending
+                .store(/*val*/ true, std::sync::atomic::Ordering::Release);
+        }
+        if cancellation.is_cancelled() {
+            return Err(CodexErr::InvalidRequest("spawn caller cancelled before publication".into()));
+        }
         agent_metadata.agent_id = Some(new_thread.thread_id);
         if notification_source
             .as_ref()
@@ -447,9 +477,7 @@ impl LocalAgentControl {
         {
             new_thread.thread.ensure_rollout_materialized().await;
             if let Err(error) = new_thread.thread.session.flush_rollout().await {
-                return Err(self
-                    .cleanup_unpublished_restoration(&new_thread.thread, error)
-                    .await);
+                return Err(error);
             }
         }
         let persisted = match self
@@ -463,9 +491,7 @@ impl LocalAgentControl {
         {
             Ok(persisted) => persisted,
             Err(error) => {
-                return Err(self
-                    .cleanup_unpublished_restoration(&new_thread.thread, error)
-                    .await);
+                return Err(error);
             }
         };
         if let Some(SessionSource::SubAgent(
@@ -521,18 +547,14 @@ impl LocalAgentControl {
                     .unwrap_or(MultiAgentVersion::V1),
             )
         {
-            return Err(self
-                .cleanup_unpublished_spawn(&new_thread.thread, error)
-                .await);
+            return Err(error);
         }
 
         if let Err(error) = self
             .restore_agent_send_settings(new_thread.thread.session.presentation_id())
             .await
         {
-            return Err(self
-                .cleanup_unpublished_spawn(&new_thread.thread, error)
-                .await);
+            return Err(error);
         }
         if notification_source.is_some() {
             if let Err(error) = state
@@ -546,9 +568,7 @@ impl LocalAgentControl {
                 })
                 .await
             {
-                return Err(self
-                    .cleanup_unpublished_spawn(&new_thread.thread, error)
-                    .await);
+                return Err(error);
             }
         } else {
             reservation.commit(agent_metadata.clone());
@@ -566,6 +586,10 @@ impl LocalAgentControl {
         };
         let mut post_admission_warning = None;
         let mut input_outcome = None;
+        if cancellation.is_cancelled() {
+            return Err(CodexErr::InvalidRequest("spawn caller cancelled before input".into()));
+        }
+        cleanup.release_input_gate();
         let submission = async {
             match initial_input {
                 SpawnInitialInput::UserControlled {
@@ -671,15 +695,22 @@ impl LocalAgentControl {
             }
         }
         .await;
-        if let Err(error) = submission {
-            // This spawn allocated a fresh thread ID; cleanup never removes an adopted runtime.
-            // The worker owns both admission and cleanup even if the caller drops its receipt.
-            if let Err(cleanup_error) = self.close_agent(new_thread.thread_id).await {
-                warn!("failed to retire unpublished spawned agent: {cleanup_error}");
+        let handoff = cleanup.reacquire_input_gate().await;
+        submission?;
+        if let Err(error) = handoff {
+            if preserve_admitted_input && input_outcome.is_some() {
+                let warning = format!("input was accepted before runtime handoff changed: {error}");
+                post_admission_warning = Some(match post_admission_warning {
+                    Some(existing) => format!("{existing}; {warning}"),
+                    None => warning,
+                });
+            } else {
+                return Err(error);
             }
-            return Err(error);
         }
-        state.notify_thread_created(new_thread.thread_id);
+        if cancellation.is_cancelled() {
+            return Err(CodexErr::InvalidRequest("spawn caller cancelled before handoff".into()));
+        }
 
         Ok(SpawnedAgent {
             agent: LiveAgent {
@@ -691,6 +722,18 @@ impl LocalAgentControl {
             post_admission_warning,
             input_outcome,
         })
+        }.await;
+        match preparation {
+            Ok(spawned) => Ok(PreparedAgentSpawn { spawned, cleanup }),
+            Err(error) => {
+                if let Err(cleanup_error) = cleanup.rollback().await {
+                    return Err(CodexErr::Fatal(format!(
+                        "{error}; spawned runtime retained for unload retry: {cleanup_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn spawn_forked_thread(

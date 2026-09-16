@@ -19,11 +19,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::GrpcCodeModeSession;
 use super::GrpcCodeModeSessionProvider;
-use super::SHUTDOWN_ERROR;
 use super::generation;
 use super::generation::GenerationDelegate;
 use crate::remote_session::ShutdownResultReceiver;
 use crate::remote_session::wait_for_watch;
+
+mod opening;
 
 pub(super) struct ReconnectableSession {
     inner: Arc<ReconnectInner>,
@@ -33,10 +34,13 @@ struct ReconnectInner {
     provider: GrpcCodeModeSessionProvider,
     limits: CodeModeSessionCellExecutionLimits,
     binding: Mutex<Option<SessionBinding>>,
-    opening_permit: Semaphore,
+    retired: Mutex<Vec<SessionBinding>>,
+    opening_permit: Arc<Semaphore>,
+    opening: Mutex<Option<opening::OpeningAttempt>>,
     next_generation: AtomicU64,
     shutdown_requested: CancellationToken,
     shutdown_result: Mutex<Option<ShutdownResultReceiver>>,
+    durable_result: Mutex<Option<ShutdownResultReceiver>>,
 }
 
 #[derive(Clone)]
@@ -55,10 +59,13 @@ impl ReconnectableSession {
                 provider,
                 limits,
                 binding: Mutex::new(None),
-                opening_permit: Semaphore::new(/*permits*/ 1),
+                retired: Mutex::new(Vec::new()),
+                opening_permit: Arc::new(Semaphore::new(/*permits*/ 1)),
+                opening: Mutex::new(None),
                 next_generation: AtomicU64::new(1),
                 shutdown_requested: CancellationToken::new(),
                 shutdown_result: Mutex::new(None),
+                durable_result: Mutex::new(None),
             }),
         }
     }
@@ -69,6 +76,10 @@ impl ReconnectableSession {
 }
 
 impl CodeModeSession for ReconnectableSession {
+    fn prewarm<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(self.initialize())
+    }
+
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,
@@ -109,6 +120,10 @@ impl CodeModeSession for ReconnectableSession {
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
         Box::pin(wait_for_watch(self.inner.request_shutdown()))
     }
+
+    fn shutdown_durably<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(wait_for_watch(self.inner.request_durable_shutdown()))
+    }
 }
 
 impl Drop for ReconnectableSession {
@@ -120,66 +135,6 @@ impl Drop for ReconnectableSession {
 }
 
 impl ReconnectInner {
-    async fn get_or_open_binding(&self) -> Result<SessionBinding, String> {
-        if self.shutdown_requested.is_cancelled() {
-            return Err(SHUTDOWN_ERROR.to_string());
-        }
-        if let Some(binding) = self.live_binding() {
-            return Ok(binding);
-        }
-
-        let _opening_permit = tokio::select! {
-            biased;
-            _ = self.shutdown_requested.cancelled() => {
-                return Err(SHUTDOWN_ERROR.to_string());
-            }
-            permit = self.opening_permit.acquire() => permit
-                .map_err(|_| "gRPC code-mode session opening coordinator closed".to_string())?,
-        };
-        if self.shutdown_requested.is_cancelled() {
-            return Err(SHUTDOWN_ERROR.to_string());
-        }
-        if let Some(binding) = self.live_binding() {
-            return Ok(binding);
-        }
-
-        let previous_binding = self
-            .binding
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        if let Some(binding) = previous_binding {
-            wait_for_watch(binding.session.inner.request_shutdown()).await?;
-        }
-
-        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let session = tokio::select! {
-            biased;
-            _ = self.shutdown_requested.cancelled() => {
-                return Err(SHUTDOWN_ERROR.to_string());
-            }
-            session = self.provider.open_binding(self.limits.clone()) => session?,
-        };
-        let binding = SessionBinding {
-            session,
-            generation,
-        };
-        let published = {
-            let mut current = self.binding.lock().unwrap_or_else(PoisonError::into_inner);
-            if self.shutdown_requested.is_cancelled() {
-                false
-            } else {
-                *current = Some(binding.clone());
-                true
-            }
-        };
-        if !published {
-            let _ = wait_for_watch(binding.session.inner.request_shutdown()).await;
-            return Err(SHUTDOWN_ERROR.to_string());
-        }
-        Ok(binding)
-    }
-
     fn live_binding(&self) -> Option<SessionBinding> {
         self.binding
             .lock()
@@ -190,13 +145,14 @@ impl ReconnectInner {
     }
 
     fn request_shutdown(self: &Arc<Self>) -> ShutdownResultReceiver {
-        {
+        let established_shutdown = {
+            let _opening = self.opening.lock().unwrap_or_else(PoisonError::into_inner);
             let binding = self.binding.lock().unwrap_or_else(PoisonError::into_inner);
             self.shutdown_requested.cancel();
-            if let Some(binding) = binding.as_ref() {
-                binding.session.inner.request_shutdown();
-            }
-        }
+            binding
+                .as_ref()
+                .map(|binding| binding.session.inner.request_shutdown())
+        };
         let mut result = self
             .shutdown_result
             .lock()
@@ -205,16 +161,17 @@ impl ReconnectInner {
             return receiver.clone();
         }
 
-        let (sender, receiver) = watch::channel(None);
+        // Fast shutdown still waits for an established binding's fast close, but
+        // an opening without an ID must not delay interruption. The owned task
+        // below retains cleanup; only durable shutdown proves it has completed.
+        let receiver = established_shutdown.unwrap_or_else(|| watch::channel(Some(Ok(()))).1);
         *result = Some(receiver.clone());
         let inner = Arc::clone(self);
         tokio::spawn(async move {
             let opening_permit = match inner.opening_permit.acquire().await {
                 Ok(permit) => permit,
                 Err(_) => {
-                    sender.send_replace(Some(Err(
-                        "gRPC code-mode session opening coordinator closed".to_string(),
-                    )));
+                    tracing::warn!("gRPC code-mode session opening coordinator closed");
                     return;
                 }
             };
@@ -222,12 +179,72 @@ impl ReconnectInner {
                 .binding
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .take();
+                .clone();
             drop(opening_permit);
-            let result = match binding {
-                Some(binding) => wait_for_watch(binding.session.inner.request_shutdown()).await,
-                None => Ok(()),
-            };
+            if let Some(binding) = binding
+                && let Err(error) = wait_for_watch(binding.session.inner.request_shutdown()).await
+            {
+                tracing::warn!(%error, "gRPC code-mode background fast close failed");
+            }
+        });
+        receiver
+    }
+
+    fn request_durable_shutdown(self: &Arc<Self>) -> ShutdownResultReceiver {
+        let opening = {
+            let opening = self.opening.lock().unwrap_or_else(PoisonError::into_inner);
+            self.shutdown_requested.cancel();
+            opening.clone()
+        };
+        let mut attempt = self
+            .durable_result
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(receiver) = attempt.as_ref()
+            && !matches!(&*receiver.borrow(), Some(Err(_)))
+        {
+            return receiver.clone();
+        }
+        let (sender, receiver) = watch::channel(None);
+        *attempt = Some(receiver.clone());
+        let inner = Arc::clone(self);
+        tokio::spawn(async move {
+            let result = async {
+                let _permit =
+                    inner.opening_permit.acquire().await.map_err(|_| {
+                        "gRPC code-mode session opening coordinator closed".to_string()
+                    })?;
+                let mut bindings = inner
+                    .retired
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                if let Some(binding) = inner
+                    .binding
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+                {
+                    bindings.push(binding);
+                }
+                if let Some(opening) = opening
+                    && let Err(error) = wait_for_watch(opening.result).await
+                    && opening.unidentified_backend.load(Ordering::Acquire)
+                {
+                    return Err(error);
+                }
+                let results = futures::future::join_all(
+                    bindings
+                        .iter()
+                        .map(|binding| binding.session.shutdown_durably()),
+                )
+                .await;
+                results
+                    .into_iter()
+                    .collect::<Result<Vec<()>, String>>()
+                    .map(|_| ())
+            }
+            .await;
             sender.send_replace(Some(result));
         });
         receiver

@@ -941,7 +941,7 @@ impl App {
             }
             AppEvent::RunningTaskExit { action, thread_id } => match action {
                 RunningTaskExitAction::RunInBackground => {
-                    return Ok(self.handle_exit_mode(app_server, ExitMode::Immediate).await);
+                    return Ok(self.handle_exit_mode(app_server, ExitMode::Disconnect).await);
                 }
                 RunningTaskExitAction::CancelTask => {
                     if self.chat_widget.thread_id() == Some(thread_id)
@@ -3619,68 +3619,6 @@ impl App {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
                 self.chat_widget
                     .add_error_message(format!("Failed to remove shortcut: {err}"));
-            }
-        }
-    }
-
-    pub(super) async fn handle_exit_mode(
-        &mut self,
-        app_server: &mut AppServerSession,
-        mode: ExitMode,
-    ) -> AppRunControl {
-        self.chat_widget.cancel_dictation();
-        for (request_id, (_, task)) in self.dynamic_tool_tasks.drain() {
-            task.abort();
-            let response = crate::dynamic_tools::failure_response(
-                "TUI disconnected while handling a dynamic tool call",
-            );
-            match serde_json::to_value(response) {
-                Ok(result) => {
-                    if let Err(error) = app_server
-                        .resolve_server_request(request_id.clone(), result)
-                        .await
-                    {
-                        tracing::warn!(?request_id, %error, "failed to cancel dynamic tool call");
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(?request_id, %error, "failed to serialize dynamic tool response")
-                }
-            }
-        }
-        match mode {
-            ExitMode::ShutdownFirst | ExitMode::ShutdownAfterInterrupt => {
-                // Mark the thread we are explicitly shutting down for exit so
-                // its shutdown completion does not trigger agent failover.
-                self.pending_shutdown_exit_thread_id =
-                    self.active_thread_id.or(self.chat_widget.thread_id());
-                if self.pending_shutdown_exit_thread_id.is_some() {
-                    // This is a UI escape-hatch budget, not a protocol
-                    // deadline. A healthy local thread/unsubscribe round trip
-                    // should finish comfortably inside two seconds, while a
-                    // longer wait makes Ctrl+C feel broken when the app-server
-                    // is already wedged.
-                    if tokio::time::timeout(
-                        SHUTDOWN_FIRST_EXIT_TIMEOUT,
-                        self.shutdown_current_thread(app_server),
-                    )
-                    .await
-                    .is_err()
-                    {
-                        tracing::warn!("timed out waiting for app-server thread shutdown");
-                    }
-                }
-                self.pending_shutdown_exit_thread_id = None;
-                AppRunControl::Exit(if mode == ExitMode::ShutdownAfterInterrupt {
-                    ExitReason::TurnInterrupted
-                } else {
-                    ExitReason::UserRequested
-                })
-            }
-            ExitMode::Immediate => {
-                self.stop_realtime_conversation(app_server).await;
-                self.pending_shutdown_exit_thread_id = None;
-                AppRunControl::Exit(ExitReason::UserRequested)
             }
         }
     }

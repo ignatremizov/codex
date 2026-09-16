@@ -554,6 +554,8 @@ pub enum InMemoryThreadStoreFailure {
     ThreadRollbackFlush,
     ThreadRollbackVerificationRead,
     ThreadRollbackResponseRead,
+    ThreadShutdown,
+    ThreadDiscard,
 }
 
 impl InMemoryThreadStoreFailure {
@@ -569,6 +571,8 @@ impl InMemoryThreadStoreFailure {
             Self::ThreadRollbackFlush => "thread rollback flush",
             Self::ThreadRollbackVerificationRead => "thread rollback verification read",
             Self::ThreadRollbackResponseRead => "thread rollback response read",
+            Self::ThreadShutdown => "thread shutdown",
+            Self::ThreadDiscard => "thread discard",
         }
     }
 }
@@ -825,7 +829,8 @@ impl InMemoryThreadStore {
                 | InMemoryThreadStoreFailure::ThreadRollbackAppend
                 | InMemoryThreadStoreFailure::ThreadRollbackFlush
                 | InMemoryThreadStoreFailure::ThreadRollbackVerificationRead
-                | InMemoryThreadStoreFailure::ThreadRollbackResponseRead,
+                | InMemoryThreadStoreFailure::ThreadRollbackResponseRead
+                | InMemoryThreadStoreFailure::ThreadShutdown,
             )
             | None => None,
         };
@@ -1466,14 +1471,39 @@ impl ThreadStore for InMemoryThreadStore {
 
     fn shutdown_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
-            self.state.lock().await.calls.shutdown_thread += 1;
+            let mut state = self.state.lock().await;
+            state.calls.shutdown_thread += 1;
+            if matches!(
+                state.fail_next_operation,
+                Some(InMemoryThreadStoreFailure::ThreadShutdown)
+            ) {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::ThreadShutdown.operation()
+                    ),
+                });
+            }
             Ok(())
         })
     }
 
     fn discard_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
-            self.state.lock().await.calls.discard_thread += 1;
+            let mut state = self.state.lock().await;
+            state.calls.discard_thread += 1;
+            if matches!(
+                state.fail_next_operation.take(),
+                Some(InMemoryThreadStoreFailure::ThreadDiscard)
+            ) {
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::ThreadDiscard.operation()
+                    ),
+                });
+            }
             Ok(())
         })
     }

@@ -29,7 +29,7 @@ use tokio::time::Instant;
 
 struct StreamingOutputHarness {
     process: Arc<UnifiedExecProcess>,
-    stdout_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    stdout_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     exit_tx: tokio::sync::oneshot::Sender<i32>,
     transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
     context: UnifiedExecContext,
@@ -104,7 +104,7 @@ async fn streaming_output_harness(
     initial_output: Option<&[u8]>,
 ) -> anyhow::Result<StreamingOutputHarness> {
     let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
-    let (stdout_tx, stdout_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+    let (stdout_tx, stdout_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(/*capacity*/ 8);
     let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<i32>();
     let spawned = codex_utils_pty::spawn_from_driver(codex_utils_pty::ProcessDriver {
         writer_tx,
@@ -135,7 +135,6 @@ async fn streaming_output_harness(
         output_notified.as_mut().enable();
         stdout_tx
             .send(initial_output.to_vec())
-            .await
             .expect("send initial output");
         tokio::time::timeout(Duration::from_secs(1), output_notified)
             .await
@@ -166,13 +165,9 @@ async fn streaming_output_preserves_multibyte_characters_across_chunks() -> anyh
     } = streaming_output_harness(/*initial_output*/ None).await?;
     let output_stream_complete = process.output_stream_completion();
 
-    stdout_tx
-        .send(vec![0xc3])
-        .await
-        .expect("send UTF-8 lead byte");
+    stdout_tx.send(vec![0xc3]).expect("send UTF-8 lead byte");
     stdout_tx
         .send(vec![0xa9])
-        .await
         .expect("send UTF-8 continuation byte");
     drop(stdout_tx);
     exit_tx.send(0).expect("send exit");
@@ -213,7 +208,7 @@ async fn exit_during_chunk_delivery_preserves_remaining_live_deltas() -> anyhow:
     start_streaming_output(&process, &context);
     assert!(!process.output_stream_completion().is_cancelled());
     let bytes = vec![b'x'; super::UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES * 128];
-    stdout_tx.send(bytes.clone()).await?;
+    stdout_tx.send(bytes.clone())?;
     let first = tokio::time::timeout(Duration::from_secs(2), rx_event.recv()).await??;
     let EventMsg::ExecCommandOutputDelta(first) = first.msg else {
         panic!("expected first output delta");
@@ -302,6 +297,68 @@ async fn exit_watcher_includes_output_emitted_before_streaming_started() -> anyh
 }
 
 #[tokio::test]
+async fn durable_shutdown_waits_for_exit_watcher_interaction_and_final_event() -> anyhow::Result<()>
+{
+    use futures::FutureExt;
+
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        transcript,
+        context,
+        rx_event,
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let interaction = process.interaction_lock().lock_owned().await;
+    let session = Arc::clone(&context.session);
+    session
+        .services
+        .unified_exec_manager
+        .retain_process_for_shutdown(Arc::clone(&process));
+    #[allow(deprecated)]
+    let cwd = context.step_context.turn.cwd.clone().into();
+    spawn_exit_watcher(
+        Arc::clone(&process),
+        &context,
+        vec!["proof".to_string()],
+        cwd,
+        /*process_id*/ 123,
+        /*plugin_attribution*/ None,
+        transcript,
+        Instant::now(),
+        /*network_denial_monitor*/ None,
+        /*plugin_metrics_sidecar*/ None,
+    );
+    exit_tx.send(0).expect("confirm real process exit");
+    drop(stdout_tx);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !process.actual_exit_confirmed() {
+            tokio::task::yield_now().await;
+        }
+        process.output_stream_completion().cancelled().await;
+    })
+    .await
+    .expect("real exit and output drain complete");
+
+    let mut shutdown = Box::pin(session.services.unified_exec_manager.shutdown_durably());
+    assert!(
+        shutdown.as_mut().now_or_never().is_none(),
+        "writer closure must still wait for the blocked final-event producer"
+    );
+    drop(interaction);
+    shutdown.await?;
+    let mut saw_completed = false;
+    while let Ok(event) = rx_event.try_recv() {
+        saw_completed |= matches!(event.msg, EventMsg::ItemCompleted(_));
+    }
+    assert!(
+        saw_completed,
+        "final event must precede the drain acknowledgement"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn streaming_output_does_not_keep_unstored_process_alive() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
@@ -337,7 +394,6 @@ async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyho
         tokio::time::sleep(Duration::from_millis(50)).await;
         stdout_tx
             .send(b"LATE-OUTPUT-MARKER\xc3".to_vec())
-            .await
             .expect("send late output");
     });
 
@@ -378,7 +434,6 @@ async fn streaming_output_close_timeout_resets_while_output_is_active() -> anyho
             tokio::time::sleep(Duration::from_millis(750)).await;
             stdout_tx
                 .send(marker.to_vec())
-                .await
                 .expect("send active trailing output");
         }
         tokio::time::sleep(Duration::from_millis(750)).await;
@@ -418,7 +473,7 @@ async fn streaming_output_has_absolute_post_exit_deadline() -> anyhow::Result<()
     tokio::spawn(async move {
         for _ in 0..20 {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if stdout_tx.send(b"x".to_vec()).await.is_err() {
+            if stdout_tx.send(b"x".to_vec()).is_err() {
                 break;
             }
         }
@@ -464,10 +519,7 @@ async fn streaming_output_marks_incomplete_output_when_close_times_out() -> anyh
 
     tokio::time::pause();
     let exited_at = Instant::now();
-    stdout_tx
-        .send(vec![0xc3])
-        .await
-        .expect("send UTF-8 lead byte");
+    stdout_tx.send(vec![0xc3]).expect("send UTF-8 lead byte");
     exit_tx.send(0).expect("send exit");
     tokio::time::timeout(Duration::from_secs(2), output_stream_complete.cancelled())
         .await
