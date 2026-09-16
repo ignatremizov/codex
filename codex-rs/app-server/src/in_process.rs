@@ -440,6 +440,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         args.arg0_paths.clone(),
         args.thread_config_loader,
     )
+    .auth_file_selection(args.config.auth_file_selection.clone())
     .with_embedded_network_policy(args.embedded_network_policy);
     let auth_manager = bootstrap::configure(
         &config_manager,

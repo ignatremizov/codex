@@ -10,8 +10,11 @@ use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_transport::daemon_profile_recovery_file_path;
 use codex_app_server_transport::daemon_recovery;
 use codex_app_server_transport::daemon_recovery_file_path;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use codex_uds::UnixStream;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
@@ -20,6 +23,7 @@ use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::path::Path;
+use std::path::PathBuf;
 #[cfg(unix)]
 use std::process::Command as StdCommand;
 use std::process::Stdio;
@@ -46,9 +50,11 @@ async fn managed_restart_resumes_loaded_threads_and_goal_without_client() -> Res
     .await;
     create_config_toml(home.path(), mock.uri(), "never")?;
     let socket_path = home.path().join("control/server.sock");
-    let recovery_file = daemon_recovery_file_path(home.path());
+    let recovery_file = profile_recovery_file_path(home.path())?;
     std::fs::create_dir_all(recovery_file.parent().context("snapshot parent")?)?;
     std::fs::write(&recovery_file, "invalid JSON")?;
+    let legacy_recovery_file = daemon_recovery_file_path(home.path());
+    std::fs::write(&legacy_recovery_file, "legacy recovery must remain inert")?;
     let mut server = spawn_server(home.path(), &socket_path)?;
     let mut client = connect_daemon_client(
         &socket_path,
@@ -63,6 +69,10 @@ async fn managed_restart_resumes_loaded_threads_and_goal_without_client() -> Res
     )
     .await?;
     assert!(!recovery_file.exists());
+    assert_eq!(
+        std::fs::read_to_string(&legacy_recovery_file)?,
+        "legacy recovery must remain inert",
+    );
     let thread = start_thread(
         &mut client,
         /*id*/ 2,
@@ -129,6 +139,10 @@ async fn managed_restart_resumes_loaded_threads_and_goal_without_client() -> Res
         "{recovered}"
     );
     assert!(!recovery_file.exists());
+    assert_eq!(
+        std::fs::read_to_string(&legacy_recovery_file)?,
+        "legacy recovery must remain inert",
+    );
     let mut reconnected = connect_daemon_client(
         &socket_path,
         InitializeCapabilities {
@@ -300,7 +314,7 @@ async fn managed_shutdown_skips_nonpersistent_threads_and_tolerates_save_failure
         )
         .await?;
     }
-    let path = daemon_recovery_file_path(home.path());
+    let path = profile_recovery_file_path(home.path())?;
     if matches!(scenario, SnapshotScenario::WriteFailure) {
         std::fs::create_dir_all(&path)?;
     } else if matches!(scenario, SnapshotScenario::Archived) {
@@ -368,13 +382,13 @@ async fn managed_shutdown_preserves_admitted_resume() -> Result<()> {
     .context("required MCP initialization did not begin")?;
     request_shutdown(&server, &socket).await?;
     assert_still_running(&mut server, "shutdown must wait for the admitted resume").await;
-    assert!(!daemon_recovery_file_path(home.path()).exists());
+    assert!(!profile_recovery_file_path(home.path())?.exists());
     release
         .send(())
         .expect("release required MCP initialization");
     wait_success(&mut server).await?;
     assert_eq!(
-        daemon_recovery::read_candidates(&daemon_recovery_file_path(home.path()))?,
+        daemon_recovery::read_candidates(&profile_recovery_file_path(home.path())?)?,
         [id].into(),
     );
     Ok(())
@@ -582,7 +596,7 @@ async fn managed_shutdown_records_interrupted_turn(outcome: &str) -> Result<()> 
         _ => unreachable!(),
     }
     request_shutdown(&server, &socket).await?;
-    let path = daemon_recovery_file_path(home.path());
+    let path = profile_recovery_file_path(home.path())?;
     timeout(DEFAULT_READ_TIMEOUT, async {
         while !path.exists() {
             sleep(Duration::from_millis(25)).await;
@@ -829,12 +843,24 @@ async fn connect_daemon_client(
     connect_initialized(socket_path, capabilities, "daemon_recovery_test", "0.1.0").await
 }
 
+fn profile_recovery_file_path(home: &Path) -> Result<PathBuf> {
+    let home = home.canonicalize()?;
+    let profile =
+        AuthFileSelection::Default.profile_identity(&home, AuthCredentialsStoreMode::File);
+    Ok(daemon_profile_recovery_file_path(
+        &home,
+        &profile.profile_opaque_id,
+    )?)
+}
+
 fn spawn_server(home: &Path, socket_path: &Path) -> Result<Child> {
     let binary = codex_utils_cargo_bin::cargo_bin("codex-app-server")?;
     Ok(Command::new(binary)
         .args(["--listen", &format!("unix://{}", socket_path.display())])
         .arg(DISABLE_PLUGIN_STARTUP_TASKS_ARG)
         .env("CODEX_HOME", home)
+        .env_remove("CODEX_AUTH_FILE")
+        .args(["-c", "cli_auth_credentials_store=\"file\""])
         .arg("--managed-daemon")
         .env(
             codex_app_server_transport::DAEMON_SHUTDOWN_SOCKET_ENV,

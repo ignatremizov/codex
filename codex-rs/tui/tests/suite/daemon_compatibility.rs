@@ -6,6 +6,8 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
 use codex_app_server_protocol::JSONRPCMessage;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -29,8 +31,14 @@ async fn incompatible_daemon_falls_back_for_default_and_explicit_features() -> R
                 ),
             )?;
         }
-        let socket = codex_app_server_client::app_server_control_socket_path(home.path())?;
-        std::fs::create_dir_all(socket.parent().unwrap())?;
+        let profile = AuthFileSelection::Default
+            .profile_identity(home.path(), AuthCredentialsStoreMode::File);
+        let socket = codex_app_server_client::app_server_profile_socket_path(
+            home.path(),
+            &profile.profile_opaque_id,
+        )?;
+        std::fs::create_dir_all(socket.parent().context("profile socket directory")?)?;
+        let codex_home = home.path().display().to_string();
         let listener = UnixListener::bind(socket.as_path())?;
         let server = tokio::spawn(async move {
             let mut socket = loop {
@@ -44,7 +52,10 @@ async fn incompatible_daemon_falls_back_for_default_and_explicit_features() -> R
                     continue;
                 };
                 let response = if request.method == "initialize" {
-                    json!({"id": request.id, "result": {"userAgent": "daemon-test/0.0.0"}})
+                    json!({
+                        "id": request.id,
+                        "result": {"userAgent": "daemon-test/0.0.0", "codexHome": codex_home},
+                    })
                 } else {
                     assert_eq!(request.method, "experimentalFeature/list");
                     json!({"id": request.id, "result": {"data": [{
@@ -68,6 +79,12 @@ async fn incompatible_daemon_falls_back_for_default_and_explicit_features() -> R
         terminal.wait_for_startup()?;
         terminal.wait_for_screen("warning")?;
         terminal.write_input(b"\x14")?;
+        terminal.wait_for_screen("Review ·")?;
+        // Startup diagnostics have no compact rows; inspect their retained Full presentation.
+        terminal.write_input(b"v")?;
+        terminal.wait_for_screen("Full ·")?;
+        // Full mode preserves the Review anchor; older startup warnings can be above it.
+        terminal.write_input(b"\x1b[1;5H")?;
         let (snapshot, warning_end) = match scenario {
             "default" => (
                 "daemon_feature_mismatch",

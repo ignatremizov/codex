@@ -13,6 +13,12 @@ fn daemon(home: &std::path::Path) -> crate::Daemon {
     let state = home.join("app-server-daemon");
     crate::Daemon {
         log_diagnostics: false,
+        launch: crate::DaemonLaunchOptions::new(
+            home.to_path_buf(),
+            codex_login::AuthFileSelection::Default,
+            codex_login::AuthCredentialsStoreMode::File,
+        )
+        .expect("launch options"),
         socket_path: state.join("app-server.sock"),
         pid_file: state.join("app-server.pid"),
         update_pid_file: state.join("app-server-updater.pid"),

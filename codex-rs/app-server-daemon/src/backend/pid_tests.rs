@@ -10,7 +10,6 @@ use tokio::time::sleep;
 use codex_app_server_transport::REMOTE_CONTROL_DISABLED_ENV_VAR;
 
 use super::PidBackend;
-use super::PidCommandKind;
 use super::PidFileState;
 use super::PidLogTail;
 use super::PidRecord;
@@ -576,15 +575,11 @@ async fn exited_unreaped_updater_is_reaped() {
 
 #[test]
 fn update_loop_uses_hidden_app_server_subcommand() {
-    let backend = PidBackend {
-        feature_overrides: Default::default(),
-        codex_bin: "codex".into(),
-        pid_file: "updater.pid".into(),
-        lock_file: "updater.pid.lock".into(),
-        command_kind: PidCommandKind::UpdateLoop {
-            restore_release: None,
-        },
-    };
+    let backend = PidBackend::new_update_loop(
+        "codex".into(),
+        "updater.pid".into(),
+        /*restore_release*/ None,
+    );
 
     assert_eq!(
         backend.command_args(),

@@ -3,6 +3,8 @@ use std::process::Output;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -58,6 +60,33 @@ where
         .context("missing initialized notification")??;
     let initialized: Value = serde_json::from_str(initialized.to_text()?)?;
     assert_eq!(initialized["method"], "initialized");
+
+    let request = websocket
+        .next()
+        .await
+        .context("missing server read request")??;
+    let request: Value = serde_json::from_str(request.to_text()?)?;
+    assert_eq!(request["method"], "server/read");
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home, AuthCredentialsStoreMode::default());
+    let metadata = if matches!(response, QueueResponse::MethodNotFound) {
+        // Older explicit remotes may lack metadata and queueing independently.
+        json!({
+            "id": request["id"],
+            "error": {"code": -32601, "message": "Method not found"},
+        })
+    } else {
+        json!({
+            "id": request["id"],
+            "result": {"authProfile": {
+                "profileOpaqueId": profile.profile_opaque_id,
+                "displayLabel": profile.display_label,
+            }},
+        })
+    };
+    websocket
+        .send(Message::Text(metadata.to_string().into()))
+        .await?;
 
     let request = websocket.next().await.context("missing queue request")??;
     let request: Value = serde_json::from_str(request.to_text()?)?;
@@ -192,7 +221,12 @@ async fn run_remote_queue_command(response: QueueResponse) -> Result<(Output, Va
 #[tokio::test]
 async fn queue_rejects_local_daemon_that_does_not_support_queueing() -> Result<()> {
     let codex_home = tempfile::tempdir_in("/tmp")?;
-    let socket_path = codex_app_server::app_server_control_socket_path(codex_home.path())?;
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home.path(), AuthCredentialsStoreMode::default());
+    let socket_path = codex_app_server::app_server_profile_socket_path(
+        codex_home.path(),
+        &profile.profile_opaque_id,
+    )?;
     std::fs::create_dir_all(
         socket_path
             .as_path()
@@ -233,7 +267,12 @@ async fn queue_rejects_local_daemon_that_does_not_support_queueing() -> Result<(
 #[tokio::test]
 async fn queue_rejects_overrides_that_bypass_local_daemon() -> Result<()> {
     let codex_home = tempfile::tempdir_in("/tmp")?;
-    let socket_path = codex_app_server::app_server_control_socket_path(codex_home.path())?;
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home.path(), AuthCredentialsStoreMode::default());
+    let socket_path = codex_app_server::app_server_profile_socket_path(
+        codex_home.path(),
+        &profile.profile_opaque_id,
+    )?;
     std::fs::create_dir_all(
         socket_path
             .as_path()

@@ -99,9 +99,14 @@ pub(super) async fn check(
             issue.reason
         ))),
         (Some(1), Some(features)) if managed_daemon => {
+            let launch = codex_app_server_daemon::DaemonLaunchOptions::new(
+                config.codex_home.to_path_buf(),
+                config.auth_file_selection.clone(),
+                config.cli_auth_credentials_store_mode,
+            )?;
             tui.with_restored(crate::tui::TerminalHandoff::Restore, || async {
                 crossterm::terminal::disable_raw_mode()?;
-                codex_app_server_daemon::restart_with_features(features)
+                codex_app_server_daemon::restart_with_features(&launch, features)
                     .await
                     .map_err(|err| {
                         io::Error::other(format!("{err:#}\n{}", daemon_startup::FAILURE_HINT))

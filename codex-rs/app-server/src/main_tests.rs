@@ -1,6 +1,5 @@
 use super::AppServerArgs;
 use clap::Parser;
-use codex_app_server::AppServerTransport;
 use pretty_assertions::assert_eq;
 use toml::Value as TomlValue;
 use url::Url;
@@ -53,7 +52,7 @@ fn app_server_accepts_process_scoped_grpc_code_mode_host() {
         args.code_mode_host.code_mode_host,
         Some(Url::parse("https://example.test").expect("test endpoint should parse"))
     );
-    assert_eq!(args.listen, AppServerTransport::Off);
+    assert_eq!(args.listen, "off");
 }
 
 #[test]

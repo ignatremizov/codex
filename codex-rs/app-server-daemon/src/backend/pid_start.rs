@@ -79,6 +79,9 @@ impl PidBackend {
                 None
             };
         let mut command = Command::new(&codex_bin);
+        if let Some(launch) = &self.launch {
+            launch.configure_command(command.as_std_mut());
+        }
         let stderr_log = match self.open_stderr_log().await {
             Ok(stderr_log) => stderr_log,
             Err(err) => {
