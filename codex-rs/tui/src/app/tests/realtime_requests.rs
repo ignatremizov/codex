@@ -1926,17 +1926,28 @@ async fn embedded_voice_settings_follow_project_after_thread_switch() -> Result<
         RealtimeVoice::Sol,
         RealtimeVoice::Maple,
     ] {
-        let thread_id = ThreadId::new();
         let cwd = projects.path().join(voice.wire_name());
+        let mut config = app.config.clone();
+        config.cwd = AbsolutePathBuf::from_absolute_path(&cwd)?;
+        config.workspace_roots = vec![config.cwd.clone()];
+        let started = Box::pin(server.start_thread(&config)).await?;
+        let thread_id = started.session.thread_id;
         app.thread_event_channels.insert(
             thread_id,
             ThreadEventChannel::new_with_session(
                 THREAD_EVENT_CHANNEL_CAPACITY,
-                test_thread_session(thread_id, cwd),
-                Vec::new(),
+                started.session,
+                started.turns,
             ),
         );
         Box::pin(app.select_agent_thread(&mut tui, &mut server, thread_id)).await?;
+        assert_eq!(
+            (
+                app.active_thread_id,
+                app.chat_widget.config_ref().cwd.as_path()
+            ),
+            (Some(thread_id), cwd.as_path()),
+        );
         app.open_realtime_settings(&server).await;
         let popup = crate::chatwidget::tests::helpers::render_bottom_popup(
             &app.chat_widget,

@@ -68,6 +68,7 @@ const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
 const INSTALL_URL: &str = "https://chatgpt.com/codex/install.ps1";
 
 pub(crate) async fn run(
+    launch: crate::DaemonLaunchOptions,
     http_client_factory: HttpClientFactory,
     restore_release: Option<String>,
 ) -> Result<()> {
@@ -77,7 +78,7 @@ pub(crate) async fn run(
     );
     run_with_http(
         &http,
-        &Daemon::from_environment()?,
+        &Daemon::from_options(&launch)?,
         &current_updater_identity().await?,
         restore_release,
     )
@@ -261,7 +262,7 @@ async fn adopt_managed_updater(
     #[cfg(unix)]
     {
         let _ = listener;
-        reexec_managed_updater(&managed_bin).map(|_| UpdateLoopControl::Stop)
+        reexec_managed_updater(&managed_bin, &daemon.launch).map(|_| UpdateLoopControl::Stop)
     }
     #[cfg(windows)]
     {
@@ -489,11 +490,7 @@ fn release_selection_unstable(daemon: &Daemon, trigger: UpdateTrigger<'_>) -> Re
 }
 
 fn selected_release(daemon: &Daemon) -> Result<(std::path::PathBuf, std::path::PathBuf, String)> {
-    let home = daemon
-        .settings_file
-        .parent()
-        .and_then(Path::parent)
-        .context("daemon settings path has no Codex home")?;
+    let home = daemon.launch.codex_home();
     let root = crate::managed_install::package_root(home);
     let release = std::fs::canonicalize(root.join("current"))?;
     let name = release
@@ -511,8 +508,13 @@ async fn current_updater_identity() -> Result<ExecutableIdentity> {
 }
 
 #[cfg(unix)]
-pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Result<()> {
-    let err = StdCommand::new(managed_codex_bin)
+pub(crate) fn reexec_managed_updater(
+    managed_codex_bin: &std::path::Path,
+    launch: &crate::DaemonLaunchOptions,
+) -> Result<()> {
+    let mut command = StdCommand::new(managed_codex_bin);
+    launch.configure_command(&mut command);
+    let err = command
         .args(["app-server", "daemon", "pid-update-loop"])
         .exec();
     Err(err).with_context(|| {

@@ -27,6 +27,7 @@ This checkpoint inventories the integrated owners through payload-free mailbox a
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
+| Captured credential profiles with shared storage | Capability | Select saved credentials with `CODEX_AUTH_FILE` without relocating configuration, skills, rollouts, or ownership. Preserve provider/API-key precedence, strict browser dictation, and captured reload/login/logout identity; isolate daemon lifecycle and recovery by profile and verify the actual local connection's home and profile before reuse. | `codex-rs/login/src/auth_file_selection.rs`<br>`codex-rs/login/src/auth_profile.rs`<br>`codex-rs/login/src/auth/manager.rs`<br>`codex-rs/app-server-daemon/src/launch_options.rs`<br>`codex-rs/tui/src/auth_profile_connection.rs` | Config/bootstrap capture, account-bound network policy, model-catalog caching, daemon package/PID ownership, actual connection verification, and current TUI startup/reconnect boundaries | `feat(auth): select credential profiles while sharing thread storage` |
 | Batch agent input with shared presentation | Capability | Send one typed input to a nonempty array of canonicalized recipients, deduplicating aliases in first-seen order and retaining independent direct, queued, mailbox, and failure outcomes. Preserve partial admissions on cancellation and show the shared input once, without a second retry ledger or a false delivery guarantee. | `codex-rs/core/src/tools/handlers/multi_agents/send_input_batch.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents/send_input_admission.rs`<br>`codex-rs/core/src/agent/control/message_audit.rs`<br>`codex-rs/protocol/src/collab_input.rs`<br>`codex-rs/tui/src/multi_agents/send_input_batch.rs`<br>`codex-rs/tui/src/app/replay_filter.rs` | Native attribution, shared interrupt facade, retained admission workers, canonical recipient history, typed legacy/API conversion, and source-owned live/replay presentation | `feat(agents): support batch send_input with shared lifecycle presentation` |
 | Exact delivered-final recovery | Compatibility | On resume suppress only an existing completed reconciliation candidate proven delivered by original-coordinate, rollback-filtered canonical evidence for the exact receiver, child, target turn, and response identity. Without that proof, preserve unseen, conflicting, empty, and later same-text results; errors remain eligible, and history never creates a subscription. Durable model-hidden root oversight remains separate from nonpersistent peer receipts. | `codex-rs/core/src/agent/control/resume_delivery.rs`<br>`codex-rs/core/src/agent/control/response_observer.rs`<br>`codex-rs/core/src/agent/control/presentation/root_completion_audit.rs` | Strict receiver-owned history, original adjacency, exact-instance observation, terminal reconciliation, and canonical root-oversight ownership | `fix(agents): prevent duplicate finals across delivery, sampling, and resume`, `feat(multi-agent): surface unobserved child conclusions in Main` |
 | Shared rich agent identity headers | Observability | Render confirmed nicknames, roles, task paths, numeric refs, and partial model/reasoning settings consistently across live and cold presentation; retain independently authoritative task-path clears and successful control mappings. Terminal-adapted nickname colors remain decorative rather than identity or authority. | `codex-rs/tui/src/multi_agents/identity_header.rs`<br>`codex-rs/tui/src/agent_color.rs`<br>`codex-rs/tui/src/chatwidget/collab_metadata.rs`<br>`codex-rs/tui/src/thread_transcript/agent_metadata.rs` | Trusted alias snapshots, fresh-spawn settings, partial metadata, client-local rendering, and terminal capabilities | `feat(tui): unify agent identity styling and fresh spawn references` |
@@ -741,6 +742,46 @@ Core, public DTO, legacy conversion, mailbox cancellation, source isolation, and
 TUI snapshot coverage are retained or authored. Earlier fixture repairs discovered during
 integration remain assigned to their original owners for the final history pass. Static
 inspection and parsing do not establish executable, schema, or snapshot qualification.
+
+### Captured credential profiles and local runtime identity
+
+Ownership anchor: `feat(auth): select credential profiles while sharing thread storage`.
+The selector is captured at startup and threaded through current ConfigManager rebuilds,
+cloud/bootstrap policy, login/device/OAuth flows, credential refresh, and logout. Explicit files
+do not fall back to another file or a persistent keyring. Process-local external credentials keep
+their existing precedence in a selection-scoped ephemeral store. Provider and API-key environment
+precedence is unchanged. Selected runtimes bypass only the shared disk model catalog; authoritative
+configured catalogs and provider discovery gates remain intact.
+
+Dictation's raw browser preflight and ChatgptAuthSession use the same captured selection. Each
+upload revalidates that source and account and captures its account-bound content factory; it never
+rediscovers the ambient selector or bypasses network-policy revocation. Missing, malformed, deleted,
+non-browser, or changed-account credentials are not invitations to use another profile.
+
+Daemon packages remain shared by home, while PID/settings/update state, control endpoints, and
+restart candidate snapshots are profile-scoped. The app-server and updater use one recovery-path
+helper, leaving legacy snapshots inert. Startup locks belong to the actual endpoint. Children
+inherit the captured absolute selector and backend; default children clear inherited selectors.
+Offline lifecycle lookup does not require fresh authentication and rejects ambiguous backend
+matches. Actual local connections verify both initialized home and full opaque profile identity;
+socket discovery and display labels are not proof. Profile response timeouts cover the entire
+correlated exchange, not each unrelated message.
+
+Current startup composers and executor restrictions are preserved. Delayed profile discovery in
+interactive and archive/queue paths reuses the existing launch-selection gate, so it cannot override
+workload identity or an explicit executor. Normal ephemeral TUI sessions remain embedded. The
+explicit agents overview retains required shared-server startup using the captured profile and
+cannot silently become an empty embedded overview. Optional ordinary startup can fall back;
+required startup and reconnect cannot. Remote WebSocket hosts retain their own credential authority,
+and a local selector is rejected rather than forwarded as a foreign-host path.
+
+Windows private-directory, non-elevated-peer, launch restriction, and PID-fingerprint protections
+remain in place; the elevated provisioning service retains its upstream auth boundary. Default
+library wrappers and the intentionally default-auth sample do not rediscover process environment.
+Source tests cover selected browser credentials, recovery isolation, actual-connection mismatch,
+unrelated response IDs/deadlines, required attachment, and discovered-socket launch exclusions.
+Schema exports, complete status snapshots, Cargo/Bazel lock reconciliation, cross-platform tests,
+and executable qualification remain remote work, not a passing result of this source rebase.
 
 ## Integration boundaries and deferred work
 

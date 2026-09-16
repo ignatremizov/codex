@@ -73,6 +73,14 @@ async fn debug_sandbox_bootstraps_cloud_managed_permission_profile_from_backend(
             .plan_type("enterprise"),
         AuthCredentialsStoreMode::File,
     )?;
+    let auth_file_selection = codex_login::AuthFileSelection::resolve(
+        codex_home.path(),
+        Some(std::ffi::OsStr::new("selected-auth.json")),
+    )?;
+    std::fs::rename(
+        codex_home.path().join("auth.json"),
+        codex_home.path().join("selected-auth.json"),
+    )?;
 
     let options = DebugSandboxConfigOptions {
         sandbox_state: Default::default(),
@@ -85,6 +93,7 @@ async fn debug_sandbox_bootstraps_cloud_managed_permission_profile_from_backend(
         &[],
         &options,
         || AbsolutePathBuf::from_absolute_path(codex_home.path()),
+        &auth_file_selection,
         /*strict_config*/ false,
     )
     .await?;
@@ -93,10 +102,12 @@ async fn debug_sandbox_bootstraps_cloud_managed_permission_profile_from_backend(
         /*codex_linux_sandbox_exe*/ None,
         options,
         Some(codex_home.path().to_path_buf()),
+        auth_file_selection.clone(),
         cloud_config_bundle,
         /*strict_config*/ false,
     )
     .await?;
+    assert_eq!(config.auth_file_selection, auth_file_selection);
 
     assert_eq!(
         config

@@ -69,7 +69,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigTomlLoadResult;
-use codex_core::config::bootstrap_auth_config;
+use codex_core::config::bootstrap_auth_config_for_selection;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_toml_with_layer_stack;
 use codex_core::config::resolve_oss_provider;
@@ -360,6 +360,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             std::process::exit(1);
         }
     };
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let user_config_path = config_profile_v2
         .as_ref()
         .map(|profile_v2| resolve_profile_v2_config_path(&codex_home, profile_v2));
@@ -391,13 +392,20 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         )
         .await;
         let gate_cloud_config = cloud_config_bundle_loader_for_storage(
-            embedded_network_policy
-                .bind_bootstrap_auth(bootstrap_auth_config(&codex_home, &gate_bootstrap)?),
+            embedded_network_policy.bind_bootstrap_auth(bootstrap_auth_config_for_selection(
+                &codex_home,
+                &gate_bootstrap,
+                &auth_file_selection,
+            )?),
             /*enable_codex_api_key_env*/ false,
         )
         .await?;
         let gate_config = ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
+                ..Default::default()
+            })
             .cli_overrides(cli_kv_overrides.clone())
             .loader_overrides(LoaderOverrides {
                 ignore_project_config: true,
@@ -433,6 +441,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         }
         let source_config = ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
+                ..Default::default()
+            })
             .cli_overrides(cli_kv_overrides.clone())
             .loader_overrides(LoaderOverrides {
                 ignore_project_config: true,
@@ -490,8 +502,9 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     )
     .await;
     let bootstrap_config_toml = &bootstrap_config.config_toml;
-    let bootstrap_auth_config = embedded_network_policy
-        .bind_bootstrap_auth(bootstrap_auth_config(&codex_home, &bootstrap_config)?);
+    let bootstrap_auth_config = embedded_network_policy.bind_bootstrap_auth(
+        bootstrap_auth_config_for_selection(&codex_home, &bootstrap_config, &auth_file_selection)?,
+    );
     // API keys cannot fetch workspace-managed configuration. Preserve the
     // existing ChatGPT bootstrap identity even when model requests allow
     // CODEX_API_KEY.
@@ -504,6 +517,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         // Destination auth can fetch source policy that the host bootstrap could not.
         let source_config = ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
+                ..Default::default()
+            })
             .cli_overrides(cli_kv_overrides.clone())
             .loader_overrides(LoaderOverrides {
                 ignore_project_config: true,
@@ -571,6 +588,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     };
 
     let overrides = ConfigOverrides {
+        auth_file_selection: Some(auth_file_selection),
         model,
         review_model: None,
         // Default to never ask for approvals in headless mode. Rebuild below if

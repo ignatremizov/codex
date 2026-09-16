@@ -12,6 +12,7 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerReadResponse;
 use codex_uds::UnixStream;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -32,20 +33,38 @@ pub(crate) struct ProbeInfo {
 }
 
 pub(crate) async fn probe(socket_path: &Path) -> Result<ProbeInfo> {
-    timeout(CONTROL_SOCKET_RESPONSE_TIMEOUT, probe_inner(socket_path))
-        .await
-        .with_context(|| {
-            format!(
-                "timed out probing app-server control socket {}",
-                socket_path.display()
-            )
-        })?
+    timeout(
+        CONTROL_SOCKET_RESPONSE_TIMEOUT,
+        probe_inner(socket_path, /*launch*/ None),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "timed out probing app-server control socket {}",
+            socket_path.display()
+        )
+    })?
 }
 
-async fn probe_inner(socket_path: &Path) -> Result<ProbeInfo> {
+pub(crate) async fn probe_profile(
+    socket_path: &Path,
+    launch: &crate::DaemonLaunchOptions,
+) -> Result<ProbeInfo> {
+    timeout(
+        CONTROL_SOCKET_RESPONSE_TIMEOUT,
+        probe_inner(socket_path, Some(launch)),
+    )
+    .await
+    .context("timed out verifying daemon auth profile")?
+}
+
+async fn probe_inner(
+    socket_path: &Path,
+    launch: Option<&crate::DaemonLaunchOptions>,
+) -> Result<ProbeInfo> {
     let mut websocket = connect(socket_path).await?;
 
-    let initialize_response = initialize(&mut websocket, /*experimental_api*/ false).await?;
+    let initialize_response = initialize(&mut websocket, /*experimental_api*/ true).await?;
     let initialized = JSONRPCMessage::Notification(JSONRPCNotification {
         method: "initialized".to_string(),
         params: None,
@@ -53,6 +72,9 @@ async fn probe_inner(socket_path: &Path) -> Result<ProbeInfo> {
     send_message(&mut websocket, &initialized)
         .await
         .context("failed to send initialized notification")?;
+    if let Some(launch) = launch {
+        verify_profile(&mut websocket, &initialize_response, launch).await?;
+    }
     websocket.close(None).await.ok();
 
     Ok(ProbeInfo {
@@ -72,6 +94,53 @@ async fn connect_at(socket_path: &Path, url: &str) -> Result<WebSocketStream<Uni
         .await
         .with_context(|| format!("failed to upgrade {}", socket_path.display()))?;
     Ok(websocket)
+}
+
+pub(crate) async fn verify_profile<S>(
+    websocket: &mut WebSocketStream<S>,
+    initialize_response: &InitializeResponse,
+    launch: &crate::DaemonLaunchOptions,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    anyhow::ensure!(
+        initialize_response.codex_home.as_path() == launch.codex_home(),
+        "app-server CODEX_HOME does not match the selected daemon home"
+    );
+    let request_id = RequestId::Integer(2);
+    send_message(
+        websocket,
+        &JSONRPCMessage::Request(JSONRPCRequest {
+            id: request_id.clone(),
+            method: "server/read".to_string(),
+            params: Some(serde_json::json!({})),
+            trace: None,
+        }),
+    )
+    .await?;
+    let response = timeout(CONTROL_SOCKET_RESPONSE_TIMEOUT, async {
+        loop {
+            match read_message(websocket).await? {
+                JSONRPCMessage::Response(response) if response.id == request_id => {
+                    return Ok(response);
+                }
+                JSONRPCMessage::Error(error) if error.id == request_id => {
+                    return Err(anyhow!("server/read failed: {}", error.error.message));
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .context("timed out waiting for server/read response")??;
+    let metadata: ServerReadResponse =
+        serde_json::from_value(response.result).context("failed to parse server/read response")?;
+    anyhow::ensure!(
+        metadata.auth_profile.profile_opaque_id == launch.auth_profile().profile_opaque_id,
+        "app-server auth profile does not match the selected daemon profile"
+    );
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -182,6 +251,10 @@ fn parse_version_from_user_agent(user_agent: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("app-server user-agent omitted version"))?;
     Ok(version.to_string())
 }
+
+#[cfg(test)]
+#[path = "client_profile_tests.rs"]
+mod profile_tests;
 
 #[cfg(all(test, unix))]
 mod tests {

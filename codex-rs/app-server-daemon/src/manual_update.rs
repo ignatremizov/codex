@@ -76,10 +76,11 @@ pub(crate) async fn request(daemon: &Daemon) -> Result<UpdateOutput> {
                         } else {
                             Some(selected_release(daemon)?.2)
                         };
-                        let worker = crate::backend::PidBackend::new_update_loop(
+                        let worker = crate::backend::PidBackend::new_update_loop_with_launch(
                             paths.codex_bin,
                             paths.update_pid_file,
                             restore_release,
+                            Some(paths.launch),
                         );
                         worker.start().await?;
                         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);

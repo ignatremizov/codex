@@ -5,6 +5,8 @@ use super::focus_palette::write_test_config;
 use anyhow::Result;
 use anyhow::ensure;
 use codex_app_server_protocol::JSONRPCMessage;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -26,15 +28,22 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
         config_path,
         format!("{config}\n[tui]\nstatus_line = [\"thread-id\"]\n"),
     )?;
-    let socket = codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home.path(), AuthCredentialsStoreMode::default());
+    let socket = codex_app_server_client::app_server_profile_socket_path(
+        codex_home.path(),
+        &profile.profile_opaque_id,
+    )?;
     std::fs::create_dir_all(socket.parent().unwrap())?;
     let listener = UnixListener::bind(socket.as_path())?;
     let (disconnect_tx, mut disconnect_rx) = tokio::sync::oneshot::channel();
     let (restore_tx, restore_rx) = tokio::sync::oneshot::channel();
     let server_cwd = repo_root.clone();
     let id = "00000000-0000-0000-0000-000000000001";
+    let server_home = codex_home.path().to_path_buf();
     let server = tokio::spawn(async move {
         let mut methods = Vec::new();
+        let mut profile_reads = Vec::new();
         let mut restore_rx = Some(restore_rx);
         let thread = json!({
             "id": id, "sessionId": id, "preview": "", "ephemeral": false,
@@ -46,7 +55,7 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
         for connection in -1..7 {
             let mut socket = loop {
                 let (stream, _) = listener.accept().await?;
-                // Startup probes the default daemon socket before opening its WebSocket.
+                // Startup probes the profile-scoped daemon socket before opening its WebSocket.
                 if let Ok(socket) = tokio_tungstenite::accept_async(stream).await {
                     break socket;
                 }
@@ -84,14 +93,23 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
                     continue;
                 }
                 let result = match request.method.as_str() {
-                    "initialize" => json!({"userAgent": "reconnect-pty"}),
+                    "initialize" => {
+                        json!({"userAgent": "reconnect-pty", "codexHome": server_home})
+                    }
                     // An older daemon can omit the client's default-disabled features.
                     "experimentalFeature/list" => {
                         json!({"data": (["code_mode_host", "auth_elicitation"].map(|name| json!({
                         "name": name, "stage": "stable", "displayName": null,
                         "description": null, "announcement": null,
                         "enabled": true, "defaultEnabled": true,
-                    }))), "nextCursor": null})
+                        }))), "nextCursor": null})
+                    }
+                    "server/read" => {
+                        profile_reads.push(connection);
+                        json!({"authProfile": {
+                            "profileOpaqueId": profile.profile_opaque_id,
+                            "displayLabel": profile.display_label,
+                        }})
                     }
                     "account/read" => {
                         json!({"account": {"type": "apiKey"}, "requiresOpenaiAuth": false})
@@ -150,7 +168,7 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
                 }
             }
         }
-        Ok::<_, anyhow::Error>(methods)
+        Ok::<_, anyhow::Error>((methods, profile_reads))
     });
     let mut terminal = PtyCodex::start(&repo_root, codex_home, &["--no-alt-screen"])?;
     terminal.wait_for_startup()?;
@@ -200,7 +218,8 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
         terminal.screen_contents()
     );
     drop(terminal);
-    let methods = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), server).await???;
+    let (methods, profile_reads) =
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 5), server).await???;
     assert_eq!(
         methods
             .iter()
@@ -209,5 +228,8 @@ async fn automatic_reconnect_restores_draft_and_routes_new_notifications() -> Re
         6
     );
     assert!(!methods.iter().any(|method| method == "turn/start"));
+    // Initial attachment and all six reconnect attempts prove their profiles,
+    // including the five whose thread/resume is rejected while the thread is closing.
+    assert_eq!(profile_reads, (0..=6).collect::<Vec<_>>());
     Ok(())
 }

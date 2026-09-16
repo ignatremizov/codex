@@ -6,6 +6,7 @@ use clap::Parser;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
 use codex_core::config::find_codex_home;
 use codex_core::plugins_manager_for_config;
 use codex_core_plugins::ConfiguredMarketplace;
@@ -732,7 +733,12 @@ async fn load_plugin_command_context(
     overrides: Vec<(String, toml::Value)>,
 ) -> Result<PluginCommandContext> {
     let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
-    let config = Config::load_with_cli_overrides(overrides)
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
+        .auth_file_selection(auth_file_selection)
+        .cli_overrides(overrides)
+        .build()
         .await
         .context("failed to load configuration")?;
     let plugins_input = config.plugins_config_input();

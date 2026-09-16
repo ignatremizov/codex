@@ -2,9 +2,12 @@
 
 use super::focus_palette::PtyCodex;
 use super::focus_palette::write_test_config;
+use anyhow::Context;
 use anyhow::Result;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RequestId;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -33,9 +36,19 @@ async fn connected_trust_cancellation_and_acceptance_control_task_creation() -> 
             config_path,
             format!("{config}\n[tui]\nresume_cwd = \"current\"\n"),
         )?;
-        let socket = codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
-        std::fs::create_dir_all(socket.parent().unwrap())?;
+        let profile = AuthFileSelection::Default
+            .profile_identity(codex_home.path(), AuthCredentialsStoreMode::File);
+        let socket = codex_app_server_client::app_server_profile_socket_path(
+            codex_home.path(),
+            &profile.profile_opaque_id,
+        )?;
+        std::fs::create_dir_all(socket.parent().context("profile socket directory")?)?;
         let listener = UnixListener::bind(socket.as_path())?;
+        let server_home = codex_home.path().to_path_buf();
+        let server_profile = json!({
+            "profileOpaqueId": profile.profile_opaque_id,
+            "displayLabel": profile.display_label,
+        });
         let cwd = repo_root.clone();
         let methods = Arc::new(Mutex::new(Vec::new()));
         let requests = Arc::clone(&methods);
@@ -48,6 +61,8 @@ async fn connected_trust_cancellation_and_acceptance_control_task_creation() -> 
                     .await
                     .expect("accept fake app-server client");
                 let cwd = cwd.clone();
+                let server_home = server_home.clone();
+                let server_profile = server_profile.clone();
                 let methods = Arc::clone(&requests);
                 let trust_reads = Arc::clone(&trust_reads);
                 clients.spawn(async move {
@@ -74,7 +89,8 @@ async fn connected_trust_cancellation_and_acceptance_control_task_creation() -> 
                         };
                         methods.lock().unwrap().push(request.method.clone());
                         let result = match request.method.as_str() {
-                            "initialize" => json!({"userAgent": "trust-pty"}),
+                            "initialize" => json!({"userAgent": "trust-pty", "codexHome": server_home}),
+                            "server/read" => json!({"authProfile": server_profile}),
                             "experimentalFeature/list" => json!({"data": (["code_mode_host", "auth_elicitation"].map(|name| json!({
                                 "name": name, "stage": "stable", "displayName": null,
                                 "description": null, "announcement": null,

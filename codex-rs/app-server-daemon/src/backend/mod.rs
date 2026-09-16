@@ -18,6 +18,7 @@ pub enum BackendKind {
 
 #[derive(Debug, Clone)]
 pub(crate) struct BackendPaths {
+    pub(crate) launch: crate::DaemonLaunchOptions,
     pub(crate) codex_bin: PathBuf,
     pub(crate) pid_file: PathBuf,
     pub(crate) update_pid_file: PathBuf,
@@ -26,20 +27,22 @@ pub(crate) struct BackendPaths {
 }
 
 pub(crate) fn pid_backend(paths: BackendPaths) -> PidBackend {
-    let mut backend = PidBackend::new(
+    let mut backend = PidBackend::new_with_launch(
         paths.codex_bin,
         paths.pid_file,
         paths.remote_control_enabled,
+        Some(paths.launch.clone()),
     );
     backend.feature_overrides = paths.feature_overrides;
     backend
 }
 
 pub(crate) fn pid_update_loop_backend(paths: BackendPaths) -> PidBackend {
-    PidBackend::new_update_loop(
+    PidBackend::new_update_loop_with_launch(
         paths.codex_bin,
         paths.update_pid_file,
         /*restore_release*/ None,
+        Some(paths.launch),
     )
 }
 

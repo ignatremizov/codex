@@ -16,6 +16,8 @@ impl TestCodexExecBuilder {
         );
         cmd.current_dir(self.cwd.path())
             .env("CODEX_HOME", self.home.path())
+            // Each test owns its temporary home; explicit profile tests opt in below.
+            .env_remove("CODEX_AUTH_FILE")
             .env("CODEX_SQLITE_HOME", self.home.path())
             .env(CODEX_API_KEY_ENV_VAR, "dummy");
         cmd
