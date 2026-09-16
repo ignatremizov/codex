@@ -114,28 +114,19 @@ impl ActiveSession {
         self.last_activity_at = Instant::now();
         match signal {
             ProcessSignalParam::Sigint => {
-                #[cfg(unix)]
                 if let Some(pid) = self.pid() {
-                    unsafe {
-                        libc::killpg(pid as libc::pid_t, libc::SIGINT);
-                    }
-                    return Ok(());
+                    let _ = codex_utils_pty::process_group::interrupt_process_group_by_pid(pid);
                 }
                 self.process.signal(ProcessSignal::Interrupt)
             }
             ProcessSignalParam::Sigterm => {
-                #[cfg(unix)]
                 if let Some(pid) = self.pid() {
-                    unsafe {
-                        libc::killpg(pid as libc::pid_t, libc::SIGTERM);
-                    }
-                    return Ok(());
+                    let _ = codex_utils_pty::process_group::terminate_process_group_by_pid(pid);
                 }
                 self.process.request_terminate();
                 Ok(())
             }
             ProcessSignalParam::Sigkill => {
-                #[cfg(unix)]
                 if let Some(pid) = self.pid() {
                     let _ = codex_utils_pty::process_group::kill_process_group_by_pid(pid);
                 }
@@ -146,7 +137,6 @@ impl ActiveSession {
     }
 
     pub fn terminate(&mut self) {
-        #[cfg(unix)]
         if let Some(pid) = self.pid() {
             let _ = codex_utils_pty::process_group::kill_process_group_by_pid(pid);
         }

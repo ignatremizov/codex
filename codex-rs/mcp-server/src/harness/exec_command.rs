@@ -113,7 +113,7 @@ pub async fn handle_exec_command(
                     ),
                 };
             }
-            codex_execpolicy::Decision::PromptUser => {
+            codex_execpolicy::Decision::Prompt => {
                 return ExecCommandResponse {
                     status: "rejected".to_string(),
                     stdout: String::new(),
@@ -158,7 +158,8 @@ pub async fn handle_exec_command(
 
     // 5. Resolve CWD
     let native_cwd = match &params.cwd {
-        Some(dir) => match codex_utils_absolute_path::AbsolutePathBuf::from_unknown_path(dir) {
+        Some(dir) => match codex_utils_absolute_path::AbsolutePathBuf::relative_to_current_dir(dir)
+        {
             Ok(p) => p,
             Err(e) => {
                 return ExecCommandResponse {
@@ -226,7 +227,7 @@ pub async fn handle_exec_command(
             } else {
                 let direct_request = SandboxDirectSpawnTransformRequest {
                     workspace_roots: std::slice::from_ref(&native_cwd),
-                    windows_sandbox_proxy_settings_mode: WindowsSandboxProxySettingsMode::Disabled,
+                    windows_sandbox_proxy_settings_mode: WindowsSandboxProxySettingsMode::default(),
                     transform: SandboxTransformRequest {
                         command: SandboxCommand {
                             program: OsString::from(program),
@@ -249,7 +250,14 @@ pub async fn handle_exec_command(
                     },
                 };
                 match sandbox_manager.transform_for_direct_spawn(direct_request) {
-                    Ok(cmd) => (cmd.program, cmd.args, cmd.env),
+                    Ok(mut cmd) => {
+                        let prog = if !cmd.command.is_empty() {
+                            cmd.command.remove(0)
+                        } else {
+                            program
+                        };
+                        (OsString::from(prog), cmd.command, cmd.env)
+                    }
                     Err(e) => {
                         return ExecCommandResponse {
                             status: "error".to_string(),

@@ -118,6 +118,70 @@ pub fn kill_process_group_by_pid(_pid: u32) -> io::Result<()> {
 }
 
 #[cfg(unix)]
+/// Send SIGINT to the process group for the given PID (best-effort).
+pub fn interrupt_process_group_by_pid(pid: u32) -> io::Result<()> {
+    use std::io::ErrorKind;
+
+    let pid = pid as libc::pid_t;
+    let pgid = unsafe { libc::getpgid(pid) };
+    if pgid == -1 {
+        let err = io::Error::last_os_error();
+        if err.kind() != ErrorKind::NotFound && err.raw_os_error() != Some(libc::ESRCH) {
+            return Err(err);
+        }
+        return Ok(());
+    }
+
+    let result = unsafe { libc::killpg(pgid, libc::SIGINT) };
+    if result == -1 {
+        let err = io::Error::last_os_error();
+        if err.kind() != ErrorKind::NotFound && err.raw_os_error() != Some(libc::ESRCH) {
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+/// No-op on non-Unix platforms.
+pub fn interrupt_process_group_by_pid(_pid: u32) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+/// Send SIGTERM to the process group for the given PID (best-effort).
+pub fn terminate_process_group_by_pid(pid: u32) -> io::Result<()> {
+    use std::io::ErrorKind;
+
+    let pid = pid as libc::pid_t;
+    let pgid = unsafe { libc::getpgid(pid) };
+    if pgid == -1 {
+        let err = io::Error::last_os_error();
+        if err.kind() != ErrorKind::NotFound && err.raw_os_error() != Some(libc::ESRCH) {
+            return Err(err);
+        }
+        return Ok(());
+    }
+
+    let result = unsafe { libc::killpg(pgid, libc::SIGTERM) };
+    if result == -1 {
+        let err = io::Error::last_os_error();
+        if err.kind() != ErrorKind::NotFound && err.raw_os_error() != Some(libc::ESRCH) {
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+/// No-op on non-Unix platforms.
+pub fn terminate_process_group_by_pid(_pid: u32) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
 fn signal_process_group_id(pgid: libc::pid_t, signal: libc::c_int) -> io::Result<bool> {
     use std::io::ErrorKind;
 

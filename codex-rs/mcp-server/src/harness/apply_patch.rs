@@ -14,7 +14,8 @@ use crate::harness::types::FilePatchAction;
 
 pub async fn handle_apply_patch(params: ApplyPatchParams) -> ApplyPatchResponse {
     let native_cwd = match &params.cwd {
-        Some(dir) => match codex_utils_absolute_path::AbsolutePathBuf::from_unknown_path(dir) {
+        Some(dir) => match codex_utils_absolute_path::AbsolutePathBuf::relative_to_current_dir(dir)
+        {
             Ok(p) => p,
             Err(e) => {
                 return ApplyPatchResponse {
@@ -93,7 +94,7 @@ pub async fn handle_apply_patch(params: ApplyPatchParams) -> ApplyPatchResponse 
             },
             MaybeApplyPatchVerified::ShellParseError(e) => ApplyPatchResponse {
                 success: false,
-                summary: format!("Dry-run shell parse error: {e}"),
+                summary: format!("Dry-run shell parse error: {e:?}"),
                 files: Vec::new(),
             },
             MaybeApplyPatchVerified::NotApplyPatch => ApplyPatchResponse {
