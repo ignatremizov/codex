@@ -224,6 +224,58 @@ async fn shutdown_stops_backend_voice_once_through_app_server() -> Result<()> {
 }
 
 #[tokio::test]
+async fn rejected_quit_keeps_parked_voice_but_accepted_disconnect_retires_its_actual_owner()
+-> Result<()> {
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let (mut server, requests, proxy) = start_recording_realtime_speech_app_server(
+        &app.config,
+        RealtimeRequestBehavior::AcceptSpeech,
+    )
+    .await?;
+    let started = server.start_thread(&app.config).await?;
+    let voice_thread = started.session.thread_id;
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            voice_thread,
+            app.config.cwd.to_path_buf(),
+        ));
+    crate::chatwidget::activate_voice_for_thread(&mut app.chat_widget, voice_thread);
+    let (other, _, _, _) = make_chatwidget_manual_with_sender().await;
+    app.replace_chat_widget(other);
+    let missing_root = ThreadId::new();
+    app.primary_thread_id = Some(missing_root);
+    app.active_thread_id = Some(missing_root);
+    assert_eq!(app.voice_owner_thread_id(), Some(voice_thread));
+
+    assert_matches!(
+        app.handle_exit_mode(&mut server, ExitMode::ShutdownFirst)
+            .await,
+        AppRunControl::Continue
+    );
+    assert_eq!(app.voice_owner_thread_id(), Some(voice_thread));
+    assert!(recorded_params(&requests, "thread/realtime/stop").is_empty());
+    assert_eq!(
+        recorded_params(&requests, "thread/unload"),
+        vec![serde_json::json!({"threadId": missing_root.to_string()})]
+    );
+
+    assert_matches!(
+        app.handle_exit_mode(&mut server, ExitMode::Disconnect)
+            .await,
+        AppRunControl::Exit(ExitReason::Disconnected)
+    );
+    assert_eq!(app.voice_owner_thread_id(), None);
+    assert_eq!(
+        recorded_params(&requests, "thread/realtime/stop"),
+        vec![serde_json::json!({"threadId": voice_thread.to_string()})]
+    );
+    assert!(recorded_params(&requests, "thread/unsubscribe").is_empty());
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn stalled_voice_stop_leaves_time_for_shutdown_unsubscribe() -> Result<()> {
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     let (mut app_server, requests, proxy) = start_recording_realtime_speech_app_server(

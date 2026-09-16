@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::protocol::ThreadRolledBackEvent;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn writer_recovery_reconciles_ordinal_after_complete_unterminated_write()
@@ -126,7 +127,8 @@ async fn accepted_marker_finishes_after_its_waiter_is_dropped() -> std::io::Resu
     tx.send(RolloutCmd::Shutdown { ack })
         .await
         .expect("enqueue shutdown barrier");
-    let writer = tokio::spawn(rollout_writer(state, rx));
+    let writer_task = RolloutWriterTask::new(/*writer_lock*/ None);
+    let writer = tokio::spawn(async move { rollout_writer(state, rx, &writer_task).await });
     completed.await.expect("shutdown acknowledgement")?;
     writer.await.expect("writer task")?;
     let lines = read_rollout_lines(&rollout_path)?;

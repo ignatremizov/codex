@@ -99,7 +99,8 @@ impl ThreadManager {
         history: &InitialHistory,
         source_thread_id: Option<ThreadId>,
     ) -> CodexResult<Option<(Arc<dyn AgentGraphStore>, SessionId)>> {
-        if options.config.ephemeral
+        if self.state.agent_control_factory.is_some()
+            || options.config.ephemeral
             || options
                 .session_source
                 .as_ref()

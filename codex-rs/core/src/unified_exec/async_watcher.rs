@@ -66,6 +66,7 @@ pub(crate) fn start_streaming_output(
         return;
     };
     let output_task_abort_handle = process.output_task_abort_handle();
+    let output_task_complete = process.output_task_completion();
     let exit_token = process.cancellation_token();
     let OutputHandles {
         output_buffer,
@@ -83,7 +84,8 @@ pub(crate) fn start_streaming_output(
     };
 
     let output_stream_completion_guard = output_stream_complete.drop_guard();
-    tokio::spawn(async move {
+    let manager = &context.session.services.unified_exec_manager;
+    manager.track_producer(async move {
         let _output_stream_completion_guard = output_stream_completion_guard;
         let mut output: Buffer = Buffer {
             pending: Vec::new(),
@@ -231,12 +233,6 @@ pub(crate) fn start_streaming_output(
         if output_incomplete {
             if let Some(output_task_abort_handle) = output_task_abort_handle {
                 output_task_abort_handle.abort();
-                let output_closed_wait = output_closed_notify.notified();
-                tokio::pin!(output_closed_wait);
-                output_closed_wait.as_mut().enable();
-                if !output_closed.load(Ordering::Acquire) {
-                    let _ = tokio::time::timeout(Duration::from_secs(1), output_closed_wait).await;
-                }
             }
             output_buffer
                 .lock()
@@ -244,6 +240,9 @@ pub(crate) fn start_streaming_output(
                 .push_chunk(INCOMPLETE_OUTPUT_WARNING);
             output_notify.notify_waiters();
         }
+        // `output_closed` is an I/O observation, not proof the producer has returned.
+        output_task_complete.cancelled().await;
+        Ok(())
     });
 }
 
@@ -271,14 +270,18 @@ pub(crate) fn spawn_exit_watcher(
     let output_stream_complete = process.output_stream_completion();
     let interaction_lock = process.interaction_lock();
 
-    tokio::spawn(async move {
+    let producer_session = Arc::clone(&session_ref);
+    let manager = &producer_session.services.unified_exec_manager;
+    manager.track_producer(async move {
         exit_token.cancelled().await;
         output_stream_complete.cancelled().await;
         // Deferred network denial deliberately remains observable for a short
         // window after process exit. Do not classify the terminal event until
         // that monitor has settled, even when output closes immediately.
         if let Some(network_denial_monitor) = network_denial_monitor {
-            let _ = network_denial_monitor.await;
+            network_denial_monitor
+                .await
+                .map_err(|error| format!("network-denial watcher failed: {error}"))?;
         }
         let _interaction_guard = interaction_lock.lock_owned().await;
 
@@ -334,6 +337,7 @@ pub(crate) fn spawn_exit_watcher(
             )
             .await;
         }
+        Ok(())
     });
 }
 

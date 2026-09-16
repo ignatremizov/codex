@@ -113,24 +113,23 @@ async fn exec_command_with_tty(
     let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
     let request = test_exec_request(turn, command.clone(), cwd.clone(), shell_env());
 
-    let process = Arc::new(
-        manager
-            .open_session_with_prepared_exec_env(
-                process_id,
-                &request,
-                /*tool_ctx*/ None,
-                codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
-                /*network_policy_decider*/ None,
-                tty,
-                Box::new(NoopSpawnLifecycle),
-                turn.initial_environments
-                    .primary()
-                    .expect("turn environment")
-                    .environment
-                    .as_ref(),
-            )
-            .await?,
-    );
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            process_id,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            tty,
+            Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
+            turn.initial_environments
+                .primary()
+                .expect("turn environment")
+                .environment
+                .as_ref(),
+        )
+        .await?;
     let context = UnifiedExecContext::new(
         Arc::clone(session),
         crate::session::step_context::StepContext::for_test(Arc::clone(turn)),
@@ -849,6 +848,7 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
             .await
             .expect("poll lifecycle event should arrive")
         };
+        let polls_started = Instant::now();
         let poll_task = spawn_poll("cancelled-poll");
         let first_begin = next_interaction().await;
         assert!(process.interaction_lock().try_lock_owned().is_err());
@@ -899,41 +899,50 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
         ] {
             let Some(codex_protocol::protocol::TerminalWaitEvent::Started {
                 started_at_ms, ..
-            }) = started.wait.clone() else {
+            }) = started.wait.clone()
+            else {
                 panic!("each poll must identify its own wait start");
             };
-            assert_eq!(started, codex_protocol::protocol::TerminalInteractionEvent {
+            assert!(started_at_ms > 0);
+            assert_eq!(
+                started,
+                codex_protocol::protocol::TerminalInteractionEvent {
+                    call_id: "call".to_string(),
+                    process_id: process_id.to_string(),
+                    stdin: String::new(),
+                    deadline_at_ms: None,
+                    wait: Some(codex_protocol::protocol::TerminalWaitEvent::Started {
+                        interaction_id: interaction_id.to_string(),
+                        started_at_ms,
+                        mode: codex_protocol::protocol::TerminalWaitMode::Timed,
+                    }),
+                }
+            );
+        }
+        let Some(codex_protocol::protocol::TerminalWaitEvent::Finished { elapsed_ms, .. }) =
+            clear.wait.clone()
+        else {
+            panic!("the resumed poll must complete its exact wait");
+        };
+        assert!(u128::from(elapsed_ms) <= polls_started.elapsed().as_millis());
+        assert_eq!(
+            clear,
+            codex_protocol::protocol::TerminalInteractionEvent {
                 call_id: "call".to_string(),
                 process_id: process_id.to_string(),
                 stdin: String::new(),
                 deadline_at_ms: None,
-                wait: Some(codex_protocol::protocol::TerminalWaitEvent::Started {
-                    interaction_id: interaction_id.to_string(),
-                    started_at_ms,
-                    mode: codex_protocol::protocol::TerminalWaitMode::Timed,
+                wait: Some(codex_protocol::protocol::TerminalWaitEvent::Finished {
+                    interaction_id: "resumed-poll".to_string(),
+                    elapsed_ms,
+                    reason: if failure.is_some() {
+                        codex_protocol::protocol::TerminalWaitCompletionReason::Failed
+                    } else {
+                        codex_protocol::protocol::TerminalWaitCompletionReason::Exited
+                    },
                 }),
-            });
-        }
-        let Some(codex_protocol::protocol::TerminalWaitEvent::Finished {
-            elapsed_ms, ..
-        }) = clear.wait.clone() else {
-            panic!("the resumed poll must complete its exact wait");
-        };
-        assert_eq!(clear, codex_protocol::protocol::TerminalInteractionEvent {
-            call_id: "call".to_string(),
-            process_id: process_id.to_string(),
-            stdin: String::new(),
-            deadline_at_ms: None,
-            wait: Some(codex_protocol::protocol::TerminalWaitEvent::Finished {
-                interaction_id: "resumed-poll".to_string(),
-                elapsed_ms,
-                reason: if failure.is_some() {
-                    codex_protocol::protocol::TerminalWaitCompletionReason::Failed
-                } else {
-                    codex_protocol::protocol::TerminalWaitCompletionReason::Exited
-                },
-            }),
-        });
+            }
+        );
         assert!(
             events.try_recv().is_err(),
             "only one ordinary-result clear is emitted"
@@ -987,7 +996,9 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
             tty: true,
             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             permissions: TerminalPermissions::for_launch(
-                turn.environments.primary().expect("turn environment"),
+                turn.initial_environments
+                    .primary()
+                    .expect("turn environment"),
                 &turn,
                 TerminalSandboxSource::Native,
                 SandboxPermissions::UseDefault,
@@ -1075,6 +1086,69 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_process_retains_shell_snapshot_until_durable_shutdown() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    let (session, turn) = make_session_and_context().await;
+    let directory = tempfile::tempdir()?;
+    let cwd = AbsolutePathBuf::try_from(directory.path())?;
+    let environment = Arc::new(codex_exec_server::Environment::default_for_tests());
+    let shell = crate::shell::Shell {
+        shell_type: crate::shell::ShellType::Bash,
+        shell_path: which::which("bash")?,
+    };
+    let snapshot = crate::shell_snapshot::ShellSnapshot::new(
+        cwd.clone(),
+        session.thread_id(),
+        turn.session_telemetry.clone(),
+        /*state_db*/ None,
+        /*credential_broker*/ None,
+        /*prefer_executor_snapshots*/ false,
+    )
+    .build(
+        Arc::clone(&environment),
+        PathUri::from_abs_path(&cwd),
+        Some(shell.clone()),
+        /*allow_login_shell*/ false,
+        codex_protocol::config_types::ShellEnvironmentPolicy::default(),
+        /*sandbox*/ None,
+    )
+    .await
+    .ok_or_else(|| anyhow::anyhow!("test shell snapshot must be created"))?;
+    let retained_snapshot = Arc::downgrade(&snapshot);
+    let request = test_exec_request(
+        &turn,
+        shell.derive_exec_args("sleep 30", /*use_login_shell*/ false),
+        cwd,
+        shell_env(),
+    );
+    let manager = UnifiedExecProcessManager::default();
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            /*process_id*/ 1234,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            /*tty*/ false,
+            Box::new(NoopSpawnLifecycle),
+            Some(snapshot),
+            environment.as_ref(),
+        )
+        .await?;
+    // Neither abandoning the caller's handle nor an additional shared owner can
+    // release the replay file while the manager still owns the live process.
+    let shared_process = Arc::clone(&process);
+    drop(process);
+    assert!(retained_snapshot.upgrade().is_some());
+    drop(shared_process);
+    assert!(retained_snapshot.upgrade().is_some());
+    manager.shutdown_durably().await?;
+    assert!(retained_snapshot.upgrade().is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     #[allow(deprecated)]
@@ -1096,6 +1170,7 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
             /*network_policy_decider*/ None,
             /*tty*/ false,
             Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
             &environment,
         )
         .await?;
@@ -1139,6 +1214,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
             /*network_policy_decider*/ None,
             /*tty*/ true,
             Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
             remote_test_env.environment(),
         )
         .await?;
@@ -1194,6 +1270,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
             Box::new(TestSpawnLifecycle {
                 inherited_fds: vec![42],
             }),
+            /*shell_snapshot_file*/ None,
             turn.initial_environments
                 .primary()
                 .expect("turn environment")

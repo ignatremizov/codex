@@ -1029,7 +1029,7 @@ pub(super) fn display_test_thread(app: &mut App, thread_id: ThreadId) {
         .handle_thread_session(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
 }
 
-async fn turn_start_with_thread_defaults(
+pub(super) async fn turn_start_with_thread_defaults(
     app_server: &mut AppServerSession,
     thread_id: ThreadId,
     input: Vec<AppServerUserInput>,
@@ -4467,7 +4467,7 @@ async fn remote_default_paginated_start_retries_unsupported_variant() -> Result<
 async fn remote_explicit_history_modes_only_negotiate_when_paginated_is_rejected() -> Result<()> {
     for mode in [ThreadHistoryMode::Paginated, ThreadHistoryMode::Legacy] {
         let (app, _codex_home) = make_history_test_app().await?;
-        let (mut app_server, requests, proxy) = start_recording_app_server_with_history(
+        let (app_server, requests, proxy) = start_recording_app_server_with_history(
             &app.config,
             HistoryCapabilities::LegacyOnlyUnsupportedVariant,
             /*blocked_thread_list*/ None,

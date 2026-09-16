@@ -21,13 +21,7 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<ThreadId> {
-        let session_source = if self.bound_session_id().is_some() {
-            self.canonical_controlled_resume_source(thread_id, session_source)
-                .await?
-        } else {
-            session_source
-        };
-        let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
+        self.runtime.upgrade()?.check_restoration_fence(thread_id)?;
         let restored = Box::pin(self.resume_single_agent_from_rollout(
             config.clone(),
             thread_id,
@@ -39,6 +33,7 @@ impl LocalAgentControl {
         let resumed_thread = restored.thread;
         let resumed_multi_agent_version = restored.version;
         let resumed_thread_id = resumed_thread.session.thread_id();
+        let root_depth = thread_spawn_depth(&resumed_thread.session_source).unwrap_or(0);
         self.restore_open_agent_descendants(
             &config,
             thread_id,
@@ -175,6 +170,15 @@ impl LocalAgentControl {
             let state = control.runtime.upgrade()?;
             let lock = state.v2_spawn_resume_lock(thread_id);
             let _guard = lock.lock_owned().await;
+            let session_source = if control.bound_session_id().is_some() {
+                // Descendant traversal supplies only the edge identity. Resolve its
+                // path, nickname and role from the durable owner under this same lock.
+                control
+                    .canonical_controlled_resume_source(thread_id, session_source)
+                    .await?
+            } else {
+                session_source
+            };
             let authority = if control.bound_session_id().is_some()
                 && control.current_agent_alias(thread_id).await?.is_some()
             {
@@ -213,6 +217,7 @@ impl LocalAgentControl {
         authority: ResumeAuthority,
     ) -> CodexResult<RestoredAgent> {
         let state = self.runtime.upgrade()?;
+        state.ensure_membership_mutation_allowed(thread_id).await?;
         state.check_restoration_fence(thread_id)?;
         if state.get_thread(thread_id).await.is_ok() {
             return Err(CodexErr::InvalidRequest(format!(
@@ -340,16 +345,106 @@ impl LocalAgentControl {
         } else {
             agent_max_threads
         };
-        let mut reservation = self.runtime.registry.reserve_spawn_slot(reservation_max_threads)?;
+        let retained_metadata = self.runtime.registry.agent_metadata_for_thread(thread_id);
+        let mut reservation = if retained_metadata.is_some() {
+            None
+        } else {
+            Some(
+                self.runtime
+                    .registry
+                    .reserve_spawn_slot(reservation_max_threads)?,
+            )
+        };
         let (session_source, agent_metadata, register_resumed_agent) = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
-                agent_path,
+                mut agent_path,
                 agent_role,
                 agent_nickname,
             }) => {
-                if !matches!(authority, ResumeAuthority::Recorded) {
+                if matches!(authority, ResumeAuthority::Transfer { .. }) {
+                    // Transfer changes the parent, not the recorded child's lifecycle name.
+                    // Preserve V1's absent path; pathless V2 uses the same deterministic name
+                    // as canonical controlled resume, so closing/reloading cannot rename it.
+                    let parent_path = self
+                        .get_agent_metadata(parent_thread_id)
+                        .and_then(|metadata| metadata.agent_path);
+                    let recorded_path = persisted_session_source
+                        .get_agent_path()
+                        .or_else(|| resumed_agent_path.clone());
+                    agent_path = match (parent_path, recorded_path) {
+                        (Some(parent), Some(recorded)) => Some(
+                            parent
+                                .join(recorded.name())
+                                .map_err(CodexErr::InvalidRequest)?,
+                        ),
+                        (Some(parent), None) if multi_agent_version == MultiAgentVersion::V2 => {
+                            Some(
+                                parent
+                                    .join(&format!("agent_{thread_id}").replace('-', "_"))
+                                    .map_err(CodexErr::InvalidRequest)?,
+                            )
+                        }
+                        (_, path) => path,
+                    };
+                }
+                if let Some(retained) = &retained_metadata {
+                    let (agent_path, agent_nickname, agent_role) =
+                        if matches!(authority, ResumeAuthority::Recorded) {
+                            if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                agent_path,
+                                agent_nickname,
+                                agent_role,
+                                ..
+                            })) = &canonical_session_source
+                            {
+                                (
+                                    agent_path.clone(),
+                                    agent_nickname.clone(),
+                                    agent_role.clone(),
+                                )
+                            } else {
+                                (
+                                    agent_path.or(resumed_agent_path),
+                                    agent_nickname.or(resumed_agent_nickname),
+                                    agent_role.or(resumed_agent_role),
+                                )
+                            }
+                        } else {
+                            let nickname = if matches!(authority, ResumeAuthority::Transfer { .. })
+                            {
+                                self.find_session_agent_alias(thread_id)
+                                    .await?
+                                    .and_then(|alias| alias.nickname)
+                                    .or(agent_nickname)
+                            } else {
+                                agent_nickname
+                            };
+                            (agent_path, nickname, agent_role.or(resumed_agent_role))
+                        };
+                    let metadata = AgentMetadata {
+                        agent_id: Some(thread_id),
+                        agent_path: agent_path.clone(),
+                        agent_nickname: agent_nickname.clone(),
+                        agent_role: agent_role.clone(),
+                        last_task_message: retained.last_task_message.clone(),
+                    };
+                    (
+                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id,
+                            depth,
+                            agent_path,
+                            agent_nickname,
+                            agent_role,
+                        }),
+                        metadata,
+                        true,
+                    )
+                } else if !matches!(authority, ResumeAuthority::Recorded) {
+                    let reservation = reservation.as_mut().ok_or_else(|| {
+                        CodexErr::Fatal("missing restored agent reservation".into())
+                    })?;
                     let agent_nickname = if matches!(authority, ResumeAuthority::Transfer { .. }) {
                         self.find_session_agent_alias(thread_id)
                             .await?
@@ -359,7 +454,7 @@ impl LocalAgentControl {
                         agent_nickname
                     };
                     let (source, metadata) = self.prepare_thread_spawn(
-                        &mut reservation,
+                        reservation,
                         &config,
                         parent_thread_id,
                         depth,
@@ -375,8 +470,11 @@ impl LocalAgentControl {
                     ..
                 })) = canonical_session_source
                 {
+                    let reservation = reservation.as_mut().ok_or_else(|| {
+                        CodexErr::Fatal("missing restored agent reservation".into())
+                    })?;
                     let metadata = self.prepare_restored_agent_metadata_exact(
-                        &mut reservation,
+                        reservation,
                         agent_path.clone(),
                         agent_role.clone(),
                         agent_nickname.clone(),
@@ -397,8 +495,11 @@ impl LocalAgentControl {
                     || resumed_agent_role.is_some()
                     || resumed_agent_nickname.is_some()
                 {
+                    let reservation = reservation.as_mut().ok_or_else(|| {
+                        CodexErr::Fatal("missing restored agent reservation".into())
+                    })?;
                     let (session_source, metadata) = self.prepare_thread_spawn(
-                        &mut reservation,
+                        reservation,
                         &config,
                         parent_thread_id,
                         depth,
@@ -412,6 +513,17 @@ impl LocalAgentControl {
                 }
             }
             other => (other, AgentMetadata::default(), false),
+        };
+        let metadata_replacement = if register_resumed_agent && retained_metadata.is_some() {
+            // Runtime unload does not relinquish the counted registration or its
+            // submission gate. Replace canonical metadata only at publication.
+            Some(
+                self.runtime
+                    .registry
+                    .reserve_agent_metadata_replacement(thread_id, agent_metadata.clone())?,
+            )
+        } else {
+            None
         };
         if resume_uses_v2_residency {
             let developer_instructions_override = if client_mcp_extensions_override.is_some()
@@ -597,10 +709,17 @@ impl LocalAgentControl {
         }
         if let Err(error) = self
             .publish_restored_agent(&resumed_thread.thread, parent.as_ref(), || {
-                if register_resumed_agent && !reservation.commit_if_absent(registration_metadata) {
-                    return Err(CodexErr::InvalidRequest(
-                        "restored agent registration changed while loading".to_string(),
-                    ));
+                if let Some(replacement) = metadata_replacement {
+                    replacement.commit()?;
+                } else if register_resumed_agent {
+                    let reservation = reservation.ok_or_else(|| {
+                        CodexErr::Fatal("missing restored agent reservation".into())
+                    })?;
+                    if !reservation.commit_if_absent(registration_metadata) {
+                        return Err(CodexErr::InvalidRequest(
+                            "restored agent registration changed while loading".to_string(),
+                        ));
+                    }
                 }
                 Ok(())
             })

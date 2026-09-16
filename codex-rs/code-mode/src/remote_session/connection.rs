@@ -110,6 +110,7 @@ pub(super) struct Connection {
     failure: Arc<std::sync::Mutex<Option<String>>>,
     cancellation: CancellationToken,
     capabilities: CapabilitySet,
+    pub(super) host_exited: CancellationToken,
 }
 
 struct CallerCancellation {
@@ -126,6 +127,7 @@ struct ConnectionSupervisor {
     driver_task: JoinHandle<()>,
     reader_task: JoinHandle<Result<(), String>>,
     writer_task: JoinHandle<Result<(), String>>,
+    host_exited: CancellationToken,
 }
 
 impl CallerCancellation {
@@ -187,14 +189,12 @@ impl Connection {
             });
         }
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| ConnectionError::Other("spawned code-mode host has no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ConnectionError::Other("spawned code-mode host has no stdout".into()))?;
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            kill_and_reap(&mut child).await;
+            return Err(ConnectionError::Other(
+                "spawned code-mode host is missing its I/O pipes".into(),
+            ));
+        };
 
         Self::establish(FramedReader::new(stdout), FramedWriter::new(stdin), child).await
     }
@@ -263,6 +263,7 @@ impl Connection {
         let (event_tx, event_rx) = mpsc::channel(IPC_CHANNEL_CAPACITY);
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<EncodedFrame>(IPC_CHANNEL_CAPACITY);
         let cancellation = CancellationToken::new();
+        let host_exited = CancellationToken::new();
         let alive = Arc::new(AtomicBool::new(true));
         let failure = Arc::new(std::sync::Mutex::new(None));
 
@@ -301,6 +302,7 @@ impl Connection {
                 driver_task,
                 reader_task,
                 writer_task,
+                host_exited: host_exited.clone(),
             }
             .run(),
         );
@@ -312,6 +314,7 @@ impl Connection {
             failure,
             cancellation,
             capabilities,
+            host_exited,
         })
     }
 
@@ -330,6 +333,7 @@ impl Connection {
         &self,
         session: RemoteSession,
         limits: CodeModeSessionCellExecutionLimits,
+        cleanup: SessionCleanup,
     ) -> Result<SessionCleanup, String> {
         if limits != CodeModeSessionCellExecutionLimits::default()
             && !self
@@ -337,23 +341,31 @@ impl Connection {
                 .iter()
                 .any(|capability| capability.as_str() == SESSION_RESOURCE_LIMITS_CAPABILITY)
         {
+            cleanup.close();
             return Err(format!(
                 "code-mode host does not support session resource limits: missing `{SESSION_RESOURCE_LIMITS_CAPABILITY}` capability"
             ));
         }
-        let cleanup = SessionCleanup::new();
         let cancellation = CallerCancellation::new();
         let (response_tx, response_rx) = oneshot::channel();
-        self.send(DriverCommand::OpenSession {
-            session,
-            limits,
-            cleanup: cleanup.clone(),
-            caller_cancellation: cancellation.token(),
-            response_tx,
-        })
-        .await?;
+        let sent = self
+            .send(DriverCommand::OpenSession {
+                session,
+                limits,
+                cleanup: cleanup.clone(),
+                caller_cancellation: cancellation.token(),
+                response_tx,
+            })
+            .await;
+        if let Err(error) = sent {
+            cleanup.close();
+            return Err(error);
+        }
         let result = self.receive(response_rx).await;
         cancellation.disarm();
+        if result.is_err() {
+            cleanup.connection_failed();
+        }
         result?;
         Ok(cleanup)
     }
@@ -554,7 +566,7 @@ impl ConnectionSupervisor {
             result = &mut self.reader_task => task_failure("reader", result),
             result = &mut self.writer_task => task_failure("writer", result),
             result = self.child.wait() => {
-                child_exited = true;
+                child_exited = result.is_ok();
                 match result {
                     Ok(status) => format!("code-mode host exited with status {status}"),
                     Err(error) => format!("failed waiting for code-mode host: {error}"),
@@ -567,6 +579,7 @@ impl ConnectionSupervisor {
         if !child_exited {
             kill_and_reap(&mut self.child).await;
         }
+        self.host_exited.cancel();
     }
 }
 
@@ -604,6 +617,16 @@ fn failure_message(failure: &std::sync::Mutex<Option<String>>) -> String {
 }
 
 async fn kill_and_reap(child: &mut Child) {
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+    // Keep startup and supervisor cleanup owned until wait confirms death. A failed
+    // kill/wait is not exit proof, even when a durable caller has reached its deadline.
+    loop {
+        let _ = child.start_kill();
+        match child.wait().await {
+            Ok(_) => return,
+            Err(error) => {
+                warn!(%error, "failed to reap code-mode host");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
 }

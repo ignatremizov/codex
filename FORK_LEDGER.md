@@ -27,6 +27,7 @@ This checkpoint inventories the integrated owners through payload-free mailbox a
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
+| Durable owning-subtree unload | Capability | Stop a selected task's owning root and loaded spawn descendants only after exact runtimes acknowledge producer drain, persistence, and writer release; retain failed actors and cancelled-spawn cleanup for retry. Graceful TUI exit uses unload, while explicit shared-server disconnect leaves server-owned work running. | `codex-rs/core/src/thread_manager/loaded_subtree.rs`<br>`codex-rs/core/src/session/durable_shutdown.rs`<br>`codex-rs/core/src/unified_exec/shutdown.rs`<br>`codex-rs/core/src/thread_manager/owned_resume_startup.rs`<br>`codex-rs/app-server/src/request_processors/thread_unload.rs`<br>`codex-rs/tui/src/app/exit_lifecycle.rs` | Exact lifecycle and subscription fences, canonical completion ownership, captured startup/controller authority, Code Mode and Guardian teardown, real process exit, and writer-lease release | `feat(lifecycle): durably unload owning subtrees on graceful client exit` |
 | Captured credential profiles with shared storage | Capability | Select saved credentials with `CODEX_AUTH_FILE` without relocating configuration, skills, rollouts, or ownership. Preserve provider/API-key precedence, strict browser dictation, and captured reload/login/logout identity; isolate daemon lifecycle and recovery by profile and verify the actual local connection's home and profile before reuse. | `codex-rs/login/src/auth_file_selection.rs`<br>`codex-rs/login/src/auth_profile.rs`<br>`codex-rs/login/src/auth/manager.rs`<br>`codex-rs/app-server-daemon/src/launch_options.rs`<br>`codex-rs/tui/src/auth_profile_connection.rs` | Config/bootstrap capture, account-bound network policy, model-catalog caching, daemon package/PID ownership, actual connection verification, and current TUI startup/reconnect boundaries | `feat(auth): select credential profiles while sharing thread storage` |
 | Batch agent input with shared presentation | Capability | Send one typed input to a nonempty array of canonicalized recipients, deduplicating aliases in first-seen order and retaining independent direct, queued, mailbox, and failure outcomes. Preserve partial admissions on cancellation and show the shared input once, without a second retry ledger or a false delivery guarantee. | `codex-rs/core/src/tools/handlers/multi_agents/send_input_batch.rs`<br>`codex-rs/core/src/tools/handlers/multi_agents/send_input_admission.rs`<br>`codex-rs/core/src/agent/control/message_audit.rs`<br>`codex-rs/protocol/src/collab_input.rs`<br>`codex-rs/tui/src/multi_agents/send_input_batch.rs`<br>`codex-rs/tui/src/app/replay_filter.rs` | Native attribution, shared interrupt facade, retained admission workers, canonical recipient history, typed legacy/API conversion, and source-owned live/replay presentation | `feat(agents): support batch send_input with shared lifecycle presentation` |
 | Exact delivered-final recovery | Compatibility | On resume suppress only an existing completed reconciliation candidate proven delivered by original-coordinate, rollback-filtered canonical evidence for the exact receiver, child, target turn, and response identity. Without that proof, preserve unseen, conflicting, empty, and later same-text results; errors remain eligible, and history never creates a subscription. Durable model-hidden root oversight remains separate from nonpersistent peer receipts. | `codex-rs/core/src/agent/control/resume_delivery.rs`<br>`codex-rs/core/src/agent/control/response_observer.rs`<br>`codex-rs/core/src/agent/control/presentation/root_completion_audit.rs` | Strict receiver-owned history, original adjacency, exact-instance observation, terminal reconciliation, and canonical root-oversight ownership | `fix(agents): prevent duplicate finals across delivery, sampling, and resume`, `feat(multi-agent): surface unobserved child conclusions in Main` |
@@ -782,6 +783,40 @@ Source tests cover selected browser credentials, recovery isolation, actual-conn
 unrelated response IDs/deadlines, required attachment, and discovered-socket launch exclusions.
 Schema exports, complete status snapshots, Cargo/Bazel lock reconciliation, cross-platform tests,
 and executable qualification remain remote work, not a passing result of this source rebase.
+
+### Durable shutdown and owning-subtree unload
+
+Ownership anchor: `feat(lifecycle): durably unload owning subtrees on graceful client exit`.
+`thread/unload` captures the owning spawn root and loaded descendants, not ordinary history-fork
+ancestry. Subscriber preflight precedes sealing. Lifecycle locks are released before accepted
+completion drains and reacquired for exact-instance removal; a stopped facade, cancellation
+request, output-close signal, or successful kill RPC does not acknowledge writer release.
+Failures retain all captured entries for retry, including stopped actors and pending cancelled-spawn
+alias cleanup. Sealed descendants prevent cold recreation of an already-unloaded ancestor.
+
+The existing provisional spawn guard owns graph publication and input uncertainty. Prepared
+receipts remain armed until consumed, not merely sent. Definite abandoned setup may complete
+its own alias rollback, but unknown input or graph acknowledgement retains its original evidence.
+Managed resume and fork startup keep captured options, host-controller choice, credential profile,
+persistence acquisition, and the exact actor owner through cancellation and durable cleanup.
+History forks activate the saved alias-reservation implementation here, without treating copied
+external UUIDs as authority over local runtime or alias state.
+
+The shell's legacy tracker and aggregate durable barrier observe the same accepted producer.
+Even an unpolled shell execution registers its queue-cleanup receipt before yielding. Local and
+remote exit-confirmation guards are retained before first poll. Pending-output collection remains
+separate from canonical bounded transcript retention; final output and network-denial watchers
+complete before inventory retirement. Code Mode retains provider openings, generations, callbacks,
+and unknown close outcomes, and Guardian retains accepted creation and exact reviewer actors.
+These owners drain before final history, metadata, and writer shutdown; a failed phase stays
+retryable rather than falling back to unacknowledged legacy teardown.
+
+Graceful TUI exit unloads the owning root even when viewing a child. A refused unload keeps the
+composer and parked App-owned voice intact. Explicit `/disconnect` is available only for shared
+servers; once exit is accepted, client-owned dictation, voice, and dynamic tasks are retired through
+their actual owners. Existing unsubscribe/navigation and interrupt-first behavior remain separate.
+Source, RPC, failure-injection, cancellation, and snapshot coverage require remote execution and
+coordinated schema generation; no local executable qualification is claimed.
 
 ## Integration boundaries and deferred work
 

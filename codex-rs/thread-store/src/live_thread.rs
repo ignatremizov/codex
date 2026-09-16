@@ -60,6 +60,7 @@ enum AppendedItemsDurability {
 pub struct LiveThreadInitGuard {
     live_thread: Option<LiveThread>,
     acquiring: Option<ThreadStoreFuture<'static, LiveThread>>,
+    acquisition_error: Option<String>,
 }
 
 impl LiveThreadInitGuard {
@@ -67,6 +68,7 @@ impl LiveThreadInitGuard {
         Self {
             live_thread,
             acquiring: None,
+            acquisition_error: None,
         }
     }
 
@@ -87,10 +89,17 @@ impl LiveThreadInitGuard {
     }
 
     async fn finish_acquisition(&mut self) -> ThreadStoreResult<()> {
+        if let Some(message) = self.acquisition_error.as_ref() {
+            return Err(ThreadStoreError::Internal {
+                message: format!("persistence acquisition previously failed: {message}"),
+            });
+        }
         if let Some(acquiring) = self.acquiring.as_mut() {
             let result = acquiring.await;
             self.acquiring = None;
-            self.live_thread = Some(result?);
+            self.live_thread = Some(result.inspect_err(|error| {
+                self.acquisition_error = Some(error.to_string());
+            })?);
         }
         Ok(())
     }
@@ -111,6 +120,20 @@ impl LiveThreadInitGuard {
         if let Err(err) = live_thread.discard().await {
             warn!("failed to discard thread persistence for failed session init: {err}");
         }
+    }
+
+    /// Completes any in-flight acquisition and durably discards the acquired writer.
+    ///
+    /// The live thread remains owned by this guard when discard fails so the caller can retry
+    /// and observe the original storage error.
+    pub async fn discard_durably(&mut self) -> ThreadStoreResult<()> {
+        self.finish_acquisition().await?;
+        let Some(live_thread) = self.live_thread.as_ref() else {
+            return Ok(());
+        };
+        live_thread.discard().await?;
+        self.live_thread = None;
+        Ok(())
     }
 }
 
@@ -396,6 +419,15 @@ impl LiveThread {
         }
     }
 
+    /// Finish metadata before closing the writer so failures remain retryable.
+    ///
+    /// Success includes the store's writer-lease release, not just stopping its I/O task.
+    pub async fn shutdown_durably(&self) -> ThreadStoreResult<()> {
+        self.flush_pending_metadata_update_for_existing_history()
+            .await?;
+        self.thread_store.shutdown_thread(self.thread_id).await
+    }
+
     pub async fn discard(&self) -> ThreadStoreResult<()> {
         self.thread_store.discard_thread(self.thread_id).await
     }
@@ -530,3 +562,7 @@ impl LiveThread {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "live_thread_shutdown_tests.rs"]
+mod shutdown_tests;

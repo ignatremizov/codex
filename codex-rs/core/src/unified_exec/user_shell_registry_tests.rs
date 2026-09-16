@@ -106,27 +106,78 @@ async fn shutdown_drain_waits_for_the_accepted_producer_not_just_its_cancel_requ
     let (cancelled, cancellation) = tokio::sync::oneshot::channel();
     let (release, released) = tokio::sync::oneshot::channel();
     let worker_manager = std::sync::Arc::clone(&manager);
-    manager.spawn_user_shell_command(async move {
-        let token = CancellationToken::new();
-        let id = worker_manager.register_user_shell_command(
-            "drained-command".to_string(), /*submission_id*/ 0, "pending command".to_string(),
-            PathUri::parse("file:///tmp").expect("cwd"), Default::default(), token.clone(),
-        ).await;
-        registered.send(id).expect("registration receipt");
-        token.cancelled().await;
-        cancelled.send(()).expect("cancellation receipt");
-        released.await.expect("finish output publication");
-        worker_manager.unregister_user_shell_command(id, "drained-command").await;
-    }).await.expect("admit producer");
+    manager
+        .spawn_user_shell_command(async move {
+            let token = CancellationToken::new();
+            let id = worker_manager
+                .register_user_shell_command(
+                    "drained-command".to_string(),
+                    /*submission_id*/ 0,
+                    "pending command".to_string(),
+                    PathUri::parse("file:///tmp").expect("cwd"),
+                    Default::default(),
+                    token.clone(),
+                )
+                .await;
+            registered.send(id).expect("registration receipt");
+            token.cancelled().await;
+            cancelled.send(()).expect("cancellation receipt");
+            released.await.expect("finish output publication");
+            worker_manager
+                .unregister_user_shell_command(id, "drained-command")
+                .await;
+        })
+        .await
+        .expect("admit producer");
     let id = registration.await.expect("registered producer");
     manager.shutdown_user_shell_commands().await;
     cancellation.await.expect("process cancellation requested");
     let mut drain = Box::pin(manager.drain_user_shell_commands());
     assert!(futures::poll!(drain.as_mut()).is_pending());
     assert_eq!(manager.list_processes().await[0].process_id, id.to_string());
-    assert!(manager.spawn_user_shell_command(async { panic!("closed admission must not poll") }).await.is_err());
+    assert!(
+        manager
+            .spawn_user_shell_command(async { panic!("closed admission must not poll") })
+            .await
+            .is_err()
+    );
     release.send(()).expect("allow publication to settle");
     tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), drain)
-        .await.expect("producer drained");
+        .await
+        .expect("producer drained");
     assert_eq!(manager.list_processes().await, Vec::new());
+}
+
+#[tokio::test]
+async fn one_accepted_shell_producer_is_owned_by_both_shutdown_barriers() {
+    let manager = std::sync::Arc::new(UnifiedExecProcessManager::default());
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let published = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let producer_published = std::sync::Arc::clone(&published);
+    manager
+        .spawn_user_shell_command(async move {
+            started.send(()).expect("producer started");
+            released.await.expect("publication gate");
+            producer_published.store(true, std::sync::atomic::Ordering::Release);
+        })
+        .await
+        .expect("accept one producer");
+    running.await.expect("producer is awaiting publication");
+    manager.shutdown_user_shell_commands().await;
+    let mut legacy_drain = Box::pin(manager.drain_user_shell_commands());
+    let mut durable_drain = Box::pin(manager.shutdown_durably());
+    assert!(futures::poll!(legacy_drain.as_mut()).is_pending());
+    assert!(futures::poll!(durable_drain.as_mut()).is_pending());
+    assert!(!published.load(std::sync::atomic::Ordering::Acquire));
+    release
+        .send(())
+        .expect("allow canonical producer completion");
+    let (_, durable) = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), async {
+        tokio::join!(legacy_drain, durable_drain)
+    })
+    .await
+    .expect("both observers acknowledge the same producer");
+    durable.expect("durable drain");
+    assert!(published.load(std::sync::atomic::Ordering::Acquire));
 }

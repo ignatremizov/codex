@@ -1,6 +1,8 @@
 use codex_agent_graph_store::AgentAlias;
 use codex_agent_graph_store::AgentAliasState;
 use codex_agent_graph_store::AllocateAgentAliasRequest;
+use codex_protocol::SessionId;
+use tokio_util::sync::CancellationToken;
 
 use super::*;
 
@@ -212,6 +214,8 @@ impl ThreadManager {
                             parent_thread_id: missing_edge.parent_thread_id,
                             child_thread_id: missing_edge.child_thread_id,
                             nickname: missing_edge.nickname,
+                            // This branch recovers an absent alias from topology alone.
+                            // Existing aliases (and their assignment labels) remain untouched.
                             task_path: None,
                         })
                         .await
@@ -402,11 +406,24 @@ impl ThreadManager {
             state: Arc::clone(&self.state),
             _test_codex_home_guard: None,
         };
-        tokio::spawn(async move {
-            manager.resume_owned_thread(
-                options, auth_manager, live_revert_messaging, startup, forked_from_thread_id,
-            ).await
-        }).await.map_err(|error| CodexErr::Fatal(format!("owned resume worker failed: {error}")))?
+        let abandoned = CancellationToken::new();
+        let handoff = abandoned.clone().drop_guard();
+        let result = tokio::spawn(async move {
+            manager
+                .resume_owned_thread(
+                    options,
+                    auth_manager,
+                    live_revert_messaging,
+                    startup,
+                    forked_from_thread_id,
+                    abandoned,
+                )
+                .await
+        })
+        .await
+        .map_err(|error| CodexErr::Fatal(format!("owned resume worker failed: {error}")))?;
+        handoff.disarm();
+        result
     }
 
     async fn resume_owned_thread(
@@ -416,6 +433,7 @@ impl ThreadManager {
         live_revert_messaging: Option<crate::LiveRevertMessagingSnapshot>,
         startup: Option<Arc<crate::session::startup::SessionStartup>>,
         forked_from_thread_id: Option<ThreadId>,
+        abandoned: CancellationToken,
     ) -> CodexResult<NewThread> {
         let config = options.config.clone();
         let initial_history = options.initial_history.clone();
@@ -428,13 +446,24 @@ impl ThreadManager {
             // The selected host owns generic resume. Alias recovery is not permission to
             // bind that request to a concrete local controller or mutate its local graph.
             let _lifecycle = match &initial_history {
-                InitialHistory::Resumed(history) => Some(
-                    self.state.agent_lifecycle_lock(history.conversation_id).lock_owned().await,
-                ),
+                InitialHistory::Resumed(history) => {
+                    let guard = self
+                        .state
+                        .agent_lifecycle_lock(history.conversation_id)
+                        .lock_owned()
+                        .await;
+                    self.state
+                        .ensure_membership_mutation_allowed(history.conversation_id)
+                        .await?;
+                    Some(guard)
+                }
                 InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
             };
-            let control = self.agent_control_for_resumed_history(&config, &initial_history).await?;
-            let (source, thread_source) = initial_history.get_resumed_session_sources()
+            let control = self
+                .agent_control_for_resumed_history(&config, &initial_history)
+                .await?;
+            let (source, thread_source) = initial_history
+                .get_resumed_session_sources()
                 .unwrap_or_else(|| (self.state.session_source.clone(), None));
             options.session_source = options.session_source.or(Some(source));
             options.thread_source = options.thread_source.or(thread_source);
@@ -450,7 +479,11 @@ impl ThreadManager {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
         };
         let _target_guard = match thread_id {
-            Some(id) => Some(self.state.agent_lifecycle_lock(id).lock_owned().await),
+            Some(id) => {
+                let guard = self.state.agent_lifecycle_lock(id).lock_owned().await;
+                self.state.ensure_membership_mutation_allowed(id).await?;
+                Some(guard)
+            }
             None => None,
         };
         let loaded_thread = {
@@ -516,6 +549,9 @@ impl ThreadManager {
             ),
             None => None,
         };
+        if let Some(owner) = owner_id {
+            self.state.ensure_membership_mutation_allowed(owner).await?;
+        }
         let control = if let Some(messaging) = &live_revert_messaging {
             let control = messaging.control_for_resume(thread_id.ok_or_else(|| {
                 CodexErr::InvalidRequest("live revert requires resumed history".into())
@@ -619,14 +655,29 @@ impl ThreadManager {
                     thread,
                 });
             }
-            self.state.remove_thread_if_matches_with(&id, &thread, || {}).await;
+            // A closed facade is not proof of actor/writer termination. Retain the
+            // exact entry until that barrier settles, then remove only that instance.
+            thread.wait_until_terminated().await;
+            self.state
+                .remove_thread_if_matches_with(&id, &thread, || {})
+                .await
+                .ok_or_else(|| {
+                    CodexErr::InvalidRequest(format!(
+                        "thread {id} changed while replacing its stopped runtime"
+                    ))
+                })?;
         }
         if let Some(parent) = &parent {
             let current = self.state.get_thread(parent.session.thread_id()).await?;
-            if !Arc::ptr_eq(parent, &current) || !parent.is_running()
-                || !control.runtime.shares_tree_with(&parent.session.services.local_agent_runtime)
+            if !Arc::ptr_eq(parent, &current)
+                || !parent.is_running()
+                || !control
+                    .runtime
+                    .shares_tree_with(&parent.session.services.local_agent_runtime)
             {
-                return Err(CodexErr::InvalidRequest("resume parent changed or belongs to another control".into()));
+                return Err(CodexErr::InvalidRequest(
+                    "resume parent changed or belongs to another control".into(),
+                ));
             }
             parent.session.submission_admission.check_ready()?;
         }
@@ -655,7 +706,7 @@ impl ThreadManager {
         request.startup = startup;
         request.forked_from_thread_id = forked_from_thread_id;
         request.parent_thread_id = source.parent_thread_id();
-        let resumed = Box::pin(self.state.spawn_thread(request)).await?;
+        let resumed = self.state.spawn_resumed_thread(request, abandoned).await?;
         if resumed.runtime_origin == ThreadRuntimeOrigin::Existing {
             return Err(CodexErr::Fatal(
                 "deferred resume adopted an independently loaded runtime".into(),
