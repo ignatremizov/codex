@@ -9,6 +9,7 @@ use codex_app_server::run_main_with_transport_options;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_config::LoaderOverrides;
+use codex_core::config::find_codex_home;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_cli::CliConfigOverrides;
 use codex_websocket_auth::WebsocketAuthArgs;
@@ -41,9 +42,10 @@ struct AppServerArgs {
     #[arg(
         long = "listen",
         value_name = "URL",
+        value_parser = codex_app_server::validate_app_server_listen_url,
         default_value = AppServerTransport::DEFAULT_LISTEN_URL
     )]
-    listen: AppServerTransport,
+    listen: String,
 
     /// Session source used to derive product restrictions and metadata.
     #[arg(
@@ -98,9 +100,21 @@ fn main() -> anyhow::Result<()> {
                 .map(LoaderOverrides::with_managed_config_path_for_tests)
                 .unwrap_or_default()
         };
-        let transport = listen;
+        let use_auth_profile_socket = listen == "unix://";
+        let transport = if use_auth_profile_socket {
+            AppServerTransport::Off
+        } else {
+            AppServerTransport::from_listen_url(&listen)?
+        };
+        let codex_home = find_codex_home()?;
+        let auth_file_selection = codex_login::AuthFileSelection::from_env(codex_home.as_path())?;
         let auth = auth.try_into_settings()?;
         let mut runtime_options = AppServerRuntimeOptions {
+            startup_auth: Some(codex_app_server::AppServerStartupAuth {
+                codex_home,
+                auth_file_selection,
+            }),
+            use_auth_profile_socket,
             code_mode_host_transport: code_mode_host.into(),
             managed_daemon,
             ..Default::default()

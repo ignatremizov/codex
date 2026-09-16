@@ -76,6 +76,7 @@ const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
 const INSTALL_URL: &str = "https://chatgpt.com/codex/install.ps1";
 
 pub(crate) async fn run(
+    launch: crate::DaemonLaunchOptions,
     http_client_factory: HttpClientFactory,
     restore_release: Option<String>,
 ) -> Result<()> {
@@ -85,7 +86,7 @@ pub(crate) async fn run(
     );
     run_with_http(
         &http,
-        &Daemon::from_environment()?,
+        &Daemon::from_options(&launch)?,
         &current_updater_identity().await?,
         restore_release,
     )
@@ -274,6 +275,7 @@ async fn adopt_managed_updater(
         let _ = listener;
         reexec_managed_updater(
             &managed_bin,
+            &daemon.launch,
             daemon
                 .update_pid_file
                 .parent()
@@ -522,11 +524,7 @@ fn release_selection_unstable(daemon: &Daemon, trigger: UpdateTrigger<'_>) -> Re
 }
 
 fn selected_release(daemon: &Daemon) -> Result<(std::path::PathBuf, std::path::PathBuf, String)> {
-    let home = daemon
-        .settings_file
-        .parent()
-        .and_then(Path::parent)
-        .context("daemon settings path has no Codex home")?;
+    let home = daemon.launch.codex_home();
     let root = crate::managed_install::package_root(home);
     let release = std::fs::canonicalize(root.join("current"))?;
     let name = release
@@ -544,8 +542,13 @@ async fn current_updater_identity() -> Result<ExecutableIdentity> {
 }
 
 #[cfg(unix)]
-pub(crate) fn reexec_managed_updater(managed_codex_bin: &Path, state_dir: &Path) -> Result<()> {
+pub(crate) fn reexec_managed_updater(
+    managed_codex_bin: &Path,
+    launch: &crate::DaemonLaunchOptions,
+    state_dir: &Path,
+) -> Result<()> {
     let mut command = StdCommand::new(managed_codex_bin);
+    launch.configure_command(&mut command);
     command.args(["app-server", "daemon", "pid-update-loop"]);
     crate::background_command::set_working_directory(&mut command, state_dir)?;
     let err = command.exec();

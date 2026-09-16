@@ -121,6 +121,16 @@ fn server_opts(
 
 #[tokio::test]
 async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
+    device_code_login_persists_selected_file(/*filename*/ None).await
+}
+
+#[tokio::test]
+async fn device_code_login_persists_explicit_file_without_touching_default_auth()
+-> anyhow::Result<()> {
+    device_code_login_persists_selected_file(Some("auth-office.json")).await
+}
+
+async fn device_code_login_persists_selected_file(filename: Option<&str>) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let codex_home = tempdir().unwrap();
@@ -144,14 +154,20 @@ async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
     mock_oauth_token_single(&mock_server, jwt.clone()).await;
 
     let issuer = mock_server.uri();
-    let opts = server_opts(&codex_home, issuer, AuthCredentialsStoreMode::File);
+    let mut opts = server_opts(&codex_home, issuer, AuthCredentialsStoreMode::File);
+    let selection = codex_login::AuthFileSelection::resolve(
+        codex_home.path(),
+        filename.map(std::ffi::OsStr::new),
+    )?;
+    opts.auth_file_selection = selection.clone();
 
     run_device_code_login(opts)
         .await
         .expect("device code login integration should succeed");
 
-    let auth = load_auth_dot_json(
+    let auth = codex_login::load_auth_dot_json_for_selection(
         codex_home.path(),
+        &selection,
         AuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
     )
@@ -163,6 +179,9 @@ async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
     assert_eq!(tokens.refresh_token, "refresh-token-123");
     assert_eq!(tokens.id_token.raw_jwt, jwt);
     assert_eq!(tokens.account_id.as_deref(), Some(WORKSPACE_ID_ALLOWED));
+    if filename.is_some() {
+        assert!(!codex_home.path().join("auth.json").exists());
+    }
     Ok(())
 }
 

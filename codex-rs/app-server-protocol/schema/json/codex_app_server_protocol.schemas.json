@@ -2549,6 +2549,30 @@
             },
             "method": {
               "enum": [
+                "server/read"
+              ],
+              "title": "Server/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ServerReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Server/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "config/read"
               ],
               "title": "Config/readRequestMethod",
@@ -21690,6 +21714,22 @@
         "title": "SendAddCreditsNudgeEmailResponse",
         "type": "object"
       },
+      "ServerAuthProfile": {
+        "description": "Startup credential selection, without credentials or absolute auth paths.\n\nThe opaque ID describes host-local configuration, not an authenticated account, and cannot be used to compare credential paths across hosts.",
+        "properties": {
+          "displayLabel": {
+            "type": "string"
+          },
+          "profileOpaqueId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "displayLabel",
+          "profileOpaqueId"
+        ],
+        "type": "object"
+      },
       "ServerDiagnosticsGauge": {
         "properties": {
           "name": {
@@ -21734,6 +21774,24 @@
         "required": [
           "id"
         ],
+        "type": "object"
+      },
+      "ServerReadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ServerReadParams",
+        "type": "object"
+      },
+      "ServerReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "authProfile": {
+            "$ref": "#/definitions/v2/ServerAuthProfile"
+          }
+        },
+        "required": [
+          "authProfile"
+        ],
+        "title": "ServerReadResponse",
         "type": "object"
       },
       "ServerRequestResolvedNotification": {

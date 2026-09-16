@@ -2222,6 +2222,7 @@ dependencies = [
  "codex-app-server-transport",
  "codex-http-client",
  "codex-install-context",
+ "codex-login",
  "codex-uds",
  "codex-utils-cargo-bin",
  "codex-utils-home-dir",
