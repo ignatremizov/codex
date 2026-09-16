@@ -564,7 +564,7 @@ impl GuardianReviewSessionManager {
         )
         .with_node_repl_policy(&params.node_repl_policy);
         let mut spawned_trunk = false;
-        let trunk_candidate = match run_before_review_deadline(
+        let (trunk_candidate, pending_creation) = match run_before_review_deadline(
             deadline,
             params.external_cancel.as_ref(),
             self.state.lock(),
@@ -623,51 +623,59 @@ impl GuardianReviewSessionManager {
                             );
                         }
                     };
-                    drop(state);
-                    let review_session = match run_before_review_deadline_with_cancel(
-                        deadline,
-                        params.external_cancel.as_ref(),
-                        &spawn_cancel_token,
-                        creation,
-                    )
-                    .await
-                    {
-                        Ok(Ok(review_session)) => review_session,
-                        Ok(Err(err)) => {
-                            return (
-                                GuardianReviewSessionOutcome::PromptBuildFailed(anyhow!("{err:#}")),
-                                GuardianReviewAnalyticsResult::without_session(),
-                            );
-                        }
-                        Err(outcome) => {
-                            return (outcome, GuardianReviewAnalyticsResult::without_session());
-                        }
-                    };
-                    state = self.state.lock().await;
-                    if state.closed {
-                        state.retired_reviews.push(review_session);
-                        spawn_cancel_token.cancel();
-                        return (
-                            GuardianReviewSessionOutcome::Aborted,
-                            GuardianReviewAnalyticsResult::without_session(),
-                        );
-                    }
-                    if state.trunk.is_none() {
-                        state.trunk = Some(review_session);
-                        spawned_trunk = true;
-                    } else {
-                        // Another selection won while this owned creation was in flight.
-                        // Retain and stop the loser without replacing the current trunk.
-                        state.retired_reviews.push(review_session);
-                        spawn_cancel_token.cancel();
-                    }
+                    (None, Some((spawn_cancel_token, creation)))
+                } else {
+                    (state.trunk.as_ref().cloned(), None)
                 }
-
-                state.trunk.as_ref().cloned()
             }
             Err(outcome) => {
                 return (outcome, GuardianReviewAnalyticsResult::without_session());
             }
+        };
+
+        // The selection guard's lexical scope ends before awaiting owned creation.
+        // pending_spawns retains the same result even if this review waiter is cancelled.
+        let trunk_candidate = if let Some((spawn_cancel_token, creation)) = pending_creation {
+            let review_session = match run_before_review_deadline_with_cancel(
+                deadline,
+                params.external_cancel.as_ref(),
+                &spawn_cancel_token,
+                creation,
+            )
+            .await
+            {
+                Ok(Ok(review_session)) => review_session,
+                Ok(Err(err)) => {
+                    return (
+                        GuardianReviewSessionOutcome::PromptBuildFailed(anyhow!("{err:#}")),
+                        GuardianReviewAnalyticsResult::without_session(),
+                    );
+                }
+                Err(outcome) => {
+                    return (outcome, GuardianReviewAnalyticsResult::without_session());
+                }
+            };
+            let mut state = self.state.lock().await;
+            if state.closed {
+                state.retired_reviews.push(review_session);
+                spawn_cancel_token.cancel();
+                return (
+                    GuardianReviewSessionOutcome::Aborted,
+                    GuardianReviewAnalyticsResult::without_session(),
+                );
+            }
+            if state.trunk.is_none() {
+                state.trunk = Some(review_session);
+                spawned_trunk = true;
+            } else {
+                // Another selection won while this owned creation was in flight.
+                // Retain and stop the loser without replacing the current trunk.
+                state.retired_reviews.push(review_session);
+                spawn_cancel_token.cancel();
+            }
+            state.trunk.as_ref().cloned()
+        } else {
+            trunk_candidate
         };
 
         let Some(trunk) = trunk_candidate else {
