@@ -5,6 +5,8 @@ use super::focus_palette::write_test_config;
 use anyhow::Result;
 use anyhow::ensure;
 use app_test_support::create_fake_rollout;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -53,12 +55,18 @@ async fn history_lookup_uses_server_provider_with_local_and_embedded_servers() -
                     "model_provider=\"server-provider\"",
                 ])
                 .env("CODEX_HOME", home.path())
+                .env_remove("CODEX_AUTH_FILE")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
                 .kill_on_drop(true)
                 .spawn()?;
-            let socket = codex_app_server_client::app_server_control_socket_path(home.path())?;
+            let profile = AuthFileSelection::Default
+                .profile_identity(home.path(), AuthCredentialsStoreMode::default());
+            let socket = codex_app_server_client::app_server_profile_socket_path(
+                home.path(),
+                &profile.profile_opaque_id,
+            )?;
             tokio::time::timeout(Duration::from_secs(/*secs*/ 30), async {
                 loop {
                     if tokio::net::UnixStream::connect(socket.as_path())

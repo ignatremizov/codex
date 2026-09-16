@@ -8,6 +8,11 @@ fn daemon_handoff_uses_selected_executable_and_propagates_failure() -> anyhow::R
     let dir = tempfile::tempdir()?;
     let executable = dir.path().join("launching CLI");
     let receipt = dir.path().join("launching CLI.args");
+    let launch = codex_app_server_daemon::DaemonLaunchOptions::new(
+        dir.path().to_path_buf(),
+        codex_login::AuthFileSelection::Default,
+        codex_login::AuthCredentialsStoreMode::File,
+    )?;
     codex_utils_cargo_bin::write_executable(
         &executable,
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n",
@@ -23,12 +28,24 @@ fn daemon_handoff_uses_selected_executable_and_propagates_failure() -> anyhow::R
             "app-server\ndaemon\nupdate\n--from-cli\n--yes\n",
         ),
     ] {
-        run_update_action(UpdateAction::Daemon(source), Some(&executable))?;
-        assert_eq!(std::fs::read_to_string(&receipt)?, expected);
+        run_update_action(
+            UpdateAction::Daemon {
+                source,
+                launch: launch.clone(),
+            },
+            Some(&executable),
+        )?;
+        assert_eq!(
+            std::fs::read_to_string(&receipt)?,
+            format!("-c\ncli_auth_credentials_store=\"file\"\n{expected}")
+        );
     }
     codex_utils_cargo_bin::write_executable(&executable, "#!/bin/sh\nexit 7\n")?;
     let error = run_update_action(
-        UpdateAction::Daemon(DaemonUpdateSource::ThisCli),
+        UpdateAction::Daemon {
+            source: DaemonUpdateSource::ThisCli,
+            launch,
+        },
         Some(&executable),
     )
     .unwrap_err();

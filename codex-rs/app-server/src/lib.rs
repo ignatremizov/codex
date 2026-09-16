@@ -42,7 +42,6 @@ use crate::transport::RemoteControlPolicy;
 use crate::transport::RemoteControlStartConfig;
 use crate::transport::TransportEvent;
 use crate::transport::acquire_app_server_startup_lock;
-use crate::transport::app_server_startup_lock_path;
 use crate::transport::route_outgoing_envelope;
 use crate::transport::start_control_socket_acceptor;
 use crate::transport::start_remote_control;
@@ -55,7 +54,8 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::TextPosition as AppTextPosition;
 use codex_app_server_protocol::TextRange as AppTextRange;
 use codex_app_server_transport::WebSocketCompression;
-use codex_app_server_transport::daemon_recovery_file_path;
+use codex_app_server_transport::app_server_socket_startup_lock_path;
+use codex_app_server_transport::daemon_profile_recovery_file_path;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLoadError;
 use codex_config::TextRange as CoreTextRange;
@@ -143,6 +143,7 @@ mod request_processors;
 mod request_serialization;
 mod server_request_error;
 mod skills_watcher;
+mod startup_auth;
 mod thread_sample;
 mod thread_state;
 mod thread_status;
@@ -156,9 +157,12 @@ pub use crate::code_mode_host::AppServerCodeModeHostArgs;
 pub use crate::code_mode_host::CodeModeHostTransport;
 pub use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 pub use crate::error_code::INVALID_PARAMS_ERROR_CODE;
+pub use crate::startup_auth::AppServerStartupAuth;
+pub use crate::startup_auth::validate_app_server_listen_url;
 pub use crate::transport::AppServerTransport;
 pub use crate::transport::RemoteControlStartupMode;
 pub use crate::transport::app_server_control_socket_path;
+pub use crate::transport::app_server_profile_socket_path;
 pub use crate::transport::take_remote_control_disabled_env;
 pub use crate::transport::verified_local_daemon_socket;
 
@@ -483,6 +487,9 @@ pub enum PluginStartupTasks {
 pub struct AppServerRuntimeOptions {
     /// Optional host-owned frozen cloud skill catalog and resources, loaded once at startup.
     pub cloud_skills_snapshot: Option<std::path::PathBuf>,
+    pub startup_auth: Option<AppServerStartupAuth>,
+    /// Resolve literal `unix://` only after capturing startup configuration.
+    pub use_auth_profile_socket: bool,
     pub code_mode_host_transport: CodeModeHostTransport,
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_startup_mode: RemoteControlStartupMode,
@@ -494,6 +501,8 @@ impl Default for AppServerRuntimeOptions {
     fn default() -> Self {
         Self {
             cloud_skills_snapshot: None,
+            startup_auth: None,
+            use_auth_profile_socket: false,
             code_mode_host_transport: CodeModeHostTransport::Local,
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
@@ -515,7 +524,7 @@ pub async fn run_main_with_transport_options(
     auth: WebsocketAuthSettings,
     runtime_options: AppServerRuntimeOptions,
 ) -> IoResult<AppServerExit> {
-    let cloud_skill_provider = match runtime_options.cloud_skills_snapshot {
+    let cloud_skill_provider = match runtime_options.cloud_skills_snapshot.clone() {
         Some(path) => {
             let provider = tokio::task::spawn_blocking(move || {
                 codex_skills_extension::FrozenCloudSkillProvider::from_file(&path)
@@ -529,8 +538,9 @@ pub async fn run_main_with_transport_options(
     };
     #[cfg(target_os = "windows")]
     let _registered_core = codex_windows_sandbox::registered_core_requested();
-    let managed_daemon = matches!(&transport, AppServerTransport::UnixSocket { .. })
-        && runtime_options.managed_daemon;
+    let managed_daemon = runtime_options.managed_daemon
+        && (runtime_options.use_auth_profile_socket
+            || matches!(&transport, AppServerTransport::UnixSocket { .. }));
     #[cfg(unix)]
     let nofile_limit_result = managed_daemon.then(managed_daemon::raise_nofile_limit);
     let loader_overrides = loader_overrides_with_test_user_config_file(
@@ -551,7 +561,20 @@ pub async fn run_main_with_transport_options(
             format!("error parsing -c overrides: {e}"),
         )
     })?;
-    let codex_home = find_codex_home()?;
+    let AppServerStartupAuth {
+        codex_home,
+        auth_file_selection,
+    } = match runtime_options.startup_auth.clone() {
+        Some(startup_auth) => startup_auth,
+        None => {
+            let codex_home = find_codex_home()?;
+            let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+            AppServerStartupAuth {
+                codex_home,
+                auth_file_selection,
+            }
+        }
+    };
     let startup_cwd = std::env::current_dir().ok();
     let local_runtime_paths = ExecServerRuntimeOptions::from_optional_paths(
         arg0_paths.codex_self_exe.clone(),
@@ -566,7 +589,8 @@ pub async fn run_main_with_transport_options(
         Default::default(),
         arg0_paths.clone(),
         Arc::new(NoopThreadConfigLoader),
-    );
+    )
+    .auth_file_selection(auth_file_selection);
     let startup = config_manager
         .load_cloud_startup_config(startup_cwd.clone())
         .await?;
@@ -608,6 +632,23 @@ pub async fn run_main_with_transport_options(
         .sync_default_client_residency_requirement()
         .await;
 
+    let startup_profile = config.auth_file_selection.profile_identity(
+        config.codex_home.as_path(),
+        config.cli_auth_credentials_store_mode,
+    );
+    let transport = runtime_options.resolve_transport(
+        transport,
+        config.codex_home.as_path(),
+        &startup_profile,
+    )?;
+    if managed_daemon {
+        let launch = codex_app_server_daemon::DaemonLaunchOptions::new(
+            config.codex_home.to_path_buf(),
+            config.auth_file_selection.clone(),
+            config.cli_auth_credentials_store_mode,
+        )?;
+        let _ = codex_app_server_daemon::maintain_stderr_log(&launch);
+    }
     #[cfg(target_os = "macos")]
     let local_runtime_paths = local_runtime_paths.with_allowed_symlinked_codex_home(
         codex_config::allowed_symlinked_codex_home(&config.config_layer_stack, &config.codex_home),
@@ -664,8 +705,8 @@ pub async fn run_main_with_transport_options(
     codex_core::otel_init::record_process_start(otel.as_ref(), OTEL_SERVICE_NAME);
     codex_core::otel_init::install_sqlite_telemetry(otel.as_ref(), OTEL_SERVICE_NAME);
     let unix_socket_startup_lock = match &transport {
-        AppServerTransport::UnixSocket { .. } => {
-            let startup_lock_path = app_server_startup_lock_path(&codex_home)?;
+        AppServerTransport::UnixSocket { socket_path } => {
+            let startup_lock_path = app_server_socket_startup_lock_path(socket_path)?;
             let startup_lock = acquire_app_server_startup_lock(startup_lock_path).await?;
             Some(startup_lock)
         }
@@ -996,12 +1037,15 @@ pub async fn run_main_with_transport_options(
         info!("outbound router task exited (channel closed)");
     });
 
-    let recovery_file = daemon_recovery_file_path(&config.codex_home);
+    let recovery_file =
+        daemon_profile_recovery_file_path(&config.codex_home, &startup_profile.profile_opaque_id)?;
     let daemon_settings_file = managed_daemon.then(|| {
         config
             .codex_home
             .as_path()
-            .join("app-server-daemon/settings.json")
+            .join("app-server-daemon")
+            .join(&startup_profile.profile_opaque_id)
+            .join("settings.json")
     });
     let processor_handle = tokio::spawn({
         let auth_manager = Arc::clone(&auth_manager);

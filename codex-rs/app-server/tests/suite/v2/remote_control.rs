@@ -43,6 +43,7 @@ use codex_app_server_protocol::ThreadResumeResponse;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::LoaderOverrides;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use codex_protocol::protocol::SessionSource;
 use codex_state::RemoteControlEnrollmentRecord;
 use codex_state::StateRuntime;
@@ -734,7 +735,13 @@ async fn managed_rpc_persists_unless_daemon_lock_is_busy() -> Result<()> {
     let home = TempDir::new()?;
     let mut backend = BlockingRemoteControlBackend::start(home.path()).await?;
     let socket = home.path().join("control/server.sock");
-    let settings_file = home.path().join("app-server-daemon/settings.json");
+    let profile = AuthFileSelection::Default
+        .profile_identity(&home.path().canonicalize()?, AuthCredentialsStoreMode::File);
+    let settings_file = home
+        .path()
+        .join("app-server-daemon")
+        .join(profile.profile_opaque_id)
+        .join("settings.json");
     let _server = spawn_server(home.path(), &socket)?;
     let mut client = connect_daemon_client(
         &socket,

@@ -4600,6 +4600,14 @@ class SendAddCreditsNudgeEmailResponse(BaseModel):
     status: AddCreditsNudgeEmailStatus
 
 
+class ServerAuthProfile(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    display_label: Annotated[str, Field(alias="displayLabel")]
+    profile_opaque_id: Annotated[str, Field(alias="profileOpaqueId")]
+
+
 class ServerDiagnosticsGauge(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5099,6 +5107,20 @@ class FuzzyFileSearchSessionCompletedServerNotification(BaseModel):
         Field(title="FuzzyFileSearch/sessionCompletedNotificationMethod"),
     ]
     params: FuzzyFileSearchSessionCompletedNotification
+
+
+class ServerReadParams(BaseModel):
+    pass
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+
+
+class ServerReadResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    auth_profile: Annotated[ServerAuthProfile, Field(alias="authProfile")]
 
 
 class ServerRequestResolvedNotification(BaseModel):
@@ -8651,6 +8673,15 @@ class CommandExecTerminateRequest(BaseModel):
         Literal["command/exec/terminate"], Field(title="Command/exec/terminateRequestMethod")
     ]
     params: CommandExecTerminateParams
+
+
+class ServerReadRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["server/read"], Field(title="Server/readRequestMethod")]
+    params: ServerReadParams
 
 
 class ConfigReadRequest(BaseModel):
@@ -14140,6 +14171,7 @@ class ClientRequest(
         | CommandExecWriteRequest
         | CommandExecTerminateRequest
         | CommandExecResizeRequest
+        | ServerReadRequest
         | ConfigReadRequest
         | ExternalAgentConfigDetectRequest
         | ExternalAgentConfigImportRequest
@@ -14254,6 +14286,7 @@ class ClientRequest(
         | CommandExecWriteRequest
         | CommandExecTerminateRequest
         | CommandExecResizeRequest
+        | ServerReadRequest
         | ConfigReadRequest
         | ExternalAgentConfigDetectRequest
         | ExternalAgentConfigImportRequest
