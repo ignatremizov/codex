@@ -19,9 +19,10 @@ codex-app-server-transport = { workspace = true }
 codex-features = { workspace = true }
 codex-http-client = { workspace = true }
 codex-install-context = { workspace = true }
-codex-utils-home-dir = { workspace = true }
 codex-utils-process = { workspace = true }
+codex-login = { workspace = true }
 codex-uds = { workspace = true }
+codex-utils-home-dir = { workspace = true }
 futures = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -65,7 +65,7 @@ pub(super) async fn reconnect(
     for delay in [0, 1, 2, 4].into_iter().chain(std::iter::repeat(/*elt*/ 8)) {
         let attempt = async {
             tokio::time::sleep(Duration::from_secs(delay)).await;
-            let client = crate::app_server_connection::connect(&target).await?;
+            let client = crate::auth_profile_connection::connect(&target, &config).await?;
             let mut session = AppServerSession::new(backend_id, client, mode)
                 .with_local_codex_home(&config.codex_home)
                 .with_remote_cwd_override(remote_cwd.clone())
@@ -355,6 +355,7 @@ impl App {
         session.worktree_source_config_builder = app_server.worktree_source_config_builder.clone();
         session.inherit_task_tool_capabilities(app_server);
         *app_server = session;
+        self.chat_widget.auth_profile_label = app_server.auth_profile_label(&self.config);
         #[cfg(any(target_os = "windows", test))]
         let interrupted_windows_setup = self.windows_sandbox.pending_setup.take().is_some();
         #[cfg(any(target_os = "windows", test))]
