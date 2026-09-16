@@ -133,8 +133,13 @@ async fn update_interval_accepts_long_values_and_rejects_zero() {
 #[tokio::test]
 async fn telemetry_distinguishes_presence_from_default_values() -> anyhow::Result<()> {
     let home = TempDir::new()?;
-    let dir = home.path().join("app-server-daemon");
-    tokio::fs::create_dir(&dir).await?;
+    let profile = codex_login::AuthFileSelection::Default
+        .profile_identity(home.path(), codex_login::AuthCredentialsStoreMode::File);
+    let dir = home
+        .path()
+        .join("app-server-daemon")
+        .join(&profile.profile_opaque_id);
+    tokio::fs::create_dir_all(&dir).await?;
     let path = dir.join("settings.json");
     for (contents, presence) in [
         ("{}", "default"),
@@ -145,7 +150,7 @@ async fn telemetry_distinguishes_presence_from_default_values() -> anyhow::Resul
     ] {
         tokio::fs::write(&path, contents).await?;
         assert_eq!(
-            crate::telemetry::settings_tags(home.path())
+            crate::telemetry::settings_tags(home.path(), &profile)
                 .await
                 .map(|(_, value)| value),
             ["enabled", presence, presence, presence]

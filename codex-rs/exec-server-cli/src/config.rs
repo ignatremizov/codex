@@ -5,7 +5,7 @@ use codex_cloud_config::chatgpt_config_bundle_loader;
 use codex_config::LoaderOverrides;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigLoadOptions;
-use codex_core::config::bootstrap_auth_config;
+use codex_core::config::bootstrap_auth_config_for_selection;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_toml_with_layer_stack;
 use codex_login::AuthManager;
@@ -125,11 +125,14 @@ pub(super) async fn load_exec_server_config(
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
     let bootstrap_cli_overrides = cli_kv_overrides.clone();
+    let codex_home = find_codex_home()?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let mut builder = ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
+        .auth_file_selection(auth_file_selection.clone())
         .cli_overrides(cli_kv_overrides)
         .strict_config(strict_config);
     if enable_cloud_config {
-        let codex_home = find_codex_home()?;
         let loader_overrides = LoaderOverrides::default();
         let network_policy = EmbeddedNetworkPolicy::load(&loader_overrides).await;
         let bootstrap_cwd = AbsolutePathBuf::current_dir()?;
@@ -144,8 +147,12 @@ pub(super) async fn load_exec_server_config(
             },
         )
         .await?;
-        let bootstrap_auth_config = network_policy
-            .bind_bootstrap_auth(bootstrap_auth_config(&codex_home, &bootstrap_config)?);
+        let bootstrap_auth_config =
+            network_policy.bind_bootstrap_auth(bootstrap_auth_config_for_selection(
+                &codex_home,
+                &bootstrap_config,
+                &auth_file_selection,
+            )?);
         let auth_manager = AuthManager::shared_from_auth_config_with_auth_modes(
             bootstrap_auth_config.clone(),
             /*enable_codex_api_key_env*/ true,

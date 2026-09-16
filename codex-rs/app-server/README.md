@@ -495,6 +495,8 @@ strip constraints in `[network_proxy]` or `[permissions.network]`; intermediarie
 host-local validation. This reader change does not migrate or
 version-gate published policy bundles.
 
+When an auth profile is explicitly selected, shared-server connections use its profile-scoped socket and verify the captured profile identity on the same connection. Older explicit remote servers that lack `server/read` retain method-not-found compatibility. Implicit startup connects to an existing matching server when available and otherwise uses embedded operation; it does not silently start or replace an admitted shared-server session.
+
 # Amazon Bedrock authentication
 
 If `model_providers.amazon-bedrock.aws.credential_export` is configured, Bedrock setup and

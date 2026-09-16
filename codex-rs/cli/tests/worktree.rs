@@ -259,6 +259,7 @@ trust_level = "trusted"
         "delta".into(),
     );
     for key in [
+        "CODEX_AUTH_FILE",
         "CODEX_EXEC_SERVER_URL",
         "CODEX_ACCESS_TOKEN",
         "OPENAI_API_KEY",
@@ -288,13 +289,20 @@ trust_level = "trusted"
         #[cfg(not(unix))]
         fs::hard_link(&program, &managed)
             .or_else(|_| codex_utils_cargo_bin::copy_executable(&program, &managed))?;
-        fs::create_dir(home.join("app-server-daemon"))?;
+        let resolved_home = home.canonicalize()?;
+        let profile = codex_login::AuthFileSelection::Default
+            .profile_identity(&resolved_home, codex_login::AuthCredentialsStoreMode::File);
+        let state = resolved_home
+            .join("app-server-daemon")
+            .join(profile.profile_opaque_id);
+        fs::create_dir_all(&state)?;
         fs::write(
-            home.join("app-server-daemon/settings.json"),
+            state.join("settings.json"),
             r#"{"shutdownGraceSeconds":0,"updater":{"autoUpdateEnabled":false}}"#,
         )?;
         let mut daemon_stop = Command::new(&program);
         daemon_stop
+            .env_remove("CODEX_AUTH_FILE")
             .envs(&env)
             .args(["app-server", "daemon", "stop"]);
         Some(StopDaemon(daemon_stop))

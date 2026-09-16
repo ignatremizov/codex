@@ -364,6 +364,7 @@ async fn new_config(
         ),
         log_dir: codex_home.join("log").to_path_buf(),
         codex_home,
+        auth_file_selection: Default::default(),
         history: History::default(),
         ephemeral: true,
         allow_persistent_dynamic_tool_updates: false,

@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
+use codex_core::config::find_codex_home;
 use codex_git_utils::ApplyGitRequest;
 use codex_git_utils::apply_git_patch;
 use codex_utils_cli::CliConfigOverrides;
@@ -23,13 +24,19 @@ pub async fn run_apply_command(
     apply_cli: ApplyCommand,
     cwd: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let config = Config::load_with_cli_overrides(
-        apply_cli
-            .config_overrides
-            .parse_overrides()
-            .map_err(anyhow::Error::msg)?,
-    )
-    .await?;
+    let codex_home = find_codex_home()?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
+        .auth_file_selection(auth_file_selection)
+        .cli_overrides(
+            apply_cli
+                .config_overrides
+                .parse_overrides()
+                .map_err(anyhow::Error::msg)?,
+        )
+        .build()
+        .await?;
 
     let task_response = get_task(&config, apply_cli.task_id).await?;
     apply_diff_from_task(task_response, cwd).await

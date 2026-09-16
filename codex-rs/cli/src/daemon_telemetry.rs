@@ -44,9 +44,13 @@ pub(crate) async fn record_command(
         return;
     };
     if let Some(metrics) = otel.metrics() {
-        let mut tags = codex_app_server_daemon::telemetry::settings_tags(&config.codex_home)
-            .await
-            .to_vec();
+        let auth_profile = config
+            .auth_file_selection
+            .profile_identity(&config.codex_home, config.cli_auth_credentials_store_mode);
+        let mut tags =
+            codex_app_server_daemon::telemetry::settings_tags(&config.codex_home, &auth_profile)
+                .await
+                .to_vec();
         tags.extend([
             ("initiation_source", "cli"),
             ("update_target", target),

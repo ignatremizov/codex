@@ -12,22 +12,34 @@ pub(super) fn wrap(
     home: PathBuf,
     mode: AuthCredentialsStoreMode,
 ) -> Arc<dyn AuthStorageBackend> {
+    wrap_for_file(inner, get_auth_file(&home), mode)
+}
+
+pub(super) fn wrap_for_file(
+    inner: Arc<dyn AuthStorageBackend>,
+    auth_file: PathBuf,
+    mode: AuthCredentialsStoreMode,
+) -> Arc<dyn AuthStorageBackend> {
     if mode == AuthCredentialsStoreMode::Ephemeral {
         return inner;
     }
-    Arc::new(CommittedStorage { inner, home, mode })
+    Arc::new(CommittedStorage {
+        inner,
+        auth_file,
+        mode,
+    })
 }
 
 #[derive(Debug)]
 struct CommittedStorage {
     inner: Arc<dyn AuthStorageBackend>,
-    home: PathBuf,
+    auth_file: PathBuf,
     mode: AuthCredentialsStoreMode,
 }
 
 impl CommittedStorage {
     fn lock(&self) -> std::io::Result<File> {
-        let auth_file = get_auth_file(&self.home);
+        let auth_file = self.auth_file.clone();
         // Keyring commits can unlink an intermediate symlink used by another
         // home, so resolvable chains must share the target's commit lock.
         let path = match storage_file::resolve_auth_file(auth_file.clone()) {
@@ -92,7 +104,10 @@ impl AuthStorageBackend for CommittedStorage {
         // Linearize this no-op before any concurrent creator, without creating
         // a directory just to leave a lock behind. Secure stores may still have
         // credentials even when the directory is absent and must take the lock.
-        if self.mode == AuthCredentialsStoreMode::File && !self.home.try_exists()? {
+        if self.mode == AuthCredentialsStoreMode::File
+            && let Some(parent) = self.auth_file.parent()
+            && !parent.try_exists()?
+        {
             return Ok(false);
         }
         let _guard = self.lock()?;

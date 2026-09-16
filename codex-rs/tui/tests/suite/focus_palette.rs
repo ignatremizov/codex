@@ -387,6 +387,8 @@ impl PtyCodex {
             .env_remove("TERM_PROGRAM_VERSION")
             .env("OPENAI_API_KEY", "focus-palette-test")
             .env("CODEX_HOME", codex_home.path())
+            // These fixtures own a default profile in their temporary home, not the caller's.
+            .env_remove("CODEX_AUTH_FILE")
             .stdin(stdin)
             .stdout(stdout)
             .stderr(slave.try_clone()?)
@@ -590,7 +592,7 @@ pub(super) fn write_test_config(codex_home: &Path, repo_root: &Path) -> Result<(
 fn no_daemon_skips_startup_and_discovery() -> Result<()> {
     for running in [false, true] {
         let workspace = tempfile::tempdir()?;
-        let home = tempfile::tempdir()?;
+        let home = tempfile::tempdir_in("/tmp")?;
         write_test_config(home.path(), workspace.path())?;
         let config = home.path().join("config.toml");
         let contents = std::fs::read_to_string(&config)?;
@@ -598,7 +600,15 @@ fn no_daemon_skips_startup_and_discovery() -> Result<()> {
             config,
             contents.replace("features.daemon_auto_start = false\n", ""),
         )?;
-        let socket_path = codex_app_server_client::app_server_control_socket_path(home.path())?;
+        let resolved_home = home.path().canonicalize()?;
+        let profile = codex_login::AuthFileSelection::Default.profile_identity(
+            &resolved_home,
+            codex_login::AuthCredentialsStoreMode::default(),
+        );
+        let socket_path = codex_app_server_client::app_server_profile_socket_path(
+            &resolved_home,
+            &profile.profile_opaque_id,
+        )?;
         std::fs::create_dir_all(socket_path.as_path().parent().unwrap())?;
         let listener = if running {
             let listener = std::os::unix::net::UnixListener::bind(socket_path.as_path())?;

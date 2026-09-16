@@ -119,14 +119,19 @@ fn startup_delays_composer_for_homes_without_authentication_state() -> std::io::
         || Ok(false),
         |_| None,
     ));
-    std::fs::write(daemon_directory.join("app-server-control.sock"), "")?;
+    let daemon_socket = crate::auth_profile_connection::daemon_socket_path(
+        &codex_home,
+        &codex_login::AuthFileSelection::Default,
+        codex_login::AuthCredentialsStoreMode::default(),
+    )?;
+    std::fs::write(daemon_socket.as_path(), "")?;
     assert!(!should_delay_startup_composer_for_first_login(
         &codex_home,
         Ok(system_config_path.clone()),
         || panic!("daemon-owned homes should not probe managed configuration"),
         |_| None,
     ));
-    std::fs::remove_file(daemon_directory.join("app-server-control.sock"))?;
+    std::fs::remove_file(daemon_socket.as_path())?;
     std::fs::remove_dir(daemon_directory)?;
 
     let additional_temporary_state = codex_home.join("tmp").join("other");

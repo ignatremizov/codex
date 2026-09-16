@@ -92,6 +92,7 @@ async fn workspace_switch_preserves_login_and_survives_reload() -> anyhow::Resul
     manager.switch_workspace("login-1", "business").await?;
     enforce_login_restrictions(&AuthConfig {
         codex_home: home.path().to_path_buf(),
+        auth_file_selection: crate::AuthFileSelection::Default,
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::default(),
         forced_login_method: None,

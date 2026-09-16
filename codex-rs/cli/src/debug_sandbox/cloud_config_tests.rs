@@ -74,6 +74,14 @@ async fn sandbox_fetches_managed_profile_only_when_local_policy_allows_backend()
             .plan_type("enterprise"),
         AuthCredentialsStoreMode::File,
     )?;
+    let auth_file_selection = codex_login::AuthFileSelection::resolve(
+        codex_home.path(),
+        Some(std::ffi::OsStr::new("selected-auth.json")),
+    )?;
+    std::fs::rename(
+        codex_home.path().join("auth.json"),
+        codex_home.path().join("selected-auth.json"),
+    )?;
 
     let mut options = DebugSandboxConfigOptions {
         sandbox_state: Default::default(),
@@ -87,6 +95,7 @@ async fn sandbox_fetches_managed_profile_only_when_local_policy_allows_backend()
             &[],
             options,
             || AbsolutePathBuf::from_absolute_path(codex_home.path()),
+            &auth_file_selection,
             /*strict_config*/ false,
         )
         .await
@@ -119,10 +128,12 @@ async fn sandbox_fetches_managed_profile_only_when_local_policy_allows_backend()
         /*codex_linux_sandbox_exe*/ None,
         options,
         Some(codex_home.path().to_path_buf()),
+        auth_file_selection.clone(),
         cloud_config_bundle,
         /*strict_config*/ false,
     )
     .await?;
+    assert_eq!(config.auth_file_selection, auth_file_selection);
 
     assert_eq!(
         config
@@ -178,6 +189,7 @@ async fn sandbox_state_skips_cloud_bootstrap() -> Result<()> {
         &[],
         &options,
         || panic!("supplied state must skip CODEX_HOME resolution"),
+        &codex_login::AuthFileSelection::Default,
         /*strict_config*/ false,
     )
     .await?;

@@ -32,6 +32,7 @@ mod storage_telemetry;
 
 use super::BedrockAccessKeysAuth;
 use super::BedrockApiKeyAuth;
+use crate::AuthFileSelection;
 use crate::token_data::TokenData;
 use codex_agent_identity::AgentIdentityJwtClaims;
 use codex_agent_identity::decode_agent_identity_jwt;
@@ -234,12 +235,14 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
 
 #[derive(Clone, Debug)]
 pub(super) struct FileAuthStorage {
-    codex_home: PathBuf,
+    auth_file: PathBuf,
 }
 
 impl FileAuthStorage {
     pub(super) fn new(codex_home: PathBuf) -> Self {
-        Self { codex_home }
+        Self {
+            auth_file: get_auth_file(&codex_home),
+        }
     }
 
     /// Attempt to read and parse the `auth.json` file in the given `CODEX_HOME` directory.
@@ -258,12 +261,11 @@ impl FileAuthStorage {
 
 impl AuthStorageBackend for FileAuthStorage {
     fn persistent_home(&self) -> Option<&Path> {
-        Some(&self.codex_home)
+        self.auth_file.parent()
     }
 
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
-        let auth_file = get_auth_file(&self.codex_home);
-        let auth_dot_json = match self.try_read_auth_json(&auth_file) {
+        let auth_dot_json = match self.try_read_auth_json(&self.auth_file) {
             Ok(auth) => auth,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err),
@@ -272,7 +274,7 @@ impl AuthStorageBackend for FileAuthStorage {
     }
 
     fn save(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
-        let auth_file = storage_file::resolve_auth_file(get_auth_file(&self.codex_home))?;
+        let auth_file = storage_file::resolve_auth_file(self.auth_file.clone())?;
         let parent = auth_file
             .parent()
             .ok_or_else(|| std::io::Error::other("auth file has no parent"))?;
@@ -295,7 +297,11 @@ impl AuthStorageBackend for FileAuthStorage {
     }
 
     fn delete(&self) -> std::io::Result<bool> {
-        delete_file_if_exists(&self.codex_home)
+        match std::fs::remove_file(&self.auth_file) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -549,7 +555,7 @@ impl AutoAuthStorage {
 
 impl AuthStorageBackend for AutoAuthStorage {
     fn persistent_home(&self) -> Option<&Path> {
-        Some(&self.file_storage.codex_home)
+        self.file_storage.persistent_home()
     }
 
     fn load_account_grant(&self) -> std::io::Result<Option<AuthDotJson>> {
@@ -661,18 +667,25 @@ static EPHEMERAL_AUTH_STORE: Lazy<Mutex<HashMap<String, AuthDotJson>>> =
 #[derive(Clone, Debug)]
 struct EphemeralAuthStorage {
     codex_home: PathBuf,
+    selected_file_key: Option<String>,
 }
 
 impl EphemeralAuthStorage {
     fn new(codex_home: PathBuf) -> Self {
-        Self { codex_home }
+        Self {
+            codex_home,
+            selected_file_key: None,
+        }
     }
 
     fn with_store<F, T>(&self, action: F) -> std::io::Result<T>
     where
         F: FnOnce(&mut HashMap<String, AuthDotJson>, String) -> std::io::Result<T>,
     {
-        let key = compute_store_key(&self.codex_home)?;
+        let key = match &self.selected_file_key {
+            Some(key) => key.clone(),
+            None => compute_store_key(&self.codex_home)?,
+        };
         let mut store = EPHEMERAL_AUTH_STORE
             .lock()
             .map_err(|_| std::io::Error::other("failed to lock ephemeral auth storage"))?;
@@ -704,6 +717,43 @@ pub(super) fn create_auth_storage(
 ) -> Arc<dyn AuthStorageBackend> {
     let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
     create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
+}
+
+pub(super) fn create_auth_storage_for_selection(
+    codex_home: PathBuf,
+    selection: &AuthFileSelection,
+    mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Arc<dyn AuthStorageBackend> {
+    let AuthFileSelection::Selected(auth_file) = selection else {
+        return create_auth_storage(codex_home, mode, keyring_backend_kind);
+    };
+    let auth_file = auth_file.as_path();
+    let effective_mode = if mode == AuthCredentialsStoreMode::Ephemeral {
+        AuthCredentialsStoreMode::Ephemeral
+    } else {
+        AuthCredentialsStoreMode::File
+    };
+    let storage: Arc<dyn AuthStorageBackend> =
+        if effective_mode == AuthCredentialsStoreMode::Ephemeral {
+            let mut hasher = Sha256::new();
+            hasher.update(b"codex-selected-auth-file-v1\0");
+            hasher.update(auth_file.as_os_str().as_encoded_bytes());
+            let digest = hasher.finalize();
+            Arc::new(EphemeralAuthStorage {
+                codex_home,
+                selected_file_key: Some(format!("selected-file|{digest:x}")),
+            })
+        } else {
+            Arc::new(FileAuthStorage {
+                auth_file: auth_file.to_path_buf(),
+            })
+        };
+    storage_commit::wrap_for_file(
+        storage_telemetry::observe(storage, effective_mode, keyring_backend_kind),
+        auth_file.to_path_buf(),
+        effective_mode,
+    )
 }
 
 fn create_auth_storage_with_store(

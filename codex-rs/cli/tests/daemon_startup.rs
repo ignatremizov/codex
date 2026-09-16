@@ -22,8 +22,14 @@ async fn agents_can_offer_restart_for_managed_daemon() -> Result<()> {
 
 #[tokio::test]
 #[cfg(unix)]
-async fn agents_no_daemon_uses_embedded_even_with_a_running_daemon() -> Result<()> {
+async fn agents_no_daemon_rejects_embedded_even_with_a_running_daemon() -> Result<()> {
     daemon_startup("agents-no-daemon").await
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn no_daemon_uses_embedded_even_with_a_running_daemon() -> Result<()> {
+    daemon_startup("no-daemon").await
 }
 
 #[tokio::test]
@@ -222,6 +228,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     let mut env = std::env::vars().collect::<std::collections::HashMap<_, _>>();
     for key in [
         "CODEX_EXEC_SERVER_URL",
+        "CODEX_AUTH_FILE",
         "CODEX_ACCESS_TOKEN",
         "CODEX_API_KEY",
         "CODEX_CLOUD_TASKS_MODE",
@@ -238,6 +245,12 @@ async fn daemon_startup(command: &str) -> Result<()> {
         home.path().display().to_string(),
     );
     env.insert("TERM".into(), "xterm-256color".into());
+    let resolved_home = home.path().canonicalize()?;
+    let profile = codex_login::AuthFileSelection::Default
+        .profile_identity(&resolved_home, codex_login::AuthCredentialsStoreMode::File);
+    let state_dir = resolved_home
+        .join("app-server-daemon")
+        .join(profile.profile_opaque_id);
     let mut args = vec!["--no-alt-screen".to_string()];
     let mut steps: VecDeque<(&str, &[u8])> = VecDeque::new();
     if matches!(
@@ -245,6 +258,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
         "start"
             | "agents"
             | "agents-no-daemon"
+            | "no-daemon"
             | "agents-untrusted"
             | "agents-untrusted-new"
             | "discovered"
@@ -265,9 +279,9 @@ async fn daemon_startup(command: &str) -> Result<()> {
         fs::hard_link(&codex, &managed)
             .or_else(|_| codex_utils_cargo_bin::copy_executable(&codex, &managed))?;
         if command != "restrictive-job" {
-            fs::create_dir(home.path().join("app-server-daemon"))?;
+            fs::create_dir_all(&state_dir)?;
             fs::write(
-                home.path().join("app-server-daemon/settings.json"),
+                state_dir.join("settings.json"),
                 if persisted {
                     r#"{"shutdownGraceSeconds":0,"updater":{"autoUpdateEnabled":false},"featureOverrides":{"api_key_model_discovery":true}}"#
                 } else {
@@ -276,9 +290,12 @@ async fn daemon_startup(command: &str) -> Result<()> {
             )?;
         }
     }
-    let pid_file = home.path().join("app-server-daemon/daemon.pid");
+    let pid_file = state_dir.join("daemon.pid");
     let result = async {
-        let mut existing_daemon = if matches!(command, "bedrock-running" | "discovered" | "agents-no-daemon")
+        let mut existing_daemon = if matches!(
+            command,
+            "bedrock-running" | "discovered" | "agents-no-daemon" | "no-daemon"
+        )
             || (mismatch && !disabling)
         {
             let started = Command::new(&codex)
@@ -302,8 +319,10 @@ async fn daemon_startup(command: &str) -> Result<()> {
             "Server:Localbackgroundserver"
         } else if command == "agents-no-daemon" {
             args.extend(["agents".into(), "--no-daemon".into()]);
-            steps.push_back(("Notasksyet", b"n"));
-            steps.push_back(("GPT-5.6-Terra", b"/daemon\r"));
+            "Theagentsoverviewrequiresasharedserver,but--no-daemonrequiresembeddedmode.Usecodex--no-daemonforanordinaryembeddedsession."
+        } else if command == "no-daemon" {
+            args.push("--no-daemon".into());
+            steps.push_back(("gpt-5.6-terra", b"/daemon\r"));
             "Notconnectedtothelocalbackgroundserver"
         } else if command == "agents" {
             args.push("agents".into());
@@ -506,7 +525,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                     }
                     if disabling && *ready == "Backgroundserverhasincompatiblefeaturesettings" {
                         existing_daemon = Some(fs::read(&pid_file)?);
-                        let settings: serde_json::Value = serde_json::from_slice(&fs::read(home.path().join("app-server-daemon/settings.json"))?)?;
+                        let settings: serde_json::Value = serde_json::from_slice(&fs::read(state_dir.join("settings.json"))?)?;
                         if persisted {
                             ensure!(settings["featureOverrides"]["api_key_model_discovery"] == true);
                         } else {
@@ -542,7 +561,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             ensure!(text.contains("Server:Localbackgroundserver") == restart);
                             if restart {
                                 let settings: serde_json::Value = serde_json::from_slice(
-                                    &fs::read(home.path().join("app-server-daemon/settings.json"))?
+                                    &fs::read(state_dir.join("settings.json"))?
                                 )?;
                                 let flag = if disabling && !persisted {
                                     "auth_elicitation"
@@ -554,7 +573,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                         }
                     } else if command == "start" {
                         ensure!(text.contains("Server:Localbackgroundserver"));
-                        ensure!(home.path().join("app-server-daemon/daemon.pid").exists());
+                        ensure!(pid_file.exists());
                     } else if command == "discovered" {
                         let previous_pid = existing_daemon.as_ref().context("missing original daemon PID")?;
                         ensure!(fs::read(&pid_file)? != *previous_pid, "daemon PID did not change");
@@ -582,9 +601,9 @@ async fn daemon_startup(command: &str) -> Result<()> {
             )
         })
         .await;
-        if command == "mismatch-cancel" && matches!(result, Ok(Ok(()))) {
+        if matches!(command, "mismatch-cancel" | "agents-no-daemon") && matches!(result, Ok(Ok(()))) {
             let status = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), exit).await??;
-            ensure!(status != 0, "incompatible daemon launch must fail");
+            ensure!(status != 0, "incompatible launch must fail");
         }
         Ok::<_, anyhow::Error>((
             session,
