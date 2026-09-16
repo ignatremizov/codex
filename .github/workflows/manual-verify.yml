@@ -74,12 +74,6 @@ jobs:
           target: x86_64-unknown-linux-gnu
           cache-scope: manual-verify-lock
 
-      - name: Regenerate Bazel module lockfile
-        id: regenerate_bazel_lock
-        if: inputs.regenerate_bazel_lock
-        working-directory: ${{ github.workspace }}
-        run: just bazel-lock-update
-
       - name: Install Linux build dependencies
         shell: bash
         run: |
@@ -90,6 +84,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: clippy, rustfmt
+
+      - name: Refresh Cargo workspace versions
+        id: refresh_cargo_workspace
+        if: inputs.regenerate_bazel_lock
+        # rules_rs matches workspace members by name and version. Refresh release
+        # version changes while preserving already-locked external dependencies.
+        run: cargo update --workspace
+
+      - name: Regenerate Bazel module lockfile
+        id: regenerate_bazel_lock
+        if: inputs.regenerate_bazel_lock
+        working-directory: ${{ github.workspace }}
+        run: just bazel-lock-update
 
       - name: Configure rusty_v8 artifact overrides and verify checksums
         uses: ./.github/actions/setup-rusty-v8
@@ -245,12 +252,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload regenerated Bazel module lockfile
-        if: always() && steps.regenerate_bazel_lock.outcome == 'success'
+      - name: Upload regenerated Cargo and Bazel lockfiles
+        if: always() && steps.refresh_cargo_workspace.outcome == 'success' && steps.regenerate_bazel_lock.outcome == 'success'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: bazel-module-lock-${{ github.run_id }}
-          path: MODULE.bazel.lock
+          path: |
+            codex-rs/Cargo.lock
+            MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
 
