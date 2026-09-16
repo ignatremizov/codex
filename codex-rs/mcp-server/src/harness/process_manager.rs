@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -65,7 +66,7 @@ impl ActiveSession {
     }
 
     pub fn read_delta(&mut self) -> (String, String, String, bool, usize) {
-        let buffers = self.buffers.lock().unwrap();
+        let buffers = self.buffers.lock().unwrap_or_else(PoisonError::into_inner);
 
         let new_stdout = if self.stdout_offset < buffers.stdout.len() {
             &buffers.stdout[self.stdout_offset..]
@@ -191,22 +192,25 @@ impl HarnessProcessManager {
         };
         self.sessions
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(session_id, Arc::new(Mutex::new(session)));
     }
 
     pub fn get_session(&self, session_id: i32) -> Option<Arc<Mutex<ActiveSession>>> {
-        let map = self.sessions.lock().unwrap();
+        let map = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
         map.get(&session_id).cloned()
     }
 
     pub fn remove_session(&self, session_id: i32) -> Option<Arc<Mutex<ActiveSession>>> {
-        self.sessions.lock().unwrap().remove(&session_id)
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&session_id)
     }
 
     pub async fn terminate_all(&self) {
         let to_terminate: Vec<Arc<Mutex<ActiveSession>>> = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
             sessions.drain().map(|(_, arc)| arc).collect()
         };
         for session_arc in to_terminate {
@@ -244,7 +248,7 @@ async fn collect_stream(
     is_stdout: bool,
 ) {
     while let Some(chunk) = rx.recv().await {
-        let mut b = buffers.lock().unwrap();
+        let mut b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
         if is_stdout {
             b.total_stdout_bytes += chunk.len();
             if b.stdout.len() < max_bytes {

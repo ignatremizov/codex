@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -358,7 +359,7 @@ pub async fn handle_exec_command(
             // Allow brief drain of pipe readers
             tokio::time::sleep(Duration::from_millis(50)).await;
 
-            let b = buffers.lock().unwrap();
+            let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
             let stdout = String::from_utf8_lossy(&b.stdout).to_string();
             let stderr = String::from_utf8_lossy(&b.stderr).to_string();
             let mut output = String::with_capacity(stdout.len() + stderr.len());
@@ -399,7 +400,7 @@ pub async fn handle_exec_command(
 
             if let Some(code) = exit_opt {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                let b = buffers.lock().unwrap();
+                let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
                 let stdout = String::from_utf8_lossy(&b.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&b.stderr).to_string();
                 let mut output = String::with_capacity(stdout.len() + stderr.len());
@@ -429,7 +430,7 @@ pub async fn handle_exec_command(
             } else {
                 // Process is still alive; yield session_id
                 let session_id = process_manager.allocate_session_id();
-                let b = buffers.lock().unwrap();
+                let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
                 let stdout = String::from_utf8_lossy(&b.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&b.stderr).to_string();
                 let mut output = String::with_capacity(stdout.len() + stderr.len());

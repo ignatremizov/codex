@@ -1,3 +1,4 @@
+use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -106,7 +107,10 @@ pub async fn handle_write_stdin(
             let (exited, has_new_output) = {
                 let mut session = session_arc.lock().await;
                 let exited = session.get_exit_code().is_some();
-                let b = session.buffers.lock().unwrap();
+                let b = session
+                    .buffers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 let has_output =
                     b.stdout.len() > initial_stdout_len || b.stderr.len() > initial_stderr_len;
                 (exited, has_output)
