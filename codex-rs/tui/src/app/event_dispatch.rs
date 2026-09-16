@@ -180,16 +180,30 @@ impl App {
                 if self.chat_widget.remote_connection.as_ref().is_some_and(|connection| connection.is_managed_daemon)
                     && self.daemon_restart.is_none()
                 {
-                    self.daemon_restart = Some(tokio::spawn(codex_app_server_daemon::run(
-                        codex_app_server_daemon::LifecycleCommand::Restart {
-                            feature_overrides: Default::default(),
-                        },
-                    )));
+                    let launch = codex_app_server_daemon::DaemonLaunchOptions::new(
+                        self.config.codex_home.to_path_buf(),
+                        self.config.auth_file_selection.clone(),
+                        self.config.cli_auth_credentials_store_mode,
+                    )?;
+                    self.daemon_restart = Some(tokio::spawn(async move {
+                        codex_app_server_daemon::run(
+                            &launch,
+                            codex_app_server_daemon::LifecycleCommand::Restart { feature_overrides: Default::default() },
+                        )
+                        .await
+                    }));
                 }
             }
             AppEvent::ConfirmDaemonUpdate(source) => self.confirm_daemon_update(source),
             AppEvent::RunDaemonUpdate(source) => {
-                self.pending_update_action = Some(UpdateAction::Daemon(source));
+                self.pending_update_action = Some(UpdateAction::Daemon {
+                    source,
+                    launch: codex_app_server_daemon::DaemonLaunchOptions::new(
+                        self.config.codex_home.to_path_buf(),
+                        self.config.auth_file_selection.clone(),
+                        self.config.cli_auth_credentials_store_mode,
+                    )?,
+                });
                 return Ok(self.handle_exit_mode(app_server, ExitMode::Immediate).await);
             }
             AppEvent::UserVerificationApproved { thread_id, server_name, request_id } => {

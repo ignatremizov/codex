@@ -311,6 +311,11 @@ impl App {
         {
             startup_try!(target.ensure_backend(app_server.backend_id()));
         }
+        let app_server_target = if app_server.uses_embedded_app_server() {
+            AppServerTarget::Embedded
+        } else {
+            app_server_target
+        };
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         if let Some(message) = project_config_warning(&config) {
@@ -918,6 +923,7 @@ impl App {
                 .continue_from(&mut startup_draft.blossom.borrow_mut());
         }
         chat_widget.remote_connection = remote_connection;
+        chat_widget.auth_profile_label = app_server.auth_profile_label(&config);
         chat_widget.snapshot_local_images = app_server_target.uses_remote_workspace();
         chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
             &app_server_target,

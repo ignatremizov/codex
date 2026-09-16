@@ -3,6 +3,8 @@ use std::process::Output;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -56,6 +58,8 @@ where
         "result": {
             "userAgent": "codex_cli_rs/0.0.0-test",
             "codexHome": codex_home,
+            "platformFamily": std::env::consts::FAMILY,
+            "platformOs": std::env::consts::OS,
         },
     });
     websocket
@@ -68,6 +72,33 @@ where
         .context("missing initialized notification")??;
     let initialized: Value = serde_json::from_str(initialized.to_text()?)?;
     assert_eq!(initialized["method"], "initialized");
+
+    let request = websocket
+        .next()
+        .await
+        .context("missing server read request")??;
+    let request: Value = serde_json::from_str(request.to_text()?)?;
+    assert_eq!(request["method"], "server/read");
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home, AuthCredentialsStoreMode::default());
+    let metadata = if matches!(response, QueueResponse::MethodNotFound) {
+        // Older explicit remotes may lack metadata and queueing independently.
+        json!({
+            "id": request["id"],
+            "error": {"code": -32601, "message": "Method not found"},
+        })
+    } else {
+        json!({
+            "id": request["id"],
+            "result": {"authProfile": {
+                "profileOpaqueId": profile.profile_opaque_id,
+                "displayLabel": profile.display_label,
+            }},
+        })
+    };
+    websocket
+        .send(Message::Text(metadata.to_string().into()))
+        .await?;
 
     let request = websocket.next().await.context("missing queue request")??;
     let request: Value = serde_json::from_str(request.to_text()?)?;
@@ -237,9 +268,10 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     .await;
     MockResponsesConfig::new(&model.uri())
         .with_root_config("features.plugins = false\nanalytics.enabled = false")
+        .with_root_config("cli_auth_credentials_store = \"file\"")
         .with_provider_config("env_key = \"CODEX_QUEUE_SERVER_API_KEY\"")
         .write(codex_home.path())?;
-    let _server = TestAppServer::builder()
+    let server = TestAppServer::builder()
         .with_program(&codex)
         .with_codex_home(codex_home.path())
         .with_plugin_startup_tasks()
@@ -255,14 +287,20 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         ])
         .build()
         .await?;
-    let socket_path = codex_app_server::app_server_control_socket_path(codex_home.path())?;
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home.path(), AuthCredentialsStoreMode::File);
+    let socket_path = codex_app_server::app_server_profile_socket_path(
+        codex_home.path(),
+        &profile.profile_opaque_id,
+    )?;
     timeout(Duration::from_secs(30), async {
         while !socket_path.as_path().try_exists()? {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok::<_, anyhow::Error>(())
     })
-    .await??;
+    .await
+    .context("profile socket was not created")??;
 
     let endpoint = format!("unix://{}", socket_path.as_path().display());
     let mut app = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
@@ -278,7 +316,10 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     let started: ThreadStartResponse = app
         .request_typed(ClientRequest::ThreadStart {
             request_id: RequestId::Integer(1),
-            params: ThreadStartParams::default(),
+            params: ThreadStartParams {
+                environments: Some(vec![server.auto_env_params()?]),
+                ..Default::default()
+            },
         })
         .await?;
     let thread_id = started.thread.id;
@@ -298,7 +339,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
             .args(["--thread", &thread_id, "--message", message])
             .output(),
     )
-    .await??;
+    .await
+    .context("queue command timed out")??;
     assert!(
         output.status.success(),
         "{}",
@@ -314,7 +356,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         }
         anyhow::bail!("app server disconnected before the queued turn completed")
     })
-    .await??;
+    .await
+    .context("queued turn did not complete")??;
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(completed.turn.status, TurnStatus::Completed);
     let queue: ThreadQueueListResponse = app
@@ -359,17 +402,17 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
             },
         })
         .await?;
-    // A separate caller home makes name resolution rely on the selected server.
-    let caller_home = TempDir::new()?;
+    // Unix-socket clients must match the server's home/profile. Workload identity
+    // remains caller-only and must not replace the selected server's credentials.
     let remote_command = || {
         let mut command = Command::new(&codex);
         command
-            .env("CODEX_HOME", caller_home.path())
-            .current_dir(caller_home.path())
+            .env("CODEX_HOME", codex_home.path())
+            .current_dir(codex_home.path())
             .env(OPENAI_FEDERATION_RULE_ID_ENV_VAR, "rule-test")
             .env(
                 OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR,
-                caller_home.path().join("missing-identity-token"),
+                codex_home.path().join("missing-identity-token"),
             )
             .env_remove("CODEX_QUEUE_SERVER_API_KEY")
             .kill_on_drop(true)
@@ -380,7 +423,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         Duration::from_secs(30),
         remote_command().args(["delete", &thread_id]).output(),
     )
-    .await??;
+    .await
+    .context("remote deletion confirmation timed out")??;
     assert!(!output.status.success());
     assert!(String::from_utf8(output.stderr)?.contains("cannot confirm session deletion"));
 
@@ -394,7 +438,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
             Duration::from_secs(30),
             remote_command().args(args).output(),
         )
-        .await??;
+        .await
+        .with_context(|| format!("remote lifecycle command timed out: {args:?}"))??;
         assert!(
             output.status.success(),
             "{args:?}: {}",
@@ -482,7 +527,12 @@ fn remote_session_commands_validate_config() -> Result<()> {
 #[tokio::test]
 async fn queue_rejects_local_daemon_that_does_not_support_queueing() -> Result<()> {
     let codex_home = socket_test_home()?;
-    let socket_path = codex_app_server::app_server_control_socket_path(codex_home.path())?;
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home.path(), AuthCredentialsStoreMode::default());
+    let socket_path = codex_app_server::app_server_profile_socket_path(
+        codex_home.path(),
+        &profile.profile_opaque_id,
+    )?;
     std::fs::create_dir_all(
         socket_path
             .as_path()
@@ -523,7 +573,12 @@ async fn queue_rejects_local_daemon_that_does_not_support_queueing() -> Result<(
 #[tokio::test]
 async fn queue_rejects_overrides_that_bypass_local_daemon() -> Result<()> {
     let codex_home = socket_test_home()?;
-    let socket_path = codex_app_server::app_server_control_socket_path(codex_home.path())?;
+    let profile = AuthFileSelection::Default
+        .profile_identity(codex_home.path(), AuthCredentialsStoreMode::default());
+    let socket_path = codex_app_server::app_server_profile_socket_path(
+        codex_home.path(),
+        &profile.profile_opaque_id,
+    )?;
     std::fs::create_dir_all(
         socket_path
             .as_path()

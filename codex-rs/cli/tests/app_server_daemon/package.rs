@@ -66,9 +66,14 @@ fn packaged_daemon_launch(action: &str, initial: InitialDaemon) -> Result<()> {
         std::os::unix::fs::symlink(&package, standalone.join("current"))?;
     }
     let cli_selection = standalone.join("current").canonicalize()?;
-    let state = daemon.home.path().join("app-server-daemon");
+    let state = daemon.state.clone();
     if initial == InitialDaemon::Missing {
-        std::fs::remove_file(state.join("app-server.stderr.log"))?;
+        std::fs::remove_file(
+            daemon
+                .home
+                .path()
+                .join("app-server-daemon/app-server.stderr.log"),
+        )?;
     }
     std::fs::write(
         state.join("settings.json"),
@@ -193,7 +198,7 @@ fn packaged_daemon_launch(action: &str, initial: InitialDaemon) -> Result<()> {
         assert_eq!(standalone.join("current").canonicalize()?, cli_selection);
     }
     if action == "bootstrap" {
-        assert_eq!(output["autoUpdateEnabled"], false);
+        assert_eq!(output["autoUpdateEnabled"], true);
     }
     Ok(())
 }

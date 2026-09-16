@@ -91,6 +91,14 @@ fn updater_reexec_preserves_paths_and_recovers_deleted_working_directory() {
             .expect("executable");
         let output = state.join("output");
         let project_path = project.canonicalize().expect("project path");
+        let launch_home = if home_name == "link/../home" {
+            project_path.join(format!("../{home_name}"))
+        } else {
+            home.path()
+                .canonicalize()
+                .expect("parent path")
+                .join(home_name)
+        };
         let ca_file = if delete_cwd {
             project_path.join("ca.pem").into_os_string()
         } else {
@@ -106,6 +114,7 @@ fn updater_reexec_preserves_paths_and_recovers_deleted_working_directory() {
             .current_dir(&project)
             .env("CODEX_TEST_UPDATER_EXECUTABLE", &executable)
             .env("CODEX_TEST_UPDATER_STATE", &state)
+            .env("CODEX_TEST_UPDATER_HOME", &launch_home)
             .env("CODEX_TEST_UPDATER_OUTPUT", &output)
             .env("CODEX_TEST_UPDATER_DELETE_CWD", delete_cwd.to_string())
             .env("CODEX_HOME", format!("../{home_name}"))
@@ -128,16 +137,7 @@ fn updater_reexec_preserves_paths_and_recovers_deleted_working_directory() {
             if delete_cwd { &state } else { &project_path }
                 .display()
                 .to_string(),
-            if home_name == "link/../home" {
-                project_path.join(format!("../{home_name}"))
-            } else {
-                home.path()
-                    .canonicalize()
-                    .expect("parent path")
-                    .join(home_name)
-            }
-            .display()
-            .to_string(),
+            launch_home.display().to_string(),
             " sqlite ".to_string(),
             "~/config".to_string(),
             std::env::join_paths([project_path.join("certs"), home.path().join("state")])
@@ -164,6 +164,14 @@ fn updater_reexec_child() {
         return;
     };
     let state = std::env::var_os("CODEX_TEST_UPDATER_STATE").expect("state path");
+    let launch = crate::DaemonLaunchOptions::new(
+        std::path::PathBuf::from(
+            std::env::var_os("CODEX_TEST_UPDATER_HOME").expect("captured home"),
+        ),
+        codex_login::AuthFileSelection::Default,
+        codex_login::AuthCredentialsStoreMode::File,
+    )
+    .expect("captured updater profile");
     if std::env::var("CODEX_TEST_UPDATER_DELETE_CWD").as_deref() == Ok("true") {
         // Model the initial background launch while the relative home is resolvable.
         let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
@@ -183,6 +191,7 @@ fn updater_reexec_child() {
     }
     super::reexec_managed_updater(
         std::path::Path::new(&executable),
+        &launch,
         std::path::Path::new(&state),
     )
     .expect("reexec updater");
@@ -442,6 +451,12 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     (
         Daemon {
             log_diagnostics: false,
+            launch: crate::DaemonLaunchOptions::new(
+                home.path().to_path_buf(),
+                codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .expect("launch options"),
             socket_path: home.path().join("app-server-control/server.sock"),
             pid_file: state.join("app-server.pid"),
             update_pid_file: state.join("app-server-updater.pid"),
@@ -672,6 +687,8 @@ async fn test_control_server(
     daemon: &Daemon,
     home: &std::path::Path,
 ) -> tokio::task::JoinHandle<()> {
+    use codex_app_server_protocol::JSONRPCMessage;
+    use codex_app_server_protocol::JSONRPCResponse;
     use futures::SinkExt;
     use futures::StreamExt;
     std::fs::create_dir_all(daemon.socket_path.parent().expect("socket parent"))
@@ -680,6 +697,7 @@ async fn test_control_server(
         .await
         .expect("control listener");
     let codex_home = home.to_path_buf();
+    let auth_profile = daemon.launch.auth_profile().clone();
     tokio::spawn(async move {
         loop {
             let connection = listener.accept().await.expect("control connection");
@@ -712,6 +730,27 @@ async fn test_control_server(
                 .await
                 .expect("initialized notification")
                 .expect("frame");
+            // Version-only probes close here; readiness also requires same-connection profile proof.
+            if let Ok(message) = crate::client::read_message(&mut websocket).await {
+                let JSONRPCMessage::Request(request) = message else {
+                    panic!("expected server/read request");
+                };
+                assert_eq!(request.method, "server/read");
+                crate::client::send_message(
+                    &mut websocket,
+                    &JSONRPCMessage::Response(JSONRPCResponse {
+                        id: request.id,
+                        result: serde_json::json!({
+                            "authProfile": {
+                                "profileOpaqueId": auth_profile.profile_opaque_id,
+                                "displayLabel": auth_profile.display_label,
+                            },
+                        }),
+                    }),
+                )
+                .await
+                .expect("profile response");
+            }
         }
     })
 }
@@ -871,9 +910,9 @@ async fn daemon_start_and_restart_preserve_launch_features() {
             features
         );
         let expected = if features.is_empty() {
-            "app-server\n--listen\nunix://\n--analytics-default-enabled\n--managed-daemon\n"
+            "-c\ncli_auth_credentials_store=\"file\"\napp-server\n--listen\nunix://\n--analytics-default-enabled\n--managed-daemon\n"
         } else {
-            "app-server\n--listen\nunix://\n--analytics-default-enabled\n-c\nfeatures.api_key_model_discovery=true\n-c\nfeatures.code_mode_host=false\n--managed-daemon\n"
+            "-c\ncli_auth_credentials_store=\"file\"\napp-server\n--listen\nunix://\n--analytics-default-enabled\n-c\nfeatures.api_key_model_discovery=true\n-c\nfeatures.code_mode_host=false\n--managed-daemon\n"
         };
         assert_eq!(std::fs::read_to_string(&args_path).unwrap(), expected);
         let reused = daemon

@@ -110,8 +110,9 @@ pub(super) async fn run_main_inner(
     // endpoint so replacing the advertised alias cannot redirect local config.
     let explicit_local_daemon_socket = match &explicit_remote_endpoint {
         Some(RemoteAppServerEndpoint::UnixSocket { socket_path })
-            if codex_app_server_client::app_server_control_socket_path(&codex_home)
-                .is_ok_and(|default_socket| default_socket == *socket_path) =>
+            if cli.remote_addr.as_deref() != Some("unix://")
+                && codex_app_server_client::app_server_control_socket_path(&codex_home)
+                    .is_ok_and(|default_socket| default_socket == *socket_path) =>
         {
             // An explicit attachment requires the server to be present. Do not
             // classify a missing daemon as remote during its restart window.
@@ -133,6 +134,11 @@ pub(super) async fn run_main_inner(
         });
     }
 
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+    auth_profile_connection::validate_remote_selection(
+        explicit_remote_endpoint.as_ref(),
+        &auth_file_selection,
+    )?;
     let mut launch_loader_overrides = loader_overrides.clone();
     if let Some(profile_v2) = cli.config_profile_v2.as_ref() {
         let user_config_path = resolve_profile_v2_config_path(&codex_home, profile_v2);
@@ -181,6 +187,7 @@ pub(super) async fn run_main_inner(
                 &validation_bootstrap,
                 &codex_home,
                 &embedded_network_policy,
+                &auth_file_selection,
             )
             .await?
         } else {
@@ -189,6 +196,7 @@ pub(super) async fn run_main_inner(
         load_config_or_exit(
             cli_kv_overrides.clone(),
             ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
                 model: cli.model.clone(),
                 approval_policy,
                 sandbox_mode,
@@ -231,6 +239,7 @@ pub(super) async fn run_main_inner(
         startup_draft::StartupDraftInitialScreen::SessionPicker
     } else if !cli.oss
         && explicit_remote_endpoint.is_none()
+        && matches!(auth_file_selection, codex_login::AuthFileSelection::Default)
         && (reuse_implicit_local_daemon || search_only_config_override)
         && launch_loader_overrides.packaged_defaults_path.is_none()
         && startup_preflight::should_delay_startup_composer_for_first_login(
@@ -339,19 +348,17 @@ pub(super) async fn run_main_inner(
     )?;
 
     let implicit_connection = explicit_remote_endpoint.is_none();
-    let default_daemon = if implicit_connection && reuse_implicit_local_daemon {
-        startup_draft
-            .run_until(maybe_probe_default_daemon_socket(&codex_home))
-            .await?
-    } else {
-        explicit_local_daemon_socket
-    };
+    let exec_server_url = std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR);
+    let discover_local_daemon = explicit_remote_endpoint.is_none()
+        && reuse_implicit_local_daemon
+        && !workload_identity_selected
+        && exec_server_url.is_none();
     let mut app_server_target = app_server_target_for_launch(
         explicit_remote_endpoint,
-        default_daemon,
+        explicit_local_daemon_socket,
         reuse_implicit_local_daemon,
         workload_identity_selected,
-        std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+        exec_server_url.as_deref(),
     )?;
     let remote_cwd_override = cli
         .cwd
@@ -379,6 +386,7 @@ pub(super) async fn run_main_inner(
             &bootstrap_config,
             &codex_home,
             &embedded_network_policy,
+            &auth_file_selection,
         ))
         .await??;
     let bootstrap_config_toml = &bootstrap_config.config_toml;
@@ -474,6 +482,7 @@ pub(super) async fn run_main_inner(
     let additional_dirs = cli.add_dir.clone();
 
     let mut overrides = ConfigOverrides {
+        auth_file_selection: Some(auth_file_selection),
         model,
         approval_policy,
         sandbox_mode,
@@ -503,6 +512,30 @@ pub(super) async fn run_main_inner(
         &crate::local_settings::LocalSettings::from(&config),
         config.cwd.as_path(),
     );
+    auth_profile_connection::resolve_profile_socket_alias(
+        &mut app_server_target,
+        cli.remote_addr.as_deref(),
+        &config,
+    )?;
+    if discover_local_daemon
+        && let Some(socket_path) = startup_draft
+            .run_until(maybe_probe_daemon_socket(
+                &config.codex_home,
+                &config.auth_file_selection,
+                config.cli_auth_credentials_store_mode,
+            ))
+            .await?
+    {
+        // Discovery supplies an endpoint, not permission to discard this launch's
+        // workload identity or explicit executor. Keep the established selection gate.
+        app_server_target = app_server_target_for_launch(
+            /*explicit_remote_endpoint*/ None,
+            Some(socket_path),
+            reuse_implicit_local_daemon,
+            workload_identity_selected,
+            exec_server_url.as_deref(),
+        )?;
+    }
 
     let mut cloud_config_bundle = if workload_identity_selected {
         cloud_config_bundle
@@ -545,12 +578,24 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
-    let auto_start_daemon = config.features.enabled(Feature::DaemonAutoStart)
+    if config.cli_auth_credentials_store_mode == codex_login::AuthCredentialsStoreMode::Ephemeral {
+        daemon_exclusion = Some("process-local ephemeral credentials");
+    }
+    let requires_local_overview = cli.agents_overview && !app_server_target.uses_remote_workspace();
+    if requires_local_overview && let Some(reason) = daemon_exclusion {
+        return Err(std::io::Error::other(format!(
+            "The agents overview requires a shared server, but {reason} requires embedded mode. Use codex --no-daemon for an ordinary embedded session."
+        )));
+    }
+    // The old CLI pre-start ran before the profile was captured. Keep its required
+    // shared-server behavior here, using this runtime's resolved home and selection.
+    let auto_start_daemon = (config.features.enabled(Feature::DaemonAutoStart)
+        || requires_local_overview)
         && implicit_connection
-        && !cli.agents_overview
         && !cli.no_daemon
         && !app_server_target.uses_remote_workspace();
     if auto_start_daemon
+        && !requires_local_overview
         && daemon_exclusion.is_none()
         && should_show_bedrock_setup_wizard(
             LoginStatus::NotAuthenticated,
@@ -582,20 +627,27 @@ pub(super) async fn run_main_inner(
     }
     let mut managed_daemon = cli.managed_daemon;
     if auto_start_daemon && daemon_exclusion.is_none() {
+        let daemon_launch = codex_app_server_daemon::DaemonLaunchOptions::new(
+            config.codex_home.to_path_buf(),
+            config.auth_file_selection.clone(),
+            config.cli_auth_credentials_store_mode,
+        )?;
         let output = startup_draft
             .run_until(async {
                 // Daemon startup needs no terminal input. Keep the composer visible and
                 // responsive while it checks the running server or prepares an installation.
-                // Preserve saved daemon settings until any mismatch is confirmed in recovery.
-                let result =
-                    codex_app_server_daemon::start_with_features(&Default::default()).await;
+                let result = codex_app_server_daemon::start_with_features(&daemon_launch, &Default::default()).await;
                 daemon_telemetry::record_start(&config, &result).await;
                 match result {
                     Ok(output) => Ok(Some(output)),
                     #[cfg(windows)]
-                    Err(err) if err.is::<codex_app_server_daemon::DetachedLaunchRestricted>() => {
+                    Err(err) if !requires_local_overview
+                        && err.is::<codex_app_server_daemon::DetachedLaunchRestricted>() => {
                         Ok(None)
                     }
+                    Err(err) if requires_local_overview => Err(std::io::Error::other(format!(
+                        "{err:#}\nThe agents overview requires the matching shared server. Start it with the same CODEX_AUTH_FILE, or use codex --no-daemon for an ordinary embedded session."
+                    ))),
                     Err(err) => Err(std::io::Error::other(format!(
                         "{err:#}\n{}",
                         daemon_startup::FAILURE_HINT
@@ -966,7 +1018,7 @@ pub(super) async fn run_main_inner(
 
     // The TUI owns this request's consent. The child is silent; installation remains unconfirmed.
     if let Ok(exit) = &app_result
-        && let Some(UpdateAction::Daemon(source)) = exit.update_action
+        && let Some(UpdateAction::Daemon { source, .. }) = &exit.update_action
         && let Some(metrics) = otel.as_ref().and_then(codex_otel::OtelProvider::metrics)
     {
         let mut tags = daemon_settings.to_vec();

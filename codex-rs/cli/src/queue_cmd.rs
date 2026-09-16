@@ -40,13 +40,15 @@ pub(crate) async fn run_queue_command(
         remote,
         config_overrides,
     } = command;
-    let cli =
+    let mut cli =
         finalize_session_archive_interactive(interactive, root_config_overrides, config_overrides);
     if !cli.images.is_empty() {
         anyhow::bail!("`codex queue` does not support image attachments");
     }
+    let remote_addr = remote.remote.or(root_remote);
+    cli.remote_addr = remote_addr.clone();
     let explicit_remote_endpoint = resolve_remote_endpoint(
-        remote.remote.or(root_remote),
+        remote_addr,
         remote.remote_auth_token_env.or(root_remote_auth_token_env),
     )?;
     codex_tui::run_session_queue_command(

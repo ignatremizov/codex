@@ -9,17 +9,20 @@
 
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
+use codex_core::config::find_codex_home;
+use codex_login::AuthFileSelection;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::AuthRouteConfig;
 use codex_login::CLIENT_ID;
 use codex_login::ServerOptions;
 use codex_login::is_workload_identity_selected;
-use codex_login::login_with_access_token;
-use codex_login::login_with_api_key;
-use codex_login::logout_with_revoke;
+use codex_login::login_with_access_token_for_selection;
+use codex_login::login_with_api_key_for_selection;
+use codex_login::logout_with_revoke_for_selection;
 use codex_login::run_device_code_login;
 use codex_login::run_login_server;
 use codex_mcp::ema_auth_scope;
@@ -126,12 +129,14 @@ fn print_login_server_start(actual_port: u16, auth_url: &str) {
 
 async fn clear_existing_auth_before_login(
     codex_home: &Path,
+    selection: &AuthFileSelection,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     auth_keyring_backend_kind: AuthKeyringBackendKind,
     auth_route_config: &AuthRouteConfig,
 ) {
-    if let Err(err) = logout_with_revoke(
+    if let Err(err) = logout_with_revoke_for_selection(
         codex_home,
+        selection,
         auth_credentials_store_mode,
         auth_keyring_backend_kind,
         auth_route_config,
@@ -144,6 +149,7 @@ async fn clear_existing_auth_before_login(
 
 pub async fn login_with_chatgpt(
     codex_home: PathBuf,
+    selection: AuthFileSelection,
     forced_chatgpt_workspace_id: Option<Vec<String>>,
     cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
     auth_keyring_backend_kind: AuthKeyringBackendKind,
@@ -151,13 +157,14 @@ pub async fn login_with_chatgpt(
 ) -> std::io::Result<()> {
     clear_existing_auth_before_login(
         &codex_home,
+        &selection,
         cli_auth_credentials_store_mode,
         auth_keyring_backend_kind,
         &auth_route_config,
     )
     .await;
 
-    let opts = ServerOptions::new(
+    let mut opts = ServerOptions::new(
         codex_home,
         CLIENT_ID.to_string(),
         forced_chatgpt_workspace_id,
@@ -165,6 +172,7 @@ pub async fn login_with_chatgpt(
         auth_keyring_backend_kind,
         auth_route_config,
     );
+    opts.auth_file_selection = selection;
     let server = run_login_server(opts)?;
 
     print_login_server_start(server.actual_port, &server.auth_url);
@@ -188,6 +196,7 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
     let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
     match login_with_chatgpt(
         config.codex_home.to_path_buf(),
+        config.auth_file_selection.clone(),
         effective_chatgpt_workspaces,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
@@ -222,8 +231,9 @@ pub async fn run_login_with_api_key(
         std::process::exit(1);
     }
 
-    match login_with_api_key(
+    match login_with_api_key_for_selection(
         &config.codex_home,
+        &config.auth_file_selection,
         &api_key,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
@@ -257,8 +267,9 @@ pub async fn run_login_with_access_token(
 
     let auth_route_config = config.auth_route_config();
     let effective_chatgpt_workspaces = config.auth_config().effective_chatgpt_workspaces();
-    match login_with_access_token(
+    match login_with_access_token_for_selection(
         &config.codex_home,
+        &config.auth_file_selection,
         &access_token,
         config.cli_auth_credentials_store_mode,
         effective_chatgpt_workspaces.as_deref(),
@@ -339,6 +350,7 @@ pub async fn run_login_with_device_code(
     let auth_route_config = config.auth_route_config();
     clear_existing_auth_before_login(
         &config.codex_home,
+        &config.auth_file_selection,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         &auth_route_config,
@@ -353,6 +365,7 @@ pub async fn run_login_with_device_code(
         config.auth_keyring_backend_kind(),
         auth_route_config,
     );
+    opts.auth_file_selection = config.auth_file_selection.clone();
     if let Some(iss) = issuer_base_url {
         opts.issuer = iss;
     }
@@ -390,6 +403,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
     let auth_route_config = config.auth_route_config();
     clear_existing_auth_before_login(
         &config.codex_home,
+        &config.auth_file_selection,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         &auth_route_config,
@@ -405,6 +419,7 @@ pub async fn run_login_with_device_code_fallback_to_browser(
         config.auth_keyring_backend_kind(),
         auth_route_config,
     );
+    opts.auth_file_selection = config.auth_file_selection.clone();
     if let Some(iss) = issuer_base_url {
         opts.issuer = iss;
     }
@@ -548,8 +563,9 @@ pub async fn run_logout(cli_config_overrides: CliConfigOverrides) -> ! {
         eprintln!("Warning: failed to remove enterprise authorization; continuing account logout");
     }
 
-    let logged_out = match logout_with_revoke(
+    let logged_out = match logout_with_revoke_for_selection(
         &config.codex_home,
+        &config.auth_file_selection,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         &auth_route_config,
@@ -599,7 +615,23 @@ async fn load_config_or_exit(cli_config_overrides: CliConfigOverrides) -> Config
         }
     };
 
-    match Config::load_with_cli_overrides(cli_overrides).await {
+    let home_and_selection = find_codex_home().and_then(|home| {
+        AuthFileSelection::from_env(home.as_path()).map(|selection| (home, selection))
+    });
+    let (home, selection) = match home_and_selection {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("Error selecting credential file: {error}");
+            std::process::exit(1);
+        }
+    };
+    match ConfigBuilder::default()
+        .codex_home(home.to_path_buf())
+        .auth_file_selection(selection)
+        .cli_overrides(cli_overrides)
+        .build()
+        .await
+    {
         Ok(config) => match config.auth_config().validate() {
             Ok(()) => config,
             Err(e) => {
@@ -630,6 +662,7 @@ mod storage_tests;
 #[cfg(test)]
 mod tests {
     use codex_config::types::AuthCredentialsStoreMode;
+    use codex_login::AuthFileSelection;
     use codex_login::AuthKeyringBackendKind;
     use codex_login::load_auth_dot_json;
     use codex_login::login_with_api_key;
@@ -652,6 +685,7 @@ mod tests {
 
         clear_existing_auth_before_login(
             codex_home.path(),
+            &AuthFileSelection::Default,
             AuthCredentialsStoreMode::File,
             AuthKeyringBackendKind::default(),
             &codex_login::test_support::transport_default_auth_route_config(),

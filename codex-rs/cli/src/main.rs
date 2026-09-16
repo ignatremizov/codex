@@ -5,7 +5,6 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::Shell;
 use clap_complete::generate;
-use codex_app_server_daemon::BootstrapOptions as AppServerBootstrapOptions;
 use codex_app_server_daemon::LifecycleCommand as AppServerLifecycleCommand;
 use codex_app_server_daemon::RemoteControlMode as AppServerRemoteControlMode;
 use codex_arg0::Arg0DispatchPaths;
@@ -57,7 +56,11 @@ mod app_cmd;
 mod cloud_config;
 mod config_override_args;
 mod daemon_install;
+mod daemon_profile;
 mod daemon_telemetry;
+#[cfg(all(test, unix))]
+#[path = "daemon_update_handoff_tests.rs"]
+mod daemon_update_handoff_tests;
 mod debug_rollout_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
@@ -630,9 +633,10 @@ struct AppServerCommand {
     #[arg(
         long = "listen",
         value_name = "URL",
+        value_parser = codex_app_server::validate_app_server_listen_url,
         default_value = codex_app_server::AppServerTransport::DEFAULT_LISTEN_URL
     )]
-    listen: codex_app_server::AppServerTransport,
+    listen: String,
 
     /// Use stdio as the transport (equivalent to `--listen stdio://`).
     #[arg(long = "stdio", conflicts_with = "listen")]
@@ -800,7 +804,7 @@ fn parse_socket_path(raw: &str) -> Result<AbsolutePathBuf, String> {
 
 /// Handle the app exit and print the results. Optionally run the update action.
 fn handle_app_exit(
-    exit_info: AppExitInfo,
+    mut exit_info: AppExitInfo,
     cli_executable: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     let is_fatal = match &exit_info.exit_reason {
@@ -814,8 +818,8 @@ fn handle_app_exit(
         | ExitReason::ThreadRemoved => false,
     };
 
-    let update_action = exit_info.update_action;
-    if !matches!(update_action, Some(UpdateAction::Daemon(_))) {
+    let update_action = exit_info.update_action.take();
+    if !matches!(&update_action, Some(UpdateAction::Daemon { .. })) {
         let color_enabled = supports_color::on(Stream::Stdout).is_some();
         for line in exit_info.format_exit_messages(color_enabled) {
             println!("{line}");
@@ -836,11 +840,13 @@ fn run_update_action(
     action: UpdateAction,
     cli_executable: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    if let UpdateAction::Daemon(source) = action {
+    if let UpdateAction::Daemon { source, launch } = &action {
         let executable = cli_executable
             .ok_or_else(|| anyhow::anyhow!("Cannot locate the launching Codex CLI"))?;
         println!("Updating the local background server...");
-        let status = std::process::Command::new(executable)
+        let mut command = std::process::Command::new(executable);
+        launch.configure_command(&mut command);
+        let status = command
             .args(source.command_args())
             .env(codex_app_server_daemon::telemetry::HANDOFF_ENV, "1")
             .status()?;
@@ -1318,22 +1324,18 @@ async fn cli_main(
             }
             match subcommand {
                 None => {
+                    let use_auth_profile_socket = !stdio && listen == "unix://";
                     let transport = if stdio {
                         codex_app_server::AppServerTransport::Stdio
+                    } else if use_auth_profile_socket {
+                        codex_app_server::AppServerTransport::Off
                     } else {
-                        listen
+                        codex_app_server::AppServerTransport::from_listen_url(&listen)?
                     };
                     let auth = auth.try_into_settings()?;
-                    if managed_daemon
-                        && matches!(
-                            &transport,
-                            codex_app_server::AppServerTransport::UnixSocket { .. }
-                        )
-                    {
-                        let _ = codex_app_server_daemon::maintain_stderr_log();
-                    }
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
                         cloud_skills_snapshot,
+                        use_auth_profile_socket,
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)
@@ -1368,67 +1370,20 @@ async fn cli_main(
                     }
                 }
                 Some(AppServerSubcommand::Daemon(daemon_cli)) => match daemon_cli.subcommand {
-                    AppServerDaemonSubcommand::Start => {
-                        print_app_server_daemon_output(AppServerLifecycleCommand::Start).await?;
-                    }
-                    AppServerDaemonSubcommand::Bootstrap(bootstrap_cli) => {
-                        let output =
-                            codex_app_server_daemon::bootstrap(AppServerBootstrapOptions {
-                                remote_control_enabled: bootstrap_cli.remote_control,
-                            })
-                            .await?;
-                        println!("{}", serde_json::to_string(&output)?);
-                    }
-                    AppServerDaemonSubcommand::Restart => {
-                        let overrides = root_config_overrides
-                            .parse_overrides()
-                            .map_err(anyhow::Error::msg)?;
-                        let layer = codex_config::build_cli_overrides_layer(&overrides);
-                        let features = layer
-                            .get("features")
-                            .and_then(toml::Value::as_table)
-                            .into_iter()
-                            .flatten()
-                            .map(|(name, value)| (name.as_str(), value))
-                            .collect::<std::collections::BTreeMap<_, _>>();
-                        let mut feature_overrides = std::collections::BTreeMap::new();
-                        // Match Features::apply_map's alias precedence.
-                        for (&name, &value) in &features {
-                            if name == "imagegenext" && features.contains_key("image_generation") {
-                                continue;
-                            }
-                            let value = if let Some(table) = value.as_table() {
-                                let Some(enabled) = table.get("enabled") else {
-                                    continue;
-                                };
-                                enabled
-                            } else {
-                                value
-                            };
-                            let feature =
-                                codex_features::feature_for_key(name).ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "daemon restart requires a boolean feature toggle: {name}"
-                                    )
-                                })?;
-                            let enabled = value.as_bool().ok_or_else(|| {
-                                anyhow::anyhow!("daemon restart requires a boolean enablement for features.{name}")
-                            })?;
-                            feature_overrides.insert(feature.key().to_string(), enabled);
-                        }
-                        print_app_server_daemon_output(AppServerLifecycleCommand::Restart {
-                            feature_overrides,
-                        })
-                        .await?;
-                    }
                     AppServerDaemonSubcommand::Update {
                         from_cli: true,
                         yes,
                     } => {
-                        let result = codex_app_server_daemon::update_from_cli(|request| {
-                            daemon_install::confirm_install(request, yes)
-                        })
-                        .await;
+                        let result =
+                            match daemon_profile::existing_launch(&root_config_overrides).await {
+                                Ok(launch) => {
+                                    codex_app_server_daemon::update_from_cli(&launch, |request| {
+                                        daemon_install::confirm_install(request, yes)
+                                    })
+                                    .await
+                                }
+                                Err(error) => Err(error),
+                            };
                         daemon_telemetry::record_command(
                             &root_config_overrides,
                             analytics_default_enabled,
@@ -1440,81 +1395,67 @@ async fn cli_main(
                             println!("{}", serde_json::to_string(&output)?);
                         }
                     }
-                    AppServerDaemonSubcommand::EnableRemoteControl => {
-                        print_app_server_remote_control_output(AppServerRemoteControlMode::Enabled)
-                            .await?;
-                    }
-                    AppServerDaemonSubcommand::DisableRemoteControl => {
-                        print_app_server_remote_control_output(
-                            AppServerRemoteControlMode::Disabled,
+                    AppServerDaemonSubcommand::Update {
+                        from_cli: false, ..
+                    } => {
+                        let cli_overrides = root_config_overrides
+                            .parse_overrides()
+                            .map_err(anyhow::Error::msg)?;
+                        let codex_home = find_codex_home()?;
+                        let auth_file_selection =
+                            codex_login::AuthFileSelection::from_env(&codex_home)?;
+                        let config = ConfigBuilder::default()
+                            .codex_home(codex_home.to_path_buf())
+                            .auth_file_selection(auth_file_selection)
+                            .cli_overrides(cli_overrides)
+                            .build()
+                            .await
+                            .map_err(anyhow::Error::from);
+                        let launch = config
+                            .as_ref()
+                            .ok()
+                            .and_then(|config| daemon_profile::launch_options(config).ok());
+                        let http_client_factory = updater_http_client_factory(config)?;
+                        let launch = launch.ok_or_else(|| {
+                            anyhow::anyhow!("failed to load daemon configuration for update")
+                        })?;
+                        let result = codex_app_server_daemon::update(&launch, http_client_factory)
+                            .await
+                            .map(Some);
+                        daemon_telemetry::record_command(
+                            &root_config_overrides,
+                            analytics_default_enabled,
+                            "public_stable",
+                            &result,
                         )
-                        .await?;
-                    }
-                    AppServerDaemonSubcommand::Stop => {
-                        print_app_server_daemon_output(AppServerLifecycleCommand::Stop).await?;
-                    }
-                    AppServerDaemonSubcommand::Version => {
-                        print_app_server_daemon_output(AppServerLifecycleCommand::Version).await?;
+                        .await;
+                        if let Some(output) = result? {
+                            println!("{}", serde_json::to_string(&output)?);
+                        }
                     }
                     AppServerDaemonSubcommand::PidUpdateLoop {
                         check_package_ownership: true,
                         ..
                     } => return Ok(()),
-                    AppServerDaemonSubcommand::Update {
-                        from_cli: false, ..
-                    }
-                    | AppServerDaemonSubcommand::PidUpdateLoop {
+                    AppServerDaemonSubcommand::PidUpdateLoop {
                         check_package_ownership: false,
                         ..
                     } => {
-                        let cli_overrides = root_config_overrides
-                            .parse_overrides()
-                            .map_err(anyhow::Error::msg)?;
-                        let config = ConfigBuilder::default()
-                            .cli_overrides(cli_overrides)
-                            .build()
-                            .await
-                            .map_err(anyhow::Error::from);
-                        let http_client_factory = updater_http_client_factory(config)?;
-                        if matches!(
-                            daemon_cli.subcommand,
-                            AppServerDaemonSubcommand::Update { .. }
-                        ) {
-                            let result = codex_app_server_daemon::update(http_client_factory)
-                                .await
-                                .map(Some);
-                            daemon_telemetry::record_command(
-                                &root_config_overrides,
-                                analytics_default_enabled,
-                                "public_stable",
-                                &result,
-                            )
-                            .await;
-                            if let Some(output) = result? {
-                                println!("{}", serde_json::to_string(&output)?);
-                            }
-                        } else {
-                            let AppServerDaemonSubcommand::PidUpdateLoop {
-                                restore_release, ..
-                            } = daemon_cli.subcommand
-                            else {
-                                unreachable!()
-                            };
-                            codex_app_server_daemon::run_pid_update_loop(
-                                http_client_factory,
-                                restore_release,
-                            )
+                        daemon_profile::run_command(daemon_cli.subcommand, &root_config_overrides)
                             .await?;
-                        }
+                    }
+                    subcommand => {
+                        daemon_profile::run_command(subcommand, &root_config_overrides).await?;
                     }
                 },
                 Some(AppServerSubcommand::Proxy(proxy_cli)) => {
                     let socket_path = match proxy_cli.socket_path {
                         Some(socket_path) => socket_path,
-                        None => {
-                            let codex_home = find_codex_home()?;
-                            codex_app_server::app_server_control_socket_path(&codex_home)?
-                        }
+                        None => AbsolutePathBuf::from_absolute_path(
+                            daemon_profile::existing_launch(&root_config_overrides)
+                                .await?
+                                .socket_path()?,
+                        )?,
                     };
                     codex_stdio_to_uds::run(socket_path.as_path()).await?;
                 }
@@ -2173,7 +2114,11 @@ async fn run_debug_prompt_input_command(
         additional_writable_roots: shared.add_dir,
         ..Default::default()
     };
+    let codex_home = find_codex_home()?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let config = ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
+        .auth_file_selection(auth_file_selection)
         .cli_overrides(cli_kv_overrides)
         .harness_overrides(overrides)
         .loader_overrides(loader_overrides)
@@ -2246,7 +2191,11 @@ async fn run_debug_models_command(
         let cli_overrides = root_config_overrides
             .parse_overrides()
             .map_err(anyhow::Error::msg)?;
+        let codex_home = find_codex_home()?;
+        let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
         let config = ConfigBuilder::default()
+            .codex_home(codex_home.to_path_buf())
+            .auth_file_selection(auth_file_selection)
             .cli_overrides(cli_overrides)
             .build()
             .await?;
@@ -2498,8 +2447,11 @@ fn app_server_subcommand_name(subcommand: Option<&AppServerSubcommand>) -> &'sta
     }
 }
 
-async fn print_app_server_daemon_output(command: AppServerLifecycleCommand) -> anyhow::Result<()> {
-    let output = codex_app_server_daemon::run(command).await?;
+async fn print_app_server_daemon_output(
+    launch: &codex_app_server_daemon::DaemonLaunchOptions,
+    command: AppServerLifecycleCommand,
+) -> anyhow::Result<()> {
+    let output = codex_app_server_daemon::run(launch, command).await?;
     println!("{}", serde_json::to_string(&output)?);
     Ok(())
 }
@@ -2513,9 +2465,10 @@ fn updater_http_client_factory(
 }
 
 async fn print_app_server_remote_control_output(
+    launch: &codex_app_server_daemon::DaemonLaunchOptions,
     mode: AppServerRemoteControlMode,
 ) -> anyhow::Result<()> {
-    let output = codex_app_server_daemon::set_remote_control(mode).await?;
+    let output = codex_app_server_daemon::set_remote_control(launch, mode).await?;
     println!("{}", serde_json::to_string(&output)?);
     Ok(())
 }
@@ -2589,15 +2542,6 @@ async fn run_interactive_tui(
         if !std::io::stdout().is_terminal() {
             return Ok(AppExitInfo::fatal("stdout is not a terminal"));
         }
-        cloud_config::load_config(&interactive.config_overrides, LoaderOverrides::default())
-            .await
-            .map_err(std::io::Error::other)?;
-        let output = codex_app_server_daemon::run(AppServerLifecycleCommand::Start)
-            .await
-            .map_err(|err| std::io::Error::other(format!(
-                "{err:#}\nThe agents overview requires a shared server. Use codex --no-daemon to work without it."
-            )))?;
-        interactive.managed_daemon = output.backend.is_some();
     }
 
     let remote_endpoint = match resolve_remote_endpoint(remote, remote_auth_token_env.clone()) {
@@ -4568,7 +4512,8 @@ enabled = true
         assert!(!app_server.analytics_default_enabled);
         assert!(!app_server.remote_control);
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::Stdio
         );
     }
@@ -4946,7 +4891,8 @@ enabled = true
             ["codex", "app-server", "--listen", "ws://127.0.0.1:4500"].as_ref(),
         );
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::WebSocket {
                 bind_address: "127.0.0.1:4500".parse().expect("valid socket address"),
             }
@@ -4958,7 +4904,8 @@ enabled = true
         let app_server =
             app_server_from_args(["codex", "app-server", "--listen", "stdio://"].as_ref());
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::Stdio
         );
     }
@@ -4987,7 +4934,8 @@ enabled = true
         let app_server =
             app_server_from_args(["codex", "app-server", "--listen", "unix://"].as_ref());
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::UnixSocket {
                 socket_path: default_app_server_socket_path()
             }
@@ -5000,7 +4948,8 @@ enabled = true
             ["codex", "app-server", "--listen", "unix:///tmp/codex.sock"].as_ref(),
         );
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::UnixSocket {
                 socket_path: AbsolutePathBuf::from_absolute_path("/tmp/codex.sock")
                     .expect("absolute path should parse")
@@ -5011,7 +4960,11 @@ enabled = true
     #[test]
     fn app_server_listen_off_parses() {
         let app_server = app_server_from_args(["codex", "app-server", "--listen", "off"].as_ref());
-        assert_eq!(app_server.listen, codex_app_server::AppServerTransport::Off);
+        assert_eq!(
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
+            codex_app_server::AppServerTransport::Off
+        );
     }
 
     #[test]
