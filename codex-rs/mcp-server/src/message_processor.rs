@@ -4,12 +4,14 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_core::StateDbHandle;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::find_thread_path_by_id_str;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
 use codex_login::default_client::USER_AGENT_SUFFIX;
 use codex_login::default_client::get_codex_user_agent;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::SessionSource;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
@@ -43,6 +45,7 @@ pub(crate) struct MessageProcessor {
     runtime_config: Arc<Config>,
     thread_manager: Arc<ThreadManager>,
     active_turns: Arc<ActiveTurnRegistry>,
+    state_db: Option<StateDbHandle>,
 }
 
 impl MessageProcessor {
@@ -120,6 +123,7 @@ impl MessageProcessor {
             arg0_paths,
             thread_manager,
             active_turns,
+            state_db,
         })
     }
 
@@ -481,14 +485,52 @@ impl MessageProcessor {
         let codex = match self.thread_manager.get_thread(thread_id).await {
             Ok(c) => c,
             Err(_) => {
-                tracing::warn!("Session not found for thread_id: {thread_id}");
-                let result = crate::codex_tool_runner::create_call_tool_result_with_thread_id(
-                    thread_id,
-                    format!("Session not found for thread_id: {thread_id}"),
-                    Some(true),
-                );
-                outgoing.send_response(request_id, result);
-                return;
+                let rollout_path = match find_thread_path_by_id_str(
+                    &self.runtime_config.codex_home,
+                    &thread_id.to_string(),
+                    self.state_db.as_deref(),
+                )
+                .await
+                {
+                    Ok(Some(path)) => path,
+                    Ok(None) | Err(_) => {
+                        tracing::warn!("Session not found for thread_id: {thread_id}");
+                        let result =
+                            crate::codex_tool_runner::create_call_tool_result_with_thread_id(
+                                thread_id,
+                                format!("Session not found for thread_id: {thread_id}"),
+                                /*is_error*/ Some(true),
+                            );
+                        outgoing.send_response(request_id, result);
+                        return;
+                    }
+                };
+
+                let auth_manager = self.thread_manager.auth_manager();
+                match self
+                    .thread_manager
+                    .resume_thread_from_rollout(
+                        (*self.runtime_config).clone(),
+                        rollout_path,
+                        auth_manager,
+                        /*parent_trace*/ None,
+                        ClientMcpExtensions::default(),
+                    )
+                    .await
+                {
+                    Ok(new_thread) => new_thread.thread,
+                    Err(e) => {
+                        tracing::warn!("Failed to resume thread {thread_id}: {e}");
+                        let result =
+                            crate::codex_tool_runner::create_call_tool_result_with_thread_id(
+                                thread_id,
+                                format!("Failed to resume thread {thread_id}: {e}"),
+                                /*is_error*/ Some(true),
+                            );
+                        outgoing.send_response(request_id, result);
+                        return;
+                    }
+                }
             }
         };
 
