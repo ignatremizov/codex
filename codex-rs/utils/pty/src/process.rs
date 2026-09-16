@@ -123,6 +123,7 @@ pub struct ProcessHandle {
     // Optional resize hook for driver-backed sessions that proxy PTY control to
     // another backend instead of owning local PTY handles.
     resizer: StdMutex<Option<ResizeFn>>,
+    pid: Option<u32>,
 }
 
 impl fmt::Debug for ProcessHandle {
@@ -144,6 +145,7 @@ impl ProcessHandle {
         exit_code: Arc<StdMutex<Option<i32>>>,
         pty_handles: Option<PtyHandles>,
         resizer: Option<ResizeFn>,
+        pid: Option<u32>,
     ) -> Self {
         Self {
             writer_tx: StdMutex::new(Some(writer_tx)),
@@ -156,7 +158,13 @@ impl ProcessHandle {
             exit_code,
             _pty_handles: StdMutex::new(pty_handles),
             resizer: StdMutex::new(resizer),
+            pid,
         }
+    }
+
+    /// Returns the OS process ID if available.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 
     /// Returns a channel sender for writing raw bytes to the child stdin.
@@ -470,6 +478,7 @@ pub fn spawn_from_driver(driver: ProcessDriver) -> SpawnedProcess {
         exit_code,
         /*pty_handles*/ None,
         resizer,
+        /*pid*/ None,
     );
 
     SpawnedProcess {

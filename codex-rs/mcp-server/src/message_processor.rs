@@ -46,6 +46,7 @@ pub(crate) struct MessageProcessor {
     thread_manager: Arc<ThreadManager>,
     active_turns: Arc<ActiveTurnRegistry>,
     state_db: Option<StateDbHandle>,
+    harness_manager: Arc<crate::harness::HarnessProcessManager>,
 }
 
 impl MessageProcessor {
@@ -116,6 +117,7 @@ impl MessageProcessor {
             /*attestation_provider*/ None,
             /*external_time_provider*/ None,
         ));
+        let harness_manager = Arc::new(crate::harness::HarnessProcessManager::new());
         Ok(Self {
             runtime_config: config,
             outgoing,
@@ -124,6 +126,7 @@ impl MessageProcessor {
             thread_manager,
             active_turns,
             state_db,
+            harness_manager,
         })
     }
 
@@ -348,6 +351,9 @@ impl MessageProcessor {
         let result = rmcp::model::ListToolsResult::with_all_items(vec![
             create_tool_for_codex_tool_call_param(),
             create_tool_for_codex_tool_call_reply_param(),
+            crate::harness::create_tool_for_exec_command(),
+            crate::harness::create_tool_for_write_stdin(),
+            crate::harness::create_tool_for_apply_patch(),
         ]);
 
         self.outgoing.send_response(id, result);
@@ -364,6 +370,17 @@ impl MessageProcessor {
             "codex-reply" => {
                 self.handle_tool_call_codex_session_reply(id, arguments)
                     .await
+            }
+            "exec_command" | "write_stdin" | "apply_patch" => {
+                crate::harness::dispatch_harness_tool_call(
+                    name.as_ref(),
+                    id,
+                    arguments,
+                    Arc::clone(&self.outgoing),
+                    Arc::clone(&self.runtime_config),
+                    self.arg0_paths.clone(),
+                    Arc::clone(&self.harness_manager),
+                );
             }
             _ => {
                 let result = CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(

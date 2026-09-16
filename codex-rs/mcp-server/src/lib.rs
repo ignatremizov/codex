@@ -34,6 +34,7 @@ mod codex_tool_config;
 mod codex_tool_runner;
 mod exec_approval;
 mod extension_event_sink;
+pub mod harness;
 pub(crate) mod message_processor;
 mod outgoing_message;
 mod patch_approval;

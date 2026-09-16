@@ -190,13 +190,12 @@ async fn spawn_process_with_stdin_mode(
     #[cfg(windows)]
     let job = crate::win::JobObject::create().map(Arc::new);
     let mut child = command.spawn()?;
+    let child_pid = child.id();
     #[cfg(windows)]
     let windows_terminator = {
         // Accept the small race: a descendant created between spawn and
         // assignment is not guaranteed to join the job and can escape termination.
-        let pid = child
-            .id()
-            .ok_or_else(|| io::Error::other("missing child pid"))?;
+        let pid = child_pid.ok_or_else(|| io::Error::other("missing child pid"))?;
         let assigned_job = job.and_then(|job| {
             let process_handle = child
                 .raw_handle()
@@ -215,9 +214,7 @@ async fn spawn_process_with_stdin_mode(
         }
     };
     #[cfg(unix)]
-    let process_group_id = child
-        .id()
-        .ok_or_else(|| io::Error::other("missing child pid"))?;
+    let process_group_id = child_pid.ok_or_else(|| io::Error::other("missing child pid"))?;
 
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
@@ -315,6 +312,7 @@ async fn spawn_process_with_stdin_mode(
         exit_code,
         /*pty_handles*/ None,
         /*resizer*/ None,
+        child_pid,
     );
 
     Ok(SpawnedProcess {
