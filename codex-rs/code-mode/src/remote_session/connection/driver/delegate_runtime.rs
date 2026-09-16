@@ -21,7 +21,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::ConnectionDriver;
-use super::notify_cell_closed;
 use super::session_registry::CellOwner;
 use super::session_registry::DelegateTarget;
 use super::session_registry::FailedSession;
@@ -140,7 +139,9 @@ impl DelegateRuntime {
         };
         let delegate = target.delegate;
         let task_cancellation = cancellation.clone();
+        let accepted = target.cleanup.accepted_callback();
         let delegate_task = tokio::spawn(async move {
+            let _accepted = accepted;
             match task_request {
                 DelegateTask::InvokeTool(invocation) => delegate
                     .invoke_tool(invocation, task_cancellation)
@@ -346,7 +347,9 @@ impl ConnectionDriver {
             return false;
         }
         for closed in effects.closed_cells {
-            notify_cell_closed(&closed.delegate, &closed.cell_id);
+            closed
+                .cleanup
+                .notify_cell_closed(&closed.delegate, &closed.cell_id);
         }
         true
     }

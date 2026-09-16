@@ -98,6 +98,67 @@ async fn closed_shutdown_channel_still_waits_for_actual_termination() {
 }
 
 #[tokio::test]
+async fn dropped_caller_keeps_cleanup_owned_until_actor_termination() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let request = request(cancellation).await;
+    let startup = Arc::new(SessionStartup::default());
+    let weak_startup = Arc::downgrade(&startup);
+    let mut config = request.config.clone();
+    config.ephemeral = true;
+    let manager =
+        crate::thread_manager::ThreadManager::with_models_provider_home_and_state_for_tests(
+            codex_login::CodexAuth::from_api_key("dummy"),
+            config.model_provider.clone(),
+            config.codex_home.to_path_buf(),
+            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            /*state_db*/ None,
+        );
+    let thread = manager
+        .start_thread(crate::thread_manager::StartThreadOptions::new(config))
+        .await
+        .expect("start decoder actor fixture")
+        .thread;
+    let mut io = thread.io.clone();
+    let actor_termination = io.session_loop_termination.clone();
+    let (terminated, termination) = oneshot::channel();
+    io.session_loop_termination = async {
+        actor_termination.await;
+        let _ = termination.await;
+    }
+    .boxed()
+    .shared();
+    startup.set_session(Arc::clone(&thread.session));
+    assert!(startup.io.set(io).is_ok());
+    let caller = tokio::spawn(run_with_startup(request, startup));
+    timeout(Duration::from_secs(/*secs*/ 5), async {
+        while !thread.io.durable_shutdown_succeeded() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup receives the actor's durable shutdown acknowledgement");
+    assert!(
+        !caller.is_finished(),
+        "durable acknowledgement is not the termination barrier"
+    );
+    caller.abort();
+    let _ = caller.await;
+    assert!(
+        weak_startup.upgrade().is_some(),
+        "worker still owns cleanup"
+    );
+    terminated.send(()).expect("termination observer");
+    timeout(Duration::from_secs(/*secs*/ 5), async {
+        while weak_startup.upgrade().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup releases startup after termination");
+}
+
+#[tokio::test]
 async fn panicked_lifetime_owner_is_not_an_ordinary_retryable_decoder_error() {
     let cancellation = CancellationToken::new();
     cancellation.cancel();

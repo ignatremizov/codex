@@ -9,7 +9,7 @@ const TRANSPORT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ERROR_BYTES: usize = 512;
 
 /// Terminal failure while establishing a new gRPC code-mode session.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GrpcSessionOpenError {
     /// Final status from OpenSession or the first read of its lease, with the bounded diagnostic.
     AdmissionStatus { code: tonic::Code, message: String },

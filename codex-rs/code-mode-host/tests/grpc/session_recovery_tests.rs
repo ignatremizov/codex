@@ -74,7 +74,7 @@ async fn quiet_session_reuses_its_worker_connection() -> Result<()> {
 }
 
 #[tokio::test]
-async fn last_failed_session_releases_the_shared_connection() -> Result<()> {
+async fn dropping_the_last_failed_session_releases_the_shared_connection() -> Result<()> {
     let reject = Arc::new(AtomicBool::new(false));
     let reject_next_rpc = Arc::clone(&reject);
     let service = CodeModeHostServer::with_interceptor(GrpcCodeModeHost::new(), move |req| {
@@ -136,10 +136,11 @@ async fn last_failed_session_releases_the_shared_connection() -> Result<()> {
             Status::not_found("session was lost")
         )
     );
-    tokio::time::timeout(super::TEST_TIMEOUT, connection)
-        .await
-        .expect("last failed session kept its worker connection open")??;
-    drop((first, last, provider));
+    // The failed handle retains its cleanup transport for a possible durable shutdown.
+    // Once its owner drops it, the provider's weak cache must let the worker exit.
+    drop(last);
+    connection.await??;
+    drop((first, provider));
     Ok(())
 }
 

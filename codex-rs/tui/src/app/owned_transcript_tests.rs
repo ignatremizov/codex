@@ -1369,7 +1369,7 @@ async fn offline_find_closes_before_the_next_ctrl_c_quits() -> Result<()> {
     assert!(matches!(
         app.handle_tui_event(&mut tui, &mut app_server, quit)
             .await?,
-        AppRunControl::Exit(ExitReason::UserRequested)
+        AppRunControl::Exit(ExitReason::Disconnected)
     ));
     tui.set_owned_screen(/*owned*/ false)?;
     Ok(())

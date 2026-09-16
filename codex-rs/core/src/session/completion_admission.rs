@@ -36,7 +36,7 @@ impl ShutdownAdmission {
         admission: Arc<SubmissionAdmission>,
         submission: &Submission,
     ) -> Self {
-        let restore = matches!(&submission.op, Op::Shutdown)
+        let restore = matches!(&submission.op, Op::Shutdown | Op::ShutdownDurably { .. })
             && !admission.completion_closed.swap(true, Ordering::AcqRel);
         admission.changed.notify_waiters();
         Self { admission, restore }

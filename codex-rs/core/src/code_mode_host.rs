@@ -82,6 +82,21 @@ impl CodeModeSessionProvider for LocalServerOutputProvider {
     ) -> CodeModeSessionProviderFuture<'a> {
         self.inner.create_session_with_options(options)
     }
+
+    fn create_owned_session(&self) -> CodeModeSessionProviderFuture<'_> {
+        self.inner
+            .create_owned_session_with_options(CodeModeSessionOptions {
+                output_truncation: CodeModeOutputTruncation::Server,
+                ..CodeModeSessionOptions::default()
+            })
+    }
+
+    fn create_owned_session_with_options<'a>(
+        &'a self,
+        options: CodeModeSessionOptions,
+    ) -> CodeModeSessionProviderFuture<'a> {
+        self.inner.create_owned_session_with_options(options)
+    }
 }
 
 pub struct ProcessOwnedGrpcCodeModeSessionProvider {
@@ -97,6 +112,19 @@ impl ProcessOwnedGrpcCodeModeSessionProvider {
             provider: OnceLock::new(),
             current: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn provider(&self) -> &GrpcCodeModeSessionProvider {
+        self.provider.get_or_init(|| {
+            let transport = Arc::new(HostTransport {
+                host_program: self.host_program.clone(),
+                current: self.current.clone(),
+            });
+            GrpcCodeModeSessionProvider::with_transport(service_fn(move |request| {
+                let transport = transport.clone();
+                async move { transport.send(request).await }
+            }))
+        })
     }
 }
 
@@ -146,17 +174,24 @@ impl CodeModeSessionProvider for ProcessOwnedGrpcCodeModeSessionProvider {
     ) -> CodeModeSessionProviderFuture<'a> {
         Box::pin(async move {
             self.availability()?;
-            let provider = self.provider.get_or_init(|| {
-                let transport = Arc::new(HostTransport {
-                    host_program: self.host_program.clone(),
-                    current: self.current.clone(),
-                });
-                GrpcCodeModeSessionProvider::with_transport(service_fn(move |request| {
-                    let transport = transport.clone();
-                    async move { transport.send(request).await }
-                }))
-            });
-            provider.create_session_with_options(options).await
+            self.provider().create_session_with_options(options).await
+        })
+    }
+
+    fn create_owned_session(&self) -> CodeModeSessionProviderFuture<'_> {
+        self.create_owned_session_with_options(CodeModeSessionOptions::default())
+    }
+
+    fn create_owned_session_with_options<'a>(
+        &'a self,
+        options: CodeModeSessionOptions,
+    ) -> CodeModeSessionProviderFuture<'a> {
+        Box::pin(async move {
+            self.availability()?;
+            // Return the logical cleanup owner before any OpenSession request.
+            self.provider()
+                .create_owned_session_with_options(options)
+                .await
         })
     }
 }

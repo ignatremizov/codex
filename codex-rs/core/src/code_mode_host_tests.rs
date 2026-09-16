@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
+#[cfg(unix)]
+use codex_code_mode::CodeModeOutputTruncation;
 use codex_code_mode::CodeModeProcessMetricsSample;
 use codex_code_mode::CodeModeSession;
 use codex_code_mode::CodeModeSessionProvider;
@@ -18,6 +20,8 @@ use pretty_assertions::assert_eq;
 use tokio::time::timeout;
 
 use super::HostConnection;
+#[cfg(unix)]
+use super::LocalServerOutputProvider;
 use super::ProcessOwnedGrpcCodeModeSessionProvider;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 20);
@@ -130,6 +134,58 @@ async fn grpc_stdio_sessions_share_a_host_and_isolate_state() -> Result<()> {
         .await
         .context("metrics retained the host after provider teardown")?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn owned_core_provider_preserves_lazy_cleanup_options_and_later_generations() -> Result<()> {
+    let recorder = CodeModeHostRecorder::new()?;
+    let provider = Arc::new(ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
+        recorder.program(),
+    ));
+    let wrapped = LocalServerOutputProvider {
+        inner: provider.clone(),
+    };
+    let unused = wrapped
+        .create_owned_session()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(recorder.invocations()?.is_empty());
+    unused
+        .shutdown_durably()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(execute(&unused, "text('must stay closed');").await.is_err());
+    assert!(recorder.invocations()?.is_empty());
+
+    // Exercise the same provider after a real eager session has consumed the
+    // first global generation. A lazy owner must not assume its generation is 1.
+    let eager = provider
+        .create_session()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        execute(&eager, "text('first generation');").await?,
+        vec![FunctionCallOutputContentItem::InputText {
+            text: "first generation".to_string(),
+        }]
+    );
+    eager.shutdown_durably().await.map_err(anyhow::Error::msg)?;
+    let later = wrapped
+        .create_owned_session()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        execute(&later, "text('later generation');").await?,
+        vec![FunctionCallOutputContentItem::InputText {
+            text: "later generation".to_string(),
+        }]
+    );
+    assert_eq!(later.output_truncation(), CodeModeOutputTruncation::Server);
+    later.shutdown_durably().await.map_err(anyhow::Error::msg)?;
+    assert!(execute(&later, "text('must stay closed');").await.is_err());
+    assert_eq!(recorder.invocations()?.len(), 1);
     Ok(())
 }
 

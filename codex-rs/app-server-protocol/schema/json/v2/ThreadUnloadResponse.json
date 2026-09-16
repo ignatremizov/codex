@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Acknowledges durable shutdown and removal of the captured runtime instances.",
+  "properties": {
+    "rootThreadId": {
+      "type": "string"
+    },
+    "unloadedThreadIds": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "rootThreadId",
+    "unloadedThreadIds"
+  ],
+  "title": "ThreadUnloadResponse",
+  "type": "object"
+}

@@ -177,7 +177,7 @@ async fn offline_selection_reserves_keys_and_preserves_draft_and_backtrack_state
             TuiEvent::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         )
         .await?,
-        AppRunControl::Exit(ExitReason::UserRequested),
+        AppRunControl::Exit(ExitReason::Disconnected),
     ));
     app_server.shutdown().await?;
     Ok(())

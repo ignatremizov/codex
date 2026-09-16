@@ -260,6 +260,8 @@ mod config_refresh;
 pub(crate) mod context_window;
 mod daemon_recovery;
 mod durable_context;
+mod durable_shutdown;
+mod private_session_event;
 mod request_command_approval;
 pub(crate) mod rollback;
 mod submission_admission;

@@ -76,7 +76,7 @@ async fn run_with_startup(
         // The initialization future is dropped before cleanup observes startup's resources.
         startup.cleanup().await;
         if let Some(io) = startup.io.get() {
-            // cleanup's shutdown submission can fail. Only this future proves actor termination.
+            // Keep the session-loop termination barrier after durable cleanup.
             io.session_loop_termination.clone().await;
         }
         result

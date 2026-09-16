@@ -56,12 +56,18 @@ fn session(client: GrpcClient) -> Arc<SessionInner> {
         route: None,
         runtime: tokio::runtime::Handle::current(),
         state: Mutex::new(SessionState::with_client(Arc::clone(&client))),
+        shutdown_client: Mutex::new(None),
         wait_slots: Mutex::new(HashMap::new()),
         shutdown_requested: AtomicBool::new(/*v*/ false),
         shutdown_result: Mutex::new(/*t*/ None),
+        durable_result: Mutex::new(/*t*/ None),
+        close_confirmed: AtomicBool::new(/*v*/ false),
+        callback_panicked: AtomicBool::new(/*v*/ false),
+        durable_requested: AtomicBool::new(/*v*/ false),
         stopped: CancellationToken::new(),
         stream_tasks: TaskTracker::new(),
         completion_permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT_COMPLETIONS)),
+        callback_tasks: TaskTracker::new(),
         _transport: Arc::new(SharedTransport::Connected(client)),
     })
 }

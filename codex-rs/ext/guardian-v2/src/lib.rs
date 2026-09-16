@@ -1,3 +1,6 @@
+// Match codex-core's limit for structural Send/Sync proofs through ThreadManager.
+#![recursion_limit = "256"]
+
 use std::sync::Arc;
 use std::sync::Weak;
 
