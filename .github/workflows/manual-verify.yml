@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      regenerate_bazel_lock:
+        description: Regenerate and upload MODULE.bazel.lock before running Rust checks
+        required: false
+        default: false
+        type: boolean
       regenerate_tui_snapshots:
         description: Regenerate and upload TUI snapshots selected by the nextest filter
         required: false
@@ -60,6 +65,20 @@ jobs:
           df -h /
 
       - uses: ./.github/actions/setup-ci
+        if: ${{ !inputs.regenerate_bazel_lock }}
+
+      - name: Prepare Bazel CI
+        if: inputs.regenerate_bazel_lock
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: manual-verify-lock
+
+      - name: Regenerate Bazel module lockfile
+        id: regenerate_bazel_lock
+        if: inputs.regenerate_bazel_lock
+        working-directory: ${{ github.workspace }}
+        run: just bazel-lock-update
 
       - name: Install Linux build dependencies
         shell: bash
@@ -223,6 +242,15 @@ jobs:
         with:
           name: app-server-schema-${{ github.run_id }}
           path: codex-rs/app-server-protocol/schema
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload regenerated Bazel module lockfile
+        if: always() && steps.regenerate_bazel_lock.outcome == 'success'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel-module-lock-${{ github.run_id }}
+          path: MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
 
