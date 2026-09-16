@@ -167,10 +167,10 @@ mod mailbox_batch_cancellation_tests;
 #[path = "control/mailbox_input_tests.rs"]
 mod mailbox_input_tests;
 
+#[path = "control/input_admission_lifecycle_tests.rs"]
+mod input_admission_lifecycle_tests;
 #[path = "control/task_path_control_tests.rs"]
 mod task_path_control_tests;
-#[path = "control/turn_queue_permission_tests.rs"]
-mod turn_queue_permission_tests;
 #[path = "control/unsupported_mailbox_subscription_tests.rs"]
 mod unsupported_mailbox_subscription_tests;
 
@@ -1105,6 +1105,64 @@ async fn spawn_failure_context_preserves_shutdown_during_child_startup() {
         "failed startup closes its published edge"
     );
     assert_thread_not_loaded(&harness.manager, closed_children[0]).await;
+}
+
+#[tokio::test]
+async fn cancelled_spawn_after_input_admission_discards_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_id, parent) = harness.start_thread().await;
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let prepared = control
+        .spawn_agent_prepared(
+            harness.config.clone(),
+            super::spawn::SpawnInitialInput::UserInput(text_input("child task")),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions::default(),
+            control.runtime.admit_start().expect("spawn membership"),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("prepare a receipt after confirmed input admission");
+    let child_id = prepared.spawned.agent.thread_id;
+    let child = harness.manager.get_thread(child_id).await.expect("child");
+    // Only consuming the receipt commits ownership, including after admitted input.
+    drop(prepared);
+    child.wait_until_terminated().await;
+    control
+        .runtime
+        .request_shutdown()
+        .wait()
+        .await
+        .expect("provisional cleanup releases tree membership");
+    assert_eq!(
+        harness
+            .state_db
+            .as_ref()
+            .expect("manager should retain state db")
+            .list_thread_spawn_children_with_status(
+                parent_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .expect("closed child edge should load"),
+        vec![child_id],
+        "cancelled startup must close its published edge"
+    );
+    assert!(
+        control.get_agent_metadata(child_id).is_none(),
+        "cancelled spawn must not leave an accepted child registered"
+    );
+    assert_thread_not_loaded(&harness.manager, child_id).await;
 }
 
 #[tokio::test]
@@ -4184,7 +4242,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
 #[test_case::test_case(false; "unmarked bundled hints")]
 #[tokio::test]
 async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marked: bool) {
-    let harness = AgentControlHarness::new().await;
+    let mut harness = AgentControlHarness::new().await;
     let mut parent_config = harness.config.clone();
     let _ = parent_config.features.enable(Feature::MultiAgentV2);
     parent_config.developer_instructions = Some("Parent developer instructions.".to_string());
@@ -4209,6 +4267,11 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         .expect("start parent thread");
     let parent_thread_id = new_thread.thread_id;
     let parent_thread = new_thread.thread;
+    harness.control = parent_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent_thread.session.session_id());
     let turn_context = parent_thread.session.new_default_turn().await;
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
     let compacted_notification = ContextualUserFragment::into(SubagentNotification::new(
@@ -7796,5 +7859,10 @@ mod response_observation_tests;
 #[path = "control_user_observation_tests.rs"]
 mod user_observation_tests;
 
+#[path = "control/spawn_handoff_tests.rs"]
+mod spawn_handoff_tests;
 #[path = "control_user_shutdown_tests.rs"]
 mod user_shutdown_tests;
+
+#[path = "control/subtree_unload_completion_tests.rs"]
+mod subtree_unload_completion_tests;

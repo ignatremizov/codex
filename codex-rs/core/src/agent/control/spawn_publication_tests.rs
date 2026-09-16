@@ -386,9 +386,13 @@ async fn repeated_child_id_preserves_existing_thread_and_graph() {
         .list_thread_spawn_children(parent, /*status_filter*/ None)
         .await
         .expect("initial graph");
-    let error = spawn_publication_child(&harness, parent)
-        .await
-        .expect_err("loaded IDs are rejected");
+    let error = timeout(
+        Duration::from_secs(/*secs*/ 5),
+        spawn_publication_child(&harness, parent),
+    )
+    .await
+    .expect("loaded ID rejection must not wait on its owner's lifecycle lock")
+    .expect_err("loaded IDs are rejected");
     assert_eq!(
         (error.agent_context(), CodexErrKind::from(&error)),
         (

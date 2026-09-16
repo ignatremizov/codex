@@ -191,7 +191,10 @@ pub use codex_guardian_context::GuardianRootMessage;
 pub use codex_guardian_reviewer::GuardianAuthorizationVersion;
 pub use codex_guardian_reviewer::GuardianRootSnapshot;
 
+mod unload_lifecycle;
+
 pub struct CodexThread {
+    pub(crate) cancelled_spawn_alias_cleanup_pending: std::sync::atomic::AtomicBool,
     pub(crate) session: Arc<Session>,
     pub(crate) io: SessionIo,
     // Queued agent mail owns a read guard until handled or dropped; eviction needs a write guard.
@@ -231,6 +234,7 @@ impl CodexThread {
         session_source: SessionSource,
     ) -> Self {
         Self {
+            cancelled_spawn_alias_cleanup_pending: std::sync::atomic::AtomicBool::new(false),
             session,
             io,
             residency_gate: Arc::default(),
@@ -364,6 +368,11 @@ impl CodexThread {
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
         self.io.shutdown_and_wait().await
+    }
+
+    /// Stop the actor only after its owned work and durable writer acknowledge shutdown.
+    pub async fn shutdown_durably_and_wait(&self) -> CodexResult<()> {
+        self.io.shutdown_durably_and_wait().await
     }
 
     /// Wait until the underlying session loop has terminated.

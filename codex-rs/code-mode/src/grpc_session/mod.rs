@@ -46,6 +46,7 @@ mod callbacks;
 mod completion;
 mod conversion;
 mod deadline;
+mod durable_shutdown;
 mod generation;
 mod operations;
 mod process_metrics;
@@ -133,6 +134,8 @@ impl GrpcCodeModeSessionProvider {
         &self,
         options: &CodeModeSessionOptions,
         pinned_mode: Option<CodeModeOutputTruncation>,
+        unidentified_backend: &AtomicBool,
+        register: impl FnOnce(Arc<GrpcCodeModeSession>) + Send,
     ) -> Result<Arc<GrpcCodeModeSession>, String> {
         let mut client = deadline::startup("transport connection", self.transport.client()).await?;
         let requested_mode = pinned_mode.unwrap_or(options.output_truncation);
@@ -149,6 +152,7 @@ impl GrpcCodeModeSessionProvider {
             || limits.max_heap_size_bytes.is_some())
         .then_some(limits);
         let open_session_span = tracing::info_span!("code_mode.grpc.open_session");
+        unidentified_backend.store(true, Ordering::Release);
         let (lease, first, route) = deadline::startup("session opening", async {
             let mut retries = 0;
             loop {
@@ -207,29 +211,36 @@ impl GrpcCodeModeSessionProvider {
             return Err("gRPC code-mode session lease omitted its opening event".to_string());
         };
         validate_identifier(&opened.session_id, "session ID")?;
-        let host_mode =
-            grpc::OutputTruncation::try_from(opened.output_truncation.unwrap_or_default())
-                .map_err(|_| "gRPC code-mode host returned an unknown output truncation mode")?;
-        let output_truncation = match host_mode {
-            grpc::OutputTruncation::Unspecified | grpc::OutputTruncation::Client => {
-                CodeModeOutputTruncation::Client
+        let negotiated_mode: Result<CodeModeOutputTruncation, String> = (|| {
+            let host_mode =
+                grpc::OutputTruncation::try_from(opened.output_truncation.unwrap_or_default())
+                    .map_err(
+                        |_| "gRPC code-mode host returned an unknown output truncation mode",
+                    )?;
+            let output_truncation = match host_mode {
+                grpc::OutputTruncation::Unspecified | grpc::OutputTruncation::Client => {
+                    CodeModeOutputTruncation::Client
+                }
+                grpc::OutputTruncation::Server => CodeModeOutputTruncation::Server,
+            };
+            if output_truncation == CodeModeOutputTruncation::Server
+                && requested_mode == CodeModeOutputTruncation::Client
+            {
+                return Err(format!(
+                    "gRPC code-mode host selected {output_truncation:?} output truncation, requested {requested_mode:?}"
+                ));
             }
-            grpc::OutputTruncation::Server => CodeModeOutputTruncation::Server,
-        };
-        if output_truncation == CodeModeOutputTruncation::Server
-            && requested_mode == CodeModeOutputTruncation::Client
-        {
-            return Err(format!(
-                "gRPC code-mode host selected {output_truncation:?} output truncation, requested {requested_mode:?}"
-            ));
-        }
-        if pinned_mode.is_some_and(|previous| previous != output_truncation) {
-            // Dropping the opening lease releases this incompatible session before subscribing.
-            return Err(
-                "gRPC code-mode host changed the session output truncation mode on reconnect"
-                    .to_string(),
-            );
-        }
+            if pinned_mode.is_some_and(|previous| previous != output_truncation) {
+                return Err(
+                    "gRPC code-mode host changed the session output truncation mode on reconnect"
+                        .to_string(),
+                );
+            }
+            Ok(output_truncation)
+        })();
+        // A valid backend ID must stay owned even when its output policy is rejected.
+        // The fallback mode is used only by this unpublished cleanup binding.
+        let output_truncation = negotiated_mode.as_ref().copied().unwrap_or(requested_mode);
 
         let inner = Arc::new(SessionInner {
             id: opened.session_id,
@@ -241,14 +252,27 @@ impl GrpcCodeModeSessionProvider {
             wait_slots: Mutex::new(HashMap::new()),
             shutdown_requested: AtomicBool::new(false),
             shutdown_result: Mutex::new(None),
+            durable_result: Mutex::new(None),
+            close_confirmed: AtomicBool::new(false),
+            callback_panicked: AtomicBool::new(false),
+            durable_requested: AtomicBool::new(false),
             stopped: CancellationToken::new(),
             stream_tasks: TaskTracker::new(),
+            callback_tasks: TaskTracker::new(),
             _transport: Arc::clone(&self.transport),
         });
+        let session = Arc::new(GrpcCodeModeSession {
+            inner: Arc::clone(&inner),
+        });
+        register(Arc::clone(&session));
         let mut opening = OpeningSession {
             inner: Some(Arc::clone(&inner)),
         };
         inner.spawn_session_events(lease);
+        if let Err(error) = negotiated_mode {
+            let _ = wait_for_watch(inner.request_shutdown()).await;
+            return Err(error);
+        }
 
         let subscribe_span = tracing::info_span!(
             "code_mode.grpc.subscribe_to_tool_calls",
@@ -274,7 +298,7 @@ impl GrpcCodeModeSessionProvider {
         inner.spawn_tool_subscription(response.into_inner());
         inner.require_open()?;
         opening.inner = None;
-        Ok(Arc::new(GrpcCodeModeSession { inner }))
+        Ok(session)
     }
 }
 
@@ -284,6 +308,22 @@ impl CodeModeSessionProvider for GrpcCodeModeSessionProvider {
     ) -> CodeModeSessionResultFuture<'_, codex_code_mode_protocol::CodeModeProcessMetricsSample>
     {
         Box::pin(process_metrics::sample(self))
+    }
+
+    fn create_owned_session(&self) -> CodeModeSessionProviderFuture<'_> {
+        self.create_owned_session_with_options(CodeModeSessionOptions::default())
+    }
+
+    fn create_owned_session_with_options<'a>(
+        &'a self,
+        options: CodeModeSessionOptions,
+    ) -> CodeModeSessionProviderFuture<'a> {
+        Box::pin(async move {
+            Ok(
+                Arc::new(reconnect::ReconnectableSession::new(self.clone(), options))
+                    as Arc<dyn CodeModeSession>,
+            )
+        })
     }
 
     fn create_session(&self) -> CodeModeSessionProviderFuture<'_> {
@@ -365,6 +405,10 @@ impl CodeModeSession for GrpcCodeModeSession {
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
         Box::pin(wait_for_watch(self.inner.request_shutdown()))
     }
+
+    fn shutdown_durably<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(wait_for_watch(self.inner.request_durable_shutdown()))
+    }
 }
 
 impl Drop for GrpcCodeModeSession {
@@ -385,8 +429,13 @@ pub(super) struct SessionInner {
     wait_slots: Mutex<HashMap<CellId, Weak<WaitSlot>>>,
     shutdown_requested: AtomicBool,
     shutdown_result: Mutex<Option<ShutdownResultReceiver>>,
+    durable_result: Mutex<Option<ShutdownResultReceiver>>,
+    close_confirmed: AtomicBool,
+    callback_panicked: AtomicBool,
+    durable_requested: AtomicBool,
     pub(super) stopped: CancellationToken,
     stream_tasks: TaskTracker,
+    callback_tasks: TaskTracker,
     _transport: Arc<SharedTransport>,
 }
 
@@ -420,9 +469,13 @@ impl SessionInner {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&cell_id);
-            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            if std::panic::catch_unwind(AssertUnwindSafe(|| {
                 delegate.cell_closed(&cell_id);
-            }));
+            }))
+            .is_err()
+            {
+                self.callback_panicked.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -491,6 +544,9 @@ impl SessionInner {
         } else {
             Ok(())
         };
+        if is_open && result.is_ok() {
+            self.close_confirmed.store(true, Ordering::Release);
+        }
         self.close_state(/*failure*/ None);
         self.stream_tasks.wait().await;
         result

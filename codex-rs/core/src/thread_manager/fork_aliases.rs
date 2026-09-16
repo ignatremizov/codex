@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::NewThread;
 use super::ThreadManager;
+use super::ThreadReadyNotification;
 use super::ThreadRegistrationMode;
 use super::ThreadSpawnRequest;
 use super::ThreadSpawnResult;
@@ -100,8 +102,11 @@ impl ThreadManager {
         session_source: &SessionSource,
         history: &InitialHistory,
         source_thread_id: Option<ThreadId>,
+        source_rollout_path: Option<&Path>,
     ) -> CodexResult<Option<(Arc<dyn AgentGraphStore>, SessionId)>> {
-        if config.ephemeral || session_source.is_non_root_agent()
+        if self.state.agent_control_factory.is_some()
+            || config.ephemeral
+            || session_source.is_non_root_agent()
         {
             return Ok(None);
         }
@@ -115,8 +120,20 @@ impl ThreadManager {
         else {
             return Ok(None);
         };
-        if let Ok(source) = self.state.get_thread(source_thread_id).await {
+        if let Some(source) = self
+            .state
+            .thread_for_fork_source(source_thread_id, source_rollout_path)
+            .await
+        {
             return Ok(Some((graph, source.session.session_id())));
+        }
+        // Historical UUIDs do not authorize borrowing a different stored rollout's aliases.
+        if !self
+            .state
+            .stored_fork_source_matches(source_thread_id, source_rollout_path)
+            .await
+        {
+            return Ok(None);
         }
         if let Some(alias) = graph
             .find_current_agent_alias_by_thread(source_thread_id)
@@ -180,6 +197,7 @@ impl ThreadManager {
             .unwrap_or_else(|| self.reserve_thread_id());
         request.options.reserved_thread_id = Some(thread_id);
         request.registration = ThreadRegistrationMode::Deferred;
+        let ready_notification = request.ready_notification;
         let abandoned = CancellationToken::new();
         let handoff = abandoned.clone().drop_guard();
         let (sender, receiver) = oneshot::channel();
@@ -226,16 +244,6 @@ impl ThreadManager {
                 if abandoned.is_cancelled() {
                     return Err(CodexErr::TurnAborted);
                 }
-                if state.agent_control_factory.is_none() {
-                    spawned
-                        .thread
-                        .session
-                        .services
-                        .local_agent_runtime
-                        .control(spawned.thread.session.session_id())
-                        .restore_agent_send_settings(spawned.thread.session.presentation_id())
-                        .await?;
-                }
                 Ok(PreparedHistoryFork { spawned, cleanup })
             }
             .await;
@@ -253,7 +261,16 @@ impl ThreadManager {
         // No await separates publication and ownership transfer.
         prepared.cleanup.pending.take();
         handoff.disarm();
-        self.state.notify_thread_created(prepared.spawned.thread_id);
-        Ok(prepared.spawned.into_new_thread())
+        let state = Arc::clone(&self.state);
+        // Publication transferred ownership. Finish callbacks even if this waiter is dropped.
+        tokio::spawn(async move {
+            if matches!(ready_notification, ThreadReadyNotification::Emit) {
+                prepared.spawned.thread.emit_thread_ready_lifecycle().await;
+            }
+            state.notify_thread_created(prepared.spawned.thread_id);
+            prepared.spawned.into_new_thread()
+        })
+        .await
+        .map_err(|_| CodexErr::InternalAgentDied)
     }
 }

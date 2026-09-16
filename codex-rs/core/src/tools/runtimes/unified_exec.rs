@@ -58,6 +58,7 @@ use codex_shell_command::powershell::prefix_powershell_script_with_utf8;
 use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -103,7 +104,7 @@ pub struct UnifiedExecRuntime<'a> {
 }
 
 pub(crate) struct UnifiedExecAttempt {
-    pub(crate) process: UnifiedExecProcess,
+    pub(crate) process: Arc<UnifiedExecProcess>,
     pub(crate) metrics_sidecar: Option<PluginMetricsSidecar>,
     pub(crate) permissions: TerminalPermissions,
 }
@@ -650,11 +651,11 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 req.shell_snapshot.clone(),
                 windows_sandbox_proxy_settings_mode,
                 prepared.tty,
+                shell_snapshot,
                 prepared.turn_environment.environment.as_ref(),
             )
             .await;
-        let mut process = with_launch_failure_events(process, prepared, ctx).await?;
-        process._shell_snapshot = shell_snapshot;
+        let process = with_launch_failure_events(process, prepared, ctx).await?;
         Ok(UnifiedExecAttempt {
             process,
             metrics_sidecar,

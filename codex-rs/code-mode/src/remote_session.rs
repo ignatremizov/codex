@@ -65,6 +65,22 @@ impl Default for ProcessOwnedCodeModeSessionProvider {
 }
 
 impl CodeModeSessionProvider for ProcessOwnedCodeModeSessionProvider {
+    fn create_owned_session(&self) -> CodeModeSessionProviderFuture<'_> {
+        self.create_owned_session_with_options(CodeModeSessionOptions::default())
+    }
+
+    fn create_owned_session_with_options<'a>(
+        &'a self,
+        options: CodeModeSessionOptions,
+    ) -> CodeModeSessionProviderFuture<'a> {
+        Box::pin(async move {
+            Ok(Arc::new(ProcessOwnedCodeModeSession::with_host(
+                self.process_host(),
+                options,
+            )) as Arc<dyn CodeModeSession>)
+        })
+    }
+
     fn availability(&self) -> Result<(), String> {
         let host_program = &self.host.host_program;
         if host_program.is_file() {
@@ -347,8 +363,7 @@ impl SessionInner {
                     SessionState::Open(binding) if binding.connection.is_alive() => {
                         return Ok(binding.clone());
                     }
-                    SessionState::Open(binding) => {
-                        self.retain_cleanup(binding.cleanup.clone());
+                    SessionState::Open(_) => {
                         *state = SessionState::New;
                         continue;
                     }
@@ -374,14 +389,17 @@ impl SessionInner {
     ) {
         let result = match self.host.connection().await {
             Ok(connection) => {
-                let cleanup = connection
+                let cleanup = SessionCleanup::new(connection.host_exited.clone());
+                self.retain_cleanup(cleanup.clone());
+                let opened = connection
                     .open_session(
                         remote.clone(),
                         self.options.clone(),
                         &self.output_truncation,
+                        cleanup.clone(),
                     )
                     .await;
-                cleanup.map(|cleanup| SessionBinding {
+                opened.map(|cleanup| SessionBinding {
                     connection,
                     remote: remote.clone(),
                     cleanup,
@@ -498,19 +516,16 @@ impl SessionInner {
             .retired_cleanups
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        retired.retain(|cleanup| !cleanup.is_complete());
-        if !cleanup.is_complete() {
-            retired.push(cleanup);
-        }
+        retired.retain(|cleanup| !cleanup.is_durably_complete());
+        retired.push(cleanup);
     }
 
     async fn wait_for_retired_cleanups(&self) {
-        let retired = std::mem::take(
-            &mut *self
-                .retired_cleanups
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let retired = self
+            .retired_cleanups
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         for cleanup in retired {
             cleanup.wait().await;
         }
@@ -564,6 +579,10 @@ impl CodeModeSession for ProcessOwnedCodeModeSession {
             .unwrap_or_default()
     }
 
+    fn prewarm<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async move { self.connection().await.map(|_| ()) })
+    }
+
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,
@@ -592,6 +611,26 @@ impl CodeModeSession for ProcessOwnedCodeModeSession {
 
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
         Box::pin(ProcessOwnedCodeModeSession::shutdown(self))
+    }
+
+    fn shutdown_durably<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async move {
+            let result = self.shutdown().await;
+            let cleanups = self
+                .inner
+                .retired_cleanups
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if cleanups.is_empty() {
+                return result;
+            }
+            futures::future::join_all(cleanups.iter().map(SessionCleanup::wait_durably))
+                .await
+                .into_iter()
+                .collect::<Result<Vec<()>, String>>()
+                .map(|_| ())
+        })
     }
 }
 

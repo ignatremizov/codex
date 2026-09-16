@@ -805,6 +805,13 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<SuspendTurnOutcome>>,
     },
 
+    /// Stop execution and acknowledge durable history and writer-lease release.
+    ///
+    /// A persistence failure keeps the session available for shutdown retries, but not new work.
+    ShutdownDurably {
+        reply: oneshot::Sender<CodexResult<()>>,
+    },
+
     /// Apply thread-settings overrides without starting a turn.
     ///
     /// This uses the same submission queue as turn starts so app-server can
@@ -1185,6 +1192,7 @@ impl Op {
             Self::TurnInput { .. } => "turn_input",
             Self::RecoverTurn { .. } => "recover_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
+            Self::ShutdownDurably { .. } => "shutdown_durably",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::ReplaceDynamicTools { .. } => "replace_dynamic_tools",
             Self::TurnSettings { .. } => "turn_settings",

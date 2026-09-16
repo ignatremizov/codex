@@ -190,10 +190,10 @@ async fn lost_mutation_reply_preserves_work_without_resubmitting() -> Result<()>
                 ))
             )
             .await?,
-            AppRunControl::Exit(ExitReason::UserRequested)
+            AppRunControl::Exit(ExitReason::Disconnected)
         ));
     }
-    for command in ["/exit", "/quit"] {
+    for command in ["/exit", "/quit", "/disconnect"] {
         app.chat_widget
             .restore_user_message_to_composer(command.into());
         app.handle_tui_event(&mut tui, &mut session, TuiEvent::Key(KeyCode::Enter.into()))
@@ -203,7 +203,7 @@ async fn lost_mutation_reply_preserves_work_without_resubmitting() -> Result<()>
             .expect("quit command should request exit");
         assert!(matches!(
             app.handle_event(&mut tui, &mut session, exit).await?,
-            AppRunControl::Exit(ExitReason::UserRequested)
+            AppRunControl::Exit(ExitReason::Disconnected)
         ));
     }
     session.shutdown().await?;

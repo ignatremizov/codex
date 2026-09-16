@@ -6,9 +6,15 @@ use codex_agent_graph_store::AgentGraphStoreFuture;
 use codex_agent_graph_store::AllocateAgentAliasRequest;
 use codex_agent_graph_store::ReserveForkAgentAliasesRequest;
 use codex_agent_graph_store::ThreadSpawnEdgeStatus;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_api::ThreadReadyInput;
+use codex_extension_api::ThreadResumeInput;
 use codex_protocol::SessionId;
 use codex_thread_store::InMemoryThreadStore;
 use pretty_assertions::assert_eq;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use test_case::test_case;
 
@@ -120,6 +126,57 @@ impl AgentGraphStore for GatedForkGraph {
     }
 }
 
+#[derive(Default)]
+struct ForkLifecycle {
+    events: StdMutex<Vec<(String, &'static str)>>,
+    block_ready: StdMutex<Option<String>>,
+    ready_entered: Notify,
+    release_ready: Notify,
+}
+
+impl ForkLifecycle {
+    fn record(&self, thread_id: &str, phase: &'static str) {
+        self.events
+            .lock()
+            .expect("lifecycle events")
+            .push((thread_id.to_string(), phase));
+    }
+
+    fn for_thread(&self, thread_id: ThreadId) -> Vec<&'static str> {
+        let id = thread_id.to_string();
+        self.events
+            .lock()
+            .expect("lifecycle events")
+            .iter()
+            .filter(|(thread, _)| thread == &id)
+            .map(|(_, phase)| *phase)
+            .collect()
+    }
+}
+
+impl ThreadLifecycleContributor<Config> for ForkLifecycle {
+    fn on_thread_ready<'a>(
+        &'a self,
+        input: ThreadReadyInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let id = input.thread_store.level_id();
+            self.record(id, "ready");
+            let blocked = self.block_ready.lock().expect("ready gate").as_deref() == Some(id);
+            if blocked {
+                self.ready_entered.notify_one();
+                self.release_ready.notified().await;
+            }
+        })
+    }
+
+    fn on_thread_resume<'a>(&'a self, input: ThreadResumeInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.record(input.thread_store.level_id(), "resume");
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ForkOutcome {
     Publish,
@@ -127,6 +184,7 @@ enum ForkOutcome {
     Cancel,
     AmbiguousReservation,
     RetryCleanup,
+    CancelAfterPublication,
 }
 
 #[test_case(ForkOutcome::Publish; "publish_after_reservation")]
@@ -134,6 +192,7 @@ enum ForkOutcome {
 #[test_case(ForkOutcome::Cancel; "cancel_during_reservation")]
 #[test_case(ForkOutcome::AmbiguousReservation; "ambiguous_reservation")]
 #[test_case(ForkOutcome::RetryCleanup; "retain_failed_cleanup")]
+#[test_case(ForkOutcome::CancelAfterPublication; "finish_ready_after_published_caller_cancel")]
 #[tokio::test]
 async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: ForkOutcome) {
     let home = tempdir().expect("home");
@@ -151,6 +210,9 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
         fail_discard: AtomicBool::new(matches!(outcome, ForkOutcome::RetryCleanup)),
     });
     let store = Arc::new(InMemoryThreadStore::default());
+    let lifecycle = Arc::new(ForkLifecycle::default());
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(lifecycle.clone());
     let mut manager = ThreadManager::with_models_provider_home_and_state_for_tests(
         CodexAuth::from_api_key("test"),
         config.model_provider.clone(),
@@ -162,6 +224,7 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
         let state = Arc::get_mut(&mut manager.state).expect("unshared manager");
         state.thread_store = store.clone();
         state.agent_graph_store = Some(graph.clone());
+        state.extensions = Arc::new(extensions.build());
     }
     let manager = Arc::new(manager);
     let source = manager
@@ -184,6 +247,10 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
         .await
         .expect("source alias");
     let fork_id = manager.reserve_thread_id();
+    let mut created = manager.subscribe_thread_created();
+    if matches!(outcome, ForkOutcome::CancelAfterPublication) {
+        *lifecycle.block_ready.lock().expect("ready gate") = Some(fork_id.to_string());
+    }
     let source_id = source.thread_id;
     let shutdowns = store.calls().await.shutdown_thread;
     config.ephemeral = matches!(outcome, ForkOutcome::Ephemeral);
@@ -230,6 +297,12 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
             Vec::<String>::new()
         );
         assert!(manager.get_thread(fork_id).await.is_ok());
+        assert_eq!(lifecycle.for_thread(fork_id), vec!["ready"]);
+        assert_eq!(created.try_recv().expect("created after ready"), fork_id);
+        assert!(matches!(
+            created.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
         published
             .thread
             .shutdown_durably_and_wait()
@@ -246,6 +319,11 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
         .await
         .expect("reservation reached");
     assert!(manager.get_thread(fork_id).await.is_err());
+    assert!(lifecycle.for_thread(fork_id).is_empty());
+    assert!(matches!(
+        created.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
     assert!(
         manager
             .state
@@ -261,6 +339,49 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
             Ok(_) => panic!("caller must be cancelled"),
         }
         graph.release.notify_one();
+    } else if matches!(outcome, ForkOutcome::CancelAfterPublication) {
+        graph.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), lifecycle.ready_entered.notified())
+            .await
+            .expect("published fork enters ready callback");
+        let published = manager
+            .get_thread(fork_id)
+            .await
+            .expect("published before ready");
+        assert!(
+            manager
+                .state
+                .agent_lifecycle_lock(fork_id)
+                .try_lock_owned()
+                .is_ok()
+        );
+        assert_eq!(lifecycle.for_thread(fork_id), vec!["ready"]);
+        assert!(matches!(
+            created.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        fork.abort();
+        match fork.await {
+            Err(error) => assert!(error.is_cancelled()),
+            Ok(_) => panic!("caller must be cancelled during ready"),
+        }
+        lifecycle.release_ready.notify_one();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), created.recv())
+                .await
+                .expect("owned callback finishes after caller cancellation")
+                .expect("created notification"),
+            fork_id
+        );
+        assert_eq!(lifecycle.for_thread(fork_id), vec!["ready"]);
+        assert!(matches!(
+            created.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        published
+            .shutdown_durably_and_wait()
+            .await
+            .expect("stop fork");
     } else {
         graph.release.notify_one();
         let result = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), fork)
@@ -270,6 +391,12 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
         match outcome {
             ForkOutcome::Publish => {
                 let published = result.expect("fork published");
+                assert_eq!(lifecycle.for_thread(fork_id), vec!["ready"]);
+                assert_eq!(created.try_recv().expect("created after ready"), fork_id);
+                assert!(matches!(
+                    created.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ));
                 let aliases = graph
                     .inner
                     .list_agent_aliases(fork_id.into())
@@ -324,12 +451,18 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
                         .contains("reservation acknowledgement lost")
                 );
             }
-            ForkOutcome::Cancel | ForkOutcome::RetryCleanup | ForkOutcome::Ephemeral => {
+            ForkOutcome::Cancel
+            | ForkOutcome::RetryCleanup
+            | ForkOutcome::Ephemeral
+            | ForkOutcome::CancelAfterPublication => {
                 unreachable!()
             }
         }
     }
-    if !matches!(outcome, ForkOutcome::Publish) {
+    if !matches!(
+        outcome,
+        ForkOutcome::Publish | ForkOutcome::CancelAfterPublication
+    ) {
         if matches!(outcome, ForkOutcome::RetryCleanup) {
             tokio::time::timeout(
                 Duration::from_secs(/*secs*/ 10),
@@ -367,6 +500,11 @@ async fn history_fork_owns_reservation_until_publication_or_cleanup(outcome: For
         .await
         .expect("durable cleanup releases namespace and lifecycle");
         assert!(manager.get_thread(fork_id).await.is_err());
+        assert!(lifecycle.for_thread(fork_id).is_empty());
+        assert!(matches!(
+            created.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
         assert!(store.calls().await.shutdown_thread > shutdowns);
     }
     source

@@ -248,6 +248,7 @@ mod daemon_menu;
 mod daybreak;
 mod empty_state_policy;
 mod event_dispatch;
+mod exit_lifecycle;
 mod exit_summary;
 mod experimental_features;
 mod feedback_upload;
@@ -525,6 +526,7 @@ pub(crate) enum AppRunControl {
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     UserRequested,
+    Disconnected,
     TurnInterrupted,
     Fatal(String),
 }
@@ -989,7 +991,7 @@ impl App {
                     && self.chat_widget.composer_is_empty()
                     && self.chat_widget.no_modal_or_popup_active()))
         {
-            return Ok(AppRunControl::Exit(ExitReason::UserRequested));
+            return Ok(AppRunControl::Exit(ExitReason::Disconnected));
         }
         let screen_size = tui.screen_size_for_event(&event)?;
         if !matches!(

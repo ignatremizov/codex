@@ -147,3 +147,37 @@ async fn shutdown_drain_waits_for_the_accepted_producer_not_just_its_cancel_requ
         .expect("producer drained");
     assert_eq!(manager.list_processes().await, Vec::new());
 }
+
+#[tokio::test]
+async fn one_accepted_shell_producer_is_owned_by_both_shutdown_barriers() {
+    let manager = std::sync::Arc::new(UnifiedExecProcessManager::default());
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let published = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let producer_published = std::sync::Arc::clone(&published);
+    manager
+        .spawn_user_shell_command(async move {
+            started.send(()).expect("producer started");
+            released.await.expect("publication gate");
+            producer_published.store(true, std::sync::atomic::Ordering::Release);
+        })
+        .await
+        .expect("accept one producer");
+    running.await.expect("producer is awaiting publication");
+    manager.shutdown_user_shell_commands().await;
+    let mut legacy_drain = Box::pin(manager.drain_user_shell_commands());
+    let mut durable_drain = Box::pin(manager.shutdown_durably());
+    assert!(futures::poll!(legacy_drain.as_mut()).is_pending());
+    assert!(futures::poll!(durable_drain.as_mut()).is_pending());
+    assert!(!published.load(std::sync::atomic::Ordering::Acquire));
+    release
+        .send(())
+        .expect("allow canonical producer completion");
+    let (_, durable) = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), async {
+        tokio::join!(legacy_drain, durable_drain)
+    })
+    .await
+    .expect("both observers acknowledge the same producer");
+    durable.expect("durable drain");
+    assert!(published.load(std::sync::atomic::Ordering::Acquire));
+}

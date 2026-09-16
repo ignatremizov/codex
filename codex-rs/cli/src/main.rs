@@ -809,7 +809,7 @@ fn handle_app_exit(
             eprintln!("ERROR: {message}");
             true
         }
-        ExitReason::UserRequested | ExitReason::TurnInterrupted => false,
+        ExitReason::UserRequested | ExitReason::Disconnected | ExitReason::TurnInterrupted => false,
     };
 
     let update_action = exit_info.update_action.take();
@@ -3910,6 +3910,7 @@ enabled = true
                     ],
                     stop_hint: "press ctrl + x".to_string(),
                 });
+                exit_info.exit_reason = ExitReason::Disconnected;
                 Ok(exit_info)
             },
             Some("CODEX_REMOTE_TOKEN"),
