@@ -283,6 +283,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         sqlite: SqliteConfig::from_sqlite_home(codex_home.clone()),
         log_dir: codex_home.join("log").to_path_buf(),
         codex_home,
+        auth_file_selection: Default::default(),
         history: History::default(),
         ephemeral: true,
         extra_config: None,

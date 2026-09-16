@@ -381,13 +381,12 @@ mod tests {
     const TEST_SERVER_NAME: &str = "owen-mbp";
     const TEST_CODEX_HOME: &str = "/tmp/codex-home";
 
-    fn launch_options() -> crate::DaemonLaunchOptions {
+    fn launch_options() -> std::io::Result<crate::DaemonLaunchOptions> {
         crate::DaemonLaunchOptions::new(
             TEST_CODEX_HOME.into(),
             codex_login::AuthFileSelection::Default,
             codex_login::AuthCredentialsStoreMode::File,
         )
-        .expect("launch options")
     }
 
     #[tokio::test]
@@ -579,7 +578,7 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         });
 
-        let status = disable_remote_control(&launch_options(), &socket_path).await?;
+        let status = disable_remote_control(&launch_options()?, &socket_path).await?;
         server_task.await??;
         assert_eq!(
             status,
@@ -626,7 +625,7 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         });
 
-        let response = start_pairing(&launch_options(), &socket_path).await?;
+        let response = start_pairing(&launch_options()?, &socket_path).await?;
         server_task.await??;
         assert_eq!(
             response,
@@ -659,7 +658,7 @@ mod tests {
 
         let mut websocket = client::connect(&socket_path).await?;
         let status =
-            enable_remote_control_with_timeout(&mut websocket, &launch_options(), ready_timeout)
+            enable_remote_control_with_timeout(&mut websocket, &launch_options()?, ready_timeout)
                 .await?;
         server_task.await??;
         Ok(status)
@@ -766,7 +765,7 @@ mod tests {
             panic!("expected server/read request");
         };
         assert_eq!(profile.method, "server/read");
-        let launch = launch_options();
+        let launch = launch_options()?;
         client::send_message(
             &mut websocket,
             &JSONRPCMessage::Response(JSONRPCResponse {

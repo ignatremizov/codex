@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -19,9 +20,11 @@ fn short_home() -> std::io::Result<tempfile::TempDir> {
     tempfile::Builder::new().prefix("codex-").tempdir_in("/tmp")
 }
 
-fn launch(home: &std::path::Path, mode: AuthCredentialsStoreMode) -> DaemonLaunchOptions {
+fn launch(
+    home: &std::path::Path,
+    mode: AuthCredentialsStoreMode,
+) -> std::io::Result<DaemonLaunchOptions> {
     DaemonLaunchOptions::new(home.to_path_buf(), AuthFileSelection::Default, mode)
-        .expect("launch options")
 }
 
 async fn serve_profile(
@@ -29,7 +32,7 @@ async fn serve_profile(
     reported_profile: AuthProfileIdentity,
 ) -> Result<tokio::task::JoinHandle<Result<()>>> {
     let socket = launch.socket_path()?;
-    tokio::fs::create_dir_all(socket.parent().expect("socket parent")).await?;
+    tokio::fs::create_dir_all(socket.parent().context("socket has no parent")?).await?;
     let mut listener = UnixListener::bind(&socket).await?;
     let home = launch.codex_home().to_path_buf();
     Ok(tokio::spawn(async move {
@@ -81,8 +84,8 @@ async fn serve_profile(
 #[tokio::test]
 async fn offline_lookup_recovers_a_running_cloud_required_backend() -> Result<()> {
     let home = short_home()?;
-    let nominal = launch(home.path(), AuthCredentialsStoreMode::File);
-    let running = launch(home.path(), AuthCredentialsStoreMode::Keyring);
+    let nominal = launch(home.path(), AuthCredentialsStoreMode::File)?;
+    let running = launch(home.path(), AuthCredentialsStoreMode::Keyring)?;
     let server = serve_profile(&running, running.auth_profile().clone()).await?;
     let resolved = resolve_existing_launch(nominal, DaemonProfileLookup::AnyBackend).await?;
     assert_eq!(resolved.auth_profile(), running.auth_profile());
@@ -93,8 +96,8 @@ async fn offline_lookup_recovers_a_running_cloud_required_backend() -> Result<()
 #[tokio::test]
 async fn offline_lookup_does_not_adopt_socket_with_mismatched_metadata() -> Result<()> {
     let home = short_home()?;
-    let nominal = launch(home.path(), AuthCredentialsStoreMode::File);
-    let other = launch(home.path(), AuthCredentialsStoreMode::Keyring);
+    let nominal = launch(home.path(), AuthCredentialsStoreMode::File)?;
+    let other = launch(home.path(), AuthCredentialsStoreMode::Keyring)?;
     let server = serve_profile(&other, nominal.auth_profile().clone()).await?;
     let resolved =
         resolve_existing_launch(nominal.clone(), DaemonProfileLookup::AnyBackend).await?;
@@ -106,8 +109,8 @@ async fn offline_lookup_does_not_adopt_socket_with_mismatched_metadata() -> Resu
 #[tokio::test]
 async fn offline_lookup_requires_explicit_backend_when_multiple_profiles_are_live() -> Result<()> {
     let home = short_home()?;
-    let first = launch(home.path(), AuthCredentialsStoreMode::File);
-    let second = launch(home.path(), AuthCredentialsStoreMode::Keyring);
+    let first = launch(home.path(), AuthCredentialsStoreMode::File)?;
+    let second = launch(home.path(), AuthCredentialsStoreMode::Keyring)?;
     let first_server = serve_profile(&first, first.auth_profile().clone()).await?;
     let second_server = serve_profile(&second, second.auth_profile().clone()).await?;
     let error = resolve_existing_launch(first, DaemonProfileLookup::AnyBackend)
@@ -122,8 +125,8 @@ async fn offline_lookup_requires_explicit_backend_when_multiple_profiles_are_liv
 #[tokio::test]
 async fn explicit_backend_does_not_fall_back_to_another_identity() -> Result<()> {
     let home = short_home()?;
-    let nominal = launch(home.path(), AuthCredentialsStoreMode::File);
-    let expected = launch(home.path(), AuthCredentialsStoreMode::Keyring);
+    let nominal = launch(home.path(), AuthCredentialsStoreMode::File)?;
+    let expected = launch(home.path(), AuthCredentialsStoreMode::Keyring)?;
     let resolved = resolve_existing_launch(
         nominal,
         DaemonProfileLookup::ExactBackend(AuthCredentialsStoreMode::Keyring),
@@ -136,7 +139,7 @@ async fn explicit_backend_does_not_fall_back_to_another_identity() -> Result<()>
 #[tokio::test]
 async fn stale_pid_fingerprint_does_not_select_a_profile() -> Result<()> {
     let home = short_home()?;
-    let stale = launch(home.path(), AuthCredentialsStoreMode::File);
+    let stale = launch(home.path(), AuthCredentialsStoreMode::File)?;
     let daemon = Daemon::from_options(&stale)?;
     tokio::fs::create_dir_all(daemon.pid_file.parent().expect("pid parent")).await?;
     tokio::fs::write(
@@ -147,7 +150,7 @@ async fn stale_pid_fingerprint_does_not_select_a_profile() -> Result<()> {
         }))?,
     )
     .await?;
-    let nominal = launch(home.path(), AuthCredentialsStoreMode::Keyring);
+    let nominal = launch(home.path(), AuthCredentialsStoreMode::Keyring)?;
     let resolved =
         resolve_existing_launch(nominal.clone(), DaemonProfileLookup::AnyBackend).await?;
     assert_eq!(resolved.auth_profile(), nominal.auth_profile());
@@ -158,7 +161,7 @@ async fn stale_pid_fingerprint_does_not_select_a_profile() -> Result<()> {
 #[tokio::test]
 async fn verified_pid_selects_an_unresponsive_profile_without_socket_proof() -> Result<()> {
     let home = short_home()?;
-    let running = launch(home.path(), AuthCredentialsStoreMode::Keyring);
+    let running = launch(home.path(), AuthCredentialsStoreMode::Keyring)?;
     let daemon = Daemon::from_options(&running)?;
     let pid = std::process::id();
     let output = tokio::process::Command::new("ps")
@@ -176,7 +179,7 @@ async fn verified_pid_selects_an_unresponsive_profile_without_socket_proof() -> 
         }))?,
     )
     .await?;
-    let nominal = launch(home.path(), AuthCredentialsStoreMode::File);
+    let nominal = launch(home.path(), AuthCredentialsStoreMode::File)?;
     let resolved = resolve_existing_launch(nominal, DaemonProfileLookup::AnyBackend).await?;
     assert_eq!(resolved.auth_profile(), running.auth_profile());
     // Lookup never sends a termination signal.
