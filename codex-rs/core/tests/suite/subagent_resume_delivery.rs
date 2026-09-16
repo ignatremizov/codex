@@ -111,7 +111,6 @@ async fn unloaded_agent_resumes_at_capacity_without_reallocating_its_registratio
     let handling = UserAgentResponseHandling::from_parts(
         /*commentary*/ false,
         UserAgentFinalResponseHandling::None,
-        /*target_messages*/ false,
         /*queue_input*/ false,
     );
     let options = UserAgentSpawnOptions {
@@ -126,8 +125,7 @@ async fn unloaded_agent_resumes_at_capacity_without_reallocating_its_registratio
     let original_source = child.config_snapshot().await.session_source;
     child.ensure_rollout_materialized().await;
     child.flush_rollout().await?;
-    child.shutdown_and_wait().await?;
-    child.wait_until_terminated().await;
+    child.shutdown_durably_and_wait().await?;
     assert!(
         test.thread_manager
             .remove_thread(&spawned.target_thread_id)
@@ -212,7 +210,6 @@ async fn user_presentation_resume_reserves_next_turn_and_preserves_prior_wake(
             response_handling: UserAgentResponseHandling::from_parts(
                 /*commentary*/ false,
                 UserAgentFinalResponseHandling::None,
-                /*target_messages*/ false,
                 /*queue_input*/ false,
             ),
             ..Default::default()
@@ -257,7 +254,6 @@ async fn user_presentation_resume_reserves_next_turn_and_preserves_prior_wake(
                 UserAgentResponseHandling::from_parts(
                     /*commentary*/ false,
                     UserAgentFinalResponseHandling::Presentation,
-                    /*target_messages*/ false,
                     queue_input,
                 ),
             )

@@ -363,3 +363,40 @@ async fn another_session_cannot_supply_shell_completion_authority() {
         (Vec::new(), TurnStartOptions::default())
     );
 }
+
+#[tokio::test]
+async fn sealed_unload_preserves_accepted_shell_context_without_admitting_a_wake() {
+    let (session, turn, _events) = make_session_and_context_with_rx().await;
+    let completion = session
+        .submission_admission
+        .try_accept_completion_delivery()
+        .expect("shell accepted before unload");
+    session.submission_admission.seal_for_unload();
+    assert!(session.submission_admission.check_ready().is_err());
+    assert!(
+        !session.submission_admission.completion_is_closing(),
+        "the unload seal precedes ordinary shutdown and is an independent admission fence"
+    );
+    assert!(
+        !session
+            .deliver_user_shell_result(
+                result_item(),
+                &turn,
+                UserShellCommandFinalDelivery::Wake,
+                &completion,
+            )
+            .await
+            .expect("accepted context survives sealing")
+    );
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(
+        session.input_queue.take_queued_items_for_next_turn().await,
+        (Vec::new(), TurnStartOptions::default())
+    );
+    let history = session.clone_history().await.into_annotated_items();
+    assert_eq!(history.len(), 1);
+    let mut item = history[0].item.clone();
+    item.set_id(None);
+    item.clear_internal_chat_message_metadata_passthrough();
+    assert_eq!(item, result_item());
+}

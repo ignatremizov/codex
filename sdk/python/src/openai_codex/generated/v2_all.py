@@ -6785,6 +6785,27 @@ class ThreadUnarchivedNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadUnloadParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[
+        str,
+        Field(
+            alias="threadId",
+            description="Any thread in the owning spawn subtree, including the root.",
+        ),
+    ]
+
+
+class ThreadUnloadResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root_thread_id: Annotated[str, Field(alias="rootThreadId")]
+    unloaded_thread_ids: Annotated[list[str], Field(alias="unloadedThreadIds")]
+
+
 class ThreadStartThreadUnreadPosition(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7917,6 +7938,15 @@ class ThreadUnsubscribeRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/unsubscribe"], Field(title="Thread/unsubscribeRequestMethod")]
     params: ThreadUnsubscribeParams
+
+
+class ThreadUnloadRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/unload"], Field(title="Thread/unloadRequestMethod")]
+    params: ThreadUnloadParams
 
 
 class ThreadNameSetRequest(BaseModel):
@@ -14080,6 +14110,7 @@ class ClientRequest(
         | ThreadArchiveRequest
         | ThreadDeleteRequest
         | ThreadUnsubscribeRequest
+        | ThreadUnloadRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
         | ThreadMcpServerActivateRequest
@@ -14195,6 +14226,7 @@ class ClientRequest(
         | ThreadArchiveRequest
         | ThreadDeleteRequest
         | ThreadUnsubscribeRequest
+        | ThreadUnloadRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
         | ThreadMcpServerActivateRequest

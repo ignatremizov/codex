@@ -164,10 +164,10 @@ mod mailbox_batch_cancellation_tests;
 #[path = "control/mailbox_input_tests.rs"]
 mod mailbox_input_tests;
 
+#[path = "control/input_admission_lifecycle_tests.rs"]
+mod input_admission_lifecycle_tests;
 #[path = "control/task_path_control_tests.rs"]
 mod task_path_control_tests;
-#[path = "control/turn_queue_permission_tests.rs"]
-mod turn_queue_permission_tests;
 #[path = "control/unsupported_mailbox_subscription_tests.rs"]
 mod unsupported_mailbox_subscription_tests;
 
@@ -4204,7 +4204,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
 #[test_case::test_case(false; "unmarked bundled hints")]
 #[tokio::test]
 async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marked: bool) {
-    let harness = AgentControlHarness::new().await;
+    let mut harness = AgentControlHarness::new().await;
     let mut parent_config = harness.config.clone();
     let _ = parent_config.features.enable(Feature::MultiAgentV2);
     parent_config.developer_instructions = Some("Parent developer instructions.".to_string());
@@ -4229,6 +4229,11 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         .expect("start parent thread");
     let parent_thread_id = new_thread.thread_id;
     let parent_thread = new_thread.thread;
+    harness.control = parent_thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent_thread.session.session_id());
     let turn_context = parent_thread.session.new_default_turn().await;
     let parent_spawn_call_id = "spawn-call-compacted-usage-hints".to_string();
     let compacted_notification = ContextualUserFragment::into(SubagentNotification::new(
@@ -7814,5 +7819,10 @@ mod response_observation_tests;
 #[path = "control_user_observation_tests.rs"]
 mod user_observation_tests;
 
+#[path = "control/spawn_handoff_tests.rs"]
+mod spawn_handoff_tests;
 #[path = "control_user_shutdown_tests.rs"]
 mod user_shutdown_tests;
+
+#[path = "control/subtree_unload_completion_tests.rs"]
+mod subtree_unload_completion_tests;

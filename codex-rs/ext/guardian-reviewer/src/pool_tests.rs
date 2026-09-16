@@ -91,6 +91,12 @@ impl ReviewerSession for Session {
     async fn snapshot(&self) -> Option<usize> {
         Some(self.0)
     }
+    async fn shutdown_durably(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn durable_shutdown_complete(&self) -> bool {
+        true
+    }
 }
 
 struct Request {

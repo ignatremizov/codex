@@ -31,6 +31,7 @@ use crate::plugins::metrics::finish_and_track_measurements;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::ExecServerEnvConfig;
+use crate::shell_snapshot::ShellSnapshotFile;
 use crate::tools::ApprovalContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::events::ToolEmitter;
@@ -520,9 +521,31 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-        let result = self
-            .exec_command_inner(request, context, /*completion*/ None)
-            .await;
+        let process_id = request.process_id;
+        let session = Arc::clone(&context.session);
+        let owned_context = UnifiedExecContext::new(
+            Arc::clone(&context.session),
+            Arc::clone(&context.step_context),
+            context.cancellation_token.clone(),
+            context.call_id.clone(),
+        );
+        let execution = self.start_execution(async move {
+            session
+                .services
+                .unified_exec_manager
+                .exec_command_inner(request, &owned_context, /*completion*/ None)
+                .await
+        });
+        let execution = match execution {
+            Ok(execution) => execution,
+            Err(error) => {
+                self.release_process_id(process_id).await;
+                return Err(error);
+            }
+        };
+        let result = execution
+            .await
+            .map_err(|error| UnifiedExecError::process_failed(error.to_string()))?;
         let outcome = match &result {
             Ok(output) if output.process_id.is_some() => "yielded",
             Ok(_) => "exited",
@@ -533,6 +556,16 @@ impl UnifiedExecProcessManager {
         result
     }
 
+    #[tracing::instrument(
+        name = "unified_exec.execution",
+        skip_all,
+        fields(
+            conversation.id = %context.session.thread_id,
+            turn_id = trace_id(&context.step_context.turn.sub_id),
+            call_id = trace_id(&context.call_id),
+            unified_exec_process_id = request.process_id,
+        )
+    )]
     pub(super) async fn exec_command_inner(
         &self,
         request: ExecCommandRequest,
@@ -556,9 +589,11 @@ impl UnifiedExecProcessManager {
             metrics_sidecar,
             permissions,
         } = attempt;
-        let process = Arc::new(process);
         if let Some(completion) = completion.as_ref() {
             let _ = completion.process.set(Arc::clone(&process));
+        }
+        if context.cancellation_token.is_cancelled() {
+            process.terminate_confirmed().await?;
         }
         let network_denial_monitor = deferred_network_approval.as_ref().map(|deferred| {
             terminate_process_on_network_denial(
@@ -678,14 +713,20 @@ impl UnifiedExecProcessManager {
                 UnifiedExecError::process_failed("timeout_ms is too large".into())
             })?);
         let output = process.output_handles().clone();
-        let collected_output = collect_output_until_deadline(
-            &output,
-            Some(context.session.subscribe_elicitation_pause_state()),
-            deadline,
-            None,
-        )
-        .await
-        .collected;
+        let collected_output = tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled(), if completion.is_none() => {
+                // The registered resumable process retains its producer and output.
+                // Release initial collection so background draining and later polls can run.
+                return Err(UnifiedExecError::process_failed("exec_command cancelled".into()));
+            }
+            result = collect_output_until_deadline(
+                &output,
+                Some(context.session.subscribe_elicitation_pause_state()),
+                deadline,
+                /*interrupts*/ None,
+            ) => result.collected,
+        };
         if let Some(completion) = completion.as_mut()
             && !process.has_exited()
         {
@@ -1526,8 +1567,9 @@ impl UnifiedExecProcessManager {
         shell_snapshot: Option<codex_exec_server::ShellSnapshotRequest>,
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         tty: bool,
+        shell_snapshot_file: Option<Arc<ShellSnapshotFile>>,
         environment: &codex_exec_server::Environment,
-    ) -> Result<UnifiedExecProcess, ToolError> {
+    ) -> Result<Arc<UnifiedExecProcess>, ToolError> {
         let mut request = if environment.is_remote() || shell_snapshot.is_some() {
             attempt.env_for_exec_server(command, options).await
         } else {
@@ -1553,6 +1595,7 @@ impl UnifiedExecProcessManager {
             windows_sandbox_proxy_settings_mode,
             network_policy_decider,
             tty,
+            shell_snapshot_file,
             environment,
         )
         .await
@@ -1576,8 +1619,9 @@ impl UnifiedExecProcessManager {
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
         tty: bool,
+        shell_snapshot_file: Option<Arc<ShellSnapshotFile>>,
         environment: &codex_exec_server::Environment,
-    ) -> Result<UnifiedExecProcess, UnifiedExecError> {
+    ) -> Result<Arc<UnifiedExecProcess>, UnifiedExecError> {
         if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
             let backend = environment.get_exec_backend();
             let params = exec_server_params_for_request(
@@ -1610,8 +1654,19 @@ impl UnifiedExecProcessManager {
             } else {
                 OutputDrainPolicy::BoundedAfterExit
             };
-            return UnifiedExecProcess::from_exec_server_started(started, output_drain_policy)
-                .await;
+            let mut process = UnifiedExecProcess::from_exec_server_before_classification(
+                started,
+                output_drain_policy,
+            )
+            .await?;
+            process._shell_snapshot = shell_snapshot_file;
+            let process = Arc::new(process);
+            self.retain_process_for_shutdown(Arc::clone(&process));
+            if let Err(error) = process.check_for_sandbox_denial().await {
+                process.terminate();
+                return Err(error);
+            }
+            return Ok(process);
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
@@ -1682,7 +1737,17 @@ impl UnifiedExecProcessManager {
         .await;
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned(spawned, request.sandbox).await
+        let mut process =
+            UnifiedExecProcess::from_spawned_before_classification(spawned, request.sandbox)
+                .await?;
+        process._shell_snapshot = shell_snapshot_file;
+        let process = Arc::new(process);
+        self.retain_process_for_shutdown(Arc::clone(&process));
+        if let Err(error) = process.check_for_sandbox_denial().await {
+            process.terminate();
+            return Err(error);
+        }
+        Ok(process)
     }
 
     #[tracing::instrument(

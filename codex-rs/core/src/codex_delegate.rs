@@ -25,6 +25,7 @@ use crate::session::GitEnrichmentPolicy;
 use crate::session::SUBMISSION_CHANNEL_CAPACITY;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
+use crate::session::SubmissionAdmission;
 use crate::session::emit_subagent_session_started;
 use crate::session::session::Session;
 use crate::session::startup::SessionStartup;
@@ -45,6 +46,12 @@ pub(crate) mod compaction;
 
 #[cfg(test)]
 use crate::session::completed_session_loop_termination;
+
+#[derive(Clone, Copy)]
+enum DelegateShutdown {
+    BestEffort,
+    Durable,
+}
 
 /// Start an interactive sub-Codex thread and return its runtime and IO channels.
 ///
@@ -103,7 +110,7 @@ pub(crate) async fn run_codex_thread_interactive(
     };
     let mut thread_extension_init = codex_extension_api::ExtensionDataInit::default();
     thread_extension_init.insert(isolation);
-    let spawn_result = Session::spawn(SessionSpawnArgs {
+    let spawn = Session::spawn(SessionSpawnArgs {
         startup: Some(Arc::clone(&startup)),
         config,
         prompt_cache_key: parent_session
@@ -169,18 +176,20 @@ pub(crate) async fn run_codex_thread_interactive(
         inherited_multi_agent_version: Some(MultiAgentVersion::Disabled),
         git_enrichment_policy,
         windows_sandbox_proxy_settings_mode,
-    })
-    .or_cancel(&cancel_token)
-    .await;
-    let (session, io) = match spawn_result {
-        Ok(Ok(spawned)) => spawned,
-        Ok(Err(error)) => {
-            startup_guard.cleanup().await;
-            return Err(error);
+    });
+    let spawn_result = if is_guardian_reviewer {
+        spawn.await
+    } else {
+        match spawn.or_cancel(&cancel_token).await {
+            Ok(result) => result,
+            Err(error) => Err(error.into()),
         }
+    };
+    let (session, io) = match spawn_result {
+        Ok(spawned) => spawned,
         Err(error) => {
             startup_guard.cleanup().await;
-            return Err(error.into());
+            return Err(error);
         }
     };
     let thread_config = session.thread_config_snapshot().await;
@@ -195,14 +204,30 @@ pub(crate) async fn run_codex_thread_interactive(
         subagent_source,
         /*resumed_created_at*/ None,
     );
-    let caller_io = forward_session_io(Arc::new(io), cancel_token);
+    let mode = if is_guardian_reviewer {
+        DelegateShutdown::Durable
+    } else {
+        DelegateShutdown::BestEffort
+    };
     startup.release_membership();
     startup_guard.disarm();
-    Ok((session, caller_io))
+    Ok((
+        session,
+        forward_session_io_with_shutdown(Arc::new(io), cancel_token, mode),
+    ))
 }
 
 /// Keeps delegate IO cancellation identical for standalone and manager-owned reviewers.
+#[cfg(test)]
 pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationToken) -> SessionIo {
+    forward_session_io_with_shutdown(io, cancel_token, DelegateShutdown::BestEffort)
+}
+
+fn forward_session_io_with_shutdown(
+    io: Arc<SessionIo>,
+    cancel_token: CancellationToken,
+    mode: DelegateShutdown,
+) -> SessionIo {
     let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     // Use a child token so parent cancel cascades but we can scope it to this task
     let cancel_token_events = cancel_token.child_token();
@@ -220,7 +245,7 @@ pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationT
     };
     let io_for_events = Arc::clone(&io);
     tokio::spawn(async move {
-        forward_events(io_for_events, tx_sub, cancel_token_events).await;
+        forward_events(io_for_events, tx_sub, cancel_token_events, mode).await;
     });
 
     caller_io
@@ -291,7 +316,8 @@ pub(crate) async fn run_codex_thread_one_shot(
     let ops_tx = io.tx_sub.clone();
     let agent_status = io.agent_status.clone();
     let session_loop_termination = io.session_loop_termination.clone();
-    let submission_admission = Arc::clone(&io.submission_admission);
+    let io = Arc::new(io);
+    let submission_admission = Arc::new(SubmissionAdmission::forwarding_to(Arc::clone(&io)));
     let submission_session = io.session.clone();
     let io_for_bridge = io;
     tokio::spawn(async move {
@@ -346,6 +372,7 @@ async fn forward_events(
     io: Arc<SessionIo>,
     tx_sub: Sender<Event>,
     cancel_token: CancellationToken,
+    shutdown_mode: DelegateShutdown,
 ) {
     let cancelled = cancel_token.cancelled();
     tokio::pin!(cancelled);
@@ -353,7 +380,7 @@ async fn forward_events(
     loop {
         tokio::select! {
             _ = &mut cancelled => {
-                shutdown_delegate(&io).await;
+                shutdown_delegate(&io, shutdown_mode).await;
                 break;
             }
             event = io.next_event() => {
@@ -371,7 +398,7 @@ async fn forward_events(
                             | EventMsg::McpStartupComplete(_),
                     } => {}
                     other => {
-                        if !forward_event_or_shutdown(&io, &tx_sub, &cancel_token, other).await
+                        if !forward_event_or_shutdown(&io, &tx_sub, &cancel_token, other, shutdown_mode).await
                         {
                             break;
                         }
@@ -383,7 +410,30 @@ async fn forward_events(
 }
 
 /// Ask the delegate to stop and drain its events so background sends do not hit a closed channel.
-async fn shutdown_delegate(io: &SessionIo) {
+async fn shutdown_delegate(io: &SessionIo, mode: DelegateShutdown) {
+    if matches!(mode, DelegateShutdown::Durable) {
+        let shutdown = io.shutdown_durably_and_wait();
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                result = &mut shutdown => {
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "delegate durable shutdown remains retryable");
+                    }
+                    break;
+                }
+                event = io.next_event() => {
+                    if event.is_err() {
+                        if let Err(error) = shutdown.await {
+                            tracing::warn!(%error, "delegate durable shutdown acknowledgement failed");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        return;
+    }
     let _ = io.submit(Op::Interrupt).await;
     let _ = io.submit(Op::Shutdown {}).await;
 
@@ -405,11 +455,12 @@ async fn forward_event_or_shutdown(
     tx_sub: &Sender<Event>,
     cancel_token: &CancellationToken,
     event: Event,
+    shutdown_mode: DelegateShutdown,
 ) -> bool {
     match tx_sub.send(event).or_cancel(cancel_token).await {
         Ok(Ok(())) => true,
         _ => {
-            shutdown_delegate(io).await;
+            shutdown_delegate(io, shutdown_mode).await;
             false
         }
     }
