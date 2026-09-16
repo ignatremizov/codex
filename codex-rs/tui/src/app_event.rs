@@ -1630,8 +1630,10 @@ pub(crate) struct RealtimeWebrtcOffer {
 pub(crate) enum ExitMode {
     /// Shutdown core and exit after completion.
     ShutdownFirst,
-    /// Unsubscribe and exit after the current turn was successfully interrupted.
+    /// Durably unload and exit after the current turn was successfully interrupted.
     ShutdownAfterInterrupt,
+    /// Explicitly detach from a shared server, leaving its threads loaded.
+    Disconnect,
     /// Exit the UI loop immediately without waiting for shutdown.
     ///
     /// This skips `Op::Shutdown`, so any in-flight work may be dropped and

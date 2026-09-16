@@ -548,8 +548,31 @@ impl UnifiedExecProcessManager {
         request: ExecCommandRequest,
         context: &UnifiedExecContext,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-        self.exec_command_inner(request, context, /*completion*/ None)
+        let process_id = request.process_id;
+        let session = Arc::clone(&context.session);
+        let context = UnifiedExecContext::new(
+            Arc::clone(&context.session),
+            Arc::clone(&context.step_context),
+            context.cancellation_token.clone(),
+            context.call_id.clone(),
+        );
+        let execution = self.start_execution(async move {
+            session
+                .services
+                .unified_exec_manager
+                .exec_command_inner(request, &context, /*completion*/ None)
+                .await
+        });
+        let execution = match execution {
+            Ok(execution) => execution,
+            Err(error) => {
+                self.release_process_id(process_id).await;
+                return Err(error);
+            }
+        };
+        execution
             .await
+            .map_err(|error| UnifiedExecError::process_failed(error.to_string()))?
     }
 
     pub(super) async fn exec_command_inner(
@@ -575,9 +598,11 @@ impl UnifiedExecProcessManager {
             metrics_sidecar,
             permissions,
         } = attempt;
-        let process = Arc::new(process);
         if let Some(completion) = completion.as_ref() {
             let _ = completion.process.set(Arc::clone(&process));
+        }
+        if context.cancellation_token.is_cancelled() {
+            process.terminate_confirmed().await?;
         }
         let network_denial_monitor = deferred_network_approval.as_ref().map(|deferred| {
             terminate_process_on_network_denial(
@@ -1454,7 +1479,7 @@ impl UnifiedExecProcessManager {
         tty: bool,
         spawn_lifecycle: SpawnLifecycleHandle,
         environment: &codex_exec_server::Environment,
-    ) -> Result<UnifiedExecProcess, ToolError> {
+    ) -> Result<Arc<UnifiedExecProcess>, ToolError> {
         let mut request = if environment.is_remote() || shell_snapshot.is_some() {
             attempt.env_for_exec_server(command, options)
         } else {
@@ -1502,7 +1527,7 @@ impl UnifiedExecProcessManager {
         tty: bool,
         mut spawn_lifecycle: SpawnLifecycleHandle,
         environment: &codex_exec_server::Environment,
-    ) -> Result<UnifiedExecProcess, UnifiedExecError> {
+    ) -> Result<Arc<UnifiedExecProcess>, UnifiedExecError> {
         let inherited_fds = spawn_lifecycle.inherited_fds();
 
         if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
@@ -1529,7 +1554,15 @@ impl UnifiedExecProcessManager {
             }
             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
             spawn_lifecycle.after_spawn();
-            return UnifiedExecProcess::from_exec_server_started(started).await;
+            let process = Arc::new(
+                UnifiedExecProcess::from_exec_server_before_classification(started).await?,
+            );
+            self.retain_process_for_shutdown(Arc::clone(&process));
+            if let Err(error) = process.check_for_sandbox_denial().await {
+                process.terminate();
+                return Err(error);
+            }
+            return Ok(process);
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
@@ -1602,7 +1635,20 @@ impl UnifiedExecProcessManager {
         spawn_lifecycle.after_spawn();
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle).await
+        let process = Arc::new(
+            UnifiedExecProcess::from_spawned_before_classification(
+                spawned,
+                request.sandbox,
+                spawn_lifecycle,
+            )
+            .await?,
+        );
+        self.retain_process_for_shutdown(Arc::clone(&process));
+        if let Err(error) = process.check_for_sandbox_denial().await {
+            process.terminate();
+            return Err(error);
+        }
+        Ok(process)
     }
 
     pub(super) async fn open_session_with_sandbox(

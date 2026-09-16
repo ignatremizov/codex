@@ -316,6 +316,7 @@ Manual Verify CI and commit the reviewed output before shipping.
 - `thread/archive` — move a thread’s rollout file into the archived directory and attempt to move any spawned descendant thread rollout files; returns `{}` on success and emits `thread/archived` for each archived thread.
 - `thread/delete` — hard-delete only the specified active or archived thread; spawned, adopted, or otherwise communicating threads remain available. Returns `{}` on success and emits one `thread/deleted` notification.
 - `thread/unsubscribe` — unsubscribe this connection from thread turn/item events. If this was the last subscriber, the server keeps the thread loaded and unloads it only after it has had no subscribers and no thread activity for 30 minutes, runs `SessionEnd` hooks, then emits `thread/closed`.
+- `thread/unload` — durably stop and unload the owning root and its loaded spawn descendants. Rejects the operation if another connection subscribes to any captured member. Preserves history and durable agent aliases.
 - `thread/name/set` — set or update a thread’s user-facing name for either a loaded thread or a persisted rollout; returns `{}` on success and emits `thread/name/updated` to initialized, opted-in clients. Thread names are not required to be unique; name lookups resolve to the most recently updated thread.
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
 - `thread/compact/start` — trigger conversation history compaction for a thread; returns `{}` immediately while progress streams through standard turn/item notifications.
@@ -754,6 +755,30 @@ Gauges register when first used. Depending on process activity, the snapshot can
 ```
 
 ### Example: Unsubscribe from a loaded thread
+
+`thread/unload` accepts a `threadId` identifying any member of an owning spawn subtree. The
+server resolves the owning root from spawn relationships, not ordinary fork ancestry, and fences
+runtime membership and new subscriptions before stopping anything. Another connection's
+subscription to the root or any captured member rejects the request without stopping work.
+
+```json
+{ "method": "thread/unload", "id": 21, "params": { "threadId": "thr_child" } }
+{ "id": 21, "result": { "rootThreadId": "thr_root", "unloadedThreadIds": ["thr_root", "thr_child"] } }
+```
+
+Success acknowledges final persistence, writer-lease release, and removal of the exact loaded
+runtime instances. It does not close durable agent aliases or delete history. The server emits
+`thread/closed` for removed runtimes, which can subsequently be resumed. A known already-unloaded
+subtree succeeds with an empty `unloadedThreadIds`; an unknown thread is an invalid request.
+The response lists runtimes unloaded by this attempt, not all historical subtree members.
+
+The accepted operation continues if the requesting connection disappears. A failed durable drain
+returns an error and retains all captured runtime entries, including actors already stopped by
+that attempt. The retained instances reject ordinary input, spawn, reopening, close, eviction,
+and removal; retry `thread/unload` to finish cleanup. Accepted completion delivery remains able
+to acquire lifecycle locks while shutdown drains. A cancelled, never-acknowledged spawn also
+retains any failed alias rollback until retry finishes it; ordinary unloaded aliases stay open.
+A client must not report successful shutdown or silently exit after such an error.
 
 `thread/unsubscribe` removes the current connection's subscription to a thread. The response status is one of:
 

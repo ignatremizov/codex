@@ -119,8 +119,11 @@ use tokio::sync::broadcast;
 use tracing::instrument;
 use tracing::warn;
 
+mod loaded_subtree;
 mod owned_resume;
 mod v2_spawn_resume;
+
+pub use loaded_subtree::LoadedSubtree;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 // Reject pathological selected cwd values at the environment-selection boundary.
@@ -1437,10 +1440,9 @@ impl ThreadManager {
         expected: &Arc<CodexThread>,
     ) -> Option<Arc<CodexThread>> {
         let mut threads = self.state.threads.write().await;
-        if threads
-            .get(thread_id)
-            .is_some_and(|thread| Arc::ptr_eq(thread, expected))
-        {
+        if threads.get(thread_id).is_some_and(|thread| {
+            Arc::ptr_eq(thread, expected) && thread.ensure_not_unloading().is_ok()
+        }) {
             threads.remove(thread_id)
         } else {
             None
@@ -2270,6 +2272,12 @@ impl ThreadManagerState {
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         let mut threads = self.threads.write().await;
         let thread = threads.get(thread_id).cloned();
+        if thread
+            .as_ref()
+            .is_some_and(|thread| thread.ensure_not_unloading().is_err())
+        {
+            return None;
+        }
         if let Some(thread) = thread.as_ref() {
             // Publish final lifecycle status and final-outcome presentations while readers must
             // still observe this exact runtime. A wait cannot therefore observe map absence
@@ -2284,17 +2292,52 @@ impl ThreadManagerState {
     }
 
     /// Remove `thread` only while it remains the manager's current instance for its thread ID.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "pending and active thread registrations must be synchronized atomically"
-    )]
     pub(crate) async fn remove_thread_if_current(
         &self,
         thread: &Arc<CodexThread>,
         on_removed: impl FnOnce(),
     ) -> Option<Arc<CodexThread>> {
+        self.remove_thread_if_current_with_authority(
+            thread,
+            loaded_subtree::ThreadRemovalAuthority::Ordinary,
+            on_removed,
+        )
+        .await
+    }
+
+    pub(crate) async fn remove_thread_after_durable_unload(
+        &self,
+        thread: &Arc<CodexThread>,
+        on_removed: impl FnOnce(),
+    ) -> Option<Arc<CodexThread>> {
+        if !thread.io.durable_shutdown_succeeded() {
+            return None;
+        }
+        self.remove_thread_if_current_with_authority(
+            thread,
+            loaded_subtree::ThreadRemovalAuthority::DurableUnload,
+            on_removed,
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "pending and active thread registrations must be synchronized atomically"
+    )]
+    async fn remove_thread_if_current_with_authority(
+        &self,
+        thread: &Arc<CodexThread>,
+        authority: loaded_subtree::ThreadRemovalAuthority,
+        on_removed: impl FnOnce(),
+    ) -> Option<Arc<CodexThread>> {
         let thread_id = thread.session.thread_id();
         let mut pending_threads = self.pending_threads.write().await;
+        if matches!(authority, loaded_subtree::ThreadRemovalAuthority::Ordinary)
+            && thread.ensure_not_unloading().is_err()
+        {
+            return None;
+        }
         pending_threads.retain(|_, pending| pending.strong_count() != 0);
         if pending_threads
             .get(&thread_id)
@@ -2338,6 +2381,9 @@ impl ThreadManagerState {
     ) -> Option<Arc<CodexThread>> {
         let thread_id = thread.session.thread_id();
         let mut pending_threads = self.pending_threads.write().await;
+        if thread.ensure_not_unloading().is_err() {
+            return None;
+        }
         pending_threads.retain(|_, pending| pending.strong_count() != 0);
         if pending_threads
             .get(&thread_id)
@@ -2791,6 +2837,7 @@ impl ThreadManagerState {
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
+                thread.ensure_not_unloading()?;
                 if thread.is_running() {
                     if let Some(requested_rollout_path) = resumed.rollout_path.as_deref()
                         && thread.rollout_path().as_deref() != Some(requested_rollout_path)
@@ -3151,6 +3198,18 @@ impl ThreadManagerState {
         let mut pending_threads = self.pending_threads.write().await;
         pending_threads.retain(|_, pending| pending.strong_count() != 0);
         let mut threads = self.threads.write().await;
+        thread.ensure_not_unloading()?;
+        if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id, ..
+        }) = &thread.session_source
+            && let Some(parent) = threads.get(parent_thread_id).cloned().or_else(|| {
+                pending_threads
+                    .get(parent_thread_id)
+                    .and_then(Weak::upgrade)
+            })
+        {
+            parent.ensure_not_unloading()?;
+        }
         let result = match threads.entry(thread_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 if let Some(pending) = pending_threads.get(&thread_id).and_then(Weak::upgrade)

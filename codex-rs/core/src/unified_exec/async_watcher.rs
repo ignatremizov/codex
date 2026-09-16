@@ -83,7 +83,8 @@ pub(crate) fn start_streaming_output(
         call_id: context.call_id.clone(),
     };
 
-    tokio::spawn(async move {
+    let manager = &context.session.services.unified_exec_manager;
+    manager.track_producer(async move {
         let mut output: Buffer = Buffer {
             pending: Vec::new(),
             emitter,
@@ -233,6 +234,7 @@ pub(crate) fn start_streaming_output(
                 .push_chunk(INCOMPLETE_OUTPUT_WARNING);
             output_notify.notify_waiters();
         }
+        Ok(())
     });
 }
 
@@ -257,14 +259,18 @@ pub(crate) fn spawn_exit_watcher(
     let output_stream_complete = process.output_stream_completion();
     let interaction_lock = process.interaction_lock();
 
-    tokio::spawn(async move {
+    let producer_session = Arc::clone(&session_ref);
+    let manager = &producer_session.services.unified_exec_manager;
+    manager.track_producer(async move {
         exit_token.cancelled().await;
         output_stream_complete.cancelled().await;
         // Deferred network denial deliberately remains observable for a short
         // window after process exit. Do not classify the terminal event until
         // that monitor has settled, even when output closes immediately.
         if let Some(network_denial_monitor) = network_denial_monitor {
-            let _ = network_denial_monitor.await;
+            network_denial_monitor
+                .await
+                .map_err(|error| format!("network-denial watcher failed: {error}"))?;
         }
         let _interaction_guard = interaction_lock.lock_owned().await;
 
@@ -315,6 +321,7 @@ pub(crate) fn spawn_exit_watcher(
             )
             .await;
         }
+        Ok(())
     });
 }
 

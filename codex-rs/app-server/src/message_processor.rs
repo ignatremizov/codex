@@ -1140,6 +1140,11 @@ impl MessageProcessor {
                     )
                     .await
             }
+            ClientRequest::ThreadUnload { params, .. } => {
+                self.thread_processor
+                    .thread_unload(request_id.clone(), params)
+                    .await
+            }
             ClientRequest::ThreadUnsubscribe { params, .. } => {
                 let thread_id = params.thread_id.clone();
                 let response = self

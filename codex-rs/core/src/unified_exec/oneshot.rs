@@ -35,7 +35,10 @@ impl UnifiedExecProcessManager {
             context.call_id.clone(),
         );
         let _cancel_on_drop = context.cancellation_token.clone().drop_guard();
-        tokio::spawn(async move {
+        let session = Arc::clone(&context.session);
+        let process_id = request.process_id;
+        let manager = &session.services.unified_exec_manager;
+        let execution = manager.start_execution(async move {
             let manager = &context.session.services.unified_exec_manager;
             let process_id = request.process_id;
             if Instant::now().checked_add(timeout).is_none() {
@@ -65,8 +68,10 @@ impl UnifiedExecProcessManager {
                             }
                             let _ = execution.await;
                         } else {
-                            drop(execution);
-                            manager.release_process_id(process_id).await;
+                            // A backend start may already have accepted the process.
+                            // Keep owning launch until it publishes the exact handle;
+                            // exec_command_inner observes cancellation after publication.
+                            let _ = execution.await;
                         }
                         Err(UnifiedExecError::process_failed("command cancelled".into()))
                     }
@@ -80,8 +85,20 @@ impl UnifiedExecProcessManager {
                 }
                 output
             })
-        })
-        .await
-        .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?
+        });
+        let execution = match execution {
+            Ok(execution) => execution,
+            Err(error) => {
+                session
+                    .services
+                    .unified_exec_manager
+                    .release_process_id(process_id)
+                    .await;
+                return Err(error);
+            }
+        };
+        execution
+            .await
+            .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?
     }
 }

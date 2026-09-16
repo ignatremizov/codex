@@ -81,6 +81,7 @@ use codex_rollout::state_db::StateDbHandle;
 static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
 
 mod sub_agent_completion;
+mod unload_lifecycle;
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -235,6 +236,7 @@ pub struct CodexThread {
     pub(crate) session: Arc<Session>,
     pub(crate) io: SessionIo,
     pub(crate) session_source: SessionSource,
+    pub(crate) cancelled_spawn_alias_cleanup_pending: std::sync::atomic::AtomicBool,
     session_configured: SessionConfiguredEvent,
     rollout_path: Option<PathBuf>,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
@@ -270,6 +272,9 @@ impl CodexThread {
             session,
             io,
             session_source,
+            cancelled_spawn_alias_cleanup_pending: std::sync::atomic::AtomicBool::new(
+                /*v*/ false,
+            ),
             session_configured,
             rollout_path,
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
@@ -321,6 +326,14 @@ impl CodexThread {
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
         self.io.shutdown_and_wait().await
+    }
+
+    /// Stop this runtime and wait for durable persistence and writer-lease release.
+    ///
+    /// An error leaves shutdown retryable, without reopening admission for ordinary work.
+    /// Unlike `shutdown_and_wait`, session termination alone never establishes success.
+    pub async fn shutdown_durably_and_wait(&self) -> CodexResult<()> {
+        self.io.shutdown_durably_and_wait().await
     }
 
     /// Wait until the underlying session loop has terminated.

@@ -22,6 +22,8 @@ mod buffered_replay;
 mod connector_policy;
 #[path = "tests/disconnect_tests.rs"]
 mod disconnect;
+#[path = "tests/exit_lifecycle_tests.rs"]
+mod exit_lifecycle_tests;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
 #[path = "tests/mcp_startup.rs"]
@@ -9388,7 +9390,7 @@ async fn new_session_requests_shutdown_for_previous_conversation() {
 }
 
 #[tokio::test]
-async fn shutdown_first_exit_returns_immediate_exit_when_shutdown_submit_fails() {
+async fn shutdown_first_exit_keeps_ui_open_when_unload_fails() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.active_thread_id = Some(thread_id);
@@ -9401,23 +9403,22 @@ async fn shutdown_first_exit_returns_immediate_exit_when_shutdown_submit_fails()
     let control = Box::pin(app.handle_exit_mode(&mut app_server, ExitMode::ShutdownFirst)).await;
 
     assert_eq!(app.pending_shutdown_exit_thread_id, None);
-    assert!(matches!(
-        control,
-        AppRunControl::Exit(ExitReason::UserRequested)
-    ));
+    assert!(matches!(control, AppRunControl::Continue));
 }
 
 #[tokio::test]
 async fn shutdown_first_exit_uses_app_server_shutdown_without_submitting_op() {
     let (mut app, _app_event_rx, mut op_rx) = Box::pin(make_test_app_with_channels()).await;
-    let thread_id = ThreadId::new();
-    app.active_thread_id = Some(thread_id);
-
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
         app.chat_widget.config_ref(),
     ))
     .await
     .expect("embedded app server");
+    let started = app_server
+        .start_thread(&app.config)
+        .await
+        .expect("start thread");
+    app.active_thread_id = Some(started.session.thread_id);
     let control = Box::pin(app.handle_exit_mode(&mut app_server, ExitMode::ShutdownFirst)).await;
 
     assert_eq!(app.pending_shutdown_exit_thread_id, None);

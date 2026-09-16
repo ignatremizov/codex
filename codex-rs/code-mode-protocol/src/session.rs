@@ -159,6 +159,12 @@ pub trait CodeModeSession: Send + Sync {
     fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome>;
 
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()>;
+
+    /// Fences execution and waits for confirmed provider closure and accepted callbacks.
+    /// Failed attempts must retain their cleanup ownership so callers can retry safely.
+    fn shutdown_durably<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async { Err("provider does not support durable code-mode shutdown".to_string()) })
+    }
 }
 
 /// Creates code-mode sessions for Codex threads.
@@ -175,6 +181,18 @@ pub trait CodeModeSessionProvider: Send + Sync {
         &'a self,
         delegate: Arc<dyn CodeModeSessionDelegate>,
     ) -> CodeModeSessionProviderFuture<'a>;
+
+    /// Returns a logical cleanup owner before starting backend initialization.
+    ///
+    /// Built-in providers defer backend opening until the first session operation. The
+    /// compatibility default preserves existing providers; an error from that default
+    /// does not prove that partially created backend resources have been cleaned up.
+    fn create_owned_session<'a>(
+        &'a self,
+        delegate: Arc<dyn CodeModeSessionDelegate>,
+    ) -> CodeModeSessionProviderFuture<'a> {
+        self.create_session(delegate)
+    }
 
     /// Creates a session whose cells share the supplied execution limits.
     ///

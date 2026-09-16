@@ -348,6 +348,15 @@ impl LiveThread {
         }
     }
 
+    /// Finish metadata before closing the writer so failures remain retryable.
+    ///
+    /// Success includes the store's writer-lease release, not just stopping its I/O task.
+    pub async fn shutdown_durably(&self) -> ThreadStoreResult<()> {
+        self.flush_pending_metadata_update_for_existing_history()
+            .await?;
+        self.thread_store.shutdown_thread(self.thread_id).await
+    }
+
     pub async fn discard(&self) -> ThreadStoreResult<()> {
         self.thread_store.discard_thread(self.thread_id).await
     }
@@ -488,3 +497,7 @@ impl LiveThread {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "live_thread_shutdown_tests.rs"]
+mod shutdown_tests;

@@ -119,6 +119,9 @@ use wiremock::matchers::path;
 use super::rmcp_client::remote_aware_environment_id;
 use super::rmcp_client::remote_aware_stdio_server_bin;
 
+#[path = "code_mode/durable_shutdown.rs"]
+mod durable_shutdown;
+
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
     match req.custom_tool_call_output(call_id).get("output") {
         Some(Value::Array(items)) => items.clone(),

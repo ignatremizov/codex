@@ -479,6 +479,9 @@ pub trait ThreadStore: Any + Send + Sync {
     fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
     /// Flushes pending items and closes the live thread writer.
+    ///
+    /// Success must also release the store's live-writer lease. On failure, retain enough
+    /// writer state to retry shutdown; a stopped recorder alone does not complete this contract.
     fn shutdown_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
     /// Discards the live thread writer without forcing pending in-memory items to become durable.

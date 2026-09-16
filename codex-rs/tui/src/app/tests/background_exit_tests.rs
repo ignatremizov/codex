@@ -12,7 +12,7 @@ async fn daemon_disconnect_exit_summary_includes_reconnect_and_stop_instructions
     let (mut app, _, _) = make_test_app_with_channels().await;
     let thread_id = prepare_running_local_daemon(&mut app)?;
     app.keymap.agents.stop = vec![crate::key_hint::plain(KeyCode::F(10))];
-    let mut exit_info = app.exit_info(ExitReason::UserRequested);
+    let mut exit_info = app.exit_info(ExitReason::Disconnected);
     exit_info.token_usage = TokenUsage {
         input_tokens: 10,
         output_tokens: 2,
@@ -196,8 +196,11 @@ async fn run_in_background_detaches_without_interrupting_main_or_side_threads() 
     let side_thread_id = ThreadId::new();
     app.side_threads
         .insert(side_thread_id, SideThreadState::new(parent_thread_id));
-    let (mut app_server, mut tui) =
-        prepare_background_exit_test(&app, &mut app_event_rx, &mut op_rx).await?;
+    while app_event_rx.try_recv().is_ok() {}
+    while op_rx.try_recv().is_ok() {}
+    let (mut app_server, _, proxy) =
+        super::session_lifecycle_requests::start_recording_remote_app_server(&app.config).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
     open_running_task_exit_menu(&mut app, &mut tui, &mut app_server).await;
 
     app.chat_widget
@@ -214,10 +217,12 @@ async fn run_in_background_detaches_without_interrupting_main_or_side_threads() 
     );
     let control = app.handle_event(&mut tui, &mut app_server, event).await?;
 
-    assert_matches!(control, AppRunControl::Exit(ExitReason::UserRequested));
+    assert_matches!(control, AppRunControl::Exit(ExitReason::Disconnected));
     assert!(app.side_threads.contains_key(&side_thread_id));
     assert!(op_rx.try_recv().is_err());
     assert!(app_event_rx.try_recv().is_err());
+    app_server.shutdown().await?;
+    proxy.await??;
     Ok(())
 }
 

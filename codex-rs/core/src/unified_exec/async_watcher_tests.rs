@@ -196,6 +196,70 @@ async fn exit_watcher_includes_output_emitted_before_streaming_started() -> anyh
 }
 
 #[tokio::test]
+async fn durable_shutdown_waits_for_exit_watcher_interaction_and_final_event() -> anyhow::Result<()>
+{
+    use futures::FutureExt;
+
+    let StreamingOutputHarness {
+        process,
+        stdout_tx,
+        exit_tx,
+        transcript,
+        context,
+        rx_event,
+    } = streaming_output_harness(/*initial_output*/ None).await?;
+    let interaction = process.interaction_lock().lock_owned().await;
+    let session = Arc::clone(&context.session);
+    session
+        .services
+        .unified_exec_manager
+        .retain_process_for_shutdown(Arc::clone(&process));
+    #[allow(deprecated)]
+    let cwd = context.step_context.turn.cwd.clone().into();
+    spawn_exit_watcher(
+        Arc::clone(&process),
+        Arc::clone(&session),
+        Arc::clone(&context.step_context.turn),
+        context.call_id,
+        vec!["proof".to_string()],
+        cwd,
+        /*process_id*/ 123,
+        /*plugin_attribution*/ None,
+        transcript,
+        Instant::now(),
+        /*network_denial_monitor*/ None,
+        /*plugin_metrics_sidecar*/ None,
+    );
+    exit_tx.send(0).expect("confirm real process exit");
+    drop(stdout_tx);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !process.actual_exit_confirmed() {
+            tokio::task::yield_now().await;
+        }
+        process.output_stream_completion().cancelled().await;
+    })
+    .await
+    .expect("real exit and output drain complete");
+
+    let mut shutdown = Box::pin(session.services.unified_exec_manager.shutdown_durably());
+    assert!(
+        shutdown.as_mut().now_or_never().is_none(),
+        "writer closure must still wait for the blocked final-event producer"
+    );
+    drop(interaction);
+    shutdown.await?;
+    let mut saw_completed = false;
+    while let Ok(event) = rx_event.try_recv() {
+        saw_completed |= matches!(event.msg, EventMsg::ItemCompleted(_));
+    }
+    assert!(
+        saw_completed,
+        "final event must precede the drain acknowledgement"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn streaming_output_does_not_keep_unstored_process_alive() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,

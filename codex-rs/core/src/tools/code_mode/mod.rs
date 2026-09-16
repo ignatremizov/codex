@@ -1,7 +1,9 @@
 mod delegate;
+mod durable_shutdown;
 mod execute_handler;
 pub(crate) mod execute_spec;
 mod response_adapter;
+mod session_initialization;
 mod telemetry;
 mod wait_handler;
 pub(crate) mod wait_spec;
@@ -67,12 +69,14 @@ pub(crate) struct ExecContext {
 }
 
 pub(crate) struct CodeModeService {
-    session: OnceCell<Arc<dyn CodeModeSession>>,
+    session: Arc<OnceCell<Arc<dyn CodeModeSession>>>,
+    initialization: session_initialization::SessionInitialization,
     session_provider: Arc<dyn CodeModeSessionProvider>,
     availability: Result<(), String>,
     dispatch_broker: Arc<CodeModeDispatchBroker>,
     default_exec_yield_time_ms: u64,
     shutdown_token: CancellationToken,
+    durable_shutdown: durable_shutdown::DurableShutdown,
     unavailable_warning_emitted: AtomicBool,
 }
 
@@ -85,12 +89,14 @@ impl CodeModeService {
         let dispatch_broker = Arc::new(CodeModeDispatchBroker::new(executed_tool_calls));
         let availability = session_provider.availability();
         Self {
-            session: OnceCell::new(),
+            session: Arc::new(OnceCell::new()),
+            initialization: session_initialization::SessionInitialization::default(),
             session_provider,
             availability,
             dispatch_broker,
             default_exec_yield_time_ms: config.default_exec_yield_time_ms,
             shutdown_token: CancellationToken::new(),
+            durable_shutdown: durable_shutdown::DurableShutdown::default(),
             unavailable_warning_emitted: AtomicBool::new(false),
         }
     }
@@ -162,18 +168,9 @@ impl CodeModeService {
 
     pub(crate) async fn shutdown(&self) -> Result<(), String> {
         self.shutdown_token.cancel();
-        // Join any initialization already in progress without initializing an unused service.
-        match self
-            .session
-            .get_or_try_init(|| async {
-                Err::<Arc<dyn CodeModeSession>, String>(
-                    "code mode session is shutting down".to_string(),
-                )
-            })
-            .await
-        {
-            Ok(session) => session.shutdown().await,
-            Err(_) => Ok(()),
+        match self.session.get() {
+            Some(session) => session.shutdown().await,
+            None => Ok(()),
         }
     }
 
@@ -216,34 +213,6 @@ impl CodeModeService {
             self.dispatch_broker
                 .start_turn_worker(exec, step_context, tracker),
         )
-    }
-
-    pub(crate) async fn session(&self) -> Result<Arc<dyn CodeModeSession>, String> {
-        if self.shutdown_token.is_cancelled() {
-            return Err("code mode session is shutting down".to_string());
-        }
-        self.session
-            .get_or_try_init(|| async {
-                if self.shutdown_token.is_cancelled() {
-                    return Err("code mode session is shutting down".to_string());
-                }
-                let session = tokio::select! {
-                    biased;
-                    _ = self.shutdown_token.cancelled() => {
-                        return Err("code mode session is shutting down".to_string());
-                    }
-                    session = self
-                        .session_provider
-                        .create_session(self.dispatch_broker.clone()) => session?,
-                };
-                if self.shutdown_token.is_cancelled() {
-                    let _ = session.shutdown().await;
-                    return Err("code mode session is shutting down".to_string());
-                }
-                Ok(session)
-            })
-            .await
-            .map(Arc::clone)
     }
 }
 

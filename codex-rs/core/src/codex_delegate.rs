@@ -44,6 +44,12 @@ use codex_protocol::turn_input::TurnStartOptions;
 #[cfg(test)]
 use crate::session::completed_session_loop_termination;
 
+#[derive(Clone, Copy)]
+enum DelegateShutdown {
+    BestEffort,
+    Durable,
+}
+
 /// Start an interactive sub-Codex thread and return its runtime and IO channels.
 ///
 /// Delegates never request approvals, and the returned IO yields their public events.
@@ -87,7 +93,7 @@ pub(crate) async fn run_codex_thread_interactive(
     } else {
         Arc::clone(&parent_session.services.extensions)
     };
-    let (session, io) = Session::spawn(SessionSpawnArgs {
+    let spawn = Session::spawn(SessionSpawnArgs {
         config,
         allow_provider_model_fallback: false,
         user_instructions,
@@ -135,9 +141,14 @@ pub(crate) async fn run_codex_thread_interactive(
         inherited_multi_agent_version: Some(MultiAgentVersion::Disabled),
         git_enrichment_policy,
         windows_sandbox_proxy_settings_mode,
-    })
-    .or_cancel(&cancel_token)
-    .await??;
+    });
+    // Guardian creation is retained by its manager until an actual runtime result is
+    // available. Cancellation must not discard a partially initialized owned session.
+    let (session, io) = if is_guardian_reviewer {
+        spawn.await?
+    } else {
+        spawn.or_cancel(&cancel_token).await??
+    };
     let thread_config = session.thread_config_snapshot().await;
     let client_metadata = parent_session.app_server_client_metadata().await;
     emit_subagent_session_started(
@@ -155,7 +166,7 @@ pub(crate) async fn run_codex_thread_interactive(
 
     // Forward public events from the sub-agent to the consumer.
     let io = Arc::new(io);
-    let caller_submission_admission = Arc::new(SubmissionAdmission::default());
+    let caller_submission_admission = Arc::new(SubmissionAdmission::forwarding_to(Arc::clone(&io)));
     let caller_io = SessionIo {
         tx_sub: tx_ops,
         rx_event: rx_sub,
@@ -171,6 +182,11 @@ pub(crate) async fn run_codex_thread_interactive(
             tx_sub,
             caller_submission_admission_for_events,
             cancel_token_events,
+            if is_guardian_reviewer {
+                DelegateShutdown::Durable
+            } else {
+                DelegateShutdown::BestEffort
+            },
         )
         .await;
     });
@@ -277,6 +293,8 @@ pub(crate) async fn run_codex_thread_one_shot_with_environment_selections(
     let ops_tx = io.tx_sub.clone();
     let agent_status = io.agent_status.clone();
     let session_loop_termination = io.session_loop_termination.clone();
+    let io = Arc::new(io);
+    let submission_admission = Arc::new(SubmissionAdmission::forwarding_to(Arc::clone(&io)));
     let io_for_bridge = io;
     tokio::spawn(async move {
         while let Ok(event) = io_for_bridge.next_event().await {
@@ -312,7 +330,7 @@ pub(crate) async fn run_codex_thread_one_shot_with_environment_selections(
         SessionIo {
             rx_event: rx_bridge,
             tx_sub: tx_closed,
-            submission_admission: Arc::new(SubmissionAdmission::default()),
+            submission_admission,
             agent_status,
             session_loop_termination,
         },
@@ -324,6 +342,7 @@ async fn forward_events(
     tx_sub: Sender<Event>,
     caller_submission_admission: Arc<SubmissionAdmission>,
     cancel_token: CancellationToken,
+    shutdown_mode: DelegateShutdown,
 ) {
     let cancelled = cancel_token.cancelled();
     tokio::pin!(cancelled);
@@ -331,7 +350,7 @@ async fn forward_events(
     loop {
         tokio::select! {
             _ = &mut cancelled => {
-                shutdown_delegate(&io).await;
+                shutdown_delegate(&io, shutdown_mode).await;
                 break;
             }
             event = io.next_event() => {
@@ -364,7 +383,7 @@ async fn forward_events(
                             | EventMsg::McpStartupComplete(_),
                     } => {}
                     other => {
-                        if !forward_event_or_shutdown(&io, &tx_sub, &cancel_token, other).await
+                        if !forward_event_or_shutdown(&io, &tx_sub, &cancel_token, other, shutdown_mode).await
                         {
                             break;
                         }
@@ -376,7 +395,30 @@ async fn forward_events(
 }
 
 /// Ask the delegate to stop and drain its events so background sends do not hit a closed channel.
-async fn shutdown_delegate(io: &SessionIo) {
+async fn shutdown_delegate(io: &SessionIo, mode: DelegateShutdown) {
+    if matches!(mode, DelegateShutdown::Durable) {
+        let shutdown = io.shutdown_durably_and_wait();
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                result = &mut shutdown => {
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "delegate durable shutdown remains retryable");
+                    }
+                    break;
+                }
+                event = io.next_event() => {
+                    if event.is_err() {
+                        if let Err(error) = shutdown.await {
+                            tracing::warn!(%error, "delegate durable shutdown acknowledgement failed");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        return;
+    }
     let _ = io.submit(Op::Interrupt).await;
     let _ = io.submit(Op::Shutdown {}).await;
 
@@ -398,11 +440,12 @@ async fn forward_event_or_shutdown(
     tx_sub: &Sender<Event>,
     cancel_token: &CancellationToken,
     event: Event,
+    shutdown_mode: DelegateShutdown,
 ) -> bool {
     match tx_sub.send(event).or_cancel(cancel_token).await {
         Ok(Ok(())) => true,
         _ => {
-            shutdown_delegate(io).await;
+            shutdown_delegate(io, shutdown_mode).await;
             false
         }
     }

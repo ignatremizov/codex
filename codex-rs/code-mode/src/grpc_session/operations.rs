@@ -36,6 +36,7 @@ struct ExecutionOwnership {
 
 impl Drop for ExecutionOwnership {
     fn drop(&mut self) {
+        let _accepted = self.session.callback_tasks.token();
         if !self.armed {
             return;
         }
@@ -53,13 +54,16 @@ impl Drop for ExecutionOwnership {
             return;
         }
         let session = Arc::clone(&self.session);
-        self.session.runtime.spawn(async move {
-            if let Err(error) = session.terminate(cell_id).await
-                && !session.stopped.is_cancelled()
-            {
-                debug!("abandoned code-mode execution termination raced closure: {error}");
-            }
-        });
+        self.session.callback_tasks.spawn_on(
+            async move {
+                if let Err(error) = session.terminate(cell_id).await
+                    && !session.stopped.is_cancelled()
+                {
+                    debug!("abandoned code-mode execution termination raced closure: {error}");
+                }
+            },
+            &self.session.runtime,
+        );
     }
 }
 
@@ -68,6 +72,7 @@ impl SessionInner {
         self: &Arc<Self>,
         request: ExecuteRequest,
     ) -> Result<StartedCell, String> {
+        let _accepted = self.callback_tasks.token();
         self.require_open()?;
         let execution_id = Uuid::new_v4().to_string();
         let execute_span = tracing::info_span!(
@@ -168,6 +173,7 @@ impl SessionInner {
         let (response_tx, response_rx) = oneshot::channel();
         let mut claim = ownership;
         let started = StartedCell::from_future(cell_id.clone(), async move {
+            let _accepted = claim.session.callback_tasks.token();
             let closure = claim
                 .session
                 .state
@@ -247,6 +253,7 @@ impl SessionInner {
         self: &Arc<Self>,
         request: WaitRequest,
     ) -> Result<WaitOutcome, String> {
+        let _accepted = self.callback_tasks.token();
         self.require_open()?;
         let slot = {
             let mut slots = self
@@ -306,6 +313,7 @@ impl SessionInner {
     }
 
     pub(super) async fn terminate(&self, cell_id: CellId) -> Result<WaitOutcome, String> {
+        let _accepted = self.callback_tasks.token();
         self.require_open()?;
         let mut client = self.client();
         let response = deadline::request(
@@ -401,6 +409,7 @@ impl WaitCancellation {
 
 impl Drop for WaitCancellation {
     fn drop(&mut self) {
+        let _accepted = self.session.callback_tasks.token();
         let slot = self.slot.take();
         if let Some(slot) = slot.as_ref() {
             slot.active.store(false, Ordering::Release);
@@ -413,28 +422,31 @@ impl Drop for WaitCancellation {
             return;
         }
         let session = Arc::clone(&self.session);
-        self.session.runtime.spawn(async move {
-            let mut client = session.client();
-            let result = deadline::request(
-                &session,
-                "wait cancellation",
-                Duration::ZERO,
-                client.cancel_wait(grpc::CancelWaitRequest {
-                    session_id: session.id.clone(),
-                    wait_id,
-                }),
-            )
-            .await;
-            if let Err(error) = result
-                && !session.stopped.is_cancelled()
-            {
-                session.fail(format!(
-                    "failed to retire canceled gRPC code-mode wait: {error}"
-                ));
-            }
-            drop(permit);
-            drop(slot);
-            session.prune_wait_slots();
-        });
+        self.session.callback_tasks.spawn_on(
+            async move {
+                let mut client = session.client();
+                let result = deadline::request(
+                    &session,
+                    "wait cancellation",
+                    Duration::ZERO,
+                    client.cancel_wait(grpc::CancelWaitRequest {
+                        session_id: session.id.clone(),
+                        wait_id,
+                    }),
+                )
+                .await;
+                if let Err(error) = result
+                    && !session.stopped.is_cancelled()
+                {
+                    session.fail(format!(
+                        "failed to retire canceled gRPC code-mode wait: {error}"
+                    ));
+                }
+                drop(permit);
+                drop(slot);
+                session.prune_wait_slots();
+            },
+            &self.session.runtime,
+        );
     }
 }

@@ -12,6 +12,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::warn;
 
+#[cfg(test)]
+#[path = "durable_shutdown_tests.rs"]
+mod durable_shutdown_tests;
+
 use super::SessionInner;
 use super::completion;
 use super::conversion;
@@ -142,7 +146,7 @@ impl SessionInner {
             Ok(cancellation) => cancellation,
             Err(error) => {
                 let inner = Arc::clone(self);
-                tokio::spawn(async move {
+                self.callback_tasks.spawn(async move {
                     inner
                         .complete_tool_call(invocation_id, CancellationToken::new(), Err(error))
                         .await;
@@ -152,7 +156,7 @@ impl SessionInner {
         };
         let invocation = conversion::tool_call(call);
         let inner = Arc::clone(self);
-        tokio::spawn(
+        self.callback_tasks.spawn(
             async move {
                 let result = match invocation {
                     Ok(invocation) => {
@@ -163,13 +167,23 @@ impl SessionInner {
                                 .await
                         })
                         .catch_unwind();
-                        tokio::select! {
+                        tokio::pin!(callback);
+                        let result = tokio::select! {
                             biased;
-                            _ = cancellation.cancelled() => return,
-                            result = callback => match result {
-                                Ok(result) => result,
-                                Err(_) => Err("code-mode tool delegate panicked".to_string()),
+                            _ = cancellation.cancelled() => {
+                                if !inner.durable_requested.load(Ordering::Acquire) {
+                                    return;
+                                }
+                                callback.await
                             },
+                            result = &mut callback => result,
+                        };
+                        match result {
+                            Ok(result) => result,
+                            Err(_) => {
+                                inner.callback_panicked.store(true, Ordering::Release);
+                                Err("code-mode tool delegate panicked".to_string())
+                            }
                         }
                     }
                     Err(error) => Err(error),
@@ -233,9 +247,8 @@ impl SessionInner {
         };
         let execution_id = notification.execution_id;
         let inner = Arc::clone(self);
-        // Delegate callbacks stay outside the tracked session tasks so shutdown can cancel
-        // them without waiting for arbitrary delegate work to complete.
-        tokio::spawn(async move {
+        // Fast shutdown does not wait for this tracker; durable shutdown does.
+        self.callback_tasks.spawn(async move {
             let callback = AssertUnwindSafe(async {
                 inner
                     .delegate
@@ -248,15 +261,24 @@ impl SessionInner {
                     .await
             })
             .catch_unwind();
+            tokio::pin!(callback);
             let result = tokio::select! {
                 biased;
-                _ = inner.stopped.cancelled() => return,
-                result = callback => result,
+                _ = inner.stopped.cancelled() => {
+                    if !inner.durable_requested.load(Ordering::Acquire) {
+                        return;
+                    }
+                    callback.await
+                },
+                result = &mut callback => result,
             };
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => warn!("code-mode notification delegate failed: {error}"),
-                Err(_) => warn!("code-mode notification delegate panicked"),
+                Err(_) => {
+                    inner.callback_panicked.store(true, Ordering::Release);
+                    warn!("code-mode notification delegate panicked");
+                }
             }
             let cell = inner
                 .state

@@ -174,6 +174,9 @@ impl ConnectionDriver {
                     return false;
                 }
                 Err(err) => {
+                    // The process-host open operation inserts the session only on success.
+                    // Session IDs are allocated once, so a rejected open owns no host session.
+                    cleanup.close();
                     let _ = response_tx.send(Err(err));
                 }
             },

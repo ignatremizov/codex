@@ -237,6 +237,7 @@ mod background_requests;
 mod config_persistence;
 mod connector_mentions;
 mod event_dispatch;
+mod exit_lifecycle;
 mod exit_summary;
 mod file_change_approvals;
 mod history_pagination;
@@ -495,6 +496,7 @@ pub(crate) enum AppRunControl {
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     UserRequested,
+    Disconnected,
     Archived(ThreadId),
     TurnInterrupted,
     /// The current thread was deleted, rather than disconnected.

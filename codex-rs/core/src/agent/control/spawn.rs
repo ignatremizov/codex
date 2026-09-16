@@ -49,7 +49,7 @@ struct SpawnAgentThreadInheritance {
 /// provide user input directly, making an uncontextualized inter-agent communication
 /// unrepresentable.
 #[allow(clippy::large_enum_variant)]
-enum SpawnInitialInput {
+pub(super) enum SpawnInitialInput {
     None,
     UserInput {
         input: Vec<UserInput>,
@@ -60,7 +60,7 @@ enum SpawnInitialInput {
 }
 
 #[derive(Clone, Copy)]
-enum SpawnPostAdmissionFailure {
+pub(super) enum SpawnPostAdmissionFailure {
     Strict,
     PreserveAdmittedUserWork,
 }
@@ -558,12 +558,17 @@ impl AgentControl {
                 .parent_thread_id(),
         };
         let _parent_lifecycle_guard = if let Some(parent_thread_id) = parent_thread_id {
-            Some(state.acquire_live_agent_lifecycle(parent_thread_id).await?)
+            Some(
+                state
+                    .acquire_agent_membership_lifecycle(parent_thread_id)
+                    .await?,
+            )
         } else {
             None
         };
         let resume_lock = state.agent_lifecycle_lock(thread_id);
         let _resume_guard = resume_lock.lock_owned().await;
+        state.ensure_membership_mutation_allowed(thread_id).await?;
         self.require_current_agent_ownership(thread_id).await?;
         if let Ok(thread) = state.get_thread_including_pending(thread_id).await {
             return self
@@ -1199,13 +1204,14 @@ impl AgentControl {
         }
     }
 
-    async fn spawn_agent_internal(
+    pub(super) async fn spawn_agent_prepared(
         &self,
         config: Config,
         initial_input: SpawnInitialInput,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
-    ) -> CodexResult<LiveAgent> {
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> CodexResult<super::spawn_ownership::PreparedAgentSpawn> {
         let state = self.upgrade()?;
         let task_path = match options.task.as_deref() {
             Some(task) => {
@@ -1281,6 +1287,24 @@ impl AgentControl {
                 .inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
                 .await,
         };
+        let parent_lifecycle_guard =
+            if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                ..
+            })) = session_source.as_ref()
+            {
+                let guard = state
+                    .agent_lifecycle_lock(*parent_thread_id)
+                    .lock_owned()
+                    .await;
+                state
+                    .get_thread(*parent_thread_id)
+                    .await?
+                    .ensure_not_unloading()?;
+                Some(Arc::new(guard))
+            } else {
+                None
+            };
         let (session_source, mut agent_metadata) = match session_source {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -1289,13 +1313,6 @@ impl AgentControl {
                 agent_role,
                 ..
             })) => {
-                let _parent_lifecycle_guard = state
-                    .agent_lifecycle_lock(parent_thread_id)
-                    .lock_owned()
-                    .await;
-                if state.get_thread(parent_thread_id).await.is_err() {
-                    return Err(CodexErr::ThreadNotFound(parent_thread_id));
-                }
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
                     &mut reservation,
                     &config,
@@ -1379,35 +1396,53 @@ impl AgentControl {
         // lifecycle boundary used by send/resume until watcher registration, edge persistence,
         // and thread-created publication are complete so an immediate close cannot be overwritten
         // by the tail of spawn setup.
+        let lifecycle_lock = state.agent_lifecycle_lock(new_thread.thread_id);
+        let lifecycle_guard = Arc::new(lifecycle_lock.lock_owned().await);
         let setup_cleanup = SetupCleanupGuard::new("spawn agent", {
             let control = self.clone();
             let state = Arc::clone(&state);
             let thread = Arc::clone(&new_thread.thread);
+            let parent_guard = parent_lifecycle_guard.clone();
+            let child_guard = Arc::clone(&lifecycle_guard);
             let should_close_persisted_lifecycle = !config.ephemeral
                 && matches!(
                     notification_source.as_ref(),
                     Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
                 );
             async move {
+                let _parent_guard = parent_guard;
+                let _child_guard = child_guard;
                 let owns_runtime = state.thread_instance_is_current_or_pending(&thread).await;
-                let alias_cleanup = if should_close_persisted_lifecycle && owns_runtime {
-                    control
-                        .persist_agent_closed(thread.session.thread_id())
-                        .await
-                } else {
-                    Ok(())
-                };
-                let runtime_cleanup = control
+                // Cancelled setup must not announce a fallback outcome for an identity its
+                // caller never received, including while durable shutdown is still draining.
+                thread.session.disarm_terminal_presentation().commit();
+                if should_close_persisted_lifecycle && owns_runtime {
+                    thread
+                        .cancelled_spawn_alias_cleanup_pending
+                        .store(/*val*/ true, std::sync::atomic::Ordering::Release);
+                }
+                let shutdown = thread.shutdown_durably_and_wait().await;
+                let alias_cleanup = control.finish_cancelled_spawn_alias_cleanup(&thread).await;
+                if (shutdown.is_err() || alias_cleanup.is_err()) && owns_runtime {
+                    // Keep both runtime shutdown and alias rollback obligations retryable.
+                    state.retain_failed_spawn_cleanup(&thread).await?;
+                }
+                shutdown?;
+                alias_cleanup?;
+                control
                     .discard_unpublished_agent_instance(
                         &thread,
                         LiveAgentMetadataDisposition::Release,
                     )
-                    .await;
-                alias_cleanup.and(runtime_cleanup)
+                    .await
             }
         });
-        let lifecycle_lock = state.agent_lifecycle_lock(new_thread.thread_id);
-        let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+        if cancellation.is_cancelled() {
+            setup_cleanup.rollback().await?;
+            return Err(CodexErr::InvalidRequest(
+                "agent spawn cancelled".to_string(),
+            ));
+        }
         agent_metadata.agent_id = Some(new_thread.thread_id);
         if matches!(
             notification_source.as_ref(),
@@ -1437,6 +1472,12 @@ impl AgentControl {
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
+        }
+        if cancellation.is_cancelled() {
+            setup_cleanup.rollback().await?;
+            return Err(CodexErr::InvalidRequest(
+                "agent spawn cancelled".to_string(),
+            ));
         }
 
         if let Some(SessionSource::SubAgent(
@@ -1738,6 +1779,9 @@ impl AgentControl {
                     .await?;
                 }
             }
+            if cancellation.is_cancelled() {
+                return Err(CodexErr::InvalidRequest("agent spawn cancelled".to_string()));
+            }
             state.publish_thread(&new_thread.thread).await?;
             Ok(())
         }
@@ -1750,13 +1794,7 @@ impl AgentControl {
             }
             return Err(err);
         }
-        setup_cleanup.disarm();
-
-        // Announce the child only after its runtime, first input, and response-observation state
-        // are durable. The alias and parent edge commit before watcher setup and publication.
-        state.notify_thread_created(new_thread.thread_id);
-
-        Ok(LiveAgent {
+        let agent = LiveAgent {
             thread_id: new_thread.thread_id,
             metadata: agent_metadata,
             status: self.get_status(new_thread.thread_id).await,
@@ -1765,6 +1803,17 @@ impl AgentControl {
                 .map(|persisted| persisted.alias.agent_ref),
             task_path: persisted_alias.and_then(|persisted| persisted.alias.task_path),
             post_admission_warning,
+        };
+        if cancellation.is_cancelled() {
+            setup_cleanup.rollback().await?;
+            return Err(CodexErr::InvalidRequest(
+                "agent spawn cancelled".to_string(),
+            ));
+        }
+        Ok(super::spawn_ownership::PreparedAgentSpawn {
+            agent,
+            cleanup: setup_cleanup,
+            state,
         })
     }
 
@@ -2336,13 +2385,30 @@ impl AgentControl {
         let mut _parent_lifecycle_guard = if transfers_ownership {
             None
         } else if let Some(parent_thread_id) = target_parent_thread_id {
-            Some(state.acquire_live_agent_lifecycle(parent_thread_id).await?)
+            Some(
+                state
+                    .acquire_agent_membership_lifecycle(parent_thread_id)
+                    .await?,
+            )
         } else {
             None
         };
         let (resumed_thread, resumed_multi_agent_version, initial_submission, persisted_alias) = {
             let lifecycle_lock = state.agent_lifecycle_lock(thread_id);
             let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+            state.ensure_membership_mutation_allowed(thread_id).await?;
+            if let Some(observer_id) = response_observer_source.parent_thread_id()
+                && let Ok(observer) = state.get_thread_including_pending(observer_id).await
+            {
+                observer.ensure_not_unloading()?;
+            }
+            if let Some(observer_id) = post_resume_observation
+                .as_ref()
+                .and_then(|observation| observation.source.parent_thread_id())
+                && let Ok(observer) = state.get_thread_including_pending(observer_id).await
+            {
+                observer.ensure_not_unloading()?;
+            }
             if matches!(
                 &thread_spawn_persistence,
                 ThreadSpawnPersistence::ControlledResume
@@ -2432,7 +2498,11 @@ impl AgentControl {
                 // The old subtree is now stable and known not to contain the destination parent.
                 // Keep that parent live until alias transfer and runtime publication complete.
                 _parent_lifecycle_guard = if let Some(parent_thread_id) = target_parent_thread_id {
-                    Some(state.acquire_live_agent_lifecycle(parent_thread_id).await?)
+                    Some(
+                        state
+                            .acquire_agent_membership_lifecycle(parent_thread_id)
+                            .await?,
+                    )
                 } else {
                     None
                 };
@@ -2689,7 +2759,7 @@ impl AgentControl {
             for child_thread_id in child_ids {
                 let child_depth = parent_depth + 1;
                 let _parent_lifecycle_guard = match state
-                    .acquire_live_agent_lifecycle(parent_thread_id)
+                    .acquire_agent_membership_lifecycle(parent_thread_id)
                     .await
                 {
                     Ok(guard) => guard,
@@ -2702,6 +2772,13 @@ impl AgentControl {
                 };
                 let lifecycle_lock = state.agent_lifecycle_lock(child_thread_id);
                 let _lifecycle_guard = lifecycle_lock.lock_owned().await;
+                if let Err(error) = state
+                    .ensure_membership_mutation_allowed(child_thread_id)
+                    .await
+                {
+                    warn!(%error, %child_thread_id, "cannot resume an unloading descendant");
+                    continue;
+                }
                 let child_resumed = if state
                     .get_thread_including_pending(child_thread_id)
                     .await

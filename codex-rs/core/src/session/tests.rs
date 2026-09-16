@@ -10850,12 +10850,20 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
     let (child_tx_sub, child_rx_sub) = async_channel::bounded::<Submission>(4);
     let (_child_tx_event, child_rx_event) = async_channel::unbounded();
     let (child_shutdown_tx, child_shutdown_rx) = tokio::sync::oneshot::channel();
+    let child_admission = Arc::new(SubmissionAdmission::default());
+    let child_loop_admission = Arc::clone(&child_admission);
     let child_session_loop_handle = tokio::spawn(async move {
         let shutdown = child_rx_sub
             .recv()
             .await
             .expect("child shutdown submission");
-        assert!(matches!(shutdown.op, Op::Shutdown));
+        let Op::ShutdownDurably { reply } = shutdown.op else {
+            panic!("expected durable guardian shutdown");
+        };
+        child_loop_admission
+            .durable_shutdown_complete
+            .store(true, std::sync::atomic::Ordering::Release);
+        reply.send(Ok(())).expect("child shutdown acknowledgement");
         child_shutdown_tx
             .send(())
             .expect("child shutdown signal should be delivered");
@@ -10864,7 +10872,7 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
-        submission_admission: Arc::new(SubmissionAdmission::default()),
+        submission_admission: child_admission,
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
@@ -10938,12 +10946,20 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
     let (child_tx_sub, child_rx_sub) = async_channel::bounded::<Submission>(4);
     let (_child_tx_event, child_rx_event) = async_channel::unbounded();
     let (child_shutdown_tx, child_shutdown_rx) = tokio::sync::oneshot::channel();
+    let child_admission = Arc::new(SubmissionAdmission::default());
+    let child_loop_admission = Arc::clone(&child_admission);
     let child_session_loop_handle = tokio::spawn(async move {
         let shutdown = child_rx_sub
             .recv()
             .await
             .expect("child shutdown submission");
-        assert!(matches!(shutdown.op, Op::Shutdown));
+        let Op::ShutdownDurably { reply } = shutdown.op else {
+            panic!("expected durable guardian shutdown");
+        };
+        child_loop_admission
+            .durable_shutdown_complete
+            .store(true, std::sync::atomic::Ordering::Release);
+        reply.send(Ok(())).expect("child shutdown acknowledgement");
         child_shutdown_tx
             .send(())
             .expect("child shutdown signal should be delivered");
@@ -10952,7 +10968,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
     let child_io = SessionIo {
         tx_sub: child_tx_sub,
         rx_event: child_rx_event,
-        submission_admission: Arc::new(SubmissionAdmission::default()),
+        submission_admission: child_admission,
         agent_status: watch::channel(AgentStatus::PendingInit).1,
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };

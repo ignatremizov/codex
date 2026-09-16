@@ -68,6 +68,7 @@ pub enum SlashCommand {
     Logout,
     Quit,
     Exit,
+    Disconnect,
     Feedback,
     #[strum(to_string = "rollout-path", serialize = "rollout")]
     Rollout,
@@ -107,6 +108,7 @@ impl SlashCommand {
             SlashCommand::Fork => "fork the current chat",
             SlashCommand::App => "continue this session in the Desktop app",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
+            SlashCommand::Disconnect => "detach from a shared server and leave work running",
             SlashCommand::Copy => "copy the last response, code block, or quote",
             SlashCommand::Export => "export the conversation as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
@@ -278,6 +280,7 @@ impl SlashCommand {
             | SlashCommand::Ide
             | SlashCommand::Quit
             | SlashCommand::Exit
+            | SlashCommand::Disconnect
             | SlashCommand::Side
             | SlashCommand::Btw => true,
             SlashCommand::Rollout => true,

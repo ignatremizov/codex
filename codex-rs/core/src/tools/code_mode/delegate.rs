@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use codex_code_mode::CellId;
 use codex_code_mode::CodeModeNestedToolCall;
@@ -14,7 +16,13 @@ use serde_json::Value as JsonValue;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
+use tokio_util::task::TaskTrackerToken;
 use tracing::Instrument;
+
+#[cfg(test)]
+#[path = "delegate_shutdown_tests.rs"]
+mod shutdown_tests;
 
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
@@ -29,6 +37,10 @@ pub(super) struct CodeModeDispatchBroker {
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
     dispatch_gates: Arc<Mutex<HashMap<CellId, CellDispatchGate>>>,
     executed_tool_calls: Option<Arc<ExecutedToolCallRecorder>>,
+    admission: Mutex<()>,
+    durable_stop: CancellationToken,
+    accepted_tasks: TaskTracker,
+    dispatch_panicked: Arc<AtomicBool>,
 }
 
 struct CellDispatchGate {
@@ -45,6 +57,30 @@ impl CodeModeDispatchBroker {
             dispatch_rx,
             dispatch_gates: Arc::new(Mutex::new(HashMap::new())),
             executed_tool_calls,
+            admission: Mutex::new(()),
+            durable_stop: CancellationToken::new(),
+            accepted_tasks: TaskTracker::new(),
+            dispatch_panicked: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(super) fn begin_durable_shutdown(&self) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.durable_stop.cancel();
+        self.dispatch_tx.close();
+        while self.dispatch_rx.try_recv().is_ok() {}
+        self.accepted_tasks.close();
+    }
+
+    pub(super) async fn wait_for_accepted_dispatch(&self) -> Result<(), String> {
+        self.accepted_tasks.wait().await;
+        if self.dispatch_panicked.load(Ordering::Acquire) {
+            Err("accepted code-mode dispatch panicked during execution".to_string())
+        } else {
+            Ok(())
         }
     }
 
@@ -113,11 +149,13 @@ impl CodeModeDispatchBroker {
         let host = Arc::new(CoreTurnHost { exec, tool_runtime });
         let dispatch_rx = self.dispatch_rx.clone();
         let dispatch_gates = Arc::clone(&self.dispatch_gates);
+        let durable_stop = self.durable_stop.clone();
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         tokio::spawn(async move {
             loop {
                 let message = tokio::select! {
                     _ = &mut shutdown_rx => break,
+                    _ = durable_stop.cancelled() => break,
                     message = dispatch_rx.recv() => message.ok(),
                 };
                 let Some(message) = message else {
@@ -130,14 +168,17 @@ impl CodeModeDispatchBroker {
                         text,
                         cancellation_token,
                         response_tx,
+                        _accepted,
                     } => {
-                        let response = if wait_until_cell_ready_for_dispatch(
+                        let ready = tokio::select! {
+                            _ = durable_stop.cancelled() => false,
+                            ready = wait_until_cell_ready_for_dispatch(
                             &dispatch_gates,
                             &cell_id,
                             &cancellation_token,
-                        )
-                        .await
-                        {
+                            ) => ready,
+                        };
+                        let response = if ready {
                             host.notify(call_id, cell_id, text).await
                         } else {
                             remove_dispatch_gate(&dispatch_gates, &cell_id);
@@ -150,21 +191,26 @@ impl CodeModeDispatchBroker {
                         cancellation_token,
                         response_tx,
                         span,
+                        _accepted,
                     } => {
                         let cell_id = invocation.cell_id.clone();
-                        if !wait_until_cell_ready_for_dispatch(
+                        let ready = tokio::select! {
+                            _ = durable_stop.cancelled() => false,
+                            ready = wait_until_cell_ready_for_dispatch(
                             &dispatch_gates,
                             &cell_id,
                             &cancellation_token,
-                        )
-                        .await
-                        {
+                            ) => ready,
+                        };
+                        if !ready {
                             remove_dispatch_gate(&dispatch_gates, &cell_id);
                             continue;
                         }
                         let host = Arc::clone(&host);
                         let dispatch_gates = Arc::clone(&dispatch_gates);
+                        let durable_stop = durable_stop.clone();
                         tokio::spawn(async move {
+                            let _accepted = _accepted;
                             let invocation = {
                                 let dispatch_gate = track_completeness.then(|| {
                                     dispatch_gates
@@ -186,6 +232,10 @@ impl CodeModeDispatchBroker {
                             tokio::pin!(invocation);
                             let response = tokio::select! {
                                 biased;
+                                _ = durable_stop.cancelled() => {
+                                    cancellation_token.cancel();
+                                    invocation.await
+                                }
                                 _ = cancellation_token.cancelled() => invocation.await,
                                 response = &mut invocation => response,
                             };
@@ -276,15 +326,27 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
                 return Err("code mode nested tool call cancelled".to_string());
             }
             let (response_tx, response_rx) = oneshot::channel();
-            self.dispatch_tx
-                .send(DispatchMessage::InvokeTool {
-                    invocation,
-                    cancellation_token: cancellation_token.clone(),
-                    response_tx,
-                    span: tracing::Span::current(),
-                })
-                .await
-                .map_err(|_| "code mode nested tool dispatcher is unavailable".to_string())?;
+            {
+                let _admission = self
+                    .admission
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if self.durable_stop.is_cancelled() {
+                    return Err("code mode nested tool dispatcher is shutting down".to_string());
+                }
+                self.dispatch_tx
+                    .try_send(DispatchMessage::InvokeTool {
+                        invocation,
+                        cancellation_token: cancellation_token.clone(),
+                        response_tx,
+                        span: tracing::Span::current(),
+                        _accepted: AcceptedDispatch {
+                            _token: self.accepted_tasks.token(),
+                            panicked: Arc::clone(&self.dispatch_panicked),
+                        },
+                    })
+                    .map_err(|_| "code mode nested tool dispatcher is unavailable".to_string())?;
+            }
             tokio::select! {
                 response = response_rx => response
                     .map_err(|_| "code mode nested tool dispatcher stopped".to_string())?,
@@ -307,16 +369,28 @@ impl CodeModeSessionDelegate for CodeModeDispatchBroker {
                 return Err("code mode notification cancelled".to_string());
             }
             let (response_tx, response_rx) = oneshot::channel();
-            self.dispatch_tx
-                .send(DispatchMessage::Notify {
-                    call_id,
-                    cell_id,
-                    text,
-                    cancellation_token: cancellation_token.clone(),
-                    response_tx,
-                })
-                .await
-                .map_err(|_| "code mode notification dispatcher is unavailable".to_string())?;
+            {
+                let _admission = self
+                    .admission
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if self.durable_stop.is_cancelled() {
+                    return Err("code mode notification dispatcher is shutting down".to_string());
+                }
+                self.dispatch_tx
+                    .try_send(DispatchMessage::Notify {
+                        call_id,
+                        cell_id,
+                        text,
+                        cancellation_token: cancellation_token.clone(),
+                        response_tx,
+                        _accepted: AcceptedDispatch {
+                            _token: self.accepted_tasks.token(),
+                            panicked: Arc::clone(&self.dispatch_panicked),
+                        },
+                    })
+                    .map_err(|_| "code mode notification dispatcher is unavailable".to_string())?;
+            }
             tokio::select! {
                 response = response_rx => response
                     .map_err(|_| "code mode notification dispatcher stopped".to_string())?,
@@ -338,6 +412,7 @@ enum DispatchMessage {
         cancellation_token: CancellationToken,
         response_tx: oneshot::Sender<Result<JsonValue, String>>,
         span: tracing::Span,
+        _accepted: AcceptedDispatch,
     },
     Notify {
         call_id: String,
@@ -345,7 +420,21 @@ enum DispatchMessage {
         text: String,
         cancellation_token: CancellationToken,
         response_tx: oneshot::Sender<Result<(), String>>,
+        _accepted: AcceptedDispatch,
     },
+}
+
+struct AcceptedDispatch {
+    _token: TaskTrackerToken,
+    panicked: Arc<AtomicBool>,
+}
+
+impl Drop for AcceptedDispatch {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.panicked.store(true, Ordering::Release);
+        }
+    }
 }
 
 pub(crate) struct CodeModeDispatchWorker {

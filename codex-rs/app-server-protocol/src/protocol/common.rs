@@ -544,6 +544,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnsubscribeResponse,
     },
+    ThreadUnload => "thread/unload" {
+        params: v2::ThreadUnloadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadUnloadResponse,
+    },
     #[experimental("thread/increment_elicitation")]
     /// Increment the thread-local out-of-band elicitation counter.
     ///

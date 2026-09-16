@@ -10,6 +10,22 @@ pub(crate) enum LiveAgentMetadataDisposition {
 }
 
 impl AgentControl {
+    /// Finalize only the exact runtime acknowledged by the durable unload coordinator.
+    pub(crate) async fn remove_durably_unloaded_instance(
+        &self,
+        thread: &Arc<CodexThread>,
+    ) -> CodexResult<bool> {
+        let state = self.upgrade()?;
+        let child = thread.session.presentation_id();
+        let removed = state
+            .remove_thread_after_durable_unload(thread, || {
+                self.forget_v2_residency(child.thread_id);
+                self.release_spawned_thread(SpawnedThreadRelease::Session(child));
+            })
+            .await;
+        Ok(removed.is_some())
+    }
+
     /// Remove a runtime that was never published to thread-created subscribers.
     ///
     /// Suppressing the final-outcome fallback prevents a failed spawn or resume from emitting a
@@ -19,6 +35,7 @@ impl AgentControl {
         thread: &Arc<CodexThread>,
         metadata_disposition: LiveAgentMetadataDisposition,
     ) -> CodexResult<()> {
+        thread.ensure_not_unloading()?;
         let terminal_presentation_disarm = thread.session.disarm_terminal_presentation();
         let result = self
             .discard_live_agent_instance(thread, metadata_disposition)
@@ -37,6 +54,7 @@ impl AgentControl {
         thread: &Arc<CodexThread>,
         metadata_disposition: LiveAgentMetadataDisposition,
     ) -> CodexResult<()> {
+        thread.ensure_not_unloading()?;
         let state = self.upgrade()?;
         let child = thread.session.presentation_id();
         let _ = state
@@ -56,6 +74,7 @@ impl AgentControl {
         thread: &Arc<CodexThread>,
         metadata_disposition: LiveAgentMetadataDisposition,
     ) -> CodexResult<String> {
+        thread.ensure_not_unloading()?;
         thread
             .session
             .ensure_rollout_materialized(PersistContext::Standard)
@@ -75,6 +94,7 @@ impl AgentControl {
         thread: &Arc<CodexThread>,
         metadata_disposition: LiveAgentMetadataDisposition,
     ) -> CodexResult<String> {
+        thread.ensure_not_unloading()?;
         let state = self.upgrade()?;
         let agent_id = thread.session.thread_id();
         let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
@@ -156,7 +176,10 @@ impl AgentControl {
             Err(err) => return Err(err),
         };
         let persist_target_closed = match target_thread.as_ref() {
-            Some(thread) => !thread.config_snapshot().await.ephemeral,
+            Some(thread) => {
+                thread.ensure_not_unloading()?;
+                !thread.config_snapshot().await.ephemeral
+            }
             None => known_agent,
         };
         let previous_status = match target_thread.as_ref() {
@@ -190,7 +213,10 @@ impl AgentControl {
         let mut descendant_threads = Vec::new();
         for descendant_id in &descendant_ids {
             match state.get_thread_including_pending(*descendant_id).await {
-                Ok(thread) => descendant_threads.push(thread),
+                Ok(thread) => {
+                    thread.ensure_not_unloading()?;
+                    descendant_threads.push(thread);
+                }
                 Err(err)
                     if matches!(
                         err.details(),

@@ -691,6 +691,13 @@ pub enum Op {
         reply: oneshot::Sender<CodexResult<SuspendTurnOutcome>>,
     },
 
+    /// Stop execution and acknowledge durable history and writer-lease release.
+    ///
+    /// A persistence failure keeps the session available for shutdown retries, but not new work.
+    ShutdownDurably {
+        reply: oneshot::Sender<CodexResult<()>>,
+    },
+
     /// Core-authored agent input.
     ///
     /// This remains an internal submission operation rather than an app-server input surface.
@@ -1051,6 +1058,7 @@ impl Op {
             Self::UserInput { .. } => "user_input",
             Self::RecoverTurn { .. } => "recover_turn",
             Self::SuspendTurnAndShutdown { .. } => "suspend_turn_and_shutdown",
+            Self::ShutdownDurably { .. } => "shutdown_durably",
             Self::AgentInput { .. } => "agent_input",
             Self::ThreadSettings { .. } => "thread_settings",
             Self::TurnSettings { .. } => "turn_settings",

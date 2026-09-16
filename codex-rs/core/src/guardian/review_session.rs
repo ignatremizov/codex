@@ -90,6 +90,9 @@ use super::prompt::build_guardian_prompt_items_with_parent_turn;
 use super::prompt::guardian_policy_prompt_with_config_and_template;
 use super::review::guardian_review_session_config;
 
+#[path = "review_session_shutdown.rs"]
+mod shutdown;
+
 const GUARDIAN_INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GUARDIAN_MAX_IMAGE_ITEM_TOKENS: i64 = 10_000;
 #[derive(Debug)]
@@ -134,6 +137,9 @@ pub(crate) struct GuardianReviewSessionManager {
 struct GuardianReviewSessionState {
     trunk: Option<Arc<GuardianReviewSession>>,
     ephemeral_reviews: Vec<Arc<GuardianReviewSession>>,
+    retired_reviews: Vec<Arc<GuardianReviewSession>>,
+    pending_spawns: Vec<shutdown::OwnedReviewSpawn>,
+    closed: bool,
 }
 
 struct GuardianReviewSession {
@@ -322,7 +328,9 @@ pub(crate) fn prompt_cache_key_override_for_review_session(
 impl GuardianReviewSession {
     async fn shutdown(&self) {
         self.cancel_token.cancel();
-        let _ = self.io.shutdown_and_wait().await;
+        if let Err(error) = self.io.shutdown_durably_and_wait().await {
+            warn!(%error, "guardian shutdown remains owned and retryable");
+        }
     }
 
     fn shutdown_in_background(self: &Arc<Self>) {
@@ -412,7 +420,11 @@ impl Drop for EphemeralReviewCleanup {
                     .ephemeral_reviews
                     .iter()
                     .position(|active_review| Arc::ptr_eq(active_review, &review_session))
-                    .map(|index| state.ephemeral_reviews.swap_remove(index))
+                    .map(|index| {
+                        let session = state.ephemeral_reviews.swap_remove(index);
+                        state.retired_reviews.push(Arc::clone(&session));
+                        session
+                    })
             };
             if let Some(review_session) = review_session {
                 review_session.shutdown().await;
@@ -454,22 +466,31 @@ impl GuardianReviewSessionManager {
             .with_node_repl_policy(&session_config.node_repl_policy);
             let spawn_cancel_token = self.cancellation_token.child_token();
             let spawn_cancel_guard = spawn_cancel_token.clone().drop_guard();
-            let review_session = spawn_guardian_review_session(
-                &parent_session,
-                &parent_context,
-                spawn_config,
-                reuse_key,
-                spawn_cancel_token.clone(),
-                parent_compaction,
-                /*fork_snapshot*/ None,
-            )
-            .await?;
+            let creation = {
+                let mut state = self.state.lock().await;
+                let cancellation = spawn_cancel_token.clone();
+                state.spawn_owned(async move {
+                    spawn_guardian_review_session(
+                        &parent_session,
+                        &parent_context,
+                        spawn_config,
+                        reuse_key,
+                        cancellation,
+                        parent_compaction,
+                        /*fork_snapshot*/ None,
+                    )
+                    .await
+                })?
+            };
+            let review_session = creation.await.map_err(|error| anyhow!("{error:#}"))?;
             // A first review or shutdown may win while eager initialization is in flight;
             // install only if neither has happened.
             let mut state = self.state.lock().await;
-            if !spawn_cancel_token.is_cancelled() && state.trunk.is_none() {
-                state.trunk = Some(Arc::new(review_session));
+            if !state.closed && !spawn_cancel_token.is_cancelled() && state.trunk.is_none() {
+                state.trunk = Some(review_session);
                 drop(spawn_cancel_guard.disarm());
+            } else {
+                state.retired_reviews.push(review_session);
             }
             Ok(())
         })
@@ -491,6 +512,7 @@ impl GuardianReviewSessionManager {
     }
 
     pub(crate) async fn shutdown(&self) {
+        self.state.lock().await.closed = true;
         self.cancellation_token.cancel();
         self.invalidate().await;
     }
@@ -498,10 +520,12 @@ impl GuardianReviewSessionManager {
     pub(crate) async fn invalidate(&self) {
         let (review_session, ephemeral_reviews) = {
             let mut state = self.state.lock().await;
-            (
-                state.trunk.take(),
-                std::mem::take(&mut state.ephemeral_reviews),
-            )
+            let trunk = state.trunk.take();
+            let ephemeral = std::mem::take(&mut state.ephemeral_reviews);
+            state
+                .retired_reviews
+                .extend(trunk.iter().cloned().chain(ephemeral.iter().cloned()));
+            (trunk, ephemeral)
         };
         for review_session in review_session.into_iter().chain(ephemeral_reviews) {
             if self.cancellation_token.is_cancelled() {
@@ -513,10 +537,6 @@ impl GuardianReviewSessionManager {
         }
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "review session selection and trunk spawning must stay serialized"
-    )]
     pub(super) async fn run_review(
         &self,
         params: GuardianReviewSessionParams,
@@ -552,6 +572,13 @@ impl GuardianReviewSessionManager {
         .await
         {
             Ok(mut state) => {
+                if state.closed {
+                    return (
+                        GuardianReviewSessionOutcome::Aborted,
+                        GuardianReviewAnalyticsResult::without_session(),
+                    );
+                }
+                state.prune_acknowledged();
                 if parent_compaction.is_none()
                     && let Some(trunk) = state.trunk.as_ref()
                 {
@@ -564,31 +591,51 @@ impl GuardianReviewSessionManager {
                     && trunk.review_lock.try_acquire().is_ok()
                     && let Some(stale_trunk) = state.trunk.take()
                 {
+                    state.retired_reviews.push(Arc::clone(&stale_trunk));
                     stale_trunk.shutdown_in_background();
                 }
 
                 if state.trunk.is_none() {
                     let spawn_cancel_token = self.cancellation_token.child_token();
+                    let parent_session = Arc::clone(&params.parent_session);
+                    let parent_context = params.parent_context.clone();
+                    let config = params.spawn_config.clone();
+                    let reuse_key = next_reuse_key.clone();
+                    let cancellation = spawn_cancel_token.clone();
+                    let compaction = parent_compaction.clone();
+                    let creation = match state.spawn_owned(async move {
+                        spawn_guardian_review_session(
+                            &parent_session,
+                            &parent_context,
+                            config,
+                            reuse_key,
+                            cancellation,
+                            compaction,
+                            /*fork_snapshot*/ None,
+                        )
+                        .await
+                    }) {
+                        Ok(creation) => creation,
+                        Err(error) => {
+                            return (
+                                GuardianReviewSessionOutcome::PromptBuildFailed(error),
+                                GuardianReviewAnalyticsResult::without_session(),
+                            );
+                        }
+                    };
+                    drop(state);
                     let review_session = match run_before_review_deadline_with_cancel(
                         deadline,
                         params.external_cancel.as_ref(),
                         &spawn_cancel_token,
-                        Box::pin(spawn_guardian_review_session(
-                            &params.parent_session,
-                            &params.parent_context,
-                            params.spawn_config.clone(),
-                            next_reuse_key.clone(),
-                            spawn_cancel_token.clone(),
-                            parent_compaction.clone(),
-                            /*fork_snapshot*/ None,
-                        )),
+                        creation,
                     )
                     .await
                     {
-                        Ok(Ok(review_session)) => Arc::new(review_session),
+                        Ok(Ok(review_session)) => review_session,
                         Ok(Err(err)) => {
                             return (
-                                GuardianReviewSessionOutcome::PromptBuildFailed(err),
+                                GuardianReviewSessionOutcome::PromptBuildFailed(anyhow!("{err:#}")),
                                 GuardianReviewAnalyticsResult::without_session(),
                             );
                         }
@@ -596,8 +643,24 @@ impl GuardianReviewSessionManager {
                             return (outcome, GuardianReviewAnalyticsResult::without_session());
                         }
                     };
-                    state.trunk = Some(Arc::clone(&review_session));
-                    spawned_trunk = true;
+                    state = self.state.lock().await;
+                    if state.closed {
+                        state.retired_reviews.push(review_session);
+                        spawn_cancel_token.cancel();
+                        return (
+                            GuardianReviewSessionOutcome::Aborted,
+                            GuardianReviewAnalyticsResult::without_session(),
+                        );
+                    }
+                    if state.trunk.is_none() {
+                        state.trunk = Some(review_session);
+                        spawned_trunk = true;
+                    } else {
+                        // Another selection won while this owned creation was in flight.
+                        // Retain and stop the loser without replacing the current trunk.
+                        state.retired_reviews.push(review_session);
+                        spawn_cancel_token.cancel();
+                    }
                 }
 
                 state.trunk.as_ref().cloned()
@@ -752,18 +815,22 @@ impl GuardianReviewSessionManager {
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, trunk))
         {
-            state.trunk.take()
+            let removed = state.trunk.take();
+            state.retired_reviews.extend(removed.iter().cloned());
+            removed
         } else {
             None
         }
     }
 
-    async fn register_active_ephemeral(&self, review_session: Arc<GuardianReviewSession>) {
-        self.state
-            .lock()
-            .await
-            .ephemeral_reviews
-            .push(review_session);
+    async fn register_active_ephemeral(&self, review_session: Arc<GuardianReviewSession>) -> bool {
+        let mut state = self.state.lock().await;
+        if state.closed {
+            state.retired_reviews.push(review_session);
+            return false;
+        }
+        state.ephemeral_reviews.push(review_session);
+        true
     }
 
     async fn take_active_ephemeral(
@@ -775,7 +842,9 @@ impl GuardianReviewSessionManager {
             .ephemeral_reviews
             .iter()
             .position(|active_review| Arc::ptr_eq(active_review, review_session))?;
-        Some(state.ephemeral_reviews.swap_remove(ephemeral_review_index))
+        let removed = state.ephemeral_reviews.swap_remove(ephemeral_review_index);
+        state.retired_reviews.push(Arc::clone(&removed));
+        Some(removed)
     }
 
     async fn run_ephemeral_review(
@@ -789,26 +858,44 @@ impl GuardianReviewSessionManager {
         let spawn_cancel_token = self.cancellation_token.child_token();
         let mut fork_config = params.spawn_config.clone();
         fork_config.ephemeral = true;
+        let parent_session = Arc::clone(&params.parent_session);
+        let parent_context = params.parent_context.clone();
+        let cancellation = spawn_cancel_token.clone();
+        let creation = {
+            let mut state = self.state.lock().await;
+            match state.spawn_owned(async move {
+                spawn_guardian_review_session(
+                    &parent_session,
+                    &parent_context,
+                    fork_config,
+                    reuse_key,
+                    cancellation,
+                    parent_compaction,
+                    fork_snapshot,
+                )
+                .await
+            }) {
+                Ok(creation) => creation,
+                Err(error) => {
+                    return (
+                        GuardianReviewSessionOutcome::PromptBuildFailed(error),
+                        GuardianReviewAnalyticsResult::without_session(),
+                    );
+                }
+            }
+        };
         let review_session = match run_before_review_deadline_with_cancel(
             deadline,
             params.external_cancel.as_ref(),
             &spawn_cancel_token,
-            Box::pin(spawn_guardian_review_session(
-                &params.parent_session,
-                &params.parent_context,
-                fork_config,
-                reuse_key,
-                spawn_cancel_token.clone(),
-                parent_compaction,
-                fork_snapshot,
-            )),
+            creation,
         )
         .await
         {
-            Ok(Ok(review_session)) => Arc::new(review_session),
+            Ok(Ok(review_session)) => review_session,
             Ok(Err(err)) => {
                 return (
-                    GuardianReviewSessionOutcome::PromptBuildFailed(err),
+                    GuardianReviewSessionOutcome::PromptBuildFailed(anyhow!("{err:#}")),
                     GuardianReviewAnalyticsResult::without_session(),
                 );
             }
@@ -816,8 +903,16 @@ impl GuardianReviewSessionManager {
                 return (outcome, GuardianReviewAnalyticsResult::without_session());
             }
         };
-        self.register_active_ephemeral(Arc::clone(&review_session))
-            .await;
+        if !self
+            .register_active_ephemeral(Arc::clone(&review_session))
+            .await
+        {
+            review_session.cancel_token.cancel();
+            return (
+                GuardianReviewSessionOutcome::Aborted,
+                GuardianReviewAnalyticsResult::without_session(),
+            );
+        }
         let mut cleanup =
             EphemeralReviewCleanup::new(Arc::clone(&self.state), Arc::clone(&review_session));
 

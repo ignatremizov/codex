@@ -286,6 +286,7 @@ enum DurableContextRecordingOutcome {
     NewlyRecorded,
     AlreadyRecorded,
 }
+mod durable_shutdown;
 pub(crate) mod time_reminder;
 mod token_budget;
 pub(crate) mod turn;
@@ -501,6 +502,9 @@ pub(crate) struct SubmissionAdmission {
     shutdown_sequence_lock: Mutex<()>,
     state: StdMutex<SubmissionAdmissionState>,
     shutdown_pending: AtomicBool,
+    subtree_unload_pending: AtomicBool,
+    durable_shutdown_complete: AtomicBool,
+    durable_shutdown_target: Option<Arc<SessionIo>>,
     completion_delivery_admission_closed: AtomicBool,
     accepted_completion_deliveries: AtomicUsize,
     changed: Notify,
@@ -1347,7 +1351,16 @@ impl SessionIo {
         mut sub: Submission,
         submission_admission: SubmissionAdmissionKind,
     ) -> CodexResult<()> {
-        let is_shutdown = matches!(&sub.op, Op::Shutdown);
+        let is_shutdown = matches!(&sub.op, Op::Shutdown | Op::ShutdownDurably { .. });
+        if self.submission_admission.is_sealed_for_unload()
+            && (matches!(&sub.op, Op::Shutdown)
+                || (!is_shutdown
+                    && matches!(submission_admission, SubmissionAdmissionKind::Ordinary)))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "thread is sealed for durable unload; retry thread/unload".to_string(),
+            ));
+        }
         let is_rollback = matches!(
             &sub.op,
             Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
@@ -1398,7 +1411,12 @@ impl SessionIo {
             .submission_admission
             .shutdown_pending
             .load(std::sync::atomic::Ordering::Acquire);
-        if shutdown_is_pending
+        if self.submission_admission.is_sealed_for_unload() && matches!(&sub.op, Op::Shutdown) {
+            return Err(CodexErr::InvalidRequest(
+                "thread is sealed for durable unload; retry thread/unload".to_string(),
+            ));
+        }
+        if (shutdown_is_pending || self.submission_admission.is_sealed_for_unload())
             && !is_shutdown
             && matches!(submission_admission, SubmissionAdmissionKind::Ordinary)
         {

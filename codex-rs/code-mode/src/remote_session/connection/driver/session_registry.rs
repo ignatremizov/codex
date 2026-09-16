@@ -7,6 +7,7 @@ use codex_code_mode_protocol::host::SessionId;
 use codex_code_mode_protocol::host::WireCellId;
 
 use super::cell_ids::public_cell_id;
+use super::cleanup::AcceptedCallback;
 use super::cleanup::SessionCleanup;
 use super::types::RemoteSession;
 
@@ -14,12 +15,15 @@ pub(super) struct CellOwner {
     pub(super) session_id: SessionId,
     pub(super) cell_id: CellId,
     pub(super) delegate: Arc<dyn CodeModeSessionDelegate>,
+    pub(super) cleanup: SessionCleanup,
+    _accepted: AcceptedCallback,
 }
 
 pub(super) struct DelegateTarget {
     pub(super) session_id: SessionId,
     pub(super) cell_id: CellId,
     pub(super) delegate: Arc<dyn CodeModeSessionDelegate>,
+    pub(super) cleanup: SessionCleanup,
 }
 
 pub(super) struct FailedSession {
@@ -164,6 +168,7 @@ impl SessionRegistry {
             session_id: session_id.clone(),
             cell_id: public_id,
             delegate: Arc::clone(&session.delegate),
+            cleanup: session.cleanup.clone(),
         })
     }
 
@@ -186,6 +191,8 @@ impl SessionRegistry {
             session_id: session_id.clone(),
             cell_id: public_id,
             delegate: Arc::clone(&session.delegate),
+            cleanup: session.cleanup.clone(),
+            _accepted: session.cleanup.accepted_callback(),
         })
     }
 
@@ -193,15 +200,19 @@ impl SessionRegistry {
         let Some(session) = self.records.remove(session_id) else {
             return Vec::new();
         };
-        session
+        let owners = session
             .cells
             .into_values()
             .map(|cell_id| CellOwner {
                 session_id: session_id.clone(),
                 cell_id,
                 delegate: Arc::clone(&session.delegate),
+                cleanup: session.cleanup.clone(),
+                _accepted: session.cleanup.accepted_callback(),
             })
-            .collect()
+            .collect();
+        session.cleanup.close();
+        owners
     }
 
     pub(super) fn drain(&mut self) -> Vec<FailedSession> {
@@ -216,6 +227,8 @@ impl SessionRegistry {
                         session_id: session_id.clone(),
                         cell_id,
                         delegate: Arc::clone(&session.delegate),
+                        cleanup: session.cleanup.clone(),
+                        _accepted: session.cleanup.accepted_callback(),
                     })
                     .collect();
                 FailedSession {

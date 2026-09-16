@@ -445,6 +445,7 @@ mod resume_registration;
 mod scoped_messages;
 pub(crate) mod setup_cleanup;
 mod spawn;
+mod spawn_ownership;
 mod turn_queue;
 mod user_authorization;
 

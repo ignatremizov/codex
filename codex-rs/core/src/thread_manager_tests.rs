@@ -60,6 +60,9 @@ mod live_revert_messaging_tests;
 #[path = "thread_manager/models_cache_selection_tests.rs"]
 mod models_cache_selection_tests;
 
+#[path = "thread_manager/subtree_spawn_ownership_tests.rs"]
+mod subtree_spawn_ownership_tests;
+
 /// Controls without a custom allocation policy still produce distinct thread identifiers.
 #[test]
 fn thread_id_generator_defaults_to_standard_ids() {
@@ -793,6 +796,9 @@ async fn cancelled_agent_spawn_discards_its_pending_runtime_and_registration() {
             .expect_err("aborted spawn should not return a child")
             .is_cancelled()
     );
+    // Initialization is owned independently of the caller. Let its accepted store operation
+    // settle so rollback can close the allocated alias and durably stop the pending runtime.
+    gated_store.release_allocation.notify_one();
     tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
         loop {
             if manager
@@ -809,12 +815,14 @@ async fn cancelled_agent_spawn_discards_its_pending_runtime_and_registration() {
     })
     .await
     .expect("cancelled setup should roll back");
-    assert!(
+    assert_eq!(
         gated_store
             .find_current_agent_alias_by_thread(child_thread_id)
             .await
             .expect("current ownership lookup")
-            .is_none()
+            .expect("cancelled spawn retains its closed durable identity")
+            .state,
+        codex_agent_graph_store::AgentAliasState::Closed,
     );
     assert_eq!(manager.list_thread_ids().await, vec![root_thread_id]);
     root.thread
@@ -1290,6 +1298,7 @@ struct GatedForkAliasStore {
 struct GatedTransferAgentGraphStore {
     inner: Arc<dyn codex_agent_graph_store::AgentGraphStore>,
     gate_allocation: bool,
+    fail_next_close: std::sync::atomic::AtomicBool,
     allocation_started: tokio::sync::Notify,
     release_allocation: tokio::sync::Notify,
     transfer_started: tokio::sync::Notify,
@@ -1301,6 +1310,7 @@ impl GatedTransferAgentGraphStore {
         Self {
             inner,
             gate_allocation: false,
+            fail_next_close: std::sync::atomic::AtomicBool::new(/*v*/ false),
             allocation_started: tokio::sync::Notify::new(),
             release_allocation: tokio::sync::Notify::new(),
             transfer_started: tokio::sync::Notify::new(),
@@ -1312,6 +1322,7 @@ impl GatedTransferAgentGraphStore {
         Self {
             inner,
             gate_allocation: true,
+            fail_next_close: std::sync::atomic::AtomicBool::new(/*v*/ false),
             allocation_started: tokio::sync::Notify::new(),
             release_allocation: tokio::sync::Notify::new(),
             transfer_started: tokio::sync::Notify::new(),
@@ -1393,6 +1404,15 @@ impl codex_agent_graph_store::AgentGraphStore for GatedTransferAgentGraphStore {
         thread_id: ThreadId,
         status: codex_agent_graph_store::ThreadSpawnEdgeStatus,
     ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, bool> {
+        if status == codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed
+            && self.fail_next_close.swap(/*val*/ false, Ordering::AcqRel)
+        {
+            return Box::pin(async {
+                Err(codex_agent_graph_store::AgentGraphStoreError::Internal {
+                    message: "injected cancelled-spawn alias rollback failure".to_string(),
+                })
+            });
+        }
         self.inner
             .set_agent_lifecycle_state(session_id, thread_id, status)
     }

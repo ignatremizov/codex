@@ -424,6 +424,14 @@ impl ThreadManager {
                         )));
                     }
                     if (current_owner, current_parent) == (expected_owner, expected_parent) {
+                        self.state
+                            .ensure_membership_mutation_allowed(resumed_thread_id)
+                            .await?;
+                        if let Some(owner) = current_owner {
+                            self.state
+                                .ensure_membership_mutation_allowed(ThreadId::from(owner))
+                                .await?;
+                        }
                         break (current_alias, lifecycle_guards);
                     }
                 }

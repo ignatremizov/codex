@@ -748,6 +748,7 @@ async fn run_review_removes_trunk_when_event_stream_is_broken() {
         state: Arc::new(Mutex::new(GuardianReviewSessionState {
             trunk: Some(Arc::new(review_session)),
             ephemeral_reviews: Vec::new(),
+            ..Default::default()
         })),
         ..Default::default()
     });

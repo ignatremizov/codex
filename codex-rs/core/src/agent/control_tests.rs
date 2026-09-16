@@ -110,8 +110,14 @@ mod mailbox_input_tests;
 #[path = "control/mailbox_batch_cancellation_tests.rs"]
 mod mailbox_batch_cancellation_tests;
 
+#[path = "control/subtree_unload_completion_tests.rs"]
+mod subtree_unload_completion_tests;
+
 #[path = "control/scoped_admission_tests.rs"]
 mod scoped_admission_tests;
+
+#[path = "control/spawn_handoff_tests.rs"]
+mod spawn_handoff_tests;
 
 #[path = "control/unsupported_mailbox_subscription_tests.rs"]
 mod unsupported_mailbox_subscription_tests;

@@ -823,6 +823,7 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
             true
         }
         ExitReason::UserRequested
+        | ExitReason::Disconnected
         | ExitReason::Archived(_)
         | ExitReason::TurnInterrupted
         | ExitReason::ThreadRemoved => false,
@@ -3859,6 +3860,7 @@ mod tests {
                     ],
                     stop_hint: "press ctrl + x".to_string(),
                 });
+                exit_info.exit_reason = ExitReason::Disconnected;
                 Ok(exit_info)
             },
             Some("CODEX_REMOTE_TOKEN"),

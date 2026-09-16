@@ -753,6 +753,7 @@ mod thread_lifecycle;
 mod thread_mailbox;
 mod thread_resume_redaction;
 mod thread_summary;
+mod thread_unload;
 
 use self::config_errors::*;
 use self::request_errors::*;

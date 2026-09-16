@@ -545,6 +545,7 @@ pub enum InMemoryThreadStoreFailure {
     UserAgentTaskContextFlush,
     TurnStartedAppend,
     ThreadMetadataUpdate,
+    ThreadShutdown,
 }
 
 impl InMemoryThreadStoreFailure {
@@ -562,6 +563,7 @@ impl InMemoryThreadStoreFailure {
             Self::UserAgentTaskContextFlush => "user agent task context flush",
             Self::TurnStartedAppend => "turn started append",
             Self::ThreadMetadataUpdate => "thread metadata update",
+            Self::ThreadShutdown => "thread shutdown",
         }
     }
 }
@@ -1304,7 +1306,8 @@ fn append_persisted_items_to_state(
                 | InMemoryThreadStoreFailure::AgentResponseObservationHistoryRead
                 | InMemoryThreadStoreFailure::UserAgentTaskContextFlush
                 | InMemoryThreadStoreFailure::TurnStartedAppend
-                | InMemoryThreadStoreFailure::ThreadMetadataUpdate,
+                | InMemoryThreadStoreFailure::ThreadMetadataUpdate
+                | InMemoryThreadStoreFailure::ThreadShutdown,
             )
             | None => None,
         }
@@ -1672,7 +1675,20 @@ impl ThreadStore for InMemoryThreadStore {
 
     fn shutdown_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
-            self.state.lock().await.calls.shutdown_thread += 1;
+            let mut state = self.state.lock().await;
+            state.calls.shutdown_thread += 1;
+            if matches!(
+                state.fail_next_operation,
+                Some(InMemoryThreadStoreFailure::ThreadShutdown)
+            ) {
+                state.fail_next_operation = None;
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "injected in-memory thread-store {} failure",
+                        InMemoryThreadStoreFailure::ThreadShutdown.operation()
+                    ),
+                });
+            }
             Ok(())
         })
     }

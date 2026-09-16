@@ -259,6 +259,12 @@ impl ThreadManager {
                 // parent-before-child order.
                 continue;
             }
+            self.state
+                .ensure_membership_mutation_allowed(resume.parent_thread_id)
+                .await?;
+            self.state
+                .ensure_membership_mutation_allowed(resume.child_thread_id)
+                .await?;
             break (resume, parent_resume_guard, resume_guard);
         };
 
