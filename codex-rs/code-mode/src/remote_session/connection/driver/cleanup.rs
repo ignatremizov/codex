@@ -7,7 +7,7 @@ use codex_code_mode_protocol::CellId;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tokio_util::task::TaskTrackerToken;
+use tokio_util::task::task_tracker::TaskTrackerToken;
 
 use super::session_registry::CellOwner;
 

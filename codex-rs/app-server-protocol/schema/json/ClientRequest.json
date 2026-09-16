@@ -4398,6 +4398,9 @@
       ],
       "type": "object"
     },
+    "ServerReadParams": {
+      "type": "object"
+    },
     "SessionMigration": {
       "properties": {
         "cwd": {
@@ -5832,6 +5835,19 @@
       ],
       "type": "object"
     },
+    "ThreadUnloadParams": {
+      "description": "Stop and unload the owning root and its loaded spawn descendants.",
+      "properties": {
+        "threadId": {
+          "description": "Any thread in the owning spawn subtree, including the root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadUnsubscribeParams": {
       "properties": {
         "threadId": {
@@ -6476,6 +6492,30 @@
         "params"
       ],
       "title": "Thread/unsubscribeRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/unload"
+          ],
+          "title": "Thread/unloadRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadUnloadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/unloadRequest",
       "type": "object"
     },
     {
@@ -8474,6 +8514,30 @@
         "params"
       ],
       "title": "Command/exec/resizeRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "server/read"
+          ],
+          "title": "Server/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ServerReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Server/readRequest",
       "type": "object"
     },
     {

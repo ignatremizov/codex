@@ -379,6 +379,30 @@
             },
             "method": {
               "enum": [
+                "thread/unload"
+              ],
+              "title": "Thread/unloadRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadUnloadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/unloadRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/name/set"
               ],
               "title": "Thread/name/setRequestMethod",
@@ -2368,6 +2392,30 @@
             "params"
           ],
           "title": "Command/exec/resizeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "server/read"
+              ],
+              "title": "Server/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ServerReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Server/readRequest",
           "type": "object"
         },
         {
@@ -20717,6 +20765,22 @@
         "title": "SendAddCreditsNudgeEmailResponse",
         "type": "object"
       },
+      "ServerAuthProfile": {
+        "description": "Startup credential selection, without credentials or absolute auth paths.\n\nThe opaque ID describes host-local configuration, not an authenticated account, and cannot be used to compare credential paths across hosts.",
+        "properties": {
+          "displayLabel": {
+            "type": "string"
+          },
+          "profileOpaqueId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "displayLabel",
+          "profileOpaqueId"
+        ],
+        "type": "object"
+      },
       "ServerDiagnosticsGauge": {
         "properties": {
           "name": {
@@ -20761,6 +20825,24 @@
         "required": [
           "id"
         ],
+        "type": "object"
+      },
+      "ServerReadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ServerReadParams",
+        "type": "object"
+      },
+      "ServerReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "authProfile": {
+            "$ref": "#/definitions/v2/ServerAuthProfile"
+          }
+        },
+        "required": [
+          "authProfile"
+        ],
+        "title": "ServerReadResponse",
         "type": "object"
       },
       "ServerRequestResolvedNotification": {
@@ -26137,6 +26219,42 @@
           "threadId"
         ],
         "title": "ThreadUnarchivedNotification",
+        "type": "object"
+      },
+      "ThreadUnloadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Stop and unload the owning root and its loaded spawn descendants.",
+        "properties": {
+          "threadId": {
+            "description": "Any thread in the owning spawn subtree, including the root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadUnloadParams",
+        "type": "object"
+      },
+      "ThreadUnloadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Acknowledges durable shutdown and removal of the captured runtime instances.",
+        "properties": {
+          "rootThreadId": {
+            "type": "string"
+          },
+          "unloadedThreadIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rootThreadId",
+          "unloadedThreadIds"
+        ],
+        "title": "ThreadUnloadResponse",
         "type": "object"
       },
       "ThreadUnsubscribeParams": {

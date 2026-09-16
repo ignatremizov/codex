@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tokio_util::task::TaskTrackerToken;
+use tokio_util::task::task_tracker::TaskTrackerToken;
 use tracing::Instrument;
 
 #[cfg(test)]
