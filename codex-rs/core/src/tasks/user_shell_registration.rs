@@ -69,21 +69,27 @@ impl Drop for UserShellCommandRegistration {
             return;
         }
         let session = Arc::clone(&self.session);
-        self.session.services.runtime_handle.spawn(async move {
-            if let Some((process_id, call_id)) = process {
-                session
-                    .services
-                    .unified_exec_manager
-                    .unregister_user_shell_command(process_id, &call_id)
-                    .await;
-            }
-            if let Some(submission_id) = submission_id {
-                session
-                    .services
-                    .unified_exec_manager
-                    .release_user_shell_submission(submission_id)
-                    .await;
-            }
-        });
+        // A dropped or never-polled execution still owns its queue/process cleanup.
+        // Keep that accepted obligation visible to the aggregate durable drain.
+        self.session
+            .services
+            .unified_exec_manager
+            .track_producer(async move {
+                if let Some((process_id, call_id)) = process {
+                    session
+                        .services
+                        .unified_exec_manager
+                        .unregister_user_shell_command(process_id, &call_id)
+                        .await;
+                }
+                if let Some(submission_id) = submission_id {
+                    session
+                        .services
+                        .unified_exec_manager
+                        .release_user_shell_submission(submission_id)
+                        .await;
+                }
+                Ok(())
+            });
     }
 }

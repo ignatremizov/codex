@@ -15,10 +15,10 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 pub(super) async fn with_launch_failure_events(
-    result: Result<UnifiedExecProcess, ToolError>,
+    result: Result<Arc<UnifiedExecProcess>, ToolError>,
     req: &UnifiedExecRequest,
     ctx: &ToolCtx,
-) -> Result<UnifiedExecProcess, ToolError> {
+) -> Result<Arc<UnifiedExecProcess>, ToolError> {
     let Err(ToolError::Rejected(message)) = &result else {
         return result;
     };

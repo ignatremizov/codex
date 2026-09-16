@@ -36,6 +36,7 @@ use std::time::Duration;
 use test_case::test_case;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
 
@@ -95,6 +96,7 @@ async fn remote_local_binding_policy_and_review_cleanup(
         ]),
     )
     .await;
+    let (finish_exec_server, mut finished) = oneshot::channel();
     let exec_server = tokio::spawn(async move {
         let mut websocket = accept_initialized_exec_server(listener).await;
         let start = loop {
@@ -155,8 +157,14 @@ async fn remote_local_binding_policy_and_review_cleanup(
             send_exec_server_json(&mut websocket, message).await;
         }
         loop {
-            let request =
-                read_exec_server_json(&mut websocket, Duration::from_secs(/*secs*/ 10)).await;
+            let request = tokio::select! {
+                biased;
+                request = read_exec_server_json(&mut websocket, Duration::from_secs(/*secs*/ 10)) => request,
+                result = &mut finished => {
+                    result.expect("test should explicitly finish after observing command output");
+                    break;
+                }
+            };
             match request["method"].as_str() {
                 Some("process/terminate") => {
                     send_exec_server_json(
@@ -164,7 +172,6 @@ async fn remote_local_binding_policy_and_review_cleanup(
                         json!({"id": request["id"], "result": {"running": false}}),
                     )
                     .await;
-                    break;
                 }
                 Some("process/read") => {
                     send_exec_server_json(&mut websocket, json!({"id": request["id"], "result": {"chunks": [], "nextSeq": 4, "exited": true, "exitCode": 0, "closed": true, "failure": null, "sandboxDenied": false}})).await;
@@ -278,6 +285,9 @@ mode = "full"
     assert!(output.contains("Process exited with code 0"), "{output}");
     assert!(output.contains("build complete"), "{output}");
     assert_eq!(parent.requests().len(), 1);
+    finish_exec_server
+        .send(())
+        .expect("fake exec-server should serve until command output is observed");
     timeout(Duration::from_secs(/*secs*/ 10), exec_server).await??;
     Ok(())
 }

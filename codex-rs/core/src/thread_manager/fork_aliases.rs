@@ -101,7 +101,9 @@ impl ThreadManager {
         history: &InitialHistory,
         source_thread_id: Option<ThreadId>,
     ) -> CodexResult<Option<(Arc<dyn AgentGraphStore>, SessionId)>> {
-        if config.ephemeral || session_source.is_non_root_agent()
+        if self.state.agent_control_factory.is_some()
+            || config.ephemeral
+            || session_source.is_non_root_agent()
         {
             return Ok(None);
         }
@@ -225,16 +227,6 @@ impl ThreadManager {
                     })?;
                 if abandoned.is_cancelled() {
                     return Err(CodexErr::TurnAborted);
-                }
-                if state.agent_control_factory.is_none() {
-                    spawned
-                        .thread
-                        .session
-                        .services
-                        .local_agent_runtime
-                        .control(spawned.thread.session.session_id())
-                        .restore_agent_send_settings(spawned.thread.session.presentation_id())
-                        .await?;
                 }
                 Ok(PreparedHistoryFork { spawned, cleanup })
             }

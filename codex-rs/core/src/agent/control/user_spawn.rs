@@ -40,8 +40,8 @@ impl LocalAgentControl {
     ) -> CodexResult<UserAgentSpawnResult> {
         let membership = self.runtime.admit_start()?;
         let control = self.clone();
-        tokio::spawn(async move {
-            let spawned = Box::pin(control.spawn_agent_owned(
+        let spawned = if input.is_none() {
+            self.spawn_with_receipt(
                 config,
                 SpawnInitialInput::UserControlled {
                     input,
@@ -50,25 +50,39 @@ impl LocalAgentControl {
                 source,
                 options,
                 membership,
-            ))
-            .await?;
-            Ok(UserAgentSpawnResult {
-                target_thread_id: spawned.agent.thread_id,
-                agent_ref: spawned.alias.as_ref().map(|alias| alias.agent_ref),
-                task_path: spawned
-                    .alias
-                    .as_ref()
-                    .and_then(|alias| alias.task_path.clone()),
-                nickname: spawned
-                    .alias
-                    .and_then(|alias| alias.nickname)
-                    .or(spawned.agent.metadata.agent_nickname),
-                status: spawned.agent.status,
-                post_admission_warning: spawned.post_admission_warning,
-                input_outcome: spawned.input_outcome,
+            )
+            .await?
+        } else {
+            tokio::spawn(async move {
+                Box::pin(control.spawn_agent_owned(
+                    config,
+                    SpawnInitialInput::UserControlled {
+                        input,
+                        task_preview,
+                    },
+                    source,
+                    options,
+                    membership,
+                ))
+                .await
             })
+            .await
+            .map_err(|error| CodexErr::Fatal(format!("user spawn worker failed: {error}")))??
+        };
+        Ok(UserAgentSpawnResult {
+            target_thread_id: spawned.agent.thread_id,
+            agent_ref: spawned.alias.as_ref().map(|alias| alias.agent_ref),
+            task_path: spawned
+                .alias
+                .as_ref()
+                .and_then(|alias| alias.task_path.clone()),
+            nickname: spawned
+                .alias
+                .and_then(|alias| alias.nickname)
+                .or(spawned.agent.metadata.agent_nickname),
+            status: spawned.agent.status,
+            post_admission_warning: spawned.post_admission_warning,
+            input_outcome: spawned.input_outcome,
         })
-        .await
-        .map_err(|error| CodexErr::Fatal(format!("user spawn worker failed: {error}")))?
     }
 }

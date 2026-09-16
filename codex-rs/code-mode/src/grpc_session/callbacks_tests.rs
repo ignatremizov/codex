@@ -55,8 +55,13 @@ fn session(client: GrpcClient) -> Arc<SessionInner> {
         wait_slots: Mutex::new(HashMap::new()),
         shutdown_requested: AtomicBool::new(/*v*/ false),
         shutdown_result: Mutex::new(/*t*/ None),
+        durable_result: Mutex::new(/*t*/ None),
+        close_confirmed: AtomicBool::new(/*v*/ false),
+        callback_panicked: AtomicBool::new(/*v*/ false),
+        durable_requested: AtomicBool::new(/*v*/ false),
         stopped: CancellationToken::new(),
         stream_tasks: TaskTracker::new(),
+        callback_tasks: TaskTracker::new(),
         _transport: Arc::new(SharedTransport::Connected(client)),
     })
 }

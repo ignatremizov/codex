@@ -2,10 +2,13 @@
 //! Cleanup remains tracked when the caller drops its startup future or stops waiting.
 
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use futures::FutureExt;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -19,7 +22,8 @@ impl ThreadManager {
     /// Starts a new isolated thread and owns it until `until` completes or the thread exits.
     /// Dropping the startup future also cancels initialization. `tasks` tracks the
     /// entire lifetime, including partial startup cleanup and deregistration.
-    /// Cleanup waits for any in-flight persistence acquisition before releasing its writer.
+    /// Cleanup waits for any in-flight persistence acquisition and durable writer acknowledgement.
+    /// Failed cleanup stays owned and is retried; task completion never means only cancellation.
     /// Once the session runtime starts, cleanup follows normal shutdown history rules,
     /// even if the caller has not received the thread yet.
     /// Resumed threads are excluded because they can refer to another owner's live runtime.
@@ -47,6 +51,13 @@ impl ThreadManager {
                 "owned thread startup requires explicit session isolation".to_owned(),
             ));
         }
+        if let Some(thread_id) = options.reserved_thread_id
+            && self.state.threads.read().await.contains_key(&thread_id)
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "thread {thread_id} is already running"
+            )));
+        }
         let task = tasks.token();
         let manager = Arc::clone(self);
         let state = Arc::downgrade(&self.state);
@@ -58,7 +69,7 @@ impl ThreadManager {
             let startup = Arc::new(SessionStartup::default());
             tokio::pin!(until);
             // Drop initialization before cleanup; startup still owns any unfinished acquisition.
-            let result = {
+            let result = AssertUnwindSafe(async {
                 let start = manager.start_thread_inner(
                     options,
                     /*forked_from_thread_id*/ None,
@@ -70,25 +81,46 @@ impl ThreadManager {
                     _ = abandoned.cancelled() => Err(CodexErr::TurnAborted),
                     result = start => result,
                 }
-            };
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or(Err(CodexErr::InternalAgentDied));
             // The lifetime task must not keep the manager and its parent threads alive.
             drop(manager);
             match result {
                 Ok(thread) => {
                     let running = Arc::clone(&thread.thread);
                     if sender.send(Ok(thread)).is_ok() {
-                        tokio::select! {
-                            _ = abandoned.cancelled() => {}
-                            _ = &mut until => {}
-                            _ = running.wait_until_terminated() => {}
-                        }
+                        let _ = AssertUnwindSafe(async {
+                            tokio::select! {
+                                _ = abandoned.cancelled() => {}
+                                _ = &mut until => {}
+                                _ = running.wait_until_terminated() => {}
+                            }
+                        })
+                        .catch_unwind()
+                        .await;
                     }
                 }
                 Err(error) => {
                     let _ = sender.send(Err(error));
                 }
             }
-            startup.cleanup().await;
+            // Cancellation and dropped callers never relinquish the captured startup or
+            // actor. Retry failed phases; TaskTracker completion proves writer release.
+            loop {
+                match AssertUnwindSafe(startup.cleanup_durably())
+                    .catch_unwind()
+                    .await
+                    .unwrap_or(Err(CodexErr::InternalAgentDied))
+                {
+                    Ok(()) => break,
+                    Err(error) => {
+                        tracing::warn!(%error, "managed thread durable cleanup failed; retaining owner");
+                        tokio::time::sleep(Duration::from_secs(/*secs*/ 1)).await;
+                    }
+                }
+            }
             if let Some(state) = state.upgrade()
                 && let Some(session) = startup.session.get()
             {

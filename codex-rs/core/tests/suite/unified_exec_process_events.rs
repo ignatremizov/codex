@@ -57,6 +57,7 @@ use std::time::Duration;
 use test_case::test_case;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::accept_async;
@@ -272,6 +273,7 @@ async fn serve_exec_with_pushed_events(
     process_started: Arc<AtomicBool>,
     output_ready: Arc<tokio::sync::Notify>,
     drain_read_ready: Arc<tokio::sync::Notify>,
+    mut finished: oneshot::Receiver<()>,
 ) -> PushedExecServerResult {
     let unrestricted_patch = matches!(
         scenario,
@@ -666,6 +668,7 @@ async fn serve_exec_with_pushed_events(
             Duration::from_secs(/*secs*/ 5)
         };
         let request = tokio::select! {
+            biased;
             request = read_exec_server_json(&mut websocket, wait) => request,
             _ = output_ready.notified(), if pending_drain_response.is_some() => {
                 send_exec_server_json(
@@ -673,6 +676,10 @@ async fn serve_exec_with_pushed_events(
                     pending_drain_response.take().expect("pending final read"),
                 ).await;
                 continue;
+            }
+            result = &mut finished => {
+                result.expect("test should explicitly finish after observing command output");
+                break;
             }
         };
         match request["method"].as_str() {
@@ -837,13 +844,13 @@ async fn serve_exec_with_pushed_events(
                     }),
                 )
                 .await;
-                return PushedExecServerResult {
-                    process_read_requests,
-                    process_start,
-                };
             }
             method => panic!("unexpected exec-server request: {method:?}"),
         }
+    }
+    PushedExecServerResult {
+        process_read_requests,
+        process_start,
     }
 }
 
@@ -1052,6 +1059,7 @@ async fn exec_command_consumes_pushed_remote_process_events(
     }
     let response_mock = mount_sse_sequence(&server, responses).await;
     let exec_server_url = format!("ws://{}", listener.local_addr()?);
+    let (finish_exec_server, finished) = oneshot::channel();
     let process_started = Arc::new(AtomicBool::new(false));
     let output_ready = Arc::new(tokio::sync::Notify::new());
     let drain_read_ready = Arc::new(tokio::sync::Notify::new());
@@ -1061,6 +1069,7 @@ async fn exec_command_consumes_pushed_remote_process_events(
         Arc::clone(&process_started),
         Arc::clone(&output_ready),
         Arc::clone(&drain_read_ready),
+        finished,
     ));
     let mut builder = test_codex().with_exec_server_url(exec_server_url);
     if managed_network_configured {
@@ -1622,6 +1631,59 @@ timeout = 900
     } else {
         Duration::from_secs(5)
     };
+    let command_output = if (cancel_after_exit || terminate_after_exit)
+        && !terminate_initial_collection
+    {
+        None
+    } else {
+        if managed_network_enabled {
+            timeout(Duration::from_secs(/*secs*/ 5), async {
+                while response_mock.requests().len() < 2 {
+                    tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+                }
+            })
+            .await
+            .context("model should receive the remote exec output")?;
+        }
+        let request = response_mock
+            .last_request()
+            .context("model should receive the exec_command output")?;
+        let output_call_id = if output_after_yield || finish_at_final_poll || finish_at_deadline {
+            let (initial, _) = request
+                .function_call_output_content_and_success(CALL_ID)
+                .context("initial collection")?;
+            let initial = initial.context("initial output")?;
+            assert!(initial.contains("Process running with session ID 1000"));
+            if output_after_yield {
+                assert!(initial.contains("pushed "));
+            }
+            assert!(
+                !test
+                    .codex
+                    .terminate_background_terminal(/*process_id*/ 1000)
+                    .await
+            );
+            POLL_CALL_ID
+        } else {
+            CALL_ID
+        };
+        if finish_at_deadline {
+            let (pending, _) = request
+                .function_call_output_content_and_success(DRAIN_POLL_CALL_ID)
+                .context("poll during the final read should yield")?;
+            let pending = pending.context("poll should contain buffered output")?;
+            assert!(pending.contains("Process running with session ID 1000"));
+            assert!(pending.contains("pushed "));
+        }
+        let (output, success) = request
+            .function_call_output_content_and_success(output_call_id)
+            .context("exec_command output should be model visible")?;
+        let output = output.context("exec_command output should contain text")?;
+        Some((output, success))
+    };
+    finish_exec_server
+        .send(())
+        .expect("fake exec-server should serve until command output is observed");
     let exec_server_result = timeout(cleanup_timeout, exec_server)
         .await
         .context("fake exec-server should observe process cleanup")??;
@@ -1797,13 +1859,6 @@ timeout = 900
         );
         assert_eq!(params["networkProxy"]["environmentId"], "remote");
         assert!(params["networkProxy"]["executionId"].as_str().is_some());
-        timeout(Duration::from_secs(5), async {
-            while response_mock.requests().len() < 2 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .context("model should receive the remote exec output")?;
         if matches!(
             scenario,
             PushedExecScenario::CredentialMaskingUnsupportedShell
@@ -1858,40 +1913,8 @@ timeout = 900
         assert_eq!(params["networkProxy"], Value::Null);
         assert_eq!(params["env"]["HTTP_PROXY"], Value::Null);
     }
-    let request = response_mock
-        .last_request()
-        .context("model should receive the exec_command output")?;
-    let output_call_id = if output_after_yield || finish_at_final_poll || finish_at_deadline {
-        let (initial, _) = request
-            .function_call_output_content_and_success(CALL_ID)
-            .context("initial collection")?;
-        let initial = initial.context("initial output")?;
-        assert!(initial.contains("Process running with session ID 1000"));
-        if output_after_yield {
-            assert!(initial.contains("pushed "));
-        }
-        assert!(
-            !test
-                .codex
-                .terminate_background_terminal(/*process_id*/ 1000)
-                .await
-        );
-        POLL_CALL_ID
-    } else {
-        CALL_ID
-    };
-    if finish_at_deadline {
-        let (pending, _) = request
-            .function_call_output_content_and_success(DRAIN_POLL_CALL_ID)
-            .context("poll during the final read should yield")?;
-        let pending = pending.context("poll should contain buffered output")?;
-        assert!(pending.contains("Process running with session ID 1000"));
-        assert!(pending.contains("pushed "));
-    }
-    let (output, success) = request
-        .function_call_output_content_and_success(output_call_id)
-        .context("exec_command output should be model visible")?;
-    let output = output.context("exec_command output should contain text")?;
+    let (output, success) =
+        command_output.context("completed command should expose model output")?;
     let process_read_requests = exec_server_result.process_read_requests;
     match scenario {
         PushedExecScenario::OutputAfterExit

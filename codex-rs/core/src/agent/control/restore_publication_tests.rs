@@ -33,6 +33,37 @@ struct FaultGraph {
 }
 
 impl AgentGraphStore for FaultGraph {
+    fn set_thread_spawn_edge_status_with_authority_revocations(
+        &self,
+        child: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+        revoked_thread_ids: Vec<ThreadId>,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async move {
+            if status == ThreadSpawnEdgeStatus::Closed && self.fail_closed.load(Ordering::Acquire) {
+                return Err(AgentGraphStoreError::Internal {
+                    message: "injected close failure".to_string(),
+                });
+            }
+            let mut edges = self.edges.lock().expect("graph");
+            let Some(edge) = edges.get_mut(&child) else {
+                return Ok(false);
+            };
+            let revoked =
+                status == ThreadSpawnEdgeStatus::Closed && edge.1 == ThreadSpawnEdgeStatus::Open;
+            if revoked && !revoked_thread_ids.contains(&child) {
+                return Err(AgentGraphStoreError::InvalidRequest {
+                    message: "revoked subtree must contain its closed agent".to_string(),
+                });
+            }
+            edge.1 = status;
+            if revoked {
+                self.revocations.fetch_add(1, Ordering::AcqRel);
+            }
+            Ok(revoked)
+        })
+    }
+
     fn close_thread_spawn_edge_if_current(
         &self,
         expected: codex_agent_graph_store::ThreadSpawnEdgeAuthority,
