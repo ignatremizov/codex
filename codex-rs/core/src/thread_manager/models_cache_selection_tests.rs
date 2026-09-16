@@ -22,6 +22,8 @@ use wiremock::MockServer;
 fn catalog(slug: &str) -> ModelsResponse {
     let mut model = model_info_from_slug(slug);
     model.visibility = ModelVisibility::List;
+    // Supplied catalog metadata is not a runtime fallback; this marker is not serialized.
+    model.used_fallback_model_metadata = false;
     ModelsResponse {
         models: vec![model],
     }
