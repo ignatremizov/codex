@@ -605,6 +605,28 @@ impl AppServerSession {
         client.codex_home()
     }
 
+    pub(crate) fn auth_profile_label(&self, config: &Config) -> Option<String> {
+        match &self.client {
+            AppServerClient::InProcess(_) => Some(
+                config
+                    .auth_file_selection
+                    .profile_identity(&config.codex_home, config.cli_auth_credentials_store_mode)
+                    .display_label,
+            ),
+            AppServerClient::Remote(client) => client
+                .auth_profile()
+                .map(|profile| profile.display_label.as_str())
+                .filter(|label| {
+                    !label.is_empty()
+                        && label.len() <= 80
+                        && label
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                })
+                .map(str::to_owned),
+        }
+    }
+
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;

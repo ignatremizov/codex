@@ -27,6 +27,7 @@ use codex_config::LoaderOverrides;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
 use codex_protocol::ThreadId;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_home_dir::find_codex_home;
 use codex_utils_oss::get_default_model_for_oss_provider;
@@ -34,6 +35,7 @@ use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use color_eyre::eyre::eyre;
 
+use super::AppServerTarget;
 use super::RemoteAppServerEndpoint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +84,9 @@ pub async fn run_session_archive_command(
     options: SessionArchiveCommandOptions,
 ) -> Result<String> {
     let codex_home = find_codex_home().wrap_err("failed to find Codex home")?;
-    let mut app_server =
-        start_app_server_for_session_command(options, codex_home.to_path_buf()).await?;
+    let mut app_server = start_app_server_for_session_command(options, codex_home.to_path_buf())
+        .await?
+        .server;
     run_session_archive_action_with_app_server(
         &mut app_server,
         codex_home.as_path(),
@@ -219,10 +222,18 @@ fn confirm_session_delete(target: &ResolvedSessionTarget) -> Result<bool> {
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
+pub(super) struct SessionCommandServer {
+    pub(super) server: AppServerSession,
+    /// Startup-resolved routing hint, retained even when overrides require
+    /// embedded startup. Queue commands must not shadow a matching daemon.
+    pub(super) expected_local_daemon_socket: Option<AbsolutePathBuf>,
+}
+
 pub(super) async fn start_app_server_for_session_command(
     options: SessionArchiveCommandOptions,
     codex_home: PathBuf,
-) -> Result<AppServerSession> {
+) -> Result<SessionCommandServer> {
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let SessionArchiveCommandOptions {
         cli,
         arg0_paths,
@@ -231,6 +242,10 @@ pub(super) async fn start_app_server_for_session_command(
     if cli.no_daemon && explicit_remote_endpoint.is_some() {
         return Err(eyre!("--no-daemon cannot be used with --remote."));
     }
+    super::auth_profile_connection::validate_remote_selection(
+        explicit_remote_endpoint.as_ref(),
+        &auth_file_selection,
+    )?;
     let loader_overrides = LoaderOverrides::default();
     let strict_config = cli.strict_config;
     let raw_overrides = cli.config_overrides.raw_overrides.clone();
@@ -257,14 +272,11 @@ pub(super) async fn start_app_server_for_session_command(
             cli.bypass_hook_trust,
         )
         .is_none();
-    let default_daemon = if explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon {
-        super::maybe_probe_default_daemon_socket(codex_home.as_path()).await
-    } else {
-        None
-    };
+    let discover_local_daemon = explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon;
+    let uses_implicit_target = explicit_remote_endpoint.is_none();
     let mut app_server_target = super::app_server_target_for_launch(
         explicit_remote_endpoint,
-        default_daemon,
+        /*default_daemon_socket*/ None,
         reuse_implicit_local_daemon,
         workload_identity_selected,
         std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
@@ -316,6 +328,7 @@ pub(super) async fn start_app_server_for_session_command(
         &app_server_target,
         &bootstrap_config,
         codex_home.as_path(),
+        &auth_file_selection,
     )
     .await?;
 
@@ -332,6 +345,8 @@ pub(super) async fn start_app_server_for_session_command(
     });
     let cwd = cli.cwd.clone();
     let config = ConfigBuilder::default()
+        .codex_home(codex_home.clone())
+        .auth_file_selection(auth_file_selection)
         .cli_overrides(cli_kv_overrides.clone())
         .harness_overrides(ConfigOverrides {
             model,
@@ -354,6 +369,24 @@ pub(super) async fn start_app_server_for_session_command(
         .build()
         .await
         .wrap_err("failed to load configuration")?;
+    super::auth_profile_connection::resolve_profile_socket_alias(
+        &mut app_server_target,
+        cli.remote_addr.as_deref(),
+        &config,
+    )?;
+    if discover_local_daemon
+        && let Some(socket_path) = super::maybe_probe_daemon_socket(
+            &config.codex_home,
+            &config.auth_file_selection,
+            config.cli_auth_credentials_store_mode,
+        )
+        .await
+    {
+        app_server_target = AppServerTarget::LocalDaemon {
+            endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+            allow_embedded_fallback: true,
+        };
+    }
     let environment_manager = Arc::new(
         prepared_environment_manager
             .build(Some(local_runtime_paths), config.http_client_factory())
@@ -362,6 +395,17 @@ pub(super) async fn start_app_server_for_session_command(
     let mut state_db = super::init_state_db_for_app_server_target(&config, &app_server_target)
         .await
         .wrap_err("failed to initialize state database")?;
+    let expected_local_daemon_socket = (uses_implicit_target
+        && config.cli_auth_credentials_store_mode
+            != codex_login::AuthCredentialsStoreMode::Ephemeral)
+        .then(|| {
+            super::auth_profile_connection::daemon_socket_path(
+                &config.codex_home,
+                &config.auth_file_selection,
+                config.cli_auth_credentials_store_mode,
+            )
+        })
+        .transpose()?;
     let app_server = super::start_app_server(
         &mut app_server_target,
         arg0_paths,
@@ -376,10 +420,11 @@ pub(super) async fn start_app_server_for_session_command(
         environment_manager,
     )
     .await?;
-    Ok(
-        AppServerSession::new(app_server, app_server_target.thread_params_mode())
+    Ok(SessionCommandServer {
+        server: AppServerSession::new(app_server, app_server_target.thread_params_mode())
             .with_remote_cwd_override(remote_cwd_override),
-    )
+        expected_local_daemon_socket,
+    })
 }
 
 #[cfg(test)]

@@ -214,7 +214,7 @@ async fn daemon_startup_falls_back_only_for_implicit_endpoints() -> color_eyre::
         if scenario == "explicit endpoint" || scenario == "required daemon" {
             assert!(result.is_err());
             if scenario == "required daemon" {
-                let message = result.err().unwrap().to_string();
+                let message = format!("{:#}", result.err().unwrap());
                 assert!(message.contains("rerun the same command with --no-daemon"));
                 assert!(message.contains("failed to connect to remote app server"));
             }

@@ -9,11 +9,14 @@ use std::collections::BTreeMap;
 
 /// Start a missing daemon with these features, or leave a running daemon unchanged.
 /// Callers must check the running server's configuration before using it.
-pub async fn start_with_features(features: &BTreeMap<String, bool>) -> Result<LifecycleOutput> {
+pub async fn start_with_features(
+    launch: &crate::DaemonLaunchOptions,
+    features: &BTreeMap<String, bool>,
+) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
     #[cfg(windows)]
     crate::backend::windows::ensure_not_elevated()?;
-    let daemon = Daemon::from_environment()?;
+    let daemon = Daemon::from_options(launch)?;
     let _operation_lock = daemon.acquire_operation_lock().await?;
     let selected = daemon.current_installation()?;
     Box::pin(selected.start(features)).await

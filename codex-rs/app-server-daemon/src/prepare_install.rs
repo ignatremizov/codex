@@ -43,12 +43,13 @@ pub(super) async fn prepare(daemon: &Daemon, settings: &DaemonSettings) -> Resul
 /// Select this CLI's complete package and pin it, restarting only a running daemon.
 /// Returns None when the user cancels without changing the installation.
 pub async fn update_from_cli(
+    launch: &crate::DaemonLaunchOptions,
     confirm: impl FnOnce(&InstallRequest) -> Result<bool>,
 ) -> Result<Option<crate::UpdateOutput>> {
     crate::ensure_supported_platform()?;
     #[cfg(windows)]
     crate::backend::windows::ensure_not_elevated()?;
-    let daemon = Daemon::from_environment()?;
+    let daemon = Daemon::from_options(launch)?;
     let settings = daemon.load_settings().await?;
     let source = InstallContext::current().package_layout.as_ref();
     if !Box::pin(prepare_from_package(
@@ -90,11 +91,7 @@ async fn prepare_from_package(
     running_exe: &Path,
     confirm: impl FnOnce(&InstallRequest) -> Result<bool>,
 ) -> Result<bool> {
-    let home = daemon
-        .settings_file
-        .parent()
-        .and_then(Path::parent)
-        .context("daemon settings path has no Codex home")?;
+    let home = daemon.launch.codex_home();
     let previous_root = managed_install::package_root(home);
     let root = home.join("packages/app-server-daemon");
     anyhow::ensure!(

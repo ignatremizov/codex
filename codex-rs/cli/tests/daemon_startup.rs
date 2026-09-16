@@ -66,6 +66,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     let mut env = std::env::vars().collect::<std::collections::HashMap<_, _>>();
     for key in [
         "CODEX_EXEC_SERVER_URL",
+        "CODEX_AUTH_FILE",
         "CODEX_ACCESS_TOKEN",
         "CODEX_API_KEY",
         "CODEX_CLOUD_TASKS_MODE",
@@ -82,6 +83,12 @@ async fn daemon_startup(command: &str) -> Result<()> {
         home.path().display().to_string(),
     );
     env.insert("TERM".into(), "xterm-256color".into());
+    let resolved_home = home.path().canonicalize()?;
+    let profile = codex_login::AuthFileSelection::Default
+        .profile_identity(&resolved_home, codex_login::AuthCredentialsStoreMode::File);
+    let state_dir = resolved_home
+        .join("app-server-daemon")
+        .join(profile.profile_opaque_id);
     let mut args = vec!["--no-alt-screen".to_string()];
     let mut steps: VecDeque<(&str, &[u8])> = VecDeque::new();
     if matches!(command, "start" | "bedrock-running") {
@@ -91,13 +98,13 @@ async fn daemon_startup(command: &str) -> Result<()> {
             .join("packages/app-server-daemon/current/bin/codex");
         fs::create_dir_all(home.path().join("packages/app-server-daemon/current/bin"))?;
         fs::hard_link(&codex, &managed).or_else(|_| fs::copy(&codex, &managed).map(|_| ()))?;
-        fs::create_dir(home.path().join("app-server-daemon"))?;
+        fs::create_dir_all(&state_dir)?;
         fs::write(
-            home.path().join("app-server-daemon/settings.json"),
+            state_dir.join("settings.json"),
             r#"{"shutdownGraceSeconds":0,"updater":{"autoUpdateEnabled":false}}"#,
         )?;
     }
-    let pid_file = home.path().join("app-server-daemon/daemon.pid");
+    let pid_file = state_dir.join("daemon.pid");
     let result = async {
         let existing_daemon = if command == "bedrock-running" {
             let started = Command::new(&codex)
@@ -124,7 +131,8 @@ async fn daemon_startup(command: &str) -> Result<()> {
         } else {
             args.extend([command.into(), "--strict-config".into()]);
             steps.push_back(("Nosessionsyet", b"\x1b"));
-            steps.push_back(("GPT-5.6-Terra", b"\x14"));
+            // Startup diagnostics are retained behind the warning indicator, not in history.
+            steps.push_back(("1warning", b"\x1bOQ"));
             "Runningwithoutthesharedbackgroundserver:--strict-config"
         };
         let spawned = codex_utils_pty::spawn_pty_process(
@@ -178,7 +186,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                     output.clear();
                 } else if steps.is_empty() && text.contains(expected) {
                     if command == "start" {
-                        ensure!(home.path().join("app-server-daemon/daemon.pid").exists());
+                        ensure!(pid_file.exists());
                     } else if let Some(existing_daemon) = &existing_daemon {
                         ensure!(fs::read(&pid_file)? == *existing_daemon);
                     } else if bedrock_onboarding {

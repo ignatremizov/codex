@@ -11,6 +11,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_exec_server::LOCAL_FS;
 use codex_features::feature_for_key;
+use codex_login::AuthFileSelection;
 use codex_login::AuthManager;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
@@ -40,6 +41,7 @@ pub(crate) struct ModelProviderRequirementsChanged;
 #[derive(Clone)]
 pub(crate) struct ConfigManager {
     codex_home: PathBuf,
+    auth_file_selection: AuthFileSelection,
     cli_overrides: Arc<RwLock<Vec<(String, TomlValue)>>>,
     runtime_feature_enablement: Arc<RwLock<BTreeMap<String, bool>>>,
     loader_overrides: LoaderOverrides,
@@ -61,6 +63,7 @@ impl ConfigManager {
     ) -> Self {
         Self {
             codex_home,
+            auth_file_selection: AuthFileSelection::Default,
             cli_overrides: Arc::new(RwLock::new(cli_overrides)),
             runtime_feature_enablement: Arc::new(RwLock::new(BTreeMap::new())),
             loader_overrides,
@@ -69,6 +72,11 @@ impl ConfigManager {
             arg0_paths,
             thread_config_loader,
         }
+    }
+
+    pub(crate) fn auth_file_selection(mut self, selection: AuthFileSelection) -> Self {
+        self.auth_file_selection = selection;
+        self
     }
 
     pub(crate) fn codex_home(&self) -> &Path {
@@ -169,7 +177,7 @@ impl ConfigManager {
         cwd: &Path,
     ) -> std::io::Result<Config> {
         let refreshed_config = self.load_latest_config(Some(cwd.to_path_buf())).await?;
-        let mut config = Config::rebuild_with_session_layers(
+        let mut config = Config::rebuild_with_session_layers_and_auth_file_selection(
             session_layers,
             cwd.to_path_buf(),
             &refreshed_config.config_layer_stack,
@@ -179,6 +187,7 @@ impl ConfigManager {
                 .clone()
                 .map(AbsolutePathBuf::try_from)
                 .transpose()?,
+            refreshed_config.auth_file_selection.clone(),
         )
         .await?;
         self.apply_runtime_feature_enablement(&mut config);
@@ -198,12 +207,13 @@ impl ConfigManager {
             .load_config_layers_for_cwd(AbsolutePathBuf::from_absolute_path(cwd)?)
             .await?;
         // Merge the retained provider definitions before resolving managed provider selection.
-        let mut config = Config::rebuild_with_session_layers(
+        let mut config = Config::rebuild_with_session_layers_and_auth_file_selection(
             session_layers,
             cwd.to_path_buf(),
             &refreshed_layers,
             AbsolutePathBuf::from_absolute_path(&self.codex_home)?,
             /*default_zsh_path*/ None,
+            self.auth_file_selection.clone(),
         )
         .await?;
         self.apply_runtime_feature_enablement(&mut config);
@@ -271,6 +281,7 @@ impl ConfigManager {
         let mut loader_overrides = self.loader_overrides.clone();
         loader_overrides.ignore_user_config = true;
         let mut config = ConfigBuilder::default()
+            .auth_file_selection(self.auth_file_selection.clone())
             .codex_home(self.codex_home.clone())
             .cli_overrides(self.current_cli_overrides())
             .loader_overrides(loader_overrides)
@@ -378,6 +389,7 @@ impl ConfigManager {
             )
             .collect::<Vec<_>>();
         let mut config = codex_core::config::ConfigBuilder::default()
+            .auth_file_selection(self.auth_file_selection.clone())
             .codex_home(self.codex_home.clone())
             .cli_overrides(merged_cli_overrides)
             .loader_overrides(self.loader_overrides.clone())
@@ -509,3 +521,7 @@ pub(crate) fn apply_runtime_feature_enablement(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "config_manager_auth_tests.rs"]
+mod auth_tests;

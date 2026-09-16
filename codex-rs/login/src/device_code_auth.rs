@@ -221,6 +221,7 @@ pub async fn complete_device_code_login(
 
     crate::server::persist_tokens_async(
         &opts.codex_home,
+        &opts.auth_file_selection,
         /*api_key*/ None,
         tokens.id_token,
         tokens.access_token,

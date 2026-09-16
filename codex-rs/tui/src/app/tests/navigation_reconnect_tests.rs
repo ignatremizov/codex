@@ -1,7 +1,7 @@
 //! Command-center inventory and cached navigation recover independently of active work.
 
 use super::active_reconnect::drain_history;
-use super::disconnect::serve_reconnect_requests;
+use super::disconnect::serve_reconnect_requests_with_profile;
 use super::*;
 use crate::app::reconnect::ReconnectPresentation;
 use crate::app::reconnect::reconnect;
@@ -183,6 +183,15 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
         let restored_previous = previous_thread
             .map(|id| make_thread(id, "Recovered task", ThreadStatus::NotLoaded))
             .transpose()?;
+        let profile = app.config.auth_file_selection.profile_identity(
+            &app.config.codex_home,
+            app.config.cli_auth_credentials_store_mode,
+        );
+        let profile = codex_app_server_protocol::ServerAuthProfile {
+            profile_opaque_id: profile.profile_opaque_id,
+            display_label: profile.display_label,
+        };
+        let server_home = app.config.codex_home.display().to_string();
         let server = tokio::spawn(async move {
             let mut listener = listener;
             let mut methods = Vec::new();
@@ -190,7 +199,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             for connection in 0..(2 + usize::from(previous_thread.is_some())) {
                 let (stream, _) = listener.accept().await?;
                 let socket = tokio_tungstenite::accept_async(stream).await?;
-                methods.extend(serve_reconnect_requests(socket, |request| std::future::ready({
+                methods.extend(serve_reconnect_requests_with_profile(socket, Some((server_home.clone(), profile.clone())), |request| std::future::ready({
                     match request.method.as_str() {
                         "thread/loaded/list" if connection == 0 => None,
                         "thread/resume" if connection == 1 && previous_thread.is_some() => None,

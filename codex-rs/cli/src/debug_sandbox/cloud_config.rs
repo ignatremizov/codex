@@ -1,7 +1,7 @@
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadOptions;
-use codex_core::config::bootstrap_auth_config;
+use codex_core::config::bootstrap_auth_config_for_selection;
 use codex_core::config::load_config_toml_with_layer_stack;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use toml::Value as TomlValue;
@@ -13,6 +13,7 @@ pub(super) async fn bootstrap_cloud_config_bundle(
     cli_overrides: &[(String, TomlValue)],
     options: &DebugSandboxConfigOptions,
     resolve_codex_home: impl FnOnce() -> std::io::Result<AbsolutePathBuf>,
+    auth_file_selection: &codex_login::AuthFileSelection,
     strict_config: bool,
 ) -> anyhow::Result<CloudConfigBundleLoader> {
     if options.permissions_profile.is_none()
@@ -41,7 +42,11 @@ pub(super) async fn bootstrap_cloud_config_bundle(
     )
     .await?;
     Ok(cloud_config_bundle_loader_for_storage(
-        bootstrap_auth_config(codex_home.as_path(), &bootstrap_config)?,
+        bootstrap_auth_config_for_selection(
+            codex_home.as_path(),
+            &bootstrap_config,
+            auth_file_selection,
+        )?,
         /*enable_codex_api_key_env*/ false,
     )
     .await?)

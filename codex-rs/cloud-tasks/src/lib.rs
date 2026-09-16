@@ -13,9 +13,8 @@ use codex_cloud_tasks_client::TaskStatus;
 use codex_git_utils::current_branch_name;
 use codex_git_utils::default_branch_name;
 use codex_http_client::ClientRouteClass;
-use codex_http_client::HttpClientFactory;
-use codex_http_client::OutboundProxyPolicy;
 use codex_http_client::RouteAwareClientPool;
+use codex_login::AuthManager;
 use codex_login::default_client::get_codex_user_agent;
 use owo_colors::OwoColorize;
 use owo_colors::Stream;
@@ -41,6 +40,7 @@ struct ApplyJob {
 
 struct BackendContext {
     backend: Arc<dyn codex_cloud_tasks_client::CloudBackend>,
+    auth_manager: Option<Arc<AuthManager>>,
     base_url: String,
     environment_http: RouteAwareClientPool,
 }
@@ -59,9 +59,11 @@ async fn init_backend(user_agent_suffix: &str) -> anyhow::Result<BackendContext>
 
     #[cfg(debug_assertions)]
     if use_mock {
-        let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+        let (auth_manager, http_client_factory) =
+            util::load_auth_manager(/*chatgpt_base_url*/ None).await;
         return Ok(BackendContext {
             backend: Arc::new(codex_cloud_tasks_mock_client::MockClient),
+            auth_manager,
             base_url,
             environment_http: RouteAwareClientPool::new_without_redirects_or_request_logging(
                 http_client_factory,
@@ -118,6 +120,7 @@ async fn init_backend(user_agent_suffix: &str) -> anyhow::Result<BackendContext>
 
     Ok(BackendContext {
         backend: Arc::new(http),
+        auth_manager,
         base_url,
         environment_http,
     })
@@ -206,7 +209,7 @@ async fn resolve_environment_id(ctx: &BackendContext, requested: &str) -> anyhow
         return Err(anyhow!("environment id must not be empty"));
     }
     let normalized = util::normalize_base_url(&ctx.base_url);
-    let headers = util::build_chatgpt_headers().await;
+    let headers = util::build_chatgpt_headers(ctx.auth_manager.as_deref()).await;
     let environments =
         crate::env_detect::list_environments(&ctx.environment_http, &normalized, &headers).await?;
     if environments.is_empty() {
@@ -777,6 +780,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
     info!("Launching Cloud Tasks list UI");
     let BackendContext {
         backend,
+        auth_manager,
         base_url,
         environment_http,
     } = init_backend("codex_cloud_tasks_tui").await?;
@@ -859,7 +863,12 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
         });
     }
     // Fetch environment list in parallel so the header can show friendly names quickly.
-    spawn_environment_load(tx.clone(), base_url.clone(), environment_http.clone());
+    spawn_environment_load(
+        tx.clone(),
+        base_url.clone(),
+        environment_http.clone(),
+        auth_manager.clone(),
+    );
 
     // Try to auto-detect a likely environment id on startup and refresh if found.
     // Do this concurrently so the initial list shows quickly; on success we refetch with filter.
@@ -867,10 +876,11 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
         let tx = tx.clone();
         let base_url = base_url.clone();
         let environment_http = environment_http.clone();
+        let auth_manager = auth_manager.clone();
         tokio::spawn(async move {
             let base_url = util::normalize_base_url(&base_url);
             // Build headers: UA + ChatGPT auth if available
-            let headers = util::build_chatgpt_headers().await;
+            let headers = util::build_chatgpt_headers(auth_manager.as_deref()).await;
 
             // Run autodetect. If it fails, we keep using "All".
             let res = crate::env_detect::autodetect_environment_id(
@@ -1103,6 +1113,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                         tx.clone(),
                                         base_url.clone(),
                                         environment_http.clone(),
+                                        auth_manager.clone(),
                                     );
                                     let _ = frame_tx.send(Instant::now());
                                 }
@@ -1483,6 +1494,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                     tx.clone(),
                                     base_url.clone(),
                                     environment_http.clone(),
+                                    auth_manager.clone(),
                                 );
                             }
                             // Render after opening env modal to show it instantly.
@@ -1667,6 +1679,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                             tx.clone(),
                                             base_url.clone(),
                                             environment_http.clone(),
+                                            auth_manager.clone(),
                                         );
                                     }
                                 }
@@ -1841,6 +1854,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                             tx.clone(),
                                             base_url.clone(),
                                             environment_http.clone(),
+                                            auth_manager.clone(),
                                         );
                                     }
                                 }
@@ -2027,10 +2041,11 @@ fn spawn_environment_load(
     tx: UnboundedSender<app::AppEvent>,
     base_url: String,
     http: RouteAwareClientPool,
+    auth_manager: Option<Arc<AuthManager>>,
 ) {
     tokio::spawn(async move {
         let base_url = util::normalize_base_url(&base_url);
-        let headers = util::build_chatgpt_headers().await;
+        let headers = util::build_chatgpt_headers(auth_manager.as_deref()).await;
         let result = crate::env_detect::list_environments(&http, &base_url, &headers).await;
         let _ = tx.send(app::AppEvent::EnvironmentsLoaded(result));
     });
