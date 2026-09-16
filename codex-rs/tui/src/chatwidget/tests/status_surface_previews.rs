@@ -93,6 +93,26 @@ fn cache_no_project_root(chat: &mut ChatWidget) {
 }
 
 #[tokio::test]
+async fn auth_profile_status_uses_runtime_label_and_omits_unknown_servers() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.codex_home = test_path_buf("/homes/.codex").abs();
+    chat.auth_profile_label = Some("codex-office".to_string());
+    let items = [StatusLineItem::CodexHome, StatusLineItem::AuthProfile];
+    insta::assert_snapshot!(
+        status_preview_line(&mut chat, &items),
+        @"codex · codex-office"
+    );
+    // A legacy remote runtime has no proven profile. Do not substitute the
+    // local client's home or its local credential selection.
+    chat.auth_profile_label = None;
+    assert_eq!(
+        chat.status_line_value_for_item(StatusLineItem::AuthProfile),
+        None,
+    );
+    insta::assert_snapshot!(status_preview_line(&mut chat, &items), @"codex");
+}
+
+#[tokio::test]
 async fn codex_home_status_and_preview_follow_resolved_local_config() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.tui_status_line = Some(vec!["codex-home".to_string()]);

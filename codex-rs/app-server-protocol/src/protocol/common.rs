@@ -1362,6 +1362,11 @@ client_request_definitions! {
         response: v2::ProcessResizePtyResponse,
     },
 
+    ServerRead => "server/read" {
+        params: v2::ServerReadParams,
+        serialization: global_shared_read("server"),
+        response: v2::ServerReadResponse,
+    },
     ConfigRead => "config/read" {
         params: v2::ConfigReadParams,
         serialization: global_shared_read("config"),

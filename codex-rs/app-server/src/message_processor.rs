@@ -135,6 +135,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
+    server_metadata: codex_app_server_protocol::ServerReadResponse,
     outgoing: Arc<OutgoingMessageSender>,
     models_refresh_worker: ModelsRefreshWorker,
     turn_cost_worker: Option<TurnCostWorker>,
@@ -567,6 +568,7 @@ impl MessageProcessor {
         );
 
         Self {
+            server_metadata: crate::request_processors::startup_server_metadata(&config),
             outgoing,
             models_refresh_worker,
             turn_cost_worker,
@@ -980,6 +982,7 @@ impl MessageProcessor {
                 panic!("Initialize should be handled before initialized request dispatch");
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::ServerRead { .. } => Ok(Some(self.server_metadata.clone().into())),
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)

@@ -7,7 +7,7 @@ use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::ConfigTomlLoadResult;
-use crate::legacy_core::config::bootstrap_auth_config;
+use crate::legacy_core::config::bootstrap_auth_config_for_selection;
 use crate::legacy_core::config::load_config_toml_with_layer_stack;
 #[cfg(test)]
 use crate::legacy_core::config::resolve_bootstrap_http_client_factory;
@@ -535,6 +535,9 @@ pub fn remote_addr_supports_auth_token(endpoint: &RemoteAppServerEndpoint) -> bo
     }
 }
 
+mod auth_profile_connection;
+use auth_profile_connection::maybe_probe_daemon_socket;
+
 async fn connect_remote_app_server(
     endpoint: RemoteAppServerEndpoint,
 ) -> color_eyre::Result<AppServerClient> {
@@ -552,36 +555,6 @@ async fn connect_remote_app_server(
     Ok(AppServerClient::Remote(app_server))
 }
 
-#[cfg(unix)]
-async fn maybe_probe_default_daemon_socket(codex_home: &Path) -> Option<AbsolutePathBuf> {
-    let socket_path = codex_app_server_client::app_server_control_socket_path(codex_home).ok()?;
-    match tokio::time::timeout(
-        AUTO_CONNECT_DAEMON_CONNECT_TIMEOUT,
-        tokio::net::UnixStream::connect(socket_path.as_path()),
-    )
-    .await
-    {
-        Ok(Ok(_stream)) => Some(socket_path),
-        Ok(Err(err)) => {
-            tracing::debug!(%err, socket_path = %socket_path.display(), "skipping default app-server daemon socket");
-            None
-        }
-        Err(_) => {
-            tracing::debug!(
-                socket_path = %socket_path.display(),
-                timeout_ms = AUTO_CONNECT_DAEMON_CONNECT_TIMEOUT.as_millis(),
-                "timed out probing default app-server daemon socket"
-            );
-            None
-        }
-    }
-}
-
-#[cfg(not(unix))]
-async fn maybe_probe_default_daemon_socket(_codex_home: &Path) -> Option<AbsolutePathBuf> {
-    None
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn start_app_server(
     target: &AppServerTarget,
@@ -593,28 +566,29 @@ async fn start_app_server(
     cloud_config_bundle: CloudConfigBundleLoader,
     feedback: codex_feedback::CodexFeedback,
     log_db: Option<log_db::LogDbLayer>,
-    state_db: Option<StateDbHandle>,
+    mut state_db: Option<StateDbHandle>,
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<AppServerClient> {
-    match target {
-        AppServerTarget::Embedded => start_embedded_app_server(
-            arg0_paths,
-            config,
-            cli_kv_overrides,
-            loader_overrides,
-            strict_config,
-            cloud_config_bundle,
-            feedback,
-            log_db,
-            state_db,
-            environment_manager,
-        )
-        .await
-        .map(AppServerClient::InProcess),
-        AppServerTarget::LocalDaemon { endpoint } | AppServerTarget::Remote { endpoint } => {
-            connect_remote_app_server(endpoint.clone()).await
-        }
+    if let Some(client) = auth_profile_connection::connect_for_startup(target, &config).await? {
+        return Ok(client);
     }
+    if matches!(target, AppServerTarget::LocalDaemon { .. }) {
+        state_db = init_state_db_for_app_server_target(&config, &AppServerTarget::Embedded).await?;
+    }
+    start_embedded_app_server(
+        arg0_paths,
+        config,
+        cli_kv_overrides,
+        loader_overrides,
+        strict_config,
+        cloud_config_bundle,
+        feedback,
+        log_db,
+        state_db,
+        environment_manager,
+    )
+    .await
+    .map(AppServerClient::InProcess)
 }
 
 pub(crate) async fn start_app_server_for_picker(
@@ -1073,10 +1047,14 @@ async fn cloud_config_bundle_for_app_server_target(
     app_server_target: &AppServerTarget,
     bootstrap_config: &ConfigTomlLoadResult,
     codex_home: &Path,
+    auth_file_selection: &codex_login::AuthFileSelection,
 ) -> std::io::Result<CloudConfigBundleLoader> {
     cloud_config_bundle_loader_for_storage(
-        app_server_target
-            .auth_config_for_cloud_loader(bootstrap_auth_config(codex_home, bootstrap_config)?),
+        app_server_target.auth_config_for_cloud_loader(bootstrap_auth_config_for_selection(
+            codex_home,
+            bootstrap_config,
+            auth_file_selection,
+        )?),
         /*enable_codex_api_key_env*/ false,
     )
     .await
@@ -1152,7 +1130,7 @@ async fn run_ratatui_app(
     arg0_paths: Arg0DispatchPaths,
     loader_overrides: LoaderOverrides,
     strict_config: bool,
-    app_server_target: AppServerTarget,
+    mut app_server_target: AppServerTarget,
     remote_cwd_override: Option<PathBuf>,
     initial_config: Config,
     manually_selected_oss_provider: Option<String>,
@@ -1230,6 +1208,9 @@ async fn run_ratatui_app(
         .await;
     let app_server_session = match startup_app_server {
         Ok(Ok(app_server)) => {
+            if matches!(&app_server, AppServerClient::InProcess(_)) {
+                app_server_target = AppServerTarget::Embedded;
+            }
             AppServerSession::new(app_server, app_server_target.thread_params_mode())
                 .with_startup_config(&initial_config)
         }
@@ -2831,24 +2812,36 @@ mod tests {
     async fn default_daemon_auto_connect_skips_missing_socket() -> color_eyre::Result<()> {
         let codex_home = TempDir::new()?;
         assert!(
-            maybe_probe_default_daemon_socket(codex_home.path())
-                .await
-                .is_none()
+            maybe_probe_daemon_socket(
+                codex_home.path(),
+                &codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .await
+            .is_none()
         );
         Ok(())
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn default_daemon_auto_connect_probes_socket_only() -> color_eyre::Result<()> {
-        let codex_home = TempDir::new()?;
-        let socket_path =
-            codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
+    async fn default_daemon_auto_connect_probes_profile_socket_only() -> color_eyre::Result<()> {
+        let codex_home = tempfile::tempdir_in("/tmp")?;
+        let socket_path = auth_profile_connection::daemon_socket_path(
+            codex_home.path(),
+            &codex_login::AuthFileSelection::Default,
+            codex_login::AuthCredentialsStoreMode::File,
+        )?;
         std::fs::create_dir_all(socket_path.as_path().parent().expect("socket parent"))?;
         let _listener = tokio::net::UnixListener::bind(socket_path.as_path())?;
 
         assert_eq!(
-            maybe_probe_default_daemon_socket(codex_home.path()).await,
+            maybe_probe_daemon_socket(
+                codex_home.path(),
+                &codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .await,
             Some(socket_path)
         );
         Ok(())

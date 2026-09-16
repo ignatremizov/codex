@@ -73,7 +73,11 @@ pub async fn run_main(
             format!("error parsing -c overrides: {e}"),
         )
     })?;
+    let codex_home = codex_core::config::find_codex_home()?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let config = ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
+        .auth_file_selection(auth_file_selection)
         .cli_overrides(cli_kv_overrides)
         .strict_config(strict_config)
         .build()

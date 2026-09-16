@@ -57,7 +57,11 @@ const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
 
 #[cfg(unix)]
-pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
+pub(crate) async fn run(
+    launch: crate::DaemonLaunchOptions,
+    http_client_factory: HttpClientFactory,
+) -> Result<()> {
+    let daemon = Daemon::from_options(&launch)?;
     let mut terminate =
         signal(SignalKind::terminate()).context("failed to install updater shutdown handler")?;
     let running_updater_identity = current_updater_identity().await?;
@@ -69,7 +73,7 @@ pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
         return Ok(());
     }
     loop {
-        match update_once(&http, &running_updater_identity, &mut terminate).await {
+        match update_once(&daemon, &http, &running_updater_identity, &mut terminate).await {
             Ok(UpdateLoopControl::Continue) | Err(_) => {}
             Ok(UpdateLoopControl::Stop) => return Ok(()),
         }
@@ -80,7 +84,10 @@ pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-pub(crate) async fn run(_http_client_factory: HttpClientFactory) -> Result<()> {
+pub(crate) async fn run(
+    _launch: crate::DaemonLaunchOptions,
+    _http_client_factory: HttpClientFactory,
+) -> Result<()> {
     bail!("pid-managed updater loop is unsupported on this platform")
 }
 
@@ -100,13 +107,13 @@ enum UpdateLoopControl {
 
 #[cfg(unix)]
 async fn update_once(
+    daemon: &Daemon,
     http: &RouteAwareClientPool,
     running_updater_identity: &ExecutableIdentity,
     terminate: &mut Signal,
 ) -> Result<UpdateLoopControl> {
-    install_latest_standalone(http).await?;
+    install_latest_standalone(http, daemon.launch.codex_home()).await?;
 
-    let daemon = Daemon::from_environment()?;
     let managed_codex_bin = resolved_managed_codex_bin(&daemon.managed_codex_bin).await?;
     let managed_identity = executable_identity(&managed_codex_bin).await?;
     let (restart_mode, updater_refresh_mode) =
@@ -153,8 +160,13 @@ fn update_modes_for_identities(
 }
 
 #[cfg(unix)]
-pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Result<()> {
-    let err = StdCommand::new(managed_codex_bin)
+pub(crate) fn reexec_managed_updater(
+    managed_codex_bin: &std::path::Path,
+    launch: &crate::DaemonLaunchOptions,
+) -> Result<()> {
+    let mut command = StdCommand::new(managed_codex_bin);
+    launch.configure_command(&mut command);
+    let err = command
         .args(["app-server", "daemon", "pid-update-loop"])
         .exec();
     Err(err).with_context(|| {
@@ -166,10 +178,14 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 }
 
 #[cfg(unix)]
-async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
+async fn install_latest_standalone(
+    http: &RouteAwareClientPool,
+    codex_home: &std::path::Path,
+) -> Result<()> {
     let script = fetch_installer_script(http).await?;
 
     let mut child = Command::new("/bin/sh")
+        .env("CODEX_HOME", codex_home)
         .arg("-s")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

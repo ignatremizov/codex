@@ -1,5 +1,6 @@
 mod backend;
 mod client;
+mod launch_options;
 mod managed_install;
 mod remote_control_client;
 mod settings;
@@ -16,8 +17,9 @@ pub use backend::BackendKind;
 use backend::BackendPaths;
 use codex_app_server_protocol::RemoteControlConnectionStatus;
 use codex_app_server_protocol::RemoteControlPairingStartResponse;
-use codex_app_server_transport::app_server_control_socket_path;
-use codex_utils_home_dir::find_codex_home;
+pub use launch_options::DaemonLaunchOptions;
+pub use launch_options::DaemonProfileLookup;
+pub use launch_options::resolve_existing_launch;
 use managed_install::managed_codex_bin;
 #[cfg(unix)]
 use managed_install::managed_codex_version;
@@ -188,30 +190,40 @@ enum RestartDecision {
     Restart,
 }
 
-pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
+pub async fn run(
+    launch: &DaemonLaunchOptions,
+    command: LifecycleCommand,
+) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?.run(command).await
+    Daemon::from_options(launch)?.run(command).await
 }
 
-pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
+pub async fn bootstrap(
+    launch: &DaemonLaunchOptions,
+    options: BootstrapOptions,
+) -> Result<BootstrapOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?.bootstrap(options).await
+    Daemon::from_options(launch)?.bootstrap(options).await
 }
 
-pub async fn ensure_remote_control_ready() -> Result<RemoteControlReadyOutput> {
+pub async fn ensure_remote_control_ready(
+    launch: &DaemonLaunchOptions,
+) -> Result<RemoteControlReadyOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?
+    Daemon::from_options(launch)?
         .ensure_remote_control_ready()
         .await
 }
 
 pub async fn enable_remote_control_on_socket(
+    launch: &DaemonLaunchOptions,
     socket_path: &Path,
     connect_timeout: Duration,
     connect_retry_delay: Duration,
 ) -> Result<RemoteControlReadyStatus> {
     ensure_supported_platform()?;
     remote_control_client::enable_remote_control_with_connect_retry(
+        launch,
         socket_path,
         connect_timeout,
         connect_retry_delay,
@@ -220,22 +232,28 @@ pub async fn enable_remote_control_on_socket(
 }
 
 /// Starts a manual pairing session through an already-running daemon app-server.
-pub async fn start_remote_control_pairing() -> Result<RemoteControlPairingStartResponse> {
+pub async fn start_remote_control_pairing(
+    launch: &DaemonLaunchOptions,
+) -> Result<RemoteControlPairingStartResponse> {
     ensure_supported_platform()?;
-    let daemon = Daemon::from_environment()?;
-    remote_control_client::start_pairing(&daemon.socket_path).await
+    let daemon = Daemon::from_options(launch)?;
+    remote_control_client::start_pairing(launch, &daemon.socket_path).await
 }
 
-pub async fn set_remote_control(mode: RemoteControlMode) -> Result<RemoteControlOutput> {
+pub async fn set_remote_control(
+    launch: &DaemonLaunchOptions,
+    mode: RemoteControlMode,
+) -> Result<RemoteControlOutput> {
     ensure_supported_platform()?;
-    Daemon::from_environment()?.set_remote_control(mode).await
+    Daemon::from_options(launch)?.set_remote_control(mode).await
 }
 
 pub async fn run_pid_update_loop(
+    launch: DaemonLaunchOptions,
     http_client_factory: codex_http_client::HttpClientFactory,
 ) -> Result<()> {
     ensure_supported_platform()?;
-    update_loop::run(http_client_factory).await
+    update_loop::run(launch, http_client_factory).await
 }
 
 #[cfg(unix)]
@@ -251,6 +269,7 @@ fn ensure_supported_platform() -> Result<()> {
 }
 
 struct Daemon {
+    launch: DaemonLaunchOptions,
     socket_path: PathBuf,
     pid_file: PathBuf,
     update_pid_file: PathBuf,
@@ -260,19 +279,20 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn from_environment() -> Result<Self> {
-        let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
-        let socket_path = app_server_control_socket_path(codex_home.as_path())?
-            .as_path()
-            .to_path_buf();
-        let state_dir = codex_home.as_path().join(STATE_DIR_NAME);
+    fn from_options(launch: &DaemonLaunchOptions) -> Result<Self> {
+        let codex_home = launch.codex_home();
+        let socket_path = launch.socket_path()?;
+        let state_dir = codex_home
+            .join(STATE_DIR_NAME)
+            .join(&launch.auth_profile().profile_opaque_id);
         Ok(Self {
+            launch: launch.clone(),
             socket_path,
             pid_file: state_dir.join(PID_FILE_NAME),
             update_pid_file: state_dir.join(UPDATE_PID_FILE_NAME),
             operation_lock_file: state_dir.join(OPERATION_LOCK_FILE_NAME),
             settings_file: state_dir.join(SETTINGS_FILE_NAME),
-            managed_codex_bin: managed_codex_bin(codex_home.as_path()),
+            managed_codex_bin: managed_codex_bin(codex_home),
         })
     }
 
@@ -296,7 +316,7 @@ impl Daemon {
 
     async fn start(&self) -> Result<LifecycleOutput> {
         let settings = self.load_settings().await?;
-        if let Ok(info) = client::probe(&self.socket_path).await {
+        if let Ok(info) = client::probe_profile(&self.socket_path, &self.launch).await {
             return Ok(self
                 .output(
                     LifecycleStatus::AlreadyRunning,
@@ -334,7 +354,9 @@ impl Daemon {
 
     async fn restart(&self) -> Result<LifecycleOutput> {
         let settings = self.load_settings().await?;
-        if client::probe(&self.socket_path).await.is_ok()
+        if client::probe_profile(&self.socket_path, &self.launch)
+            .await
+            .is_ok()
             && self.running_backend(&settings).await?.is_none()
         {
             return Err(anyhow!(
@@ -372,7 +394,9 @@ impl Daemon {
         }
         let settings = self.load_settings().await?;
         let outcome = if let Some(backend) = self.running_backend_instance(&settings).await? {
-            let info = client::probe(&self.socket_path).await.ok();
+            let info = client::probe_profile(&self.socket_path, &self.launch)
+                .await
+                .ok();
             let managed_version = if info.is_some() {
                 Some(managed_codex_version(managed_codex_bin).await?)
             } else {
@@ -390,7 +414,10 @@ impl Daemon {
                     RestartIfRunningOutcome::Restarted
                 }
             }
-        } else if client::probe(&self.socket_path).await.is_ok() {
+        } else if client::probe_profile(&self.socket_path, &self.launch)
+            .await
+            .is_ok()
+        {
             return Err(anyhow!(
                 "app server is running but is not managed by codex app-server daemon"
             ));
@@ -399,7 +426,7 @@ impl Daemon {
         };
 
         if should_reexec_updater(updater_refresh_mode, outcome) {
-            crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
+            crate::update_loop::reexec_managed_updater(managed_codex_bin, &self.launch)?;
         }
 
         Ok(outcome)
@@ -419,7 +446,10 @@ impl Daemon {
                 .await);
         }
 
-        if client::probe(&self.socket_path).await.is_ok() {
+        if client::probe_profile(&self.socket_path, &self.launch)
+            .await
+            .is_ok()
+        {
             return Err(anyhow!(
                 "app server is running but is not managed by codex app-server daemon"
             ));
@@ -437,7 +467,7 @@ impl Daemon {
 
     async fn version(&self) -> Result<LifecycleOutput> {
         let settings = self.load_settings().await?;
-        let info = client::probe(&self.socket_path).await?;
+        let info = client::probe_profile(&self.socket_path, &self.launch).await?;
         Ok(self
             .output(
                 LifecycleStatus::Running,
@@ -451,7 +481,7 @@ impl Daemon {
     async fn wait_until_ready(&self) -> Result<client::ProbeInfo> {
         let deadline = tokio::time::Instant::now() + START_TIMEOUT;
         loop {
-            match client::probe(&self.socket_path).await {
+            match client::probe_profile(&self.socket_path, &self.launch).await {
                 Ok(info) => return Ok(info),
                 Err(err) if tokio::time::Instant::now() < deadline => {
                     let _ = err;
@@ -513,7 +543,7 @@ impl Daemon {
     async fn ensure_remote_control_ready(&self) -> Result<RemoteControlReadyOutput> {
         let daemon = self.ensure_remote_control_started().await?;
         let remote_control =
-            remote_control_client::enable_remote_control(&self.socket_path).await?;
+            remote_control_client::enable_remote_control(&self.launch, &self.socket_path).await?;
         Ok(RemoteControlReadyOutput {
             daemon,
             remote_control,
@@ -534,7 +564,11 @@ impl Daemon {
         let remote_control_enabled = mode.is_enabled();
         let backend = self.running_backend_instance(&previous_settings).await?;
 
-        if backend.is_none() && client::probe(&self.socket_path).await.is_ok() {
+        if backend.is_none()
+            && client::probe_profile(&self.socket_path, &self.launch)
+                .await
+                .is_ok()
+        {
             return Err(anyhow!(
                 "app server is running but is not managed by codex app-server daemon"
             ));
@@ -549,10 +583,18 @@ impl Daemon {
             if info.is_some() {
                 match mode {
                     RemoteControlMode::Enabled => {
-                        remote_control_client::enable_remote_control(&self.socket_path).await?;
+                        remote_control_client::enable_remote_control(
+                            &self.launch,
+                            &self.socket_path,
+                        )
+                        .await?;
                     }
                     RemoteControlMode::Disabled => {
-                        remote_control_client::disable_remote_control(&self.socket_path).await?;
+                        remote_control_client::disable_remote_control(
+                            &self.launch,
+                            &self.socket_path,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -590,7 +632,9 @@ impl Daemon {
         let settings = DaemonSettings {
             remote_control_enabled: options.remote_control_enabled,
         };
-        if client::probe(&self.socket_path).await.is_ok()
+        if client::probe_profile(&self.socket_path, &self.launch)
+            .await
+            .is_ok()
             && self.running_backend(&settings).await?.is_none()
         {
             return Err(anyhow!(
@@ -699,6 +743,7 @@ impl Daemon {
         managed_codex_bin: &Path,
     ) -> BackendPaths {
         BackendPaths {
+            launch: self.launch.clone(),
             codex_bin: managed_codex_bin.to_path_buf(),
             pid_file: self.pid_file.clone(),
             update_pid_file: self.update_pid_file.clone(),
@@ -856,6 +901,7 @@ mod tests {
     use super::BootstrapOutput;
     use super::BootstrapStatus;
     use super::Daemon;
+    use super::DaemonLaunchOptions;
     use super::LifecycleOutput;
     use super::LifecycleStatus;
     use super::RemoteControlStartOutput;
@@ -1010,6 +1056,12 @@ mod tests {
     async fn not_ready_context_reports_daemon_app_server_before_stderr() {
         let temp_dir = TempDir::new().expect("temp dir");
         let daemon = Daemon {
+            launch: DaemonLaunchOptions::new(
+                temp_dir.path().to_path_buf(),
+                codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .expect("launch options"),
             socket_path: temp_dir.path().join("app-server-control.sock"),
             pid_file: temp_dir.path().join("app-server.pid"),
             update_pid_file: temp_dir.path().join("app-server-updater.pid"),

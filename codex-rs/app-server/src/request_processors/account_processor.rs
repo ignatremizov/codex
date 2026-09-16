@@ -8,7 +8,9 @@ use crate::external_auth::ExternalAuthBridge;
 use chrono::DateTime;
 use codex_app_server_protocol::DesktopOnboardingEntrypoint;
 use codex_login::LoginOnboardingEntrypoint;
-use codex_login::login_with_bedrock_access_keys;
+use codex_login::login_with_api_key_for_selection;
+use codex_login::login_with_bedrock_access_keys_for_selection;
+use codex_login::login_with_bedrock_api_key_for_selection;
 use codex_model_provider::is_supported_amazon_bedrock_region;
 
 mod bedrock_setup;
@@ -421,8 +423,9 @@ impl AccountRequestProcessor {
             }
         }
 
-        match login_with_api_key(
+        match login_with_api_key_for_selection(
             &self.config.codex_home,
+            &self.config.auth_file_selection,
             &params.api_key,
             self.config.cli_auth_credentials_store_mode,
             self.config.auth_keyring_backend_kind(),
@@ -497,13 +500,16 @@ impl AccountRequestProcessor {
             .await?;
 
             match credentials {
-                BedrockLoginCredentials::ApiKey(api_key) => login_with_bedrock_api_key(
-                    &self.config.codex_home,
-                    api_key.trim(),
-                    region,
-                    self.config.cli_auth_credentials_store_mode,
-                    self.config.auth_keyring_backend_kind(),
-                ),
+                BedrockLoginCredentials::ApiKey(api_key) => {
+                    login_with_bedrock_api_key_for_selection(
+                        &self.config.codex_home,
+                        &self.config.auth_file_selection,
+                        api_key.trim(),
+                        region,
+                        self.config.cli_auth_credentials_store_mode,
+                        self.config.auth_keyring_backend_kind(),
+                    )
+                }
                 BedrockLoginCredentials::AccessKeys {
                     access_key_id,
                     secret_access_key,
@@ -513,8 +519,9 @@ impl AccountRequestProcessor {
                         .as_deref()
                         .map(str::trim)
                         .filter(|token| !token.is_empty());
-                    login_with_bedrock_access_keys(
+                    login_with_bedrock_access_keys_for_selection(
                         &self.config.codex_home,
+                        &self.config.auth_file_selection,
                         access_key_id.trim(),
                         secret_access_key.trim(),
                         session_token,
@@ -560,6 +567,7 @@ impl AccountRequestProcessor {
         }
 
         let opts = LoginServerOptions {
+            auth_file_selection: config.auth_file_selection.clone(),
             open_browser: false,
             codex_streamlined_login,
             login_success_page,

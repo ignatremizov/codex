@@ -8,7 +8,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::ChatgptAuthSession;
 use codex_login::CodexAuth;
-use codex_login::load_auth_dot_json;
+use codex_login::load_auth_dot_json_for_selection;
 use codex_login::read_codex_access_token_from_env;
 use codex_protocol::auth::AuthMode;
 use serde::Deserialize;
@@ -54,8 +54,9 @@ pub(crate) fn validate_transcription_auth(config: &Config) -> Result<(), String>
         );
     }
 
-    if load_auth_dot_json(
+    if load_auth_dot_json_for_selection(
         config.codex_home.as_path(),
+        &config.auth_file_selection,
         AuthCredentialsStoreMode::Ephemeral,
         config.auth_keyring_backend_kind(),
     )
@@ -68,8 +69,9 @@ pub(crate) fn validate_transcription_auth(config: &Config) -> Result<(), String>
         );
     }
 
-    let auth = load_auth_dot_json(
+    let auth = load_auth_dot_json_for_selection(
         config.codex_home.as_path(),
+        &config.auth_file_selection,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
     )

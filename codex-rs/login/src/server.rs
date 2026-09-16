@@ -24,9 +24,10 @@ use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
 
+use crate::AuthFileSelection;
 use crate::auth::AuthDotJson;
 use crate::auth::AuthKeyringBackendKind;
-use crate::auth::save_auth;
+use crate::auth::save_auth_for_selection;
 use crate::callback_params::LoginCallbackResult;
 use crate::callback_params::login_callback_result_from_state;
 use crate::default_client::create_raw_auth_client;
@@ -69,6 +70,8 @@ static LOGIN_ERROR_PAGE_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     pub codex_home: PathBuf,
+    /// Credential store captured before the browser or device-code flow starts.
+    pub auth_file_selection: AuthFileSelection,
     pub client_id: String,
     pub issuer: String,
     pub port: u16,
@@ -94,6 +97,7 @@ impl ServerOptions {
     ) -> Self {
         Self {
             codex_home,
+            auth_file_selection: AuthFileSelection::Default,
             client_id,
             issuer: DEFAULT_ISSUER.to_string(),
             port: DEFAULT_PORT,
@@ -436,6 +440,7 @@ async fn process_request(
                     .ok();
                     if let Err(err) = persist_tokens_async(
                         &opts.codex_home,
+                        &opts.auth_file_selection,
                         api_key.clone(),
                         tokens.id_token.clone(),
                         tokens.access_token.clone(),
@@ -883,8 +888,10 @@ pub(crate) async fn exchange_code_for_tokens(
 }
 
 /// Persists exchanged credentials using the configured local auth store.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_tokens_async(
     codex_home: &Path,
+    auth_file_selection: &AuthFileSelection,
     api_key: Option<String>,
     id_token: String,
     access_token: String,
@@ -894,6 +901,7 @@ pub(crate) async fn persist_tokens_async(
 ) -> io::Result<()> {
     // Reuse existing synchronous logic but run it off the async runtime.
     let codex_home = codex_home.to_path_buf();
+    let auth_file_selection = auth_file_selection.clone();
     tokio::task::spawn_blocking(move || {
         let mut tokens = TokenData {
             id_token: parse_chatgpt_jwt_claims(&id_token).map_err(io::Error::other)?,
@@ -917,8 +925,9 @@ pub(crate) async fn persist_tokens_async(
             bedrock_api_key: None,
             bedrock_access_keys: None,
         };
-        save_auth(
+        save_auth_for_selection(
             &codex_home,
+            &auth_file_selection,
             &auth,
             auth_credentials_store_mode,
             keyring_backend_kind,

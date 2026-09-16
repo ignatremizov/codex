@@ -106,6 +106,12 @@ impl ChatWidget {
             app_event_tx.clone(),
             pet_http_client.clone(),
         );
+        let auth_profile_label = Some(
+            config
+                .auth_file_selection
+                .profile_identity(&config.codex_home, config.cli_auth_credentials_store_mode)
+                .display_label,
+        );
         let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
@@ -139,6 +145,7 @@ impl ChatWidget {
             status_account_display,
             runtime_model_provider_base_url,
             remote_connection: None,
+            auth_profile_label,
             token_info: None,
             token_usage_pending: false,
             rate_limit_snapshots_by_limit_id: BTreeMap::new(),

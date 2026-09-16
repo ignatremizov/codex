@@ -40,6 +40,7 @@ use super::external_bearer::BearerTokenRefresher;
 use super::revoke::revoke_auth_tokens;
 use super::workload_identity::WorkloadIdentityExternalAuth;
 use super::workload_identity::WorkloadIdentitySessionError;
+use crate::AuthFileSelection;
 use crate::auth::AuthHeaders;
 pub use crate::auth::agent_identity::AgentIdentityAuth;
 pub use crate::auth::agent_identity::AgentIdentityAuthError;
@@ -52,6 +53,7 @@ pub use crate::auth::storage::AuthDotJson;
 pub use crate::auth::storage::AuthKeyringBackendKind;
 use crate::auth::storage::AuthStorageBackend;
 use crate::auth::storage::create_auth_storage;
+use crate::auth::storage::create_auth_storage_for_selection;
 use crate::auth::util::try_parse_error_message;
 use crate::default_client::create_client;
 use crate::default_client::create_default_auth_client;
@@ -326,8 +328,10 @@ impl ChatgptAuthSession {
 }
 
 impl CodexAuth {
+    #[allow(clippy::too_many_arguments)]
     async fn from_auth_dot_json(
         codex_home: &Path,
+        auth_file_selection: &AuthFileSelection,
         auth_dot_json: AuthDotJson,
         auth_credentials_store_mode: AuthCredentialsStoreMode,
         chatgpt_base_url: Option<&str>,
@@ -416,8 +420,9 @@ impl CodexAuth {
 
         match auth_mode {
             AuthMode::Chatgpt => {
-                let storage = create_auth_storage(
+                let storage = create_auth_storage_for_selection(
                     codex_home.to_path_buf(),
+                    auth_file_selection,
                     storage_mode,
                     keyring_backend_kind,
                 );
@@ -450,6 +455,7 @@ impl CodexAuth {
             agent_identity_authapi_base_url(chatgpt_base_url).ok();
         load_auth(
             codex_home,
+            &AuthFileSelection::Default,
             /*enable_codex_api_key_env*/ false,
             auth_credentials_store_mode,
             /*allowed_login_methods*/ None,
@@ -971,8 +977,24 @@ pub fn logout(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<bool> {
-    let storage = create_auth_storage(
+    logout_for_selection(
+        codex_home,
+        &AuthFileSelection::Default,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+/// Delete credentials from the selected backend without touching other selections.
+pub fn logout_for_selection(
+    codex_home: &Path,
+    selection: &AuthFileSelection,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<bool> {
+    let storage = create_auth_storage_for_selection(
         codex_home.to_path_buf(),
+        selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
@@ -985,8 +1007,27 @@ pub async fn logout_with_revoke(
     keyring_backend_kind: AuthKeyringBackendKind,
     auth_route_config: &AuthRouteConfig,
 ) -> std::io::Result<bool> {
-    let auth_dot_json = match load_auth_dot_json(
+    logout_with_revoke_for_selection(
         codex_home,
+        &AuthFileSelection::Default,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+        auth_route_config,
+    )
+    .await
+}
+
+/// Revoke and remove credentials belonging to the captured file selection.
+pub async fn logout_with_revoke_for_selection(
+    codex_home: &Path,
+    selection: &AuthFileSelection,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    auth_route_config: &AuthRouteConfig,
+) -> std::io::Result<bool> {
+    let auth_dot_json = match load_auth_dot_json_for_selection(
+        codex_home,
+        selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     ) {
@@ -1001,6 +1042,7 @@ pub async fn logout_with_revoke(
     }
     logout_all_stores(
         codex_home,
+        selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     )
@@ -1009,6 +1051,23 @@ pub async fn logout_with_revoke(
 /// Writes an `auth.json` that contains only the API key.
 pub fn login_with_api_key(
     codex_home: &Path,
+    api_key: &str,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<()> {
+    login_with_api_key_for_selection(
+        codex_home,
+        &AuthFileSelection::Default,
+        api_key,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+/// Save an explicitly supplied API key to the selected credential store.
+pub fn login_with_api_key_for_selection(
+    codex_home: &Path,
+    selection: &AuthFileSelection,
     api_key: &str,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
@@ -1023,8 +1082,9 @@ pub fn login_with_api_key(
         bedrock_api_key: None,
         bedrock_access_keys: None,
     };
-    save_auth(
+    save_auth_for_selection(
         codex_home,
+        selection,
         &auth_dot_json,
         auth_credentials_store_mode,
         keyring_backend_kind,
@@ -1034,6 +1094,31 @@ pub fn login_with_api_key(
 /// Writes an `auth.json` that contains only the access token.
 pub async fn login_with_access_token(
     codex_home: &Path,
+    access_token: &str,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    forced_chatgpt_workspace_id: Option<&[String]>,
+    chatgpt_base_url: Option<&str>,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    auth_route_config: &AuthRouteConfig,
+) -> std::io::Result<()> {
+    login_with_access_token_for_selection(
+        codex_home,
+        &AuthFileSelection::Default,
+        access_token,
+        auth_credentials_store_mode,
+        forced_chatgpt_workspace_id,
+        chatgpt_base_url,
+        keyring_backend_kind,
+        auth_route_config,
+    )
+    .await
+}
+
+/// Validate and save an access token to the selected credential store.
+#[allow(clippy::too_many_arguments)]
+pub async fn login_with_access_token_for_selection(
+    codex_home: &Path,
+    selection: &AuthFileSelection,
     access_token: &str,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     forced_chatgpt_workspace_id: Option<&[String]>,
@@ -1078,8 +1163,9 @@ pub async fn login_with_access_token(
             }
         }
     };
-    save_auth(
+    save_auth_for_selection(
         codex_home,
+        selection,
         &auth_dot_json,
         auth_credentials_store_mode,
         keyring_backend_kind,
@@ -1140,8 +1226,26 @@ pub fn save_auth(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<()> {
-    let storage = create_auth_storage(
+    save_auth_for_selection(
+        codex_home,
+        &AuthFileSelection::Default,
+        auth,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+/// Persist credentials using the captured selection and configured storage mode.
+pub fn save_auth_for_selection(
+    codex_home: &Path,
+    selection: &AuthFileSelection,
+    auth: &AuthDotJson,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<()> {
+    let storage = create_auth_storage_for_selection(
         codex_home.to_path_buf(),
+        selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
@@ -1158,8 +1262,24 @@ pub fn load_auth_dot_json(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<Option<AuthDotJson>> {
-    let storage = create_auth_storage(
+    load_auth_dot_json_for_selection(
+        codex_home,
+        &AuthFileSelection::Default,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+/// Read only the captured credential store, without environment auth overrides.
+pub fn load_auth_dot_json_for_selection(
+    codex_home: &Path,
+    selection: &AuthFileSelection,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<Option<AuthDotJson>> {
+    let storage = create_auth_storage_for_selection(
         codex_home.to_path_buf(),
+        selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
@@ -1169,6 +1289,8 @@ pub fn load_auth_dot_json(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthConfig {
     pub codex_home: PathBuf,
+    /// Captured at startup; credential reload never resolves the environment again.
+    pub auth_file_selection: AuthFileSelection,
     pub auth_credentials_store_mode: AuthCredentialsStoreMode,
     pub keyring_backend_kind: AuthKeyringBackendKind,
     pub forced_login_method: Option<ForcedLoginMethod>,
@@ -1222,6 +1344,7 @@ impl AuthConfig {
             agent_identity_authapi_base_url(self.chatgpt_base_url.as_deref()).ok();
         let auth = load_auth(
             &self.codex_home,
+            &self.auth_file_selection,
             enable_codex_api_key_env,
             self.auth_credentials_store_mode,
             Some(&allowed_login_methods),
@@ -1321,6 +1444,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
 
     let Some(auth) = load_auth(
         &config.codex_home,
+        &config.auth_file_selection,
         /*enable_codex_api_key_env*/ true,
         config.auth_credentials_store_mode,
         /*allowed_login_methods*/ None,
@@ -1364,6 +1488,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
         if let Some(message) = method_violation {
             return logout_with_message(
                 &config.codex_home,
+                &config.auth_file_selection,
                 message,
                 config.auth_credentials_store_mode,
                 config.keyring_backend_kind,
@@ -1387,6 +1512,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
                     Err(err) => {
                         return logout_with_message(
                             &config.codex_home,
+                            &config.auth_file_selection,
                             format!(
                                 "Failed to load ChatGPT credentials while enforcing workspace restrictions: {err}. Logging out."
                             ),
@@ -1417,6 +1543,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
             };
             return logout_with_message(
                 &config.codex_home,
+                &config.auth_file_selection,
                 message,
                 config.auth_credentials_store_mode,
                 config.keyring_backend_kind,
@@ -1429,6 +1556,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
 
 fn logout_with_message(
     codex_home: &Path,
+    selection: &AuthFileSelection,
     message: String,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
@@ -1437,6 +1565,7 @@ fn logout_with_message(
     // from earlier logins. Clear both so a forced logout truly removes all active auth.
     let removal_result = logout_all_stores(
         codex_home,
+        selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
@@ -1449,23 +1578,27 @@ fn logout_with_message(
 
 fn logout_all_stores(
     codex_home: &Path,
+    selection: &AuthFileSelection,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<bool> {
     if auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
-        return logout(
+        return logout_for_selection(
             codex_home,
+            selection,
             AuthCredentialsStoreMode::Ephemeral,
             AuthKeyringBackendKind::default(),
         );
     }
-    let removed_ephemeral = logout(
+    let removed_ephemeral = logout_for_selection(
         codex_home,
+        selection,
         AuthCredentialsStoreMode::Ephemeral,
         AuthKeyringBackendKind::default(),
     )?;
-    let removed_managed = logout(
+    let removed_managed = logout_for_selection(
         codex_home,
+        selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     )?;
@@ -1475,6 +1608,7 @@ fn logout_all_stores(
 #[allow(clippy::too_many_arguments)]
 async fn load_auth(
     codex_home: &Path,
+    auth_file_selection: &AuthFileSelection,
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     allowed_login_methods: Option<&[ForcedLoginMethod]>,
@@ -1494,8 +1628,9 @@ async fn load_auth(
 
     // External ChatGPT auth tokens live in the in-memory (ephemeral) store. Always check this
     // first so external auth takes precedence over any persisted credentials.
-    let ephemeral_storage = create_auth_storage(
+    let ephemeral_storage = create_auth_storage_for_selection(
         codex_home.to_path_buf(),
+        auth_file_selection,
         AuthCredentialsStoreMode::Ephemeral,
         AuthKeyringBackendKind::default(),
     );
@@ -1507,6 +1642,7 @@ async fn load_auth(
         }
         let auth = CodexAuth::from_auth_dot_json(
             codex_home,
+            auth_file_selection,
             auth_dot_json,
             AuthCredentialsStoreMode::Ephemeral,
             chatgpt_base_url,
@@ -1551,8 +1687,9 @@ async fn load_auth(
     }
 
     // Fall back to the configured persistent store (file/keyring/auto) for managed auth.
-    let storage = create_auth_storage(
+    let storage = create_auth_storage_for_selection(
         codex_home.to_path_buf(),
+        auth_file_selection,
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
@@ -1569,6 +1706,7 @@ async fn load_auth(
 
     let auth = CodexAuth::from_auth_dot_json(
         codex_home,
+        auth_file_selection,
         auth_dot_json,
         auth_credentials_store_mode,
         chatgpt_base_url,
@@ -2063,6 +2201,7 @@ impl UnauthorizedRecovery {
 /// different parts of the program seeing inconsistent auth data mid‑run.
 pub struct AuthManager {
     codex_home: PathBuf,
+    auth_file_selection: AuthFileSelection,
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
     enable_codex_api_key_env: bool,
@@ -2090,6 +2229,9 @@ pub struct AuthManager {
 pub trait AuthManagerConfig {
     /// Returns the Codex home directory used for auth storage.
     fn codex_home(&self) -> PathBuf;
+
+    /// Returns the immutable credential-file selection for this runtime.
+    fn auth_file_selection(&self) -> AuthFileSelection;
 
     /// Returns the CLI auth credential storage mode for auth loading.
     fn cli_auth_credentials_store_mode(&self) -> AuthCredentialsStoreMode;
@@ -2162,6 +2304,7 @@ impl AuthManager {
         Self::new_from_auth_config(
             AuthConfig {
                 codex_home,
+                auth_file_selection: AuthFileSelection::Default,
                 auth_credentials_store_mode,
                 keyring_backend_kind,
                 forced_login_method: None,
@@ -2183,6 +2326,7 @@ impl AuthManager {
             .flatten();
         let AuthConfig {
             codex_home,
+            auth_file_selection,
             auth_credentials_store_mode,
             keyring_backend_kind,
             forced_login_method,
@@ -2196,6 +2340,7 @@ impl AuthManager {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Self {
             codex_home,
+            auth_file_selection,
             inner: RwLock::new(CachedAuth {
                 auth: managed_auth,
                 permanent_refresh_failure: None,
@@ -2233,6 +2378,7 @@ impl AuthManager {
 
         Arc::new(Self {
             codex_home: PathBuf::from("non-existent"),
+            auth_file_selection: AuthFileSelection::Default,
             inner: RwLock::new(cached),
             auth_change_tx,
             enable_codex_api_key_env: false,
@@ -2261,6 +2407,7 @@ impl AuthManager {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
             codex_home,
+            auth_file_selection: AuthFileSelection::Default,
             inner: RwLock::new(cached),
             auth_change_tx,
             enable_codex_api_key_env: false,
@@ -2293,6 +2440,7 @@ impl AuthManager {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
             codex_home: PathBuf::from("non-existent"),
+            auth_file_selection: AuthFileSelection::Default,
             inner: RwLock::new(cached),
             auth_change_tx,
             enable_codex_api_key_env: false,
@@ -2320,6 +2468,7 @@ impl AuthManager {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
             codex_home: PathBuf::from("non-existent"),
+            auth_file_selection: AuthFileSelection::Default,
             inner: RwLock::new(CachedAuth {
                 auth: None,
                 permanent_refresh_failure: None,
@@ -2578,6 +2727,7 @@ impl AuthManager {
         let effective_chatgpt_workspaces = self.effective_chatgpt_workspaces();
         load_auth(
             &self.codex_home,
+            &self.auth_file_selection,
             self.enable_codex_api_key_env,
             self.auth_credentials_store_mode,
             Some(&allowed_login_methods),
@@ -2898,6 +3048,7 @@ impl AuthManager {
         self.ensure_logout_allowed()?;
         let removed = logout_all_stores(
             &self.codex_home,
+            &self.auth_file_selection,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
         )?;
@@ -2918,6 +3069,7 @@ impl AuthManager {
         }
         let result = logout_all_stores(
             &self.codex_home,
+            &self.auth_file_selection,
             self.auth_credentials_store_mode,
             self.keyring_backend_kind,
         )?;
@@ -3011,8 +3163,9 @@ impl AuthManager {
                 ))
             })?;
             // Independent AuthManagers share external ChatGPT auth through the process-local store.
-            save_auth(
+            save_auth_for_selection(
                 &self.codex_home,
+                &self.auth_file_selection,
                 &auth_dot_json,
                 AuthCredentialsStoreMode::Ephemeral,
                 AuthKeyringBackendKind::default(),
@@ -3063,6 +3216,7 @@ impl AuthManager {
 fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
     AuthConfig {
         codex_home: config.codex_home(),
+        auth_file_selection: config.auth_file_selection(),
         auth_credentials_store_mode: config.cli_auth_credentials_store_mode(),
         keyring_backend_kind: config.auth_keyring_backend_kind(),
         forced_login_method: config.forced_login_method(),
@@ -3076,3 +3230,7 @@ fn auth_config_from(config: &impl AuthManagerConfig) -> AuthConfig {
 #[cfg(test)]
 #[path = "auth_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "selection_tests.rs"]
+mod selection_tests;

@@ -55,7 +55,7 @@ use codex_login::CodexAuth;
 use codex_login::OPENAI_API_KEY_ENV_VAR;
 use codex_login::default_client::create_client_without_request_logging;
 use codex_login::default_client::default_headers;
-use codex_login::load_auth_dot_json;
+use codex_login::load_auth_dot_json_for_selection;
 use codex_model_provider::create_model_provider;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::protocol::AskForApproval;
@@ -590,7 +590,11 @@ async fn load_config(
         ..config_overrides_from_interactive(interactive, arg0_paths)
     };
 
+    let codex_home = find_codex_home()?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(codex_home.as_path())?;
     ConfigBuilder::default()
+        .codex_home(codex_home.to_path_buf())
+        .auth_file_selection(auth_file_selection)
         .cli_overrides(cli_kv_overrides)
         .harness_overrides(overrides)
         .build()
@@ -1294,8 +1298,9 @@ fn auth_check(config: &Config) -> DoctorCheck {
         return check;
     }
 
-    match load_auth_dot_json(
+    match load_auth_dot_json_for_selection(
         &config.codex_home,
+        &config.auth_file_selection,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
     ) {
@@ -2621,8 +2626,9 @@ fn provider_reachability_plan(config: &Config) -> ReachabilityPlan {
             .map(|(name, value)| (name.clone(), value.as_str().to_owned()))
             .collect::<HashMap<_, _>>()
     });
-    let stored_auth = load_auth_dot_json(
+    let stored_auth = load_auth_dot_json_for_selection(
         &config.codex_home,
+        &config.auth_file_selection,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
     )

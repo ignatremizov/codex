@@ -6,7 +6,7 @@ use codex_config::ConfigLoadOptions;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::LoaderOverrides;
-use codex_core::config::bootstrap_auth_config;
+use codex_core::config::bootstrap_auth_config_for_selection;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_toml_with_layer_stack;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -31,6 +31,7 @@ pub(crate) async fn config_builder(
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
     let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let cwd = AbsolutePathBuf::current_dir().context("failed to resolve current directory")?;
     let bootstrap_config = load_config_toml_with_layer_stack(
         codex_home.as_path(),
@@ -45,14 +46,19 @@ pub(crate) async fn config_builder(
     .await
     .context("failed to load bootstrap configuration")?;
     let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
-        bootstrap_auth_config(codex_home.as_path(), &bootstrap_config)
-            .context("failed to resolve cloud configuration authentication")?,
+        bootstrap_auth_config_for_selection(
+            codex_home.as_path(),
+            &bootstrap_config,
+            &auth_file_selection,
+        )
+        .context("failed to resolve cloud configuration authentication")?,
         /*enable_codex_api_key_env*/ false,
     )
     .await
     .context("failed to initialize cloud configuration authentication")?;
 
     Ok(ConfigBuilder::default()
+        .auth_file_selection(auth_file_selection)
         .codex_home(codex_home.to_path_buf())
         .cli_overrides(cli_overrides)
         .loader_overrides(loader_overrides)

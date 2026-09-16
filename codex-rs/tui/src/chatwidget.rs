@@ -592,6 +592,7 @@ pub(crate) struct ChatWidget {
     status_account_display: Option<StatusAccountDisplay>,
     runtime_model_provider_base_url: Option<String>,
     pub(crate) remote_connection: Option<RemoteConnectionStatus>,
+    pub(crate) auth_profile_label: Option<String>,
     token_info: Option<TokenUsageInfo>,
     token_usage_pending: bool,
     rate_limit_snapshots_by_limit_id: BTreeMap<String, RateLimitSnapshotDisplay>,

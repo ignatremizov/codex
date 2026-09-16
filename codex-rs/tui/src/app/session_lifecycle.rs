@@ -498,6 +498,7 @@ impl App {
             chat_widget.last_terminal_title = previous_terminal_title;
         }
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
+        chat_widget.auth_profile_label = self.chat_widget.auth_profile_label.clone();
         chat_widget.set_agents_navigation_enabled(matches!(
             self.app_server_target,
             AppServerTarget::LocalDaemon { .. }

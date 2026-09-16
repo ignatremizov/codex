@@ -95,6 +95,15 @@ fn start_mock_issuer(chatgpt_account_id: &str) -> (SocketAddr, thread::JoinHandl
 
 #[tokio::test]
 async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
+    login_flow_persists_selected_file(/*filename*/ None).await
+}
+
+#[tokio::test]
+async fn end_to_end_login_flow_persists_explicit_selected_file_only() -> Result<()> {
+    login_flow_persists_selected_file(Some("auth-office.json")).await
+}
+
+async fn login_flow_persists_selected_file(filename: Option<&str>) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let chatgpt_account_id = "12345678-0000-0000-0000-000000000000";
@@ -123,8 +132,11 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
 
     // Run server in background
     let server_home = codex_home.clone();
+    let selection =
+        codex_login::AuthFileSelection::resolve(&codex_home, filename.map(std::ffi::OsStr::new))?;
 
     let opts = ServerOptions {
+        auth_file_selection: selection,
         codex_home: server_home,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -174,7 +186,7 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
     );
 
     // Validate auth.json
-    let auth_path = codex_home.join("auth.json");
+    let auth_path = codex_home.join(filename.unwrap_or("auth.json"));
     let data = std::fs::read_to_string(&auth_path)?;
     let json: serde_json::Value = serde_json::from_str(&data)?;
     // The following assert is here because of the old oauth flow that exchanges tokens for an
@@ -184,6 +196,11 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
     assert_eq!(json["tokens"]["access_token"], "access-123");
     assert_eq!(json["tokens"]["refresh_token"], "refresh-123");
     assert_eq!(json["tokens"]["account_id"], chatgpt_account_id);
+    if filename.is_some() {
+        let default_auth: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(codex_home.join("auth.json"))?)?;
+        assert_eq!(default_auth, stale_auth);
+    }
 
     // Stop mock issuer
     drop(issuer_handle);
@@ -198,6 +215,7 @@ async fn hosted_login_redirects_to_configured_open_app_url() -> Result<()> {
     let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
     let tmp = tempdir()?;
     let server = run_login_server(ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home: tmp.path().to_path_buf(),
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -251,6 +269,7 @@ async fn creates_missing_codex_home_dir() -> Result<()> {
     // Run server in background
     let server_home = codex_home.clone();
     let opts = ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home: server_home,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -294,6 +313,7 @@ async fn login_server_includes_forced_workspaces_as_one_query_param() -> Result<
     let state = "state-multi".to_string();
 
     let opts = ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -338,6 +358,7 @@ async fn forced_chatgpt_workspace_id_mismatch_blocks_login() -> Result<()> {
     let state = "state-mismatch".to_string();
 
     let opts = ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home: codex_home.clone(),
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -401,6 +422,7 @@ async fn oauth_access_denied_missing_entitlement_blocks_login_with_clear_error()
     let state = "state-entitlement".to_string();
 
     let opts = ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home: codex_home.clone(),
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -472,6 +494,7 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
     let state = "state-generic-denial".to_string();
 
     let opts = ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home: codex_home.clone(),
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -622,6 +645,7 @@ async fn cancels_previous_login_server_when_port_is_in_use() -> Result<()> {
     let first_codex_home = first_tmp.path().to_path_buf();
 
     let first_opts = ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home: first_codex_home,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
@@ -646,6 +670,7 @@ async fn cancels_previous_login_server_when_port_is_in_use() -> Result<()> {
     let second_codex_home = second_tmp.path().to_path_buf();
 
     let second_opts = ServerOptions {
+        auth_file_selection: codex_login::AuthFileSelection::Default,
         codex_home: second_codex_home,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         auth_route_config: codex_login::test_support::transport_default_auth_route_config(),

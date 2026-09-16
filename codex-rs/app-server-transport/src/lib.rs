@@ -1,4 +1,5 @@
 mod outgoing_message;
+mod profile_socket;
 mod transport;
 
 pub use outgoing_message::ConnectionId;
@@ -6,6 +7,8 @@ pub use outgoing_message::OutgoingError;
 pub use outgoing_message::OutgoingMessage;
 pub use outgoing_message::OutgoingResponse;
 pub use outgoing_message::QueuedOutgoingMessage;
+pub use profile_socket::app_server_profile_socket_path;
+pub use profile_socket::app_server_socket_startup_lock_path;
 pub use transport::AppServerStartupLock;
 pub use transport::AppServerTransport;
 pub use transport::AppServerTransportParseError;

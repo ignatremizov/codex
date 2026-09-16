@@ -142,6 +142,7 @@ impl CodexToolCallParam {
     pub async fn into_config(
         self,
         arg0_paths: Arg0DispatchPaths,
+        runtime_config: &Config,
     ) -> std::io::Result<(String, Config)> {
         let Self {
             prompt,
@@ -177,6 +178,8 @@ impl CodexToolCallParam {
             .collect();
 
         let cfg = ConfigBuilder::default()
+            .codex_home(runtime_config.codex_home.to_path_buf())
+            .auth_file_selection(runtime_config.auth_file_selection.clone())
             .cli_overrides(cli_overrides)
             .harness_overrides(overrides)
             .build()

@@ -10,6 +10,9 @@ callers such as the TUI can switch between them without changing their
 higher-level session logic.
 */
 
+#[path = "remote_auth_profile.rs"]
+mod auth_profile;
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::io::Error as IoError;
@@ -154,6 +157,7 @@ pub struct RemoteAppServerClient {
     pending_events: VecDeque<AppServerEvent>,
     server_version: Option<String>,
     codex_home: Option<String>,
+    auth_profile: Option<codex_app_server_protocol::ServerAuthProfile>,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -480,6 +484,7 @@ impl RemoteAppServerClient {
             pending_events: pending_events.into(),
             server_version,
             codex_home,
+            auth_profile: None,
             worker_handle,
         })
     }
@@ -606,6 +611,7 @@ impl RemoteAppServerClient {
             pending_events: _pending_events,
             server_version: _server_version,
             codex_home: _codex_home,
+            auth_profile: _auth_profile,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
@@ -1029,6 +1035,7 @@ mod tests {
             pending_events: VecDeque::new(),
             server_version: None,
             codex_home: None,
+            auth_profile: None,
             worker_handle,
         };
 

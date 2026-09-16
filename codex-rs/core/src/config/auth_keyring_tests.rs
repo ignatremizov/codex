@@ -180,3 +180,49 @@ fn config_toml_load_result(
         )?,
     })
 }
+
+#[tokio::test]
+async fn auth_selection_survives_bootstrap_build_and_session_reload() -> std::io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let selection = AuthFileSelection::resolve(
+        home.path(),
+        Some(std::ffi::OsStr::new("selected-auth.json")),
+    )?;
+    let bootstrap_config =
+        config_toml_load_result(ConfigToml::default(), /*feature_requirements*/ None)?;
+    let mut expected_bootstrap = bootstrap_auth_config(home.path(), &bootstrap_config)?;
+    expected_bootstrap.auth_file_selection = selection.clone();
+    assert_eq!(
+        bootstrap_auth_config_for_selection(home.path(), &bootstrap_config, &selection)?,
+        expected_bootstrap,
+    );
+
+    let builder = super::super::ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()));
+    let default_config = builder.clone().build().await?;
+    let config = builder
+        .clone()
+        .auth_file_selection(selection.clone())
+        .build()
+        .await?;
+    let mut expected_auth = default_config.auth_config();
+    expected_auth.auth_file_selection = selection.clone();
+    assert_eq!(config.auth_config(), expected_auth);
+
+    let rebuilt = config
+        .rebuild_preserving_session_layers(&default_config)
+        .await?;
+    assert_eq!(rebuilt.auth_config(), config.auth_config());
+
+    let explicit_default = builder
+        .auth_file_selection(selection)
+        .harness_overrides(super::super::ConfigOverrides {
+            auth_file_selection: Some(AuthFileSelection::Default),
+            ..Default::default()
+        })
+        .build()
+        .await?;
+    assert_eq!(explicit_default.auth_config(), default_config.auth_config());
+    Ok(())
+}

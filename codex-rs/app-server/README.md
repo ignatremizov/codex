@@ -25,7 +25,7 @@ Supported transports:
 
 - stdio (`--stdio` or `--listen stdio://`, default): newline-delimited JSON (JSONL)
 - websocket (`--listen ws://IP:PORT`): one JSON-RPC message per websocket text frame (**experimental / unsupported**)
-- unix socket (`--listen unix://` or `--listen unix://PATH`): websocket connections over `$CODEX_HOME/app-server-control/app-server-control.sock` or a custom socket path, using the standard HTTP Upgrade handshake
+- unix socket (`--listen unix://` or `--listen unix://PATH`): websocket connections over the startup auth profile's socket under `$CODEX_HOME/app-server-control/`, or a custom socket path, using the standard HTTP Upgrade handshake
 - off (`--listen off`): do not expose a local transport
 
 When running with `--listen ws://IP:PORT`, the same listener also serves basic HTTP health probes:
@@ -39,7 +39,7 @@ Websocket transport is currently experimental and unsupported. Do not rely on it
 Pass `--code-mode-host URL` to connect this app-server process to a remote code-mode host instead of starting a local host. Use a root `http://` or `https://` URL without a path or query for gRPC. Remote hosts require the `code_mode_host` feature. This outbound connection is independent of `--listen` and is shared by the process's threads.
 
 The unix socket transport is intended for local app-server control-plane clients. `codex app-server proxy`
-opens exactly one raw stream connection to `$CODEX_HOME/app-server-control/app-server-control.sock`
+opens exactly one raw stream connection to the selected auth profile's control socket
 by default, or to `--sock PATH` when provided, and proxies bytes between that socket and stdin/stdout.
 The proxied stream carries the websocket HTTP Upgrade handshake followed by websocket frames.
 
@@ -85,6 +85,21 @@ Use the thread APIs to create, list, or archive conversations. Drive a conversat
 ## Initialization
 
 Clients must send a single `initialize` request per transport connection before invoking any other method on that connection, then acknowledge with an `initialized` notification. The server returns the user agent string it will present to upstream services, `codexHome` for the server's Codex home directory, and `platformFamily` and `platformOs` strings describing the app-server runtime target; subsequent requests issued before initialization receive a `"Not initialized"` error, and repeated `initialize` calls on the same connection receive an `"Already initialized"` error.
+
+After initialization, `server/read` with `{}` returns
+`{ "authProfile": { "profileOpaqueId": "...", "displayLabel": "codex-office" } }`.
+This metadata describes the immutable startup credential selection, not the
+authenticated account. It contains no credentials or absolute auth-file path.
+The opaque identity includes the default storage policy, so a default keyring
+profile is not interchangeable with an explicitly selected file. Friendly
+labels are for display and must not be used as identity keys.
+
+Local shared-server clients verify both the initialized `codexHome` and the
+`server/read` profile on the actual connection before using it. A separate
+socket probe is not proof of the server used by a later connection. Opaque
+profile IDs are host-local and must not be compared across remote hosts;
+remote endpoints own their authentication independently of the client's
+local credential-file selection. Legacy remote servers may omit this method.
 
 `initialize.params.capabilities` also supports per-connection notification opt-out via `optOutNotificationMethods`, which is a list of exact method names to suppress for that connection. Matching is exact (no wildcards/prefixes). Unknown method names are accepted and ignored.
 
@@ -258,6 +273,7 @@ Protocol updates must include regenerated stable and experimental JSON/TypeScrip
 precomputed exports. When local compilation is prohibited, generate those artifacts in
 Manual Verify CI and commit the reviewed output before shipping.
 
+- `server/read` — read immutable startup auth-profile metadata after initialization.
 - `server/diagnostics` — experimental; read process-local memory measurements and registered diagnostic gauges.
 - `thread/start` — create a new thread; emits `thread/started` (including the current `thread.status`) and auto-subscribes you to turn/item events for that thread. Experimental `projectId` assigns a durable thread to an existing project; ephemeral threads expose the same project identity in live responses without creating a stored/listable assignment. Experimental `historyMode` selects the persisted history contract: when omitted, durable threads use `"paginated"` if the active thread store supports `thread/turns/list` and `thread/items/list`, while ephemeral threads and stores without that support use `"legacy"`. When the request includes a `cwd` and the resolved sandbox is `workspace-write` or full access, app-server also marks that project as trusted in the user `config.toml`. Pass `sessionStartSource: "clear"` when starting a replacement thread after clearing the current session so `SessionStart` hooks receive `source: "clear"` instead of the default `"startup"`. Experimental `allowProviderModelFallback` lets providers backed by an authoritative static model catalog replace an unavailable requested `model` with the catalog default; dynamic or cached catalogs preserve the requested model. Experimental `runtimeWorkspaceRoots` supplies the runtime workspace roots used when app-server creates default environment selections; paths must be absolute. For permissions, prefer experimental `permissions` profile selection by id; the legacy `sandbox` shorthand is still accepted but cannot be combined with `permissions`. Deprecated experimental `multiAgentMode` is ignored; use Ultra reasoning effort for proactive multi-agent behavior. Experimental `environments` selects the sticky execution environments for turns on the thread; omit it to use the server default, pass `[]` to disable environments, or pass explicit environment ids with per-environment `cwd` and optional environment-native `runtimeWorkspaceRoots`. Explicit environments ignore the top-level roots; omitted per-environment roots default to that environment's `cwd`, while an empty list explicitly selects no roots. Experimental `selectedCapabilityRoots` selects environment-owned plugin or standalone-skill roots using environment-native absolute paths. Skills found below those roots are listed and read through the owning environment. Stdio MCP servers declared by selected plugins are started in that environment, and HTTP MCP connections use that environment's HTTP client.
 - `thread/resume` — reopen an existing thread by id so subsequent `turn/start` calls append to it. When loading a saved thread, an omitted `cwd` uses the cwd from the latest retained settings snapshot explicitly owned by that thread, or its startup cwd if none exists. Older snapshots without an owner ID do not override the startup cwd. Resume does not read older history solely to recover cwd. Successful compaction checkpoints the current thread settings so they remain available within that replay window. An explicit `cwd` overrides that default. Accepts the same permission override rules as `thread/start`.

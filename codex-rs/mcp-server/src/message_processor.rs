@@ -40,6 +40,7 @@ pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     initialized: bool,
     arg0_paths: Arg0DispatchPaths,
+    runtime_config: Arc<Config>,
     thread_manager: Arc<ThreadManager>,
     active_turns: Arc<ActiveTurnRegistry>,
 }
@@ -113,6 +114,7 @@ impl MessageProcessor {
             /*external_time_provider*/ None,
         ));
         Ok(Self {
+            runtime_config: config,
             outgoing,
             initialized: false,
             arg0_paths,
@@ -376,7 +378,10 @@ impl MessageProcessor {
         let arguments = arguments.map(serde_json::Value::Object);
         let (initial_prompt, config): (String, Config) = match arguments {
             Some(json_val) => match serde_json::from_value::<CodexToolCallParam>(json_val) {
-                Ok(tool_cfg) => match tool_cfg.into_config(self.arg0_paths.clone()).await {
+                Ok(tool_cfg) => match tool_cfg
+                    .into_config(self.arg0_paths.clone(), &self.runtime_config)
+                    .await
+                {
                     Ok(cfg) => cfg,
                     Err(e) => {
                         let result = CallToolResult::error(vec![rmcp::model::ContentBlock::text(

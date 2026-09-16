@@ -156,6 +156,8 @@ pub(crate) enum StatusLineItem {
 
     /// Resolved local TUI Codex home basename, with one leading dot removed.
     CodexHome,
+    /// Credential profile reported by this session's runtime.
+    AuthProfile,
 }
 
 impl StatusLineItem {
@@ -216,6 +218,9 @@ impl StatusLineItem {
                 "Latest task progress from update_plan (omitted until available)"
             }
             StatusLineItem::CodexHome => "Local TUI Codex home name (not the remote server's home)",
+            StatusLineItem::AuthProfile => {
+                "Connected runtime's auth profile (omitted when unavailable)"
+            }
         }
     }
 
@@ -251,6 +256,7 @@ impl StatusLineItem {
             StatusLineItem::WorkspaceHeadline => StatusSurfacePreviewItem::WorkspaceHeadline,
             StatusLineItem::TaskProgress => StatusSurfacePreviewItem::TaskProgress,
             StatusLineItem::CodexHome => StatusSurfacePreviewItem::CodexHome,
+            StatusLineItem::AuthProfile => StatusSurfacePreviewItem::AuthProfile,
         }
     }
 }
@@ -773,6 +779,43 @@ mod tests {
         assert_eq!(
             (items, use_theme_colors),
             (vec![StatusLineItem::CodexHome], false)
+        );
+    }
+
+    #[test]
+    fn setup_view_snapshot_includes_runtime_auth_profile_and_saves_selection() {
+        let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
+        let mut view = StatusLineSetupView::new(
+            Some(&["auth-profile".to_string()]),
+            /*use_theme_colors*/ false,
+            StatusSurfacePreviewData::from_iter([(
+                StatusSurfacePreviewItem::AuthProfile,
+                "codex-office",
+            )]),
+            AppEventSender::new(tx_raw),
+            crate::keymap::RuntimeKeymap::defaults().list,
+        );
+        assert_snapshot!(
+            render_lines(&view, /*width*/ 100)
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        view.handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let AppEvent::StatusLineSetup {
+            items,
+            use_theme_colors,
+        } = rx.try_recv().expect("status line selection")
+        else {
+            panic!("expected status line setup");
+        };
+        assert_eq!(
+            (items, use_theme_colors),
+            (vec![StatusLineItem::AuthProfile], false)
         );
     }
 

@@ -40,7 +40,7 @@ use crate::transport::RemoteControlPolicy;
 use crate::transport::RemoteControlStartConfig;
 use crate::transport::TransportEvent;
 use crate::transport::acquire_app_server_startup_lock;
-use crate::transport::app_server_startup_lock_path;
+use crate::transport::app_server_socket_startup_lock_path;
 use crate::transport::auth::policy_from_settings;
 use crate::transport::prepare_control_socket_path;
 use crate::transport::route_outgoing_envelope;
@@ -128,6 +128,7 @@ mod request_processors;
 mod request_serialization;
 mod server_request_error;
 mod skills_watcher;
+mod startup_auth;
 mod thread_state;
 mod thread_status;
 mod transport;
@@ -137,9 +138,12 @@ pub use crate::code_mode_host::AppServerCodeModeHostArgs;
 pub use crate::code_mode_host::CodeModeHostTransport;
 pub use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 pub use crate::error_code::INVALID_PARAMS_ERROR_CODE;
+pub use crate::startup_auth::AppServerStartupAuth;
+pub use crate::startup_auth::validate_app_server_listen_url;
 pub use crate::transport::AppServerTransport;
 pub use crate::transport::RemoteControlStartupMode;
 pub use crate::transport::app_server_control_socket_path;
+pub use crate::transport::app_server_profile_socket_path;
 pub use crate::transport::auth::AppServerWebsocketAuthArgs;
 pub use crate::transport::auth::AppServerWebsocketAuthSettings;
 pub use crate::transport::auth::WebsocketAuthCliMode;
@@ -439,6 +443,9 @@ pub enum PluginStartupTasks {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppServerRuntimeOptions {
+    pub startup_auth: Option<AppServerStartupAuth>,
+    /// Resolve literal `unix://` only after capturing startup configuration.
+    pub use_auth_profile_socket: bool,
     pub code_mode_host_transport: CodeModeHostTransport,
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_startup_mode: RemoteControlStartupMode,
@@ -448,6 +455,8 @@ pub struct AppServerRuntimeOptions {
 impl Default for AppServerRuntimeOptions {
     fn default() -> Self {
         Self {
+            startup_auth: None,
+            use_auth_profile_socket: false,
             code_mode_host_transport: CodeModeHostTransport::Local,
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
@@ -486,7 +495,20 @@ pub async fn run_main_with_transport_options(
             format!("error parsing -c overrides: {e}"),
         )
     })?;
-    let codex_home = find_codex_home()?;
+    let AppServerStartupAuth {
+        codex_home,
+        auth_file_selection,
+    } = match runtime_options.startup_auth.clone() {
+        Some(startup_auth) => startup_auth,
+        None => {
+            let codex_home = find_codex_home()?;
+            let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+            AppServerStartupAuth {
+                codex_home,
+                auth_file_selection,
+            }
+        }
+    };
     let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
         arg0_paths.codex_self_exe.clone(),
         arg0_paths.codex_linux_sandbox_exe.clone(),
@@ -500,7 +522,8 @@ pub async fn run_main_with_transport_options(
         Default::default(),
         arg0_paths.clone(),
         Arc::new(NoopThreadConfigLoader),
-    );
+    )
+    .auth_file_selection(auth_file_selection);
     match config_manager
         .load_latest_config(/*fallback_cwd*/ None)
         .await
@@ -597,9 +620,15 @@ pub async fn run_main_with_transport_options(
     })?;
     codex_core::otel_init::record_process_start(otel.as_ref(), OTEL_SERVICE_NAME);
     codex_core::otel_init::install_sqlite_telemetry(otel.as_ref(), OTEL_SERVICE_NAME);
+    let auth_profile = config.auth_file_selection.profile_identity(
+        config.codex_home.as_path(),
+        config.cli_auth_credentials_store_mode,
+    );
+    let transport =
+        runtime_options.resolve_transport(transport, &config.codex_home, &auth_profile)?;
     let unix_socket_startup_lock = match &transport {
         AppServerTransport::UnixSocket { socket_path } => {
-            let startup_lock_path = app_server_startup_lock_path(&codex_home)?;
+            let startup_lock_path = app_server_socket_startup_lock_path(socket_path)?;
             let startup_lock = acquire_app_server_startup_lock(startup_lock_path).await?;
             prepare_control_socket_path(socket_path.as_path()).await?;
             Some(startup_lock)

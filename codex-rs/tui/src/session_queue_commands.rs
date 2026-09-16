@@ -32,11 +32,12 @@ pub async fn run_session_queue_command(
 ) -> Result<String> {
     let codex_home = find_codex_home().wrap_err("failed to find Codex home")?;
     let explicit_remote = options.explicit_remote_endpoint.is_some();
-    let mut app_server =
-        start_app_server_for_session_command(options, codex_home.to_path_buf()).await?;
+    let startup = start_app_server_for_session_command(options, codex_home.to_path_buf()).await?;
+    let mut app_server = startup.server;
     if !explicit_remote
         && app_server.uses_embedded_app_server()
-        && super::maybe_probe_default_daemon_socket(codex_home.as_path())
+        && let Some(socket_path) = startup.expected_local_daemon_socket
+        && super::auth_profile_connection::probe_daemon_socket(socket_path)
             .await
             .is_some()
     {

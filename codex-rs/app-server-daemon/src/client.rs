@@ -32,17 +32,35 @@ pub(crate) struct ProbeInfo {
 }
 
 pub(crate) async fn probe(socket_path: &Path) -> Result<ProbeInfo> {
-    timeout(CONTROL_SOCKET_RESPONSE_TIMEOUT, probe_inner(socket_path))
-        .await
-        .with_context(|| {
-            format!(
-                "timed out probing app-server control socket {}",
-                socket_path.display()
-            )
-        })?
+    timeout(
+        CONTROL_SOCKET_RESPONSE_TIMEOUT,
+        probe_inner(socket_path, /*launch*/ None),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "timed out probing app-server control socket {}",
+            socket_path.display()
+        )
+    })?
 }
 
-async fn probe_inner(socket_path: &Path) -> Result<ProbeInfo> {
+pub(crate) async fn probe_profile(
+    socket_path: &Path,
+    launch: &crate::DaemonLaunchOptions,
+) -> Result<ProbeInfo> {
+    timeout(
+        CONTROL_SOCKET_RESPONSE_TIMEOUT,
+        probe_inner(socket_path, Some(launch)),
+    )
+    .await
+    .context("timed out verifying daemon auth profile")?
+}
+
+async fn probe_inner(
+    socket_path: &Path,
+    launch: Option<&crate::DaemonLaunchOptions>,
+) -> Result<ProbeInfo> {
     let mut websocket = connect(socket_path).await?;
 
     let initialize_response = initialize(&mut websocket, /*experimental_api*/ false).await?;
@@ -53,11 +71,60 @@ async fn probe_inner(socket_path: &Path) -> Result<ProbeInfo> {
     send_message(&mut websocket, &initialized)
         .await
         .context("failed to send initialized notification")?;
+    if let Some(launch) = launch {
+        verify_profile(&mut websocket, &initialize_response, launch).await?;
+    }
     websocket.close(None).await.ok();
 
     Ok(ProbeInfo {
         app_server_version: parse_version_from_user_agent(&initialize_response.user_agent)?,
     })
+}
+
+/// Verify this initialized control connection before a profile-scoped operation.
+pub(crate) async fn verify_profile<S>(
+    websocket: &mut WebSocketStream<S>,
+    initialized: &InitializeResponse,
+    launch: &crate::DaemonLaunchOptions,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if initialized.codex_home.as_path() != launch.codex_home() {
+        return Err(anyhow!("local app server uses a different CODEX_HOME"));
+    }
+    let request_id = RequestId::String("daemon-auth-profile".to_string());
+    send_message(
+        websocket,
+        &JSONRPCMessage::Request(JSONRPCRequest {
+            id: request_id.clone(),
+            method: "server/read".to_string(),
+            params: Some(serde_json::json!({})),
+            trace: None,
+        }),
+    )
+    .await?;
+    timeout(CONTROL_SOCKET_RESPONSE_TIMEOUT, async {
+        loop {
+            match read_message(websocket).await? {
+                JSONRPCMessage::Response(response) if response.id == request_id => {
+                    let response: codex_app_server_protocol::ServerReadResponse =
+                        serde_json::from_value(response.result)?;
+                    if response.auth_profile.profile_opaque_id != launch.auth_profile().profile_opaque_id {
+                        return Err(anyhow!("local app server uses a different auth profile"));
+                    }
+                    return Ok(());
+                }
+                JSONRPCMessage::Error(error) if error.id == request_id => {
+                    return Err(anyhow!("local app server cannot prove its auth profile; restart it with a current Codex"));
+                }
+                JSONRPCMessage::Response(_)
+                | JSONRPCMessage::Error(_)
+                | JSONRPCMessage::Notification(_)
+                | JSONRPCMessage::Request(_) => {}
+            }
+        }
+    }).await.context("timed out verifying daemon auth profile")?
 }
 
 pub(crate) async fn connect(socket_path: &Path) -> Result<WebSocketStream<UnixStream>> {

@@ -124,6 +124,11 @@ impl App {
         }
 
         let startup_started_at = Instant::now();
+        let app_server_target = if app_server.uses_embedded_app_server() {
+            AppServerTarget::Embedded
+        } else {
+            app_server_target
+        };
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         emit_project_config_warnings(&app_event_tx, &config);
@@ -462,6 +467,7 @@ impl App {
         };
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         chat_widget.remote_connection = remote_connection;
+        chat_widget.auth_profile_label = app_server.auth_profile_label(&config);
         chat_widget.set_agents_navigation_enabled(matches!(
             app_server_target,
             AppServerTarget::LocalDaemon { .. }

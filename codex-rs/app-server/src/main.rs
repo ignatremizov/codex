@@ -31,9 +31,10 @@ struct AppServerArgs {
     #[arg(
         long = "listen",
         value_name = "URL",
+        value_parser = codex_app_server::validate_app_server_listen_url,
         default_value = AppServerTransport::DEFAULT_LISTEN_URL
     )]
-    listen: AppServerTransport,
+    listen: String,
 
     /// Session source used to derive product restrictions and metadata.
     #[arg(
@@ -83,9 +84,15 @@ fn main() -> anyhow::Result<()> {
                 .map(LoaderOverrides::with_managed_config_path_for_tests)
                 .unwrap_or_default()
         };
-        let transport = listen;
+        let use_auth_profile_socket = listen == "unix://";
+        let transport = if use_auth_profile_socket {
+            AppServerTransport::Off
+        } else {
+            AppServerTransport::from_listen_url(&listen)?
+        };
         let auth = auth.try_into_settings()?;
         let mut runtime_options = AppServerRuntimeOptions {
+            use_auth_profile_socket,
             code_mode_host_transport: code_mode_host.into(),
             ..Default::default()
         };

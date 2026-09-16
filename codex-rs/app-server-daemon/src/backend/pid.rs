@@ -28,6 +28,7 @@ const STDERR_LOG_TAIL_BYTES: u64 = 4096;
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct PidBackend {
+    launch: crate::DaemonLaunchOptions,
     codex_bin: PathBuf,
     pid_file: PathBuf,
     lock_file: PathBuf,
@@ -75,9 +76,15 @@ enum PidCommandKind {
 }
 
 impl PidBackend {
-    pub(crate) fn new(codex_bin: PathBuf, pid_file: PathBuf, remote_control_enabled: bool) -> Self {
+    pub(crate) fn new(
+        codex_bin: PathBuf,
+        pid_file: PathBuf,
+        remote_control_enabled: bool,
+        launch: crate::DaemonLaunchOptions,
+    ) -> Self {
         let lock_file = pid_file.with_extension("pid.lock");
         Self {
+            launch,
             codex_bin,
             pid_file,
             lock_file,
@@ -87,9 +94,14 @@ impl PidBackend {
         }
     }
 
-    pub(crate) fn new_update_loop(codex_bin: PathBuf, pid_file: PathBuf) -> Self {
+    pub(crate) fn new_update_loop(
+        codex_bin: PathBuf,
+        pid_file: PathBuf,
+        launch: crate::DaemonLaunchOptions,
+    ) -> Self {
         let lock_file = pid_file.with_extension("pid.lock");
         Self {
+            launch,
             codex_bin,
             pid_file,
             lock_file,
@@ -111,6 +123,23 @@ impl PidBackend {
                         PidFileState::Starting | PidFileState::Running(_) => continue,
                     }
                 }
+            }
+        }
+    }
+
+    /// Wait for any startup reservation, then require a matching process
+    /// fingerprint rather than treating the reservation itself as identity.
+    pub(crate) async fn verified_running_pid(&self) -> Result<Option<u32>> {
+        loop {
+            let Some(record) = self.wait_for_pid_start().await? else {
+                return Ok(None);
+            };
+            if self.record_is_active(&record).await? {
+                return Ok(Some(record.pid));
+            }
+            match self.refresh_after_stale_record(&record).await? {
+                PidFileState::Missing => return Ok(None),
+                PidFileState::Starting | PidFileState::Running(_) => {}
             }
         }
     }
@@ -154,6 +183,7 @@ impl PidBackend {
             }
         };
         let mut command = Command::new(&self.codex_bin);
+        self.launch.configure_command(command.as_std_mut());
         let stderr_log = match self.open_stderr_log().await {
             Ok(stderr_log) => stderr_log,
             Err(err) => {

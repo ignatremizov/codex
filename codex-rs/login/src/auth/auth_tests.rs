@@ -378,6 +378,7 @@ async fn stored_agent_identity_jwt_keeps_auth_json_unchanged() -> anyhow::Result
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -568,6 +569,7 @@ async fn chatgpt_auth_registers_agent_identity_when_enabled() -> anyhow::Result<
     )?;
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -651,6 +653,7 @@ async fn chatgpt_auth_registers_agent_identity_when_enabled() -> anyhow::Result<
 
     let reloaded = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -694,6 +697,7 @@ async fn chatgpt_auth_retries_transient_agent_identity_registration() -> anyhow:
     )?;
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -761,6 +765,7 @@ async fn chatgpt_auth_registration_retry_exhaustion_is_fallback_eligible() -> an
     )?;
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -823,6 +828,7 @@ async fn chatgpt_auth_task_registration_retry_exhaustion_is_fallback_eligible() 
     storage.save(&auth_json)?;
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -880,6 +886,7 @@ async fn chatgpt_auth_non_retryable_registration_error_is_hard_failure() -> anyh
     )?;
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -1026,6 +1033,7 @@ async fn pro_account_with_no_api_key_uses_chatgpt_auth() {
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -1090,6 +1098,7 @@ async fn loads_api_key_from_auth_json() {
 
     let auth = super::load_auth(
         dir.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -1188,6 +1197,7 @@ async fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -1211,6 +1221,7 @@ async fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
     updated_tokens.refresh_token = "new-refresh-token".to_string();
     let updated_auth = CodexAuth::from_auth_dot_json(
         codex_home.path(),
+        &AuthFileSelection::Default,
         updated_auth_dot_json,
         AuthCredentialsStoreMode::File,
         /*chatgpt_base_url*/ None,
@@ -1833,6 +1844,7 @@ async fn build_config(
     forced_chatgpt_workspace_id: Option<Vec<String>>,
 ) -> AuthConfig {
     AuthConfig {
+        auth_file_selection: AuthFileSelection::Default,
         codex_home: codex_home.to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::Direct,
@@ -1890,6 +1902,10 @@ fn remove_access_token_env_var() -> EnvVarGuard {
 struct TestAuthManagerConfig(AuthConfig);
 
 impl AuthManagerConfig for TestAuthManagerConfig {
+    fn auth_file_selection(&self) -> AuthFileSelection {
+        self.0.auth_file_selection.clone()
+    }
+
     fn codex_home(&self) -> PathBuf {
         self.0.codex_home.clone()
     }
@@ -1928,6 +1944,7 @@ impl AuthManagerConfig for TestAuthManagerConfig {
 
 fn test_auth_manager_config(codex_home: &Path) -> TestAuthManagerConfig {
     TestAuthManagerConfig(AuthConfig {
+        auth_file_selection: AuthFileSelection::Default,
         codex_home: codex_home.to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::Direct,
@@ -1950,7 +1967,12 @@ fn test_auth_manager_config(codex_home: &Path) -> TestAuthManagerConfig {
 #[test]
 fn auth_config_from_preserves_all_fields() {
     let codex_home = tempdir().expect("tempdir");
-    let config = test_auth_manager_config(codex_home.path());
+    let mut config = test_auth_manager_config(codex_home.path());
+    config.0.auth_file_selection = AuthFileSelection::resolve(
+        codex_home.path(),
+        Some(std::ffi::OsStr::new("auth-office.json")),
+    )
+    .expect("selected file should resolve");
 
     assert_eq!(auth_config_from(&config), config.0);
 }
@@ -2005,6 +2027,7 @@ async fn load_auth_reads_access_token_from_env() {
     let chatgpt_base_url = format!("{authapi_base_url}/backend-api");
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -2054,6 +2077,7 @@ async fn load_auth_reads_personal_access_token_from_env() {
     ] {
         let auth = super::load_auth(
             codex_home.path(),
+            &AuthFileSelection::Default,
             /*enable_codex_api_key_env*/ false,
             auth_credentials_store_mode,
             /*allowed_login_methods*/ None,
@@ -2226,22 +2250,30 @@ async fn load_auth_keeps_codex_api_key_env_precedence() {
     let _access_token_guard = EnvVarGuard::set(CODEX_ACCESS_TOKEN_ENV_VAR, &agent_identity);
     let _api_key_guard = EnvVarGuard::set(CODEX_API_KEY_ENV_VAR, "sk-env");
 
-    let auth = super::load_auth(
+    let selected = AuthFileSelection::resolve(
         codex_home.path(),
-        /*enable_codex_api_key_env*/ true,
-        AuthCredentialsStoreMode::File,
-        /*allowed_login_methods*/ None,
-        /*forced_chatgpt_workspace_id*/ None,
-        /*chatgpt_base_url*/ None,
-        AuthKeyringBackendKind::Direct,
-        /*agent_identity_authapi_base_url*/ None,
-        &crate::test_support::transport_default_auth_route_config(),
+        Some(std::ffi::OsStr::new("auth-office.json")),
     )
-    .await
-    .expect("env auth should load")
-    .expect("env auth should be present");
+    .expect("selected file should resolve");
+    for selection in [&AuthFileSelection::Default, &selected] {
+        let auth = super::load_auth(
+            codex_home.path(),
+            selection,
+            /*enable_codex_api_key_env*/ true,
+            AuthCredentialsStoreMode::File,
+            /*allowed_login_methods*/ None,
+            /*forced_chatgpt_workspace_id*/ None,
+            /*chatgpt_base_url*/ None,
+            AuthKeyringBackendKind::Direct,
+            /*agent_identity_authapi_base_url*/ None,
+            &crate::test_support::transport_default_auth_route_config(),
+        )
+        .await
+        .expect("env auth should load")
+        .expect("env auth should be present");
 
-    assert_eq!(auth.api_key(), Some("sk-env"));
+        assert_eq!(auth.api_key(), Some("sk-env"));
+    }
 }
 
 #[tokio::test]
@@ -2505,6 +2537,7 @@ async fn enforce_login_restrictions_logs_out_for_personal_access_token_workspace
     .expect("personal access token login should succeed");
 
     let config = AuthConfig {
+        auth_file_selection: AuthFileSelection::Default,
         codex_home: codex_home.path().to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::default(),
@@ -2631,6 +2664,7 @@ async fn enforce_login_restrictions_logs_out_for_agent_identity_workspace_mismat
     .expect("seed agent identity auth");
 
     let config = AuthConfig {
+        auth_file_selection: AuthFileSelection::Default,
         codex_home: codex_home.path().to_path_buf(),
         auth_credentials_store_mode: AuthCredentialsStoreMode::File,
         keyring_backend_kind: AuthKeyringBackendKind::Direct,
@@ -2917,6 +2951,7 @@ async fn plan_type_maps_known_plan() {
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -2950,6 +2985,7 @@ async fn plan_type_maps_self_serve_business_usage_based_plan() {
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -2986,6 +3022,7 @@ async fn plan_type_maps_enterprise_cbp_usage_based_plan() {
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -3022,6 +3059,7 @@ async fn plan_type_maps_unknown_to_unknown() {
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,
@@ -3055,6 +3093,7 @@ async fn missing_plan_type_maps_to_unknown() {
 
     let auth = super::load_auth(
         codex_home.path(),
+        &AuthFileSelection::Default,
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
         /*allowed_login_methods*/ None,

@@ -59,6 +59,11 @@ pub(super) async fn run_main_inner(
         }
     };
 
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+    auth_profile_connection::validate_remote_selection(
+        explicit_remote_endpoint.as_ref(),
+        &auth_file_selection,
+    )?;
     let mut launch_loader_overrides = loader_overrides.clone();
     if let Some(profile_v2) = cli.config_profile_v2.as_ref() {
         let user_config_path = resolve_profile_v2_config_path(&codex_home, profile_v2);
@@ -103,6 +108,7 @@ pub(super) async fn run_main_inner(
                 &validation_target,
                 &validation_bootstrap,
                 &codex_home,
+                &auth_file_selection,
             )
             .await?
         } else {
@@ -111,6 +117,7 @@ pub(super) async fn run_main_inner(
         load_config_or_exit(
             cli_kv_overrides.clone(),
             ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
                 model: cli.model.clone(),
                 approval_policy,
                 sandbox_mode,
@@ -153,6 +160,7 @@ pub(super) async fn run_main_inner(
         startup_draft::StartupDraftInitialScreen::SessionPicker
     } else if !cli.oss
         && explicit_remote_endpoint.is_none()
+        && matches!(auth_file_selection, codex_login::AuthFileSelection::Default)
         && (reuse_implicit_local_daemon || search_only_config_override)
         && launch_loader_overrides.packaged_defaults_path.is_none()
         && startup_preflight::should_delay_startup_composer_for_first_login(
@@ -175,16 +183,10 @@ pub(super) async fn run_main_inner(
     };
     let mut startup_draft = startup_draft::StartupDraft::new(initial_screen, session_action)?;
 
-    let default_daemon = if explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon {
-        startup_draft
-            .run_until(maybe_probe_default_daemon_socket(&codex_home))
-            .await?
-    } else {
-        None
-    };
-    let app_server_target = app_server_target_for_launch(
+    let discover_local_daemon = explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon;
+    let mut app_server_target = app_server_target_for_launch(
         explicit_remote_endpoint,
-        default_daemon,
+        /*default_daemon_socket*/ None,
         reuse_implicit_local_daemon,
         workload_identity_selected,
     )?;
@@ -238,6 +240,7 @@ pub(super) async fn run_main_inner(
             &app_server_target,
             &bootstrap_config,
             &codex_home,
+            &auth_file_selection,
         ))
         .await??;
 
@@ -323,6 +326,7 @@ pub(super) async fn run_main_inner(
     let additional_dirs = cli.add_dir.clone();
 
     let overrides = ConfigOverrides {
+        auth_file_selection: Some(auth_file_selection),
         model,
         approval_policy,
         sandbox_mode,
@@ -347,6 +351,24 @@ pub(super) async fn run_main_inner(
         ))
         .await?;
     startup_draft.apply_config(&config);
+    auth_profile_connection::resolve_profile_socket_alias(
+        &mut app_server_target,
+        cli.remote_addr.as_deref(),
+        &config,
+    )?;
+    if discover_local_daemon
+        && let Some(socket_path) = startup_draft
+            .run_until(maybe_probe_daemon_socket(
+                &config.codex_home,
+                &config.auth_file_selection,
+                config.cli_auth_credentials_store_mode,
+            ))
+            .await?
+    {
+        app_server_target = AppServerTarget::LocalDaemon {
+            endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+        };
+    }
 
     let cloud_config_bundle = if workload_identity_selected {
         cloud_config_bundle

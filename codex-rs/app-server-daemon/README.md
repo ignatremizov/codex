@@ -41,8 +41,49 @@ $HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --rem
 ```
 
 `bootstrap` requires the standalone managed install. It records the daemon
-settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
+settings under `CODEX_HOME/app-server-daemon/<profileOpaqueId>/`, starts app-server as a
 pidfile-backed detached process, and launches a detached updater loop.
+
+## Auth-profile scope
+
+Each explicitly started server uses one captured credential selection.
+`CODEX_AUTH_FILE=auth-office.json codex app-server daemon start`, for example,
+starts the office profile while keeping the same `CODEX_HOME` for shared data.
+Use the same selection for subsequent lifecycle and remote-control commands.
+Default credential-storage policy participates in the profile identity; default
+keyring storage does not match an explicitly selected file.
+
+PID records, updater PID records, settings, lifecycle locks, and control sockets
+are profile-scoped. Literal `--listen unix://` is resolved after startup config
+loads; an explicit `--listen unix://PATH` remains exactly that endpoint.
+Child servers and updater restarts retain the captured home, auth-file selection,
+and backend policy. They do not reselect credentials from a later environment.
+
+Executable installation remains shared under `CODEX_HOME/packages/standalone`,
+including the installer's shared mutation lock. Thread ownership locks remain
+scoped by home and thread ID, not auth profile.
+
+Clients only reuse an existing, matching local server after checking home and
+auth-profile metadata on the actual connection. Client startup does not start a
+shared server automatically. A legacy server without profile metadata is not
+eligible for automatic reuse; start a current profile-scoped server explicitly.
+Legacy home-wide daemon PID files are not adopted by profile-scoped lifecycle
+commands.
+
+Stop, version, disable-remote-control, pairing, and default proxy lookup do not
+initialize cloud authentication or fetch cloud configuration. They use local
+configuration and inspect only the selected file's bounded set of backend
+identities. A verified process-start fingerprint permits stopping a daemon even
+when its socket is unresponsive; socket-only discovery requires matching
+connection metadata. More than one live backend is an error unless
+`-c cli_auth_credentials_store="keyring"` (or the intended other backend) selects
+the captured runtime backend explicitly. These lookups never start a server or
+search another auth-file selection.
+
+The hidden updater receives its captured backend explicitly from bootstrap.
+Optional local HTTP configuration is best-effort and cannot prevent resolving
+that identity. Starting or explicitly restarting a daemon still loads effective
+cloud configuration normally.
 
 ## Installation and update cases
 
@@ -99,15 +140,15 @@ daemon normally.
 `stop` sends a graceful termination request first, then sends a second
 termination signal after the grace window if the process is still alive.
 
-All mutating lifecycle commands are serialized per `CODEX_HOME`, so a concurrent
+All mutating lifecycle commands are serialized per home and auth profile, so a concurrent
 `start`, `restart`, `enable-remote-control`, `disable-remote-control`, `stop`,
-or `bootstrap` does not race another in-flight lifecycle operation.
+or `bootstrap` does not race another in-flight lifecycle operation for that profile.
 
 ## State
 
-The daemon stores its local state under `CODEX_HOME/app-server-daemon/`:
+The daemon stores its local state under `CODEX_HOME/app-server-daemon/<profileOpaqueId>/`:
 
 - `settings.json` for persisted launch settings
 - `app-server.pid` for the app-server process record
 - `app-server-updater.pid` for the pid-backed standalone updater loop
-- `daemon.lock` for daemon-wide lifecycle serialization
+- `daemon.lock` for profile-local lifecycle serialization
