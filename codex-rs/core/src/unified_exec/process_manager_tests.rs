@@ -389,7 +389,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(5)),
-        None,
+        /*interrupts*/ None,
     );
     let produce = async {
         for chunk in chunks {
@@ -450,7 +450,7 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(1)),
-        None,
+        /*interrupts*/ None,
     )
     .await
     .collected;
@@ -528,6 +528,10 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
     expected.push_chunk(b"late output");
     assert_eq!(collected.collected, expected);
     assert_eq!(output_buffer.lock().await.transcript, expected);
+    assert_eq!(
+        collected.completion_reason,
+        TerminalWaitCompletionReason::Exited
+    );
 }
 
 #[tokio::test]
@@ -576,6 +580,10 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
     expected.push_chunk(b"unbounded output");
     assert_eq!(collected.collected, expected);
     assert_eq!(output_buffer.lock().await.transcript, expected);
+    assert_eq!(
+        collected.completion_reason,
+        TerminalWaitCompletionReason::Exited
+    );
 }
 
 #[test]
@@ -682,6 +690,10 @@ async fn unbounded_poll_still_caps_the_post_exit_drain() {
     let mut expected = HeadTailBuffer::<10>::default();
     expected.push_chunk(b"late bytes");
     assert_eq!(collected.collected, expected);
+    assert_eq!(
+        collected.completion_reason,
+        TerminalWaitCompletionReason::Exited
+    );
 }
 
 #[tokio::test]

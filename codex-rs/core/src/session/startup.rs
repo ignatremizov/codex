@@ -10,11 +10,13 @@ use std::sync::PoisonError;
 
 use crate::agent::control::AgentTreeMembership;
 use crate::agent::control::AgentTreeTeardownGuard;
-use crate::thread_manager::thread_store_error_kind;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrKind;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::Op;
 use codex_thread_store::LiveThreadInitGuard;
+use futures::FutureExt;
 use futures::future::BoxFuture;
 use tokio::sync::Mutex;
 
@@ -27,6 +29,18 @@ pub(crate) struct SessionStartup {
     pub(crate) persistence: Mutex<LiveThreadInitGuard>,
     pub(crate) session: OnceLock<Arc<Session>>,
     pub(crate) io: OnceLock<SessionIo>,
+    cleanup: Mutex<CleanupPhase>,
+}
+
+#[derive(Default)]
+enum CleanupPhase {
+    #[default]
+    NotStarted,
+    ExecutionStopped,
+    ProcessesDrained,
+    GuardiansDrained,
+    ServicesStopped,
+    Complete,
 }
 
 impl SessionStartup {
@@ -62,47 +76,121 @@ impl SessionStartup {
         }
     }
 
-    pub(crate) async fn cleanup(&self) {
-        let mut teardown = self.lock_teardown().take();
-        if let Some(teardown) = teardown.as_mut()
-            && let Some(session) = self.session.get()
-        {
-            teardown.set_thread_id(session.thread_id);
+    pub(crate) async fn cleanup(self: &Arc<Self>) {
+        let startup = Arc::clone(self);
+        let (settled, first_attempt) = tokio::sync::oneshot::channel();
+        // Cleanup owns the original membership and writer even if this waiter is dropped.
+        // A failed attempt may return the original startup error while cleanup stays owned.
+        drop(tokio::spawn(async move {
+            let mut settled = Some(settled);
+            loop {
+                let result = std::panic::AssertUnwindSafe(startup.cleanup_durably())
+                    .catch_unwind()
+                    .await
+                    .unwrap_or(Err(CodexErr::InternalAgentDied));
+                match result {
+                    Ok(()) => {
+                        if let Some(settled) = settled.take() {
+                            let _ = settled.send(());
+                        }
+                        break;
+                    }
+                    Err(error) => {
+                        if let Some(teardown) = startup.lock_teardown().as_ref() {
+                            teardown.record_shutdown_failure(
+                                "durable_startup_cleanup",
+                                CodexErrKind::from(&error).into(),
+                            );
+                        }
+                        tracing::warn!(%error, "cancelled startup cleanup failed; retaining owner");
+                        if let Some(settled) = settled.take() {
+                            let _ = settled.send(());
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(/*secs*/ 1)).await;
+                    }
+                }
+            }
+        }));
+        if let Err(error) = first_attempt.await {
+            tracing::warn!(%error, "startup cleanup worker failed");
+        }
+    }
+
+    /// Managed lifetimes retain this owner and retry failures until writer release is proven.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "cleanup phases must serialize through their acknowledgements, and persistence must retain the acquisition/writer across failed or cancelled durable discard for retry"
+    )]
+    pub(crate) async fn cleanup_durably(&self) -> CodexResult<()> {
+        let mut phase = self.cleanup.lock().await;
+        if matches!(*phase, CleanupPhase::Complete) {
+            return Ok(());
         }
         if let Some(io) = self.io.get() {
-            // The session loop owns persistence now. Preserve its shutdown semantics even
-            // if registration or the caller's handoff was interrupted after the loop started.
             self.persistence.lock().await.commit();
             let _ = io.submit(Op::Interrupt).await;
-            if let Err(error) = io.shutdown_and_wait().await {
-                if let Some(teardown) = teardown.as_ref() {
-                    teardown.record_shutdown_failure(
-                        "stop_session_io",
-                        CodexErrKind::from(&error).into(),
-                    );
-                }
-                tracing::warn!("failed to stop cancelled session init: {error}");
+            io.shutdown_durably_and_wait().await?;
+            *phase = CleanupPhase::Complete;
+            self.release_membership();
+            return Ok(());
+        }
+        // Before the submission loop exists, initialization still owns the writer.
+        // Drain producers without materializing a failed/lazy session's history.
+        if let Some(session) = self.session.get() {
+            if matches!(*phase, CleanupPhase::NotStarted) {
+                session
+                    .services
+                    .unified_exec_manager
+                    .begin_durable_shutdown();
+                super::handlers::stop_session_execution(session).await;
+                *phase = CleanupPhase::ExecutionStopped;
             }
-        } else {
-            if let Some(session) = self.session.get() {
-                super::handlers::shutdown_session_runtime(session).await;
-            }
-            let mut persistence = std::mem::take(&mut *self.persistence.lock().await);
-            if let Err(error) = persistence.discard().await {
-                if let Some(teardown) = teardown.as_ref() {
-                    teardown.record_shutdown_failure(
-                        "discard_persistence",
-                        thread_store_error_kind(&error),
-                    );
-                }
-                tracing::warn!(
-                    "failed to discard thread persistence for failed session init: {error}"
+            if matches!(*phase, CleanupPhase::ExecutionStopped) {
+                let (code_mode, processes) = tokio::join!(
+                    session.services.code_mode_service.shutdown_durably(),
+                    session.services.unified_exec_manager.shutdown_durably(),
                 );
+                code_mode.map_err(CodexErr::Fatal)?;
+                processes.map_err(|error| CodexErr::Fatal(error.to_string()))?;
+                // Accepted callbacks can publish producers while the first drain runs.
+                // Once code-mode acknowledges, its final inventory cannot grow again.
+                session
+                    .services
+                    .unified_exec_manager
+                    .shutdown_durably()
+                    .await
+                    .map_err(|error| CodexErr::Fatal(error.to_string()))?;
+                *phase = CleanupPhase::ProcessesDrained;
+            }
+            if matches!(*phase, CleanupPhase::ProcessesDrained) {
+                if let Some(guardians) = session
+                    .services
+                    .thread_extension_data
+                    .get::<crate::guardian::GuardianReviewSessionManager>()
+                {
+                    guardians
+                        .shutdown_durably()
+                        .await
+                        .map_err(|error| CodexErr::Fatal(format!("{error:#}")))?;
+                }
+                *phase = CleanupPhase::GuardiansDrained;
+            }
+            if matches!(*phase, CleanupPhase::GuardiansDrained) {
+                super::handlers::shutdown_session_services(session).await;
+                crate::hook_runtime::run_session_end_hooks(session).await;
+                super::handlers::emit_thread_stop_lifecycle(session).await;
+                *phase = CleanupPhase::ServicesStopped;
             }
         }
-        if let Some(teardown) = teardown {
-            teardown.complete();
-        }
+        self.persistence
+            .lock()
+            .await
+            .discard_durably()
+            .await
+            .map_err(|error| CodexErr::Fatal(format!("discard managed startup writer: {error}")))?;
+        *phase = CleanupPhase::Complete;
+        self.release_membership();
+        Ok(())
     }
 }
 
