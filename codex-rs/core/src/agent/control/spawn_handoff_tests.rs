@@ -155,7 +155,10 @@ async fn sealed_child_prevents_recreating_its_absent_root_during_unload() {
     .expect("controlled resume does not deadlock")
     .err()
     .expect("sealed observer cannot resume Main");
-    assert!(matches!(error, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
     let error = tokio::time::timeout(
         Duration::from_secs(/*secs*/ 5),
         harness.manager.resume_thread_from_rollout(
@@ -170,7 +173,10 @@ async fn sealed_child_prevents_recreating_its_absent_root_during_unload() {
     .expect("cold resume does not deadlock")
     .err()
     .expect("cold resume cannot recreate sealed subtree root");
-    assert!(matches!(error, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
     assert_eq!(harness.manager.list_thread_ids().await, vec![child_id]);
     drop(delivery);
     assert_eq!(

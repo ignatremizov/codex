@@ -6,6 +6,7 @@ use crate::agent::AgentControl;
 use crate::codex_thread::CodexThread;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -254,7 +255,7 @@ impl ThreadManagerState {
     ) -> CodexResult<()> {
         match self.get_thread_including_pending(thread_id).await {
             Ok(thread) => thread.ensure_not_unloading()?,
-            Err(CodexErr::ThreadNotFound(_)) => {}
+            Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
             Err(error) => return Err(error),
         }
         // A cold root has no runtime on which to store the seal. Surviving sealed children
