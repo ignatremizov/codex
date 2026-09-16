@@ -79,11 +79,14 @@ async fn child_selection_captures_owning_root_and_fences_membership() {
     );
     let mut new_membership = Box::pin(manager.state.acquire_agent_membership_lifecycle(child_id));
     assert!(new_membership.as_mut().now_or_never().is_none());
-    let unloaded = subtree.shutdown_and_remove().await.expect("durable unload");
+    // Keep polling the queued FIFO waiter when unload releases its lifecycle locks.
+    // Otherwise that waiter reserves the child lock and blocks unload's final reacquisition.
+    let (unloaded, new_membership) = tokio::join!(subtree.shutdown_and_remove(), new_membership);
+    let unloaded = unloaded.expect("durable unload");
+    assert!(new_membership.is_err());
     assert_eq!(unloaded, vec![root, child_id, grandchild]);
     assert!(manager.list_thread_ids().await.is_empty());
     drop(subtree);
-    assert!(new_membership.await.is_err());
     let retry = manager
         .prepare_subtree_unload(grandchild)
         .await

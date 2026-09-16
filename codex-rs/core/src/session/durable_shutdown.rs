@@ -167,7 +167,17 @@ impl SessionIo {
         {
             let (reply, result) = oneshot::channel();
             let outcome = match endpoint.submit(Op::ShutdownDurably { reply }).await {
-                Ok(_) => result.await.unwrap_or(Err(CodexErr::InternalAgentDied)),
+                Ok(_) => tokio::select! {
+                    result = result => result.unwrap_or(Err(CodexErr::InternalAgentDied)),
+                    () = endpoint.session_loop_termination.clone() => {
+                        // Another queued shutdown may have stopped the actor. Its unread
+                        // reply sender can remain in the channel while tx_sub is retained.
+                        // Actor exit alone is not proof that the writer was closed.
+                        Err(CodexErr::Fatal(
+                            "session terminated without acknowledging durable shutdown".to_string(),
+                        ))
+                    }
+                },
                 Err(error) => Err(error),
             };
             if let Err(error) = outcome

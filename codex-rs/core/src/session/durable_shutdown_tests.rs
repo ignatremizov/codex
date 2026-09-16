@@ -15,6 +15,8 @@ use codex_thread_store::LiveThread;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use pretty_assertions::assert_eq;
+use std::future::Future;
+use std::task::Poll;
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -37,6 +39,81 @@ async fn running_session() -> (Arc<Session>, SessionIo) {
         session_loop_termination: session_loop_termination_from_handle(session_loop),
     };
     (session, io)
+}
+
+#[derive(Clone, Copy)]
+enum ActorExit {
+    DurableShutdown,
+    WithoutAcknowledgement,
+}
+
+#[test_case::test_case(ActorExit::DurableShutdown; "acknowledged_actor_exit")]
+#[test_case::test_case(ActorExit::WithoutAcknowledgement; "unacknowledged_actor_exit")]
+#[tokio::test]
+async fn queued_shutdown_waiters_require_durable_acknowledgement_after_actor_exit(
+    actor_exit: ActorExit,
+) {
+    let (session, _) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let config = session.get_config().await;
+    let (tx_sub, rx_sub) = async_channel::bounded::<Submission>(/*cap*/ 4);
+    let (_, rx_event) = async_channel::unbounded();
+    let (start, started) = oneshot::channel();
+    let actor_session = Arc::clone(&session);
+    let session_loop = tokio::spawn(async move {
+        started.await.expect("release actor");
+        match actor_exit {
+            ActorExit::DurableShutdown => {
+                handlers::submission_loop(actor_session, config, rx_sub).await;
+            }
+            ActorExit::WithoutAcknowledgement => drop(rx_sub),
+        }
+    });
+    let io = SessionIo {
+        tx_sub,
+        rx_event,
+        submission_admission: Arc::clone(&session.submission_admission),
+        agent_status: watch::channel(AgentStatus::PendingInit).1,
+        session_loop_termination: session_loop_termination_from_handle(session_loop),
+    };
+    let mut first = Box::pin(io.shutdown_durably_and_wait());
+    let mut second = Box::pin(io.shutdown_durably_and_wait());
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 10),
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            assert!(second.as_mut().poll(cx).is_pending());
+            if io.tx_sub.len() == 2 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }),
+    )
+    .await
+    .expect("queue both shutdowns before starting the actor");
+    // Both reply-bearing operations exist before the actor can consume either one.
+    assert_eq!(io.tx_sub.len(), 2);
+    start.send(()).expect("start actor");
+    let (first, second) = tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
+        tokio::join!(first, second)
+    })
+    .await
+    .expect("both waiters observe actor termination despite retained queued replies");
+    match actor_exit {
+        ActorExit::DurableShutdown => {
+            first.expect("first acknowledged waiter");
+            second.expect("second acknowledged waiter");
+            assert!(io.durable_shutdown_succeeded());
+            assert_eq!(io.tx_sub.len(), 1);
+        }
+        ActorExit::WithoutAcknowledgement => {
+            assert!(first.is_err());
+            assert!(second.is_err());
+            assert!(!io.durable_shutdown_succeeded());
+            assert_eq!(io.tx_sub.len(), 2);
+        }
+    }
 }
 
 #[tokio::test]
