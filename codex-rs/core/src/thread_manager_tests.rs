@@ -62,6 +62,9 @@ mod fork_aliases_tests;
 #[path = "thread_manager/models_cache_selection_tests.rs"]
 mod models_cache_selection_tests;
 
+#[path = "thread_manager/subtree_spawn_ownership_tests.rs"]
+mod subtree_spawn_ownership_tests;
+
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
 struct ParentInstructionsProvider(codex_extension_api::Instructions);
@@ -340,7 +343,8 @@ async fn reserved_thread_id_is_used_without_changing_normal_id_generation() {
     let resume_error = manager
         .start_thread(resumed_options)
         .await
-        .expect_err("reject reserved ID for resume");
+        .err()
+        .expect("reject reserved ID for resume");
     let generated = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
@@ -961,34 +965,26 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
         .expect("resume replacement thread");
     assert_eq!(replacement.thread_id, old.thread_id);
     assert!(!Arc::ptr_eq(&replacement.thread, &old.thread));
-    let cleanup_called = Arc::new(AtomicBool::new(false));
-    let cleanup_called_for_removal = Arc::clone(&cleanup_called);
-
     let removed = manager
         .state
-        .remove_thread_if_current(&old.thread, move || {
-            cleanup_called_for_removal.store(true, Ordering::Release);
-        })
+        .remove_thread_if_matches(&old.thread_id, &old.thread)
         .await;
 
     assert!(removed.is_none());
-    assert!(!cleanup_called.load(Ordering::Acquire));
     assert!(
         manager
-            .remove_thread_if_current(&old.thread)
+            .remove_thread_if_matches(&old.thread_id, &old.thread)
             .await
             .is_none()
     );
     let absent_cleanup_called = Arc::new(AtomicBool::new(false));
     let absent_cleanup_called_for_check = Arc::clone(&absent_cleanup_called);
-    assert!(
-        !manager
-            .state
-            .run_if_thread_absent(old.thread_id, move || {
-                absent_cleanup_called_for_check.store(true, Ordering::Release);
-            })
-            .await
-    );
+    manager
+        .state
+        .run_if_thread_absent(old.thread_id, move || {
+            absent_cleanup_called_for_check.store(true, Ordering::Release);
+        })
+        .await;
     assert!(!absent_cleanup_called.load(Ordering::Acquire));
     let current = manager
         .get_thread(old.thread_id)
@@ -2232,8 +2228,10 @@ async fn explicit_installation_id_skips_codex_home_file() {
     let _ = manager.remove_thread(&thread.thread_id).await;
 }
 
+#[test_case::test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case::test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
-async fn resume_active_thread_from_rollout_returns_running_thread() {
+async fn resume_active_thread_from_rollout_returns_running_thread(history_mode: ThreadHistoryMode) {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
@@ -2261,7 +2259,10 @@ async fn resume_active_thread_from_rollout_returns_running_thread() {
     );
 
     let source = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
+        .start_thread(StartThreadOptions {
+            history_mode: Some(history_mode),
+            ..StartThreadOptions::new(config.clone())
+        })
         .await
         .expect("start source thread");
     source.thread.ensure_rollout_materialized().await;
@@ -2277,16 +2278,59 @@ async fn resume_active_thread_from_rollout_returns_running_thread() {
 
     let resumed = manager
         .resume_thread_from_rollout(
-            config,
-            rollout_path,
-            auth_manager,
+            config.clone(),
+            rollout_path.clone(),
+            auth_manager.clone(),
             /*parent_trace*/ None,
             ClientMcpExtensions::default(),
         )
         .await
         .expect("resume active source thread");
     assert_eq!(resumed.thread_id, source.thread_id);
+    assert_eq!(
+        resumed
+            .thread
+            .read_thread(
+                /*include_archived*/ true, /*include_history*/ false
+            )
+            .await
+            .expect("resumed metadata")
+            .history_mode,
+        history_mode,
+    );
     assert!(Arc::ptr_eq(&resumed.thread, &source.thread));
+
+    let mut mismatched = manager
+        .initial_history_from_rollout_path(rollout_path)
+        .await
+        .expect("load the source history");
+    let InitialHistory::Resumed(history) = &mut mismatched else {
+        panic!("source history must retain resume identity");
+    };
+    history.rollout_path = Some(temp_dir.path().join("different-rollout.jsonl"));
+    let error = manager
+        .resume_thread_with_history(
+            config,
+            mismatched,
+            auth_manager,
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await
+        .err()
+        .expect("a different path cannot reuse the live writer");
+    assert!(
+        error
+            .to_string()
+            .contains("already running with a different rollout path")
+    );
+    assert!(Arc::ptr_eq(
+        &manager
+            .get_thread(source.thread_id)
+            .await
+            .expect("original runtime remains"),
+        &source.thread,
+    ));
 
     source
         .thread
@@ -2295,8 +2339,10 @@ async fn resume_active_thread_from_rollout_returns_running_thread() {
         .expect("shutdown source thread");
 }
 
+#[test_case::test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case::test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
-async fn resume_stopped_thread_from_rollout_spawns_new_thread() {
+async fn resume_stopped_thread_from_rollout_spawns_new_thread(history_mode: ThreadHistoryMode) {
     let temp_dir = tempdir().expect("tempdir");
     let mut config = test_config().await;
     config.codex_home = temp_dir.path().join("codex-home").abs();
@@ -2324,7 +2370,10 @@ async fn resume_stopped_thread_from_rollout_spawns_new_thread() {
     );
 
     let source = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
+        .start_thread(StartThreadOptions {
+            history_mode: Some(history_mode),
+            ..StartThreadOptions::new(config.clone())
+        })
         .await
         .expect("start source thread");
     source.thread.ensure_rollout_materialized().await;
@@ -2354,7 +2403,19 @@ async fn resume_stopped_thread_from_rollout_spawns_new_thread() {
         .await
         .expect("resume stopped source thread");
     assert_eq!(resumed.thread_id, source.thread_id);
+    assert_eq!(
+        resumed
+            .thread
+            .read_thread(
+                /*include_archived*/ true, /*include_history*/ false
+            )
+            .await
+            .expect("resumed metadata")
+            .history_mode,
+        history_mode,
+    );
     assert!(!Arc::ptr_eq(&resumed.thread, &source.thread));
+    assert!(resumed.thread.is_running());
 
     resumed
         .thread
@@ -2563,6 +2624,7 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
         .expect("shutdown seeded resumed thread");
     let _ = manager.remove_thread(&resumed.thread_id).await;
 
+    let path_reads_before = in_memory_store.calls().await.read_thread_by_rollout_path;
     let resumed_from_path = manager
         .resume_thread_from_rollout(
             config.clone(),
@@ -2574,6 +2636,8 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
         .await
         .expect("resume from rollout path");
     assert_eq!(resumed_from_path.thread_id, resumed.thread_id);
+    let path_reads_after_resume = in_memory_store.calls().await.read_thread_by_rollout_path;
+    assert_eq!(path_reads_after_resume, path_reads_before + 1);
 
     let forked = manager
         .fork_thread(
@@ -2585,8 +2649,8 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
         .expect("fork from rollout path");
     assert_ne!(forked.thread_id, resumed.thread_id);
 
-    let calls = in_memory_store.calls().await;
-    assert_eq!(calls.read_thread_by_rollout_path, 4);
+    let path_reads_after_fork = in_memory_store.calls().await.read_thread_by_rollout_path;
+    assert_eq!(path_reads_after_fork, path_reads_after_resume + 1);
 
     resumed_from_path
         .thread

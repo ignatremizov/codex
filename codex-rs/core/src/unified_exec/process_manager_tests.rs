@@ -377,7 +377,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(5)),
-        None,
+        /*interrupts*/ None,
     );
     let produce = async {
         for chunk in chunks {
@@ -435,7 +435,7 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
         &output,
         /*pause_state*/ None,
         Some(Instant::now() + Duration::from_secs(1)),
-        None,
+        /*interrupts*/ None,
     )
     .await
     .collected;
@@ -497,10 +497,11 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
 
     let collected = tokio::time::timeout(
         Duration::from_secs(2),
-        UnifiedExecProcessManager::collect_output_until_deadline(
+        collect_output_until_deadline(
             &output,
             /*pause_state*/ None,
             Some(Instant::now()),
+            /*interrupts*/ None,
         ),
     )
     .await
@@ -508,7 +509,11 @@ async fn collect_output_waits_for_close_after_expired_deadline_when_exit_seen() 
 
     let mut expected = HeadTailBuffer::default();
     expected.push_chunk(b"late output");
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
+    assert_eq!(
+        collected.completion_reason,
+        TerminalWaitCompletionReason::Exited
+    );
 }
 
 #[tokio::test]
@@ -544,8 +549,8 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
 
     let collected = tokio::time::timeout(
         Duration::from_secs(2),
-        UnifiedExecProcessManager::collect_output_until_deadline(
-            &output, /*pause_state*/ None, /*deadline*/ None,
+        collect_output_until_deadline(
+            &output, /*pause_state*/ None, /*deadline*/ None, /*interrupts*/ None,
         ),
     )
     .await
@@ -553,7 +558,11 @@ async fn collect_output_without_deadline_waits_until_output_closes() {
 
     let mut expected = HeadTailBuffer::default();
     expected.push_chunk(b"unbounded output");
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
+    assert_eq!(
+        collected.completion_reason,
+        TerminalWaitCompletionReason::Exited
+    );
 }
 
 #[test]
@@ -587,48 +596,6 @@ fn polling_deadlines_use_platform_checked_arithmetic() {
             start.checked_add(Duration::from_millis(timeout_ms))
         );
     }
-
-    for initial in [None, Some(start)] {
-        for extension in [Duration::from_secs(1), Duration::MAX] {
-            let mut deadline = initial;
-            extend_deadline(&mut deadline, extension);
-            assert_eq!(
-                deadline,
-                initial.and_then(|deadline| deadline.checked_add(extension))
-            );
-        }
-    }
-}
-
-#[tokio::test]
-async fn paused_polling_extends_only_finite_deadlines() {
-    let start = Instant::now();
-    for initial in [None, Some(start)] {
-        let (sender, receiver) = watch::channel(/*init*/ true);
-        let mut pause_state = Some(receiver);
-        let mut deadline = initial;
-        let mut post_exit_deadline = Some(start);
-        {
-            let paused = UnifiedExecProcessManager::extend_deadlines_while_paused(
-                &mut pause_state,
-                &mut deadline,
-                &mut post_exit_deadline,
-            );
-            tokio::pin!(paused);
-            assert!(futures::poll!(&mut paused).is_pending());
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            assert!(futures::poll!(&mut paused).is_pending());
-            sender
-                .send(/*value*/ false)
-                .expect("pause receiver remains alive");
-            tokio::time::timeout(Duration::from_secs(1), paused)
-                .await
-                .expect("resuming should release the paused collector");
-        }
-        let extended = post_exit_deadline.expect("post-exit deadline stays finite");
-        assert!(extended > start);
-        assert_eq!(deadline, initial.map(|_| extended));
-    }
 }
 
 #[tokio::test]
@@ -642,8 +609,8 @@ async fn unbounded_poll_still_caps_the_post_exit_drain() {
         output_closed_notify: Arc::new(Notify::new()),
         cancellation_token,
     };
-    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
-        &output, /*pause_state*/ None, /*deadline*/ None,
+    let collect = collect_output_until_deadline(
+        &output, /*pause_state*/ None, /*deadline*/ None, /*interrupts*/ None,
     );
     tokio::pin!(collect);
     assert!(futures::poll!(&mut collect).is_pending());
@@ -654,7 +621,11 @@ async fn unbounded_poll_still_caps_the_post_exit_drain() {
         .expect("exit must bound collection even when the output stream never closes");
     let mut expected = HeadTailBuffer::<10>::default();
     expected.push_chunk(b"late bytes");
-    assert_eq!(collected, expected);
+    assert_eq!(collected.collected, expected);
+    assert_eq!(
+        collected.completion_reason,
+        TerminalWaitCompletionReason::Exited
+    );
 }
 
 #[tokio::test]

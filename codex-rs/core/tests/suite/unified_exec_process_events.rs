@@ -48,6 +48,7 @@ use std::time::Duration;
 use test_case::test_case;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::accept_async;
@@ -188,6 +189,7 @@ async fn respond_environment_info(
 async fn serve_exec_with_pushed_events(
     listener: TcpListener,
     scenario: PushedExecScenario,
+    mut finished: oneshot::Receiver<()>,
 ) -> PushedExecServerResult {
     let unrestricted_patch = matches!(
         scenario,
@@ -451,7 +453,14 @@ async fn serve_exec_with_pushed_events(
 
     let mut process_read_requests = 0;
     loop {
-        let request = read_exec_server_json(&mut websocket, Duration::from_secs(/*secs*/ 5)).await;
+        let request = tokio::select! {
+            biased;
+            request = read_exec_server_json(&mut websocket, Duration::from_secs(/*secs*/ 5)) => request,
+            result = &mut finished => {
+                result.expect("test should explicitly finish after observing command output");
+                break;
+            }
+        };
         match request["method"].as_str() {
             Some("process/read") => {
                 process_read_requests += 1;
@@ -555,13 +564,13 @@ async fn serve_exec_with_pushed_events(
                     }),
                 )
                 .await;
-                return PushedExecServerResult {
-                    process_read_requests,
-                    process_start,
-                };
             }
             method => panic!("unexpected exec-server request: {method:?}"),
         }
+    }
+    PushedExecServerResult {
+        process_read_requests,
+        process_start,
     }
 }
 
@@ -645,7 +654,8 @@ async fn exec_command_consumes_pushed_remote_process_events(
     )
     .await;
     let exec_server_url = format!("ws://{}", listener.local_addr()?);
-    let exec_server = tokio::spawn(serve_exec_with_pushed_events(listener, scenario));
+    let (finish_exec_server, finished) = oneshot::channel();
+    let exec_server = tokio::spawn(serve_exec_with_pushed_events(listener, scenario, finished));
     let mut builder = test_codex().with_exec_server_url(exec_server_url);
     if managed_network_configured {
         let cloud_config_bundle = match managed_network {
@@ -969,6 +979,52 @@ timeout = 900
     } else {
         Duration::from_secs(5)
     };
+    if managed_network_enabled {
+        timeout(Duration::from_secs(/*secs*/ 5), async {
+            while response_mock.requests().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+        })
+        .await
+        .context("model should receive the remote exec output")?;
+    }
+    let request = response_mock
+        .last_request()
+        .context("model should receive the exec_command output")?;
+    let (output, success) = request
+        .function_call_output_content_and_success(CALL_ID)
+        .context("exec_command output should be model visible")?;
+    let output = output.context("exec_command output should contain text")?;
+    match scenario {
+        PushedExecScenario::Complete | PushedExecScenario::ElevatedPowerShell => {
+            assert_ne!(success, Some(false));
+            assert!(managed_network_enabled || saw_exec_command_begin);
+            assert!(output.contains("Process exited with code 0"));
+            assert!(output.contains(COMPLETE_OUTPUT));
+        }
+        PushedExecScenario::DirectDenied | PushedExecScenario::LegacyExit => {
+            assert!(!saw_exec_command_begin);
+            assert!(output.contains("Process exited with code 1"));
+        }
+        PushedExecScenario::ReplayGap => {
+            assert_ne!(success, Some(false));
+            assert!(saw_exec_command_begin);
+            assert_eq!(output.matches(RECOVERED_OUTPUT).count(), 1);
+            assert_eq!(output.matches(RETAINED_OUTPUT).count(), 1);
+        }
+        PushedExecScenario::RejectedLongWindowsDangerousCommand
+        | PushedExecScenario::SandboxedInterceptedPatch
+        | PushedExecScenario::SandboxedDirectPatch
+        | PushedExecScenario::SandboxedDirectPatchDenied
+        | PushedExecScenario::SandboxedDirectPatchRetry
+        | PushedExecScenario::UnsandboxedInterceptedPatch
+        | PushedExecScenario::FullDiskInterceptedPatch => {
+            unreachable!("non-process scenario returned early")
+        }
+    }
+    finish_exec_server
+        .send(())
+        .expect("fake exec-server should serve until command output is observed");
     let exec_server_result = timeout(cleanup_timeout, exec_server)
         .await
         .context("fake exec-server should observe process cleanup")??;
@@ -1012,13 +1068,6 @@ timeout = 900
         );
         assert_eq!(params["networkProxy"]["environmentId"], "remote");
         assert!(params["networkProxy"]["executionId"].as_str().is_some());
-        timeout(Duration::from_secs(5), async {
-            while response_mock.requests().len() < 2 {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .context("model should receive the remote exec output")?;
         return Ok(());
     }
     if matches!(managed_network, ManagedNetworkScenario::Disabled) {
@@ -1028,28 +1077,15 @@ timeout = 900
         assert_eq!(params["networkProxy"], Value::Null);
         assert_eq!(params["env"]["HTTP_PROXY"], Value::Null);
     }
-    let request = response_mock
-        .last_request()
-        .context("model should receive the exec_command output")?;
-    let (output, success) = request
-        .function_call_output_content_and_success(CALL_ID)
-        .context("exec_command output should be model visible")?;
-    let output = output.context("exec_command output should contain text")?;
     let process_read_requests = exec_server_result.process_read_requests;
     match scenario {
         PushedExecScenario::Complete | PushedExecScenario::ElevatedPowerShell => {
-            assert_ne!(success, Some(false));
-            assert!(saw_exec_command_begin);
-            assert!(output.contains("Process exited with code 0"));
-            assert!(output.contains(COMPLETE_OUTPUT));
             assert_eq!(process_read_requests, 0, "unexpected compatibility read");
         }
         PushedExecScenario::RejectedLongWindowsDangerousCommand => {
             unreachable!("dangerous command returned early")
         }
         PushedExecScenario::DirectDenied => {
-            assert!(!saw_exec_command_begin);
-            assert!(output.contains("Process exited with code 1"));
             assert_eq!(process_read_requests, 0, "unexpected compatibility read");
         }
         PushedExecScenario::SandboxedInterceptedPatch
@@ -1063,15 +1099,9 @@ timeout = 900
             unreachable!("unsandboxed intercepted patch returned early")
         }
         PushedExecScenario::LegacyExit => {
-            assert!(!saw_exec_command_begin);
-            assert!(output.contains("Process exited with code 1"));
             assert_eq!(process_read_requests, 1, "expected compatibility read");
         }
         PushedExecScenario::ReplayGap => {
-            assert_ne!(success, Some(false));
-            assert!(saw_exec_command_begin);
-            assert_eq!(output.matches(RECOVERED_OUTPUT).count(), 1);
-            assert_eq!(output.matches(RETAINED_OUTPUT).count(), 1);
             assert_eq!(process_read_requests, 1, "expected replay recovery read");
         }
     }

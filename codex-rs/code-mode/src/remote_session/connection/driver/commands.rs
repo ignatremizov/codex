@@ -68,6 +68,7 @@ impl ConnectionDriver {
         response_tx: oneshot::Sender<Result<(), String>>,
     ) -> bool {
         if self.sessions.contains(&session.id) || self.requests.contains_pending_open(&session) {
+            cleanup.close();
             let _ = response_tx.send(Err(format!(
                 "code-mode session {} is already open",
                 session.id
@@ -77,6 +78,7 @@ impl ConnectionDriver {
         let limits = match WireSessionCellExecutionLimits::try_from(limits) {
             Ok(limits) => limits,
             Err(error) => {
+                cleanup.close();
                 let _ = response_tx.send(Err(format!(
                     "failed to encode code-mode session execution limits: {error}"
                 )));
@@ -86,6 +88,7 @@ impl ConnectionDriver {
         let request_id = match self.requests.allocate_id() {
             Ok(id) => id,
             Err(err) => {
+                cleanup.close();
                 let _ = response_tx.send(Err(err));
                 return false;
             }
@@ -101,6 +104,7 @@ impl ConnectionDriver {
         let frame = match EncodedFrame::encode(&message) {
             Ok(frame) => frame,
             Err(err) => {
+                cleanup.close();
                 let _ = response_tx.send(Err(format!(
                     "failed to encode code-mode open-session request: {err}"
                 )));

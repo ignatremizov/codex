@@ -88,7 +88,7 @@ impl DriverHarness {
     }
 
     async fn open(&mut self, session: RemoteSession) -> SessionCleanup {
-        let cleanup = SessionCleanup::new();
+        let cleanup = SessionCleanup::new(CancellationToken::new());
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(DriverCommand::OpenSession {
@@ -208,7 +208,7 @@ async fn open_session_includes_nondefault_cell_execution_limits() {
             session: session.clone(),
 
             limits,
-            cleanup: SessionCleanup::new(),
+            cleanup: SessionCleanup::new(CancellationToken::new()),
             caller_cancellation: CancellationToken::new(),
             response_tx,
         })
@@ -538,7 +538,7 @@ async fn dropped_open_waiter_shuts_down_committed_session() {
     let mut harness = DriverHarness::start();
     let session = remote_session();
     let (open_tx, open_rx) = oneshot::channel();
-    let cleanup = SessionCleanup::new();
+    let cleanup = SessionCleanup::new(CancellationToken::new());
     harness
         .command_tx
         .send(DriverCommand::OpenSession {
@@ -853,7 +853,7 @@ async fn shutdown_closes_cell_without_waiting_for_delegate_cleanup() {
     let mut harness = DriverHarness::start();
     let session = remote_session();
     let (delegate, mut events_rx, release) = HeldDelegate::new();
-    harness.open(session.clone()).await;
+    let cleanup = harness.open(session.clone()).await;
     let _started = harness
         .start_cell(
             session.clone(),
@@ -914,12 +914,23 @@ async fn shutdown_closes_cell_without_waiting_for_delegate_cleanup() {
     assert!(closure_events.contains(&HeldDelegateEvent::Cancelled));
     assert!(closure_events.contains(&HeldDelegateEvent::CellClosed(CellId::new("1".to_string()))));
     assert_eq!(response_rx.await.expect("shutdown reply"), Ok(()));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), cleanup.wait_durably())
+            .await
+            .is_err()
+    );
     assert!(matches!(
         events_rx.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
 
     release.cancel();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), cleanup.wait_durably())
+            .await
+            .expect("durable callback drain"),
+        Ok(())
+    );
     assert_eq!(
         next_held_delegate_event(&mut events_rx).await,
         HeldDelegateEvent::Finished
@@ -1356,6 +1367,7 @@ async fn queued_remote_wait_times_out_and_invalidates_the_connection() {
         failure: Arc::clone(&harness.failure),
         cancellation: harness.cancellation.clone(),
         capabilities: CapabilitySet::empty(),
+        host_exited: CancellationToken::new(),
     };
     let response = tokio::spawn(async move {
         let result = connection
@@ -1405,6 +1417,7 @@ async fn queued_remote_termination_times_out_and_invalidates_the_connection() {
         failure: Arc::clone(&harness.failure),
         cancellation: harness.cancellation.clone(),
         capabilities: CapabilitySet::empty(),
+        host_exited: CancellationToken::new(),
     };
     let response = tokio::spawn(async move {
         let result = connection

@@ -4,7 +4,34 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_thread_store::PersistContext;
 
 impl LocalAgentControl {
+    /// Remove only the runtime whose durable unload has acknowledged writer release.
+    pub(crate) async fn remove_durably_unloaded_instance(
+        &self,
+        thread: &Arc<CodexThread>,
+    ) -> CodexResult<bool> {
+        let state = self.upgrade()?;
+        let thread_id = thread.session.thread_id();
+        if !thread.io.durable_shutdown_succeeded() {
+            return Err(CodexErr::InvalidRequest(
+                "durable unload has not acknowledged writer release".to_string(),
+            ));
+        }
+        let removed = state
+            .remove_thread_with_authority(
+                &thread_id,
+                thread,
+                crate::thread_manager::ThreadRemovalAuthority::DurableUnload,
+                || {
+                    self.forget_v2_residency(thread_id);
+                    self.state.release_spawned_thread(thread_id);
+                },
+            )
+            .await;
+        Ok(removed.is_some())
+    }
+
     /// Retire an exact runtime while serializing against explicit restoration.
+    #[cfg(test)]
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let control = self.clone();
         tokio::spawn(async move {
@@ -31,6 +58,7 @@ impl LocalAgentControl {
                 return Err(error);
             }
         };
+        thread.ensure_not_unloading()?;
         thread
             .session
             .ensure_rollout_materialized(PersistContext::Standard)
@@ -64,6 +92,7 @@ impl LocalAgentControl {
 
     /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the
     /// agent and any live descendants reached from the in-memory tree.
+    #[cfg(test)]
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let control = self.clone();
         tokio::spawn(async move {
@@ -98,6 +127,7 @@ impl LocalAgentControl {
         let state = self.upgrade()?;
         let lock = state.v2_spawn_resume_lock(agent_id);
         let _guard = lock.lock_owned().await;
+        state.ensure_membership_mutation_allowed(agent_id).await?;
         let closed = match state.get_thread(agent_id).await {
             Ok(thread) => {
                 let (snapshot, _) = thread.session.subscribe_agent_responses();
@@ -138,6 +168,9 @@ impl LocalAgentControl {
             if !added {
                 break;
             }
+        }
+        for id in &descendants {
+            state.ensure_membership_mutation_allowed(*id).await?;
         }
         if fence.is_none() {
             if known_agent {
@@ -253,6 +286,7 @@ impl LocalAgentControl {
     }
 
     /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.
+    #[cfg(test)]
     pub(crate) async fn shutdown_agent_tree(&self, agent_id: ThreadId) -> CodexResult<String> {
         let descendant_ids = self.live_thread_spawn_descendants(agent_id).await?;
         let result = self.shutdown_live_agent(agent_id).await;

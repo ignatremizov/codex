@@ -330,6 +330,13 @@ impl ChatWidget {
         self.bottom_pane.set_footer_hint_override(items);
     }
 
+    /// Permit retry or explicit disconnect after a durable shutdown request fails.
+    pub(crate) fn restore_composer_after_failed_shutdown(&mut self) {
+        self.bottom_pane
+            .set_composer_input_enabled(/*enabled*/ true, /*placeholder*/ None);
+        self.set_footer_hint_override(/*items*/ None);
+    }
+
     pub(crate) fn show_selection_view(&mut self, params: SelectionViewParams) {
         self.bottom_pane.show_selection_view(params);
         self.request_redraw();

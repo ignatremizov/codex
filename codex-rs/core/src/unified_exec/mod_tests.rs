@@ -21,6 +21,10 @@ use codex_exec_server::ReadResponse;
 use codex_exec_server::StartedExecProcess;
 use codex_exec_server::WriteResponse;
 use codex_exec_server::WriteStatus;
+use codex_protocol::protocol::TerminalInteractionEvent;
+use codex_protocol::protocol::TerminalWaitCompletionReason;
+use codex_protocol::protocol::TerminalWaitEvent;
+use codex_protocol::protocol::TerminalWaitMode;
 use codex_sandboxing::SandboxType;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -113,24 +117,23 @@ async fn exec_command_with_tty(
     let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
     let request = test_exec_request(turn, command.clone(), cwd.clone(), shell_env());
 
-    let process = Arc::new(
-        manager
-            .open_session_with_prepared_exec_env(
-                process_id,
-                &request,
-                /*tool_ctx*/ None,
-                codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
-                /*network_policy_decider*/ None,
-                tty,
-                Box::new(NoopSpawnLifecycle),
-                turn.initial_environments
-                    .primary()
-                    .expect("turn environment")
-                    .environment
-                    .as_ref(),
-            )
-            .await?,
-    );
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            process_id,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            tty,
+            Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
+            turn.initial_environments
+                .primary()
+                .expect("turn environment")
+                .environment
+                .as_ref(),
+        )
+        .await?;
     let context = UnifiedExecContext::new(
         Arc::clone(session),
         crate::session::step_context::StepContext::for_test(Arc::clone(turn)),
@@ -848,6 +851,7 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
             .await
             .expect("poll lifecycle event should arrive")
         };
+        let polls_started = Instant::now();
         let poll_task = spawn_poll();
         let first_begin = next_interaction().await;
         assert!(process.interaction_lock().try_lock_owned().is_err());
@@ -892,16 +896,52 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
         }
         assert!(manager.process_store.lock().await.processes.is_empty());
         let clear = next_interaction().await;
-        let expected = codex_protocol::protocol::TerminalInteractionEvent {
+        let (
+            Some(TerminalWaitEvent::Started {
+                started_at_ms: first_started_at_ms,
+                ..
+            }),
+            Some(TerminalWaitEvent::Started {
+                started_at_ms: second_started_at_ms,
+                ..
+            }),
+            Some(TerminalWaitEvent::Finished { elapsed_ms, .. }),
+        ) = (&first_begin.wait, &second_begin.wait, &clear.wait)
+        else {
+            anyhow::bail!("expected two wait starts and one wait completion");
+        };
+        assert!(*first_started_at_ms > 0);
+        assert!(second_started_at_ms >= first_started_at_ms);
+        assert!(u128::from(*elapsed_ms) <= polls_started.elapsed().as_millis());
+        let expected = |wait| TerminalInteractionEvent {
             call_id: "call".to_string(),
             process_id: process_id.to_string(),
             stdin: String::new(),
             deadline_at_ms: None,
+            wait: Some(wait),
         };
-        assert_eq!(
-            [first_begin, second_begin, clear],
-            [expected.clone(), expected.clone(), expected]
-        );
+        let expected_events = [
+            expected(TerminalWaitEvent::Started {
+                interaction_id: "poll-call".to_string(),
+                started_at_ms: *first_started_at_ms,
+                mode: TerminalWaitMode::Timed,
+            }),
+            expected(TerminalWaitEvent::Started {
+                interaction_id: "poll-call".to_string(),
+                started_at_ms: *second_started_at_ms,
+                mode: TerminalWaitMode::Timed,
+            }),
+            expected(TerminalWaitEvent::Finished {
+                interaction_id: "poll-call".to_string(),
+                elapsed_ms: *elapsed_ms,
+                reason: if failure.is_some() {
+                    TerminalWaitCompletionReason::Failed
+                } else {
+                    TerminalWaitCompletionReason::Exited
+                },
+            }),
+        ];
+        assert_eq!([first_begin, second_begin, clear], expected_events);
         assert!(
             events.try_recv().is_err(),
             "only one ordinary-result clear is emitted"
@@ -955,7 +995,9 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
             tty: true,
             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             permissions: TerminalPermissions::for_launch(
-                turn.environments.primary().expect("turn environment"),
+                turn.initial_environments
+                    .primary()
+                    .expect("turn environment"),
                 &turn,
                 TerminalSandboxSource::Native,
                 SandboxPermissions::UseDefault,
@@ -1043,6 +1085,69 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_process_retains_shell_snapshot_until_durable_shutdown() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    let (session, turn) = make_session_and_context().await;
+    let directory = tempfile::tempdir()?;
+    let cwd = AbsolutePathBuf::try_from(directory.path())?;
+    let environment = Arc::new(codex_exec_server::Environment::default_for_tests());
+    let shell = crate::shell::Shell {
+        shell_type: crate::shell::ShellType::Bash,
+        shell_path: which::which("bash")?,
+    };
+    let snapshot = crate::shell_snapshot::ShellSnapshot::new(
+        cwd.clone(),
+        session.thread_id(),
+        turn.session_telemetry.clone(),
+        /*state_db*/ None,
+        /*credential_broker*/ None,
+        /*prefer_executor_snapshots*/ false,
+    )
+    .build(
+        Arc::clone(&environment),
+        PathUri::from_abs_path(&cwd),
+        Some(shell.clone()),
+        /*allow_login_shell*/ false,
+        codex_protocol::config_types::ShellEnvironmentPolicy::default(),
+        /*sandbox*/ None,
+    )
+    .await
+    .ok_or_else(|| anyhow::anyhow!("test shell snapshot must be created"))?;
+    let retained_snapshot = Arc::downgrade(&snapshot);
+    let request = test_exec_request(
+        &turn,
+        shell.derive_exec_args("sleep 30", /*use_login_shell*/ false),
+        cwd,
+        shell_env(),
+    );
+    let manager = UnifiedExecProcessManager::default();
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            /*process_id*/ 1234,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            /*tty*/ false,
+            Box::new(NoopSpawnLifecycle),
+            Some(snapshot),
+            environment.as_ref(),
+        )
+        .await?;
+    // Neither abandoning the caller's handle nor an additional shared owner can
+    // release the replay file while the manager still owns the live process.
+    let shared_process = Arc::clone(&process);
+    drop(process);
+    assert!(retained_snapshot.upgrade().is_some());
+    drop(shared_process);
+    assert!(retained_snapshot.upgrade().is_some());
+    manager.shutdown_durably().await?;
+    assert!(retained_snapshot.upgrade().is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     #[allow(deprecated)]
@@ -1064,6 +1169,7 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
             /*network_policy_decider*/ None,
             /*tty*/ false,
             Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
             &environment,
         )
         .await?;
@@ -1107,6 +1213,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
             /*network_policy_decider*/ None,
             /*tty*/ true,
             Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
             remote_test_env.environment(),
         )
         .await?;
@@ -1162,6 +1269,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
             Box::new(TestSpawnLifecycle {
                 inherited_fds: vec![42],
             }),
+            /*shell_snapshot_file*/ None,
             turn.initial_environments
                 .primary()
                 .expect("turn environment")

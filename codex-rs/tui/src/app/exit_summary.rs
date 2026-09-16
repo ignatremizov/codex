@@ -25,7 +25,11 @@ impl App {
     pub(super) fn exit_info(&self, exit_reason: ExitReason) -> AppExitInfo {
         let thread_id = match exit_reason {
             ExitReason::Archived(_) | ExitReason::ThreadRemoved => None,
-            ExitReason::UserRequested | ExitReason::TurnInterrupted | ExitReason::Fatal(_) => {
+            ExitReason::UserRequested | ExitReason::TurnInterrupted => self
+                .agent_root_thread_id()
+                .or(self.primary_thread_id)
+                .or(self.chat_widget.thread_id()),
+            ExitReason::Disconnected | ExitReason::Fatal(_) => {
                 self.chat_widget.thread_id().or(self.primary_thread_id)
             }
         };
@@ -91,14 +95,17 @@ impl AppExitInfo {
         if let Some(disconnect) = self.disconnect_info
             && let Some(thread_id) = self.thread_id
         {
-            let turn_interrupted = matches!(self.exit_reason, ExitReason::TurnInterrupted);
+            let stopped = matches!(
+                self.exit_reason,
+                ExitReason::UserRequested | ExitReason::TurnInterrupted
+            );
             let message = match self.exit_reason {
-                ExitReason::UserRequested | ExitReason::Archived(_) | ExitReason::ThreadRemoved => {
+                ExitReason::Disconnected | ExitReason::Archived(_) | ExitReason::ThreadRemoved => {
                     "Disconnected from this task. Any running work continues."
                 }
                 ExitReason::Fatal(_) => "Disconnected from this task. Work may still be running.",
-                ExitReason::TurnInterrupted => {
-                    "Disconnected from this task. The current turn was stopped."
+                ExitReason::UserRequested | ExitReason::TurnInterrupted => {
+                    "Stopped and unloaded this task and its loaded agents."
                 }
             };
             lines.push(message.to_string());
@@ -108,7 +115,7 @@ impl AppExitInfo {
                 "Reconnect: {}",
                 color_command(escape_command(&resume_command)),
             ));
-            if !turn_interrupted {
+            if !stopped {
                 let mut agents_command = disconnect.command;
                 agents_command.push("agents".to_string());
                 lines.push(format!(
@@ -119,7 +126,7 @@ impl AppExitInfo {
             }
             if !self.token_usage.is_zero() {
                 let usage = self.token_usage.to_string();
-                lines.push(if turn_interrupted {
+                lines.push(if stopped {
                     usage
                 } else {
                     usage.replacen("Token usage:", "Token usage so far:", /*count*/ 1)

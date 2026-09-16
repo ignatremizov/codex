@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::agent_observation_display::AgentFinalResponseDisplay;
 use crate::app_event::TranscriptExportDestination;
 use crate::bottom_pane::BottomPaneView;
 use crate::chatwidget::UserMessage;
@@ -48,6 +49,7 @@ use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use std::sync::Mutex;
+use test_case::test_case;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -167,6 +169,8 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HistoryCapabilities {
     Current,
+    /// Keep the real turn/item stream instead of the metadata-only fixture filter.
+    CurrentWithLiveNotifications,
     LegacyOnly,
     LegacyOnlyUnsupportedVariant,
     LegacyDynamicToolsAndHistory,
@@ -357,7 +361,13 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                 event = embedded.next_event() => {
                     let Some(event) = event else { break };
                     if let codex_app_server_client::InProcessServerEvent::ServerNotification(notification) = event
-                        && matches!(*notification, ServerNotification::ThreadSettingsUpdated(_))
+                        && (history_capabilities == HistoryCapabilities::CurrentWithLiveNotifications
+                            || matches!(
+                                *notification,
+                                ServerNotification::ThreadSettingsUpdated(_)
+                                    | ServerNotification::ThreadStarted(_)
+                                    | ServerNotification::ThreadReverted(_)
+                            ))
                     {
                         websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await?;
                     }
@@ -1007,7 +1017,7 @@ pub(super) fn display_test_thread(app: &mut App, thread_id: ThreadId) {
         .handle_thread_session(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
 }
 
-async fn turn_start_with_thread_defaults(
+pub(super) async fn turn_start_with_thread_defaults(
     app_server: &mut AppServerSession,
     thread_id: ThreadId,
     input: Vec<AppServerUserInput>,
@@ -1238,10 +1248,26 @@ async fn promptless_resume_routes_next_child_input_through_reserved_control() ->
     Ok(())
 }
 
+#[test_case(
+    "active-observation",
+    AgentResponseObservationBinding::Bound,
+    AgentFinalResponseDisplay::Passive;
+    "active_turn"
+)]
+#[test_case(
+    "undelivered-observation",
+    AgentResponseObservationBinding::NextTurn,
+    AgentFinalResponseDisplay::Wake;
+    "undelivered_completion"
+)]
 #[tokio::test]
-async fn explicit_observe_replaces_current_display_policy() -> Result<()> {
+async fn explicit_observe_updates_only_the_authoritative_binding(
+    authored: &str,
+    expected_binding: AgentResponseObservationBinding,
+    expected_final: AgentFinalResponseDisplay,
+) -> Result<()> {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let (mut app_server, _requests, proxy) = start_recording_app_server(
+    let (mut app_server, requests, proxy) = start_recording_app_server(
         &app.config,
         /*blocked_thread_list*/ None,
         /*failed_thread_name*/ None,
@@ -1276,13 +1302,19 @@ async fn explicit_observe_replaces_current_display_policy() -> Result<()> {
         AgentResponseObservationBinding::Bound,
         Some(codex_app_server_protocol::AgentResponseHandling::Presentation),
     );
+    assert_eq!(
+        app.agent_navigation
+            .response_observation(source_thread_id, target_thread_id)
+            .map(|observation| observation.binding),
+        Some(AgentResponseObservationBinding::Bound)
+    );
 
     app.observe_agent_from_selector(
         &mut app_server,
         source_thread_id,
         AgentSelector {
             kind: AgentSelectorKind::Id(target_thread_id),
-            authored: "undelivered-observation".to_string(),
+            authored: authored.to_string(),
         },
         /*observer*/ None,
         codex_app_server_protocol::AgentObservationMode::Passive,
@@ -1294,14 +1326,32 @@ async fn explicit_observe_replaces_current_display_policy() -> Result<()> {
             .response_observation(source_thread_id, target_thread_id),
         Some(
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
-                binding: AgentResponseObservationBinding::Bound,
+                binding: expected_binding,
                 commentary: false,
                 target_messages: false,
                 queue_delivery: false,
-                final_response:
-                    crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
+                final_response: expected_final,
             }
         )
+    );
+    let recorded = requests.lock().expect("request recorder lock").clone();
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|request| request.method == "agent/control")
+            .map(|request| request.params.clone())
+            .collect::<Vec<_>>(),
+        vec![Some(serde_json::json!({
+            "sourceThreadId": source_thread_id.to_string(),
+            "authoredSelector": authored,
+            "action": {
+                "type": "observe",
+                "target": target_thread_id.to_string(),
+                "observer": null,
+                "authoredObserverSelector": null,
+                "responseHandling": "passive",
+            },
+        }))]
     );
 
     app_server.shutdown().await?;
@@ -1487,6 +1537,7 @@ async fn direct_agent_prompt_uses_source_relative_control_with_structured_payloa
     let skill_path = app.config.cwd.join("review-skill").join("SKILL.md");
     app.chat_widget
         .set_skills(Some(vec![codex_app_server_protocol::SkillMetadata {
+            plugin_id: None,
             name: "review".to_string(),
             description: "Review this change".to_string(),
             short_description: None,
@@ -1570,7 +1621,7 @@ async fn direct_agent_prompt_uses_source_relative_control_with_structured_payloa
                 detail: None,
             },
             AppServerUserInput::LocalImage {
-                path: local_image_path,
+                path: local_image_path.to_path_buf(),
                 detail: None,
             },
             AppServerUserInput::Text {
@@ -1582,7 +1633,7 @@ async fn direct_agent_prompt_uses_source_relative_control_with_structured_payloa
             },
             AppServerUserInput::Skill {
                 name: "review".to_string(),
-                path: skill_path,
+                path: skill_path.to_path_buf(),
             },
         ])?
     );
@@ -4378,7 +4429,7 @@ async fn remote_default_paginated_start_retries_unsupported_variant() -> Result<
 async fn remote_explicit_history_modes_only_negotiate_when_paginated_is_rejected() -> Result<()> {
     for mode in [ThreadHistoryMode::Paginated, ThreadHistoryMode::Legacy] {
         let (app, _codex_home) = make_history_test_app().await?;
-        let (mut app_server, requests, proxy) = start_recording_app_server_with_history(
+        let (app_server, requests, proxy) = start_recording_app_server_with_history(
             &app.config,
             HistoryCapabilities::LegacyOnlyUnsupportedVariant,
             /*blocked_thread_list*/ None,

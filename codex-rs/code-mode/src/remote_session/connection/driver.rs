@@ -1,11 +1,8 @@
 use std::collections::VecDeque;
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
-use codex_code_mode_protocol::CellId;
-use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::host::EncodedFrame;
 use codex_code_mode_protocol::host::HostToClient;
 use codex_code_mode_protocol::host::RequestId;
@@ -172,10 +169,6 @@ impl Drop for ConnectionDriver {
     fn drop(&mut self) {
         self.fail("code-mode connection driver stopped unexpectedly".to_string());
     }
-}
-
-fn notify_cell_closed(delegate: &Arc<dyn CodeModeSessionDelegate>, cell_id: &CellId) {
-    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| delegate.cell_closed(cell_id)));
 }
 
 #[cfg(test)]

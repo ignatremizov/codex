@@ -44,6 +44,14 @@ pub(crate) fn install(session: &Session, config: &Config) {
         /*attestation_provider*/ None,
         /*external_time_provider*/ None,
     ));
+    // Context-adapter fixtures use a synthetic parent, whose default control has no
+    // manager. Reviewers still need a live host while retaining that parent's identity.
+    let agent_control = manager.agent_control().with_session_id(
+        session.session_id(),
+        config
+            .effective_agent_max_threads(codex_protocol::protocol::MultiAgentVersion::V2)
+            .unwrap_or(usize::MAX),
+    );
     let runtime = session
         .services
         .thread_extension_data
@@ -55,10 +63,16 @@ pub(crate) fn install(session: &Session, config: &Config) {
             Arc::clone(&runtime),
             move |context, key, kind, snapshot, cancel| {
                 let manager = Arc::clone(&manager);
+                let agent_control = agent_control.clone();
                 let runtime = Arc::clone(&runtime);
                 Box::pin(async move {
                     let history_reset = context.history_reset.clone();
                     let (mut options, state) = context.thread_options(snapshot).await;
+                    options
+                        .internal_parent
+                        .as_mut()
+                        .expect("review context captures its parent")
+                        .agent_control = agent_control;
                     if matches!(
                         kind,
                         codex_analytics::GuardianReviewSessionKind::EphemeralForked

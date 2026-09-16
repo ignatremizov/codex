@@ -476,6 +476,9 @@ impl ChatWidget {
             SlashCommand::Quit | SlashCommand::Exit => {
                 self.request_quit_without_confirmation();
             }
+            SlashCommand::Disconnect => {
+                self.app_event_tx.send(AppEvent::Exit(ExitMode::Disconnect));
+            }
             SlashCommand::Logout => {
                 self.app_event_tx.send(AppEvent::Logout);
             }
@@ -1632,6 +1635,7 @@ impl ChatWidget {
             | SlashCommand::Memories
             | SlashCommand::Quit
             | SlashCommand::Exit
+            | SlashCommand::Disconnect
             | SlashCommand::Logout
             | SlashCommand::Mention
             | SlashCommand::Skills
