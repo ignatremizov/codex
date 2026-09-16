@@ -919,6 +919,14 @@ impl codex_guardian_reviewer::ReviewerSession for GuardianReviewSession {
     async fn snapshot(&self) -> Option<GuardianReviewForkSnapshot> {
         self.state.lock().await.conversation.snapshot().cloned()
     }
+    async fn shutdown_durably(&self) -> anyhow::Result<()> {
+        self.io.shutdown_durably_and_wait().await?;
+        Ok(())
+    }
+
+    fn durable_shutdown_complete(&self) -> bool {
+        self.io.durable_shutdown_succeeded()
+    }
 }
 
 impl GuardianReviewSession {

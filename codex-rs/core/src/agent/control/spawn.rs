@@ -1,6 +1,7 @@
 use super::delivery::CapturedRecipient;
 use super::residency::is_v2_resident_session_source;
 use super::spawn_guard::PendingSpawn;
+use super::spawn_ownership::PreparedAgentSpawn;
 use super::spawn_telemetry::SpawnMeasurements;
 use super::spawn_telemetry::record_spawn_success;
 use super::*;
@@ -213,15 +214,7 @@ impl LocalAgentControl {
         options: SpawnAgentOptions,
     ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
         let membership = self.runtime.admit_start()?;
-        let control = self.clone();
-        tokio::spawn(async move {
-            Box::pin(control.spawn_agent_owned(
-                config,
-                initial_input,
-                session_source,
-                options,
-                membership,
-            ))
+        self.spawn_with_receipt(config, initial_input, session_source, options, membership)
             .await
             .and_then(|spawned| match spawned.post_admission_warning {
                 Some(warning) => Err(CodexErr::Fatal(format!(
@@ -230,9 +223,6 @@ impl LocalAgentControl {
                 ))),
                 None => Ok((spawned.agent, spawned.config)),
             })
-        })
-        .await
-        .map_err(|error| CodexErr::Fatal(format!("agent spawn worker failed: {error}")))?
     }
 
     pub(super) async fn spawn_agent_owned(
@@ -243,19 +233,38 @@ impl LocalAgentControl {
         options: SpawnAgentOptions,
         membership: AgentTreeMembership,
     ) -> CodexResult<SpawnedAgent> {
+        Ok(self
+            .spawn_agent_prepared(
+                config,
+                initial_input,
+                session_source,
+                options,
+                membership,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await?
+            .commit())
+    }
+
+    pub(super) async fn spawn_agent_prepared(
+        &self,
+        config: Config,
+        initial_input: SpawnInitialInput,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+        membership: AgentTreeMembership,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> CodexResult<PreparedAgentSpawn> {
+        let preserve_admitted_input = matches!(
+            &initial_input,
+            SpawnInitialInput::UserControlled { input: Some(_), .. }
+        );
         let (model_input_origin, initial_input) = match initial_input {
             SpawnInitialInput::ModelInput { input, origin } => {
                 (Some(origin), SpawnInitialInput::UserInput(input))
             }
             initial_input => (None, initial_input),
         };
-        if options.response_observation.target_messages()
-            && config.multi_agent_version_from_features() == MultiAgentVersion::V2
-        {
-            return Err(CodexErr::UnsupportedOperation(
-                "this target does not support scoped reply routes; omit m".into(),
-            ));
-        }
         let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
         let parent_thread_id = session_source
@@ -293,6 +302,7 @@ impl LocalAgentControl {
                 ));
             }
             parent.session.submission_admission.check_ready()?;
+            parent.ensure_not_unloading()?;
         }
         if let Some(origin) = &model_input_origin
             && parent
@@ -469,7 +479,6 @@ impl LocalAgentControl {
             .await
             .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
         let child_create = child_create_started_at.elapsed();
-        agent_metadata.agent_id = Some(new_thread.thread_id);
         let mut pending_spawn = PendingSpawn::new(
             self.clone(),
             Arc::clone(&state),
@@ -477,7 +486,16 @@ impl LocalAgentControl {
             _parent_guard,
             membership,
         );
+        let child_guard = state
+            .agent_lifecycle_lock(new_thread.thread_id)
+            .lock_owned()
+            .await;
+        pending_spawn.set_child_guard(child_guard);
+        agent_metadata.agent_id = Some(new_thread.thread_id);
         let setup = async {
+        if cancellation.is_cancelled() {
+            return Err(CodexErr::InvalidRequest("spawn caller cancelled before publication".into()));
+        }
         let durability_wait_started_at = Instant::now();
         if options.fork_mode.is_some()
             || notification_source.as_ref().is_some_and(SessionSource::is_non_root_agent)
@@ -536,7 +554,6 @@ impl LocalAgentControl {
                     .unwrap_or(MultiAgentVersion::V1),
             )?;
         }
-        self.restore_agent_send_settings(new_thread.thread.session.presentation_id()).await?;
         if notification_source.is_some() {
             state.publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
                 if !reservation.commit_if_absent(agent_metadata.clone()) {
@@ -581,6 +598,10 @@ impl LocalAgentControl {
         let input_admission_started_at = Instant::now();
         let mut post_admission_warning = None;
         let mut input_outcome = None;
+        if cancellation.is_cancelled() {
+            return Err(CodexErr::InvalidRequest("spawn caller cancelled before input".into()));
+        }
+        pending_spawn.release_input_gate();
         // The outer spawn worker owns admission. Avoid a nested worker whose lost JoinHandle
         // could be mistaken for a definite rejection after input has already been enqueued.
         pending_spawn.begin_input_attempt();
@@ -598,7 +619,6 @@ impl LocalAgentControl {
                     Some(input) => self.dispatch_user_input_locked(
                         &new_thread.thread,
                         super::user_dispatch::ObservedUserInputRequest {
-                            target_message_wake: None,
                             input: super::AgentControlInput::User(input), start_options, observer: observer.session.presentation_id(),
                             observation: super::user_dispatch::UserObservation::Install(options.response_observation),
                             dispatch: super::user_dispatch::UserDispatch::Prompt(codex_protocol::turn_input::TurnInputMode::StartOrSteer),
@@ -634,7 +654,6 @@ impl LocalAgentControl {
                     self.dispatch_user_input_locked(
                         &new_thread.thread,
                         super::user_dispatch::ObservedUserInputRequest {
-                            target_message_wake: None,
                             input, start_options,
                             observer: observer.session.presentation_id(),
                             observation: super::user_dispatch::UserObservation::Install(options.response_observation),
@@ -682,17 +701,33 @@ impl LocalAgentControl {
         }
         let input_admission = input_admission_started_at.elapsed();
 
+        if post_admission_warning.is_none()
+            && input_outcome != Some(crate::agent::UserAgentInputOutcome::Unknown)
+        {
+            pending_spawn.input_settled();
+        }
+        let handoff = pending_spawn.reacquire_input_gate().await;
+        if let Err(error) = handoff {
+            if preserve_admitted_input && input_outcome.is_some() {
+                let warning = format!("input was accepted before runtime handoff changed: {error}");
+                post_admission_warning = Some(match post_admission_warning {
+                    Some(existing) => format!("{existing}; {warning}"),
+                    None => warning,
+                });
+                pending_spawn.begin_input_attempt();
+            } else {
+                return Err(error);
+            }
+        }
+        if cancellation.is_cancelled() {
+            return Err(CodexErr::InvalidRequest("spawn caller cancelled before handoff".into()));
+        }
+
         let status = self.get_status(new_thread.thread_id).await;
         let config = match spawn_config {
             Some(config) => config,
             None => new_thread.thread.config_snapshot().await,
         };
-
-        // Notify a new thread has been created. This notification will be processed by clients
-        // to subscribe or drain this newly created thread.
-        // TODO(jif) add helper for drain
-        state.notify_thread_created(new_thread.thread_id);
-
         let agent = LiveAgent {
             thread_id: new_thread.thread_id,
             metadata: agent_metadata,
@@ -721,10 +756,10 @@ impl LocalAgentControl {
         })
         }.await;
         match setup {
-            Ok(spawned) => {
-                pending_spawn.disarm();
-                Ok(spawned)
-            }
+            Ok(spawned) => Ok(PreparedAgentSpawn {
+                spawned,
+                cleanup: pending_spawn,
+            }),
             Err(error) => Err(pending_spawn.rollback(error).await),
         }
     }

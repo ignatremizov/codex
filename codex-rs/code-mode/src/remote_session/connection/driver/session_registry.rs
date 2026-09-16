@@ -7,6 +7,7 @@ use codex_code_mode_protocol::host::SessionId;
 use codex_code_mode_protocol::host::WireCellId;
 
 use super::cell_ids::public_cell_id;
+use super::cleanup::AcceptedCallback;
 use super::cleanup::SessionCleanup;
 use super::types::RemoteSession;
 
@@ -14,12 +15,15 @@ pub(super) struct CellOwner {
     pub(super) session_id: SessionId,
     pub(super) cell_id: CellId,
     pub(super) delegate: Arc<dyn CodeModeSessionDelegate>,
+    pub(super) cleanup: SessionCleanup,
+    _accepted: AcceptedCallback,
 }
 
 pub(super) struct DelegateTarget {
     pub(super) session_id: SessionId,
     pub(super) cell_id: CellId,
     pub(super) delegate: Arc<dyn CodeModeSessionDelegate>,
+    pub(super) cleanup: SessionCleanup,
 }
 
 pub(super) struct FailedSession {
@@ -141,6 +145,8 @@ impl SessionRegistry {
                 session_id: session.id.clone(),
                 cell_id: public_id.clone(),
                 delegate,
+                cleanup: record.cleanup.clone(),
+                _accepted: record.cleanup.accepted_callback(),
             },
         );
         Ok(public_id)
@@ -165,6 +171,7 @@ impl SessionRegistry {
             session_id: session_id.clone(),
             cell_id: owner.cell_id.clone(),
             delegate: Arc::clone(&owner.delegate),
+            cleanup: session.cleanup.clone(),
         })
     }
 
@@ -189,7 +196,9 @@ impl SessionRegistry {
         let Some(session) = self.records.remove(session_id) else {
             return Vec::new();
         };
-        session.cells.into_values().collect()
+        let owners = session.cells.into_values().collect();
+        session.cleanup.close();
+        owners
     }
 
     pub(super) fn drain(&mut self) -> Vec<FailedSession> {

@@ -63,6 +63,7 @@ mod process;
 mod process_manager;
 mod process_state;
 mod shell_snapshot;
+mod shutdown;
 mod stdin_approval;
 mod user_shell_queue;
 mod user_shell_registry;
@@ -191,6 +192,7 @@ pub(crate) struct UnifiedExecProcessManager {
     process_store: Mutex<ProcessStore>,
     // Tracks result producers through final publication, separately from process cancellation.
     user_shell_tasks: tokio_util::task::TaskTracker,
+    shutdown: shutdown::ShutdownBarrier,
     user_shell_wake_reservation: Mutex<()>,
     user_shell_submission_changed: Notify,
     max_write_stdin_yield_time_ms: Option<u64>,
@@ -201,6 +203,7 @@ impl UnifiedExecProcessManager {
         Self {
             process_store: Mutex::new(ProcessStore::default()),
             user_shell_tasks: tokio_util::task::TaskTracker::new(),
+            shutdown: shutdown::ShutdownBarrier::default(),
             user_shell_wake_reservation: Mutex::new(()),
             user_shell_submission_changed: Notify::new(),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
