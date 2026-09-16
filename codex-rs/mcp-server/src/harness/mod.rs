@@ -1,7 +1,7 @@
 pub mod apply_patch;
 pub mod exec_command;
 pub mod process_manager;
-pub mod tool_runner;
+pub(crate) mod tool_runner;
 pub mod types;
 pub mod write_stdin;
 
@@ -14,7 +14,7 @@ use schemars::r#gen::SchemaSettings;
 pub use apply_patch::handle_apply_patch;
 pub use exec_command::handle_exec_command;
 pub use process_manager::HarnessProcessManager;
-pub use tool_runner::dispatch_harness_tool_call;
+pub(crate) use tool_runner::dispatch_harness_tool_call;
 pub use types::ApplyPatchParams;
 pub use types::ApplyPatchResponse;
 pub use types::ExecCommandParams;
