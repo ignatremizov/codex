@@ -19,6 +19,7 @@ pub(super) struct PendingSpawn {
     state: Arc<ThreadManagerState>,
     child: Option<Arc<CodexThread>>,
     parent_guard: Option<OwnedMutexGuard<()>>,
+    child_guard: Option<OwnedMutexGuard<()>>,
     edge_write: Option<JoinHandle<CodexResult<PersistedAgentSpawn>>>,
     graph_published: bool,
     graph_uncertain: bool,
@@ -37,6 +38,7 @@ impl PendingSpawn {
             state,
             child: Some(child),
             parent_guard,
+            child_guard: None,
             edge_write: None,
             graph_published: false,
             graph_uncertain: false,
@@ -77,8 +79,51 @@ impl PendingSpawn {
         self.input_pending = false;
     }
 
-    pub(super) fn disarm(mut self) {
-        self.child = None;
+    pub(super) fn input_settled(&mut self) {
+        self.input_pending = false;
+    }
+
+    pub(super) fn set_child_guard(&mut self, guard: OwnedMutexGuard<()>) {
+        self.child_guard = Some(guard);
+    }
+
+    pub(super) fn release_input_gate(&mut self) {
+        self.child_guard.take();
+    }
+
+    pub(super) async fn reacquire_input_gate(&mut self) -> CodexResult<()> {
+        let Some(child) = self.child.as_ref() else {
+            return Ok(());
+        };
+        let id = child.session.thread_id();
+        self.child_guard = Some(self.state.agent_lifecycle_lock(id).lock_owned().await);
+        if !self
+            .state
+            .get_thread(id)
+            .await
+            .is_ok_and(|current| Arc::ptr_eq(&current, child))
+        {
+            return Err(CodexErr::InvalidRequest(
+                "spawned runtime changed before handoff".into(),
+            ));
+        }
+        child.ensure_not_unloading()?;
+        if !child.is_running() {
+            return Err(CodexErr::InvalidRequest(
+                "spawned runtime stopped before handoff".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Consuming the prepared receipt, not sending it, transfers cleanup ownership.
+    pub(super) fn commit(mut self) {
+        if let Some(child) = self.child.take() {
+            child
+                .cancelled_spawn_alias_cleanup_pending
+                .store(false, std::sync::atomic::Ordering::Release);
+            self.state.notify_thread_created(child.session.thread_id());
+        }
     }
 
     /// The caller has either not attempted input or received a definite rejection.
@@ -103,29 +148,81 @@ impl PendingSpawn {
             self.graph_uncertain = !self.graph_published;
         }
         let id = child.session.thread_id();
-        let _child_guard = self.state.agent_lifecycle_lock(id).lock_owned().await;
-        if self.state.get_thread(id).await.is_ok_and(|current| !Arc::ptr_eq(&current, &child)) {
-            child.session.quarantine_history("provisional child was replaced during cleanup".into());
-            return CodexErr::Fatal(format!("{error}; provisional child was replaced; history retained"));
+        if self.child_guard.is_none() {
+            self.child_guard = Some(self.state.agent_lifecycle_lock(id).lock_owned().await);
         }
-        let mut error = self.control.cleanup_unpublished_restoration(&child, error).await;
-        self.state.remove_thread_if_matches_with(&id, &child, || {
-            self.control.runtime.registry.release_spawned_thread(id);
-        }).await;
-        if !self.graph_uncertain {
-            if self.graph_published && child.session_source.parent_thread_id().is_some()
-                && !child.config_snapshot().await.ephemeral
-                && let Err(close) = self.control.persist_agent_closed(id).await
-            {
-                return CodexErr::Fatal(format!("{error}; spawn graph cleanup failed: {close}; history retained"));
-            }
-            // A published edge or alias is durable audit state even after Closed. Preserve
-            // its matching history rather than leaving a resumable alias without a source.
-            if !self.graph_published && let Some(live_thread) = child.session.live_thread()
-                && let Err(discard) = live_thread.discard().await
-            {
-                error = CodexErr::Fatal(format!("{error}; rejected spawn history cleanup failed: {discard}"));
-            }
+        if self
+            .state
+            .get_thread(id)
+            .await
+            .is_ok_and(|current| !Arc::ptr_eq(&current, &child))
+        {
+            child
+                .session
+                .quarantine_history("provisional child was replaced during cleanup".into());
+            return CodexErr::Fatal(format!(
+                "{error}; provisional child was replaced; history retained"
+            ));
+        }
+        if self.graph_published
+            && !self.graph_uncertain
+            && child.session_source.parent_thread_id().is_some()
+            && !child.config_snapshot().await.ephemeral
+        {
+            child
+                .cancelled_spawn_alias_cleanup_pending
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        child.session.submission_admission.seal_for_unload();
+        let disarm = child.session.disarm_terminal_presentation();
+        child
+            .session
+            .retire_agent_status_observers(crate::session::AgentStatusRetirement::RestoreRollback);
+        // Both obligations must settle. A writer failure cannot erase the independent
+        // exact alias-close obligation, and an uncertain Open write never creates one.
+        let shutdown = child.shutdown_durably_and_wait().await;
+        let alias_cleanup = self
+            .control
+            .finish_cancelled_spawn_alias_cleanup(&child)
+            .await;
+        disarm.commit();
+        if shutdown.is_err() || alias_cleanup.is_err() {
+            let retained = self.state.retain_failed_spawn_cleanup(&child).await;
+            return CodexErr::Fatal(format!(
+                "{error}; spawned runtime cleanup incomplete; shutdown: {shutdown:?}; alias cleanup: {alias_cleanup:?}; unload-retry retention: {retained:?}"
+            ));
+        }
+        let mut error = error;
+        // An unpublished, definitively rejected setup may discard its history. A published
+        // or uncertain graph keeps the original audit source, even after its writer closes.
+        if !self.graph_published
+            && !self.graph_uncertain
+            && let Some(live_thread) = child.session.live_thread()
+            && let Err(discard) = live_thread.discard().await
+        {
+            error = CodexErr::Fatal(format!(
+                "{error}; rejected spawn history cleanup failed: {discard}"
+            ));
+        }
+        let removed = self
+            .state
+            .remove_thread_with_authority(
+                &id,
+                &child,
+                crate::thread_manager::ThreadRemovalAuthority::DurableUnload,
+                || {
+                    self.control.forget_v2_residency(id);
+                    self.control.runtime.registry.release_spawned_thread(id);
+                },
+            )
+            .await;
+        if removed.is_none() {
+            self.state
+                .run_if_thread_absent(id, || {
+                    self.control.forget_v2_residency(id);
+                    self.control.runtime.registry.release_spawned_thread(id);
+                })
+                .await;
         }
         error
     }
@@ -148,6 +245,7 @@ impl Drop for PendingSpawn {
             state: Arc::clone(&self.state),
             child: None,
             parent_guard: self.parent_guard.take(),
+            child_guard: self.child_guard.take(),
             edge_write: self.edge_write.take(),
             graph_published: self.graph_published,
             graph_uncertain: self.graph_uncertain,

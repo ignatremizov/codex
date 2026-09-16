@@ -1,12 +1,12 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
-assertion_line: 5328
+assertion_line: 5496
 expression: terminal.backend()
 ---
-"› /diff  show git diff (including untracked files)                                                  "
+"› /diff        show git diff (including untracked files)                                            "
+"  /disconnect  detach from a shared server and leave work running                                   "
 "                                                                                                    "
 "› /dide tail                                                                                        "
-"                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "

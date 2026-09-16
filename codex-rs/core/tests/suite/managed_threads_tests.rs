@@ -211,6 +211,11 @@ async fn owner_cancellation_closes_agent_and_preserves_history_and_parent() -> a
         .await
         .context("the owner must be able to join shutdown and deregistration")?;
     tokio::time::timeout(Duration::from_secs(1), agent.thread.wait_until_terminated()).await?;
+    agent
+        .thread
+        .shutdown_durably_and_wait()
+        .await
+        .context("cancelled child must retain a durable shutdown acknowledgement")?;
     assert_eq!(
         fixture.thread_manager.list_thread_ids().await,
         vec![fixture.session_configured.thread_id],

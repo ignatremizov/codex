@@ -1384,6 +1384,71 @@ async fn process_exec_tool_call_respects_cancellation_token() -> Result<()> {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn cancelled_capture_reaps_child_before_returning_terminal_output() -> Result<()> {
+    let child = tokio::process::Command::new("/bin/sh")
+        .args(["-c", "sleep 60"])
+        .process_group(/*pgroup*/ 0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let pid = i32::try_from(child.id().expect("spawned child id")).expect("process id");
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        consume_output(
+            child,
+            ExecExpiration::Cancellation(cancellation),
+            ExecCapturePolicy::ShellTool,
+            /*stdout_stream*/ None,
+        ),
+    )
+    .await
+    .expect("cancelled capture finishes")?;
+    assert!(!output.timed_out);
+    // An unreaped child is still observable by kill(pid, 0), even after its kill request.
+    let probe = unsafe {
+        libc::kill(pid, /*sig*/ 0)
+    };
+    let error = std::io::Error::last_os_error().raw_os_error();
+    assert_eq!((probe, error), (-1, Some(libc::ESRCH)));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn missing_capture_pipe_reaps_child_before_returning_error() -> Result<()> {
+    let child = tokio::process::Command::new("/bin/sh")
+        .args(["-c", "sleep 60"])
+        .process_group(/*pgroup*/ 0)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let pid = i32::try_from(child.id().expect("spawned child id")).expect("process id");
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        consume_output(
+            child,
+            ExecExpiration::DefaultTimeout,
+            ExecCapturePolicy::ShellTool,
+            /*stdout_stream*/ None,
+        ),
+    )
+    .await
+    .expect("invalid capture finishes");
+    assert!(result.is_err());
+    let probe = unsafe {
+        libc::kill(pid, /*sig*/ 0)
+    };
+    let error = std::io::Error::last_os_error().raw_os_error();
+    assert_eq!((probe, error), (-1, Some(libc::ESRCH)));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn process_exec_tool_call_cancellation_allows_sigterm_cleanup() -> Result<()> {
     let temp_dir = tempfile::TempDir::new()?;
     let ready_marker = temp_dir.path().join("ready");

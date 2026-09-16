@@ -630,6 +630,8 @@ export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";
 export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";
 export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";
 export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotification";
+export type { ThreadUnloadParams } from "./ThreadUnloadParams";
+export type { ThreadUnloadResponse } from "./ThreadUnloadResponse";
 export type { ThreadUnsubscribeParams } from "./ThreadUnsubscribeParams";
 export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";
 export type { ThreadUnsubscribeStatus } from "./ThreadUnsubscribeStatus";

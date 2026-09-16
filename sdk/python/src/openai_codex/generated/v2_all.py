@@ -6568,6 +6568,27 @@ class ThreadUnarchivedNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadUnloadParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[
+        str,
+        Field(
+            alias="threadId",
+            description="Any thread in the owning spawn subtree, including the root.",
+        ),
+    ]
+
+
+class ThreadUnloadResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root_thread_id: Annotated[str, Field(alias="rootThreadId")]
+    unloaded_thread_ids: Annotated[list[str], Field(alias="unloadedThreadIds")]
+
+
 class ThreadUnsubscribeParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7649,6 +7670,15 @@ class ThreadUnsubscribeRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/unsubscribe"], Field(title="Thread/unsubscribeRequestMethod")]
     params: ThreadUnsubscribeParams
+
+
+class ThreadUnloadRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/unload"], Field(title="Thread/unloadRequestMethod")]
+    params: ThreadUnloadParams
 
 
 class ThreadNameSetRequest(BaseModel):
@@ -13612,12 +13642,231 @@ class ExternalAgentConfigImportRecordHistoryRequest(BaseModel):
 
 
 class ClientRequest(
-    RootModel[InitializeRequest | ThreadStartRequest | ThreadResumeRequest | ThreadForkRequest | ThreadArchiveRequest | ThreadDeleteRequest | ThreadUnsubscribeRequest | ThreadNameSetRequest | ThreadGoalSetRequest | ThreadMcpServerActivateRequest | ThreadGoalGetRequest | ThreadGoalClearRequest | ThreadMetadataUpdateRequest | ThreadAttachmentAddRequest | ThreadAttachmentListRequest | ThreadAttachmentRemoveRequest | ThreadSectionMoveRequest | ThreadUnarchiveRequest | ThreadCompactStartRequest | ThreadShellCommandRequest | ThreadApproveGuardianDeniedActionRequest | ThreadRollbackRequest | ThreadRevertRequest | ThreadListRequest | ThreadSectionListRequest | ThreadSectionCreateRequest | ThreadSectionUpdateRequest | ThreadSectionDeleteRequest | ThreadLoadedListRequest | ThreadReadRequest | ThreadTurnsListRequest | ThreadItemsListRequest | ThreadInjectItemsRequest | SkillsListRequest | SkillsExtraRootsSetRequest | HooksListRequest | MarketplaceAddRequest | MarketplaceRemoveRequest | MarketplaceUpgradeRequest | PluginListRequest | PluginInstalledRequest | PluginReconcileRequest | PluginReadRequest | PluginSkillReadRequest | PluginShareSaveRequest | PluginShareUpdateTargetsRequest | PluginShareListRequest | PluginShareCheckoutRequest | PluginShareDeleteRequest | AppReadRequest | AppListRequest | AppInstalledRequest | FsReadFileRequest | FsWriteFileRequest | FsCreateDirectoryRequest | FsGetMetadataRequest | FsReadDirectoryRequest | FsRemoveRequest | FsCopyRequest | FsWatchRequest | FsUnwatchRequest | SkillsConfigWriteRequest | PluginInstallRequest | PluginUninstallRequest | TurnStartRequest | TurnSteerRequest | TurnInterruptRequest | ReviewStartRequest | ModelListRequest | AccountGatewayOAuthReadRequest | AccountGatewayOAuthLoginRequest | AccountGatewayOAuthCancelRequest | ModelProviderCapabilitiesReadRequest | ExperimentalFeatureListRequest | PermissionProfileListRequest | ExperimentalFeatureEnablementSetRequest | McpServerOauthLoginRequest | ConfigMcpServerReloadRequest | McpServerStatusListRequest | McpServerResourceReadRequest | McpServerToolCallRequest | WindowsSandboxSetupStartRequest | WindowsSandboxReadinessRequest | AccountLoginStartRequest | AccountLoginCancelRequest | AccountLogoutRequest | AccountRateLimitsReadRequest | AccountRateLimitResetCreditConsumeRequest | AccountUsageReadRequest | AccountWorkspaceMessagesReadRequest | AccountSendAddCreditsNudgeEmailRequest | FeedbackUploadRequest | CommandExecRequest | CommandExecWriteRequest | CommandExecTerminateRequest | CommandExecResizeRequest | ServerReadRequest | ConfigReadRequest | ExternalAgentConfigDetectRequest | ExternalAgentConfigImportRequest | ExternalAgentConfigImportRecordHistoryRequest | ExternalAgentConfigImportReadHistoriesRequest | ConfigValueWriteRequest | ConfigBatchWriteRequest | ConfigRequirementsReadRequest | AccountReadRequest | FuzzyFileSearchRequest]
+    RootModel[
+        InitializeRequest
+        | ThreadStartRequest
+        | ThreadResumeRequest
+        | ThreadForkRequest
+        | ThreadArchiveRequest
+        | ThreadDeleteRequest
+        | ThreadUnsubscribeRequest
+        | ThreadUnloadRequest
+        | ThreadNameSetRequest
+        | ThreadGoalSetRequest
+        | ThreadMcpServerActivateRequest
+        | ThreadGoalGetRequest
+        | ThreadGoalClearRequest
+        | ThreadMetadataUpdateRequest
+        | ThreadAttachmentAddRequest
+        | ThreadAttachmentListRequest
+        | ThreadAttachmentRemoveRequest
+        | ThreadSectionMoveRequest
+        | ThreadUnarchiveRequest
+        | ThreadCompactStartRequest
+        | ThreadShellCommandRequest
+        | ThreadApproveGuardianDeniedActionRequest
+        | ThreadRollbackRequest
+        | ThreadRevertRequest
+        | ThreadListRequest
+        | ThreadSectionListRequest
+        | ThreadSectionCreateRequest
+        | ThreadSectionUpdateRequest
+        | ThreadSectionDeleteRequest
+        | ThreadLoadedListRequest
+        | ThreadReadRequest
+        | ThreadTurnsListRequest
+        | ThreadItemsListRequest
+        | ThreadInjectItemsRequest
+        | SkillsListRequest
+        | SkillsExtraRootsSetRequest
+        | HooksListRequest
+        | MarketplaceAddRequest
+        | MarketplaceRemoveRequest
+        | MarketplaceUpgradeRequest
+        | PluginListRequest
+        | PluginInstalledRequest
+        | PluginReconcileRequest
+        | PluginReadRequest
+        | PluginSkillReadRequest
+        | PluginShareSaveRequest
+        | PluginShareUpdateTargetsRequest
+        | PluginShareListRequest
+        | PluginShareCheckoutRequest
+        | PluginShareDeleteRequest
+        | AppReadRequest
+        | AppListRequest
+        | AppInstalledRequest
+        | FsReadFileRequest
+        | FsWriteFileRequest
+        | FsCreateDirectoryRequest
+        | FsGetMetadataRequest
+        | FsReadDirectoryRequest
+        | FsRemoveRequest
+        | FsCopyRequest
+        | FsWatchRequest
+        | FsUnwatchRequest
+        | SkillsConfigWriteRequest
+        | PluginInstallRequest
+        | PluginUninstallRequest
+        | TurnStartRequest
+        | TurnSteerRequest
+        | TurnInterruptRequest
+        | ReviewStartRequest
+        | ModelListRequest
+        | AccountGatewayOAuthReadRequest
+        | AccountGatewayOAuthLoginRequest
+        | AccountGatewayOAuthCancelRequest
+        | ModelProviderCapabilitiesReadRequest
+        | ExperimentalFeatureListRequest
+        | PermissionProfileListRequest
+        | ExperimentalFeatureEnablementSetRequest
+        | McpServerOauthLoginRequest
+        | ConfigMcpServerReloadRequest
+        | McpServerStatusListRequest
+        | McpServerResourceReadRequest
+        | McpServerToolCallRequest
+        | WindowsSandboxSetupStartRequest
+        | WindowsSandboxReadinessRequest
+        | AccountLoginStartRequest
+        | AccountLoginCancelRequest
+        | AccountLogoutRequest
+        | AccountRateLimitsReadRequest
+        | AccountRateLimitResetCreditConsumeRequest
+        | AccountUsageReadRequest
+        | AccountWorkspaceMessagesReadRequest
+        | AccountSendAddCreditsNudgeEmailRequest
+        | FeedbackUploadRequest
+        | CommandExecRequest
+        | CommandExecWriteRequest
+        | CommandExecTerminateRequest
+        | CommandExecResizeRequest
+        | ServerReadRequest
+        | ConfigReadRequest
+        | ExternalAgentConfigDetectRequest
+        | ExternalAgentConfigImportRequest
+        | ExternalAgentConfigImportRecordHistoryRequest
+        | ExternalAgentConfigImportReadHistoriesRequest
+        | ConfigValueWriteRequest
+        | ConfigBatchWriteRequest
+        | ConfigRequirementsReadRequest
+        | AccountReadRequest
+        | FuzzyFileSearchRequest
+    ]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[InitializeRequest | ThreadStartRequest | ThreadResumeRequest | ThreadForkRequest | ThreadArchiveRequest | ThreadDeleteRequest | ThreadUnsubscribeRequest | ThreadNameSetRequest | ThreadGoalSetRequest | ThreadMcpServerActivateRequest | ThreadGoalGetRequest | ThreadGoalClearRequest | ThreadMetadataUpdateRequest | ThreadAttachmentAddRequest | ThreadAttachmentListRequest | ThreadAttachmentRemoveRequest | ThreadSectionMoveRequest | ThreadUnarchiveRequest | ThreadCompactStartRequest | ThreadShellCommandRequest | ThreadApproveGuardianDeniedActionRequest | ThreadRollbackRequest | ThreadRevertRequest | ThreadListRequest | ThreadSectionListRequest | ThreadSectionCreateRequest | ThreadSectionUpdateRequest | ThreadSectionDeleteRequest | ThreadLoadedListRequest | ThreadReadRequest | ThreadTurnsListRequest | ThreadItemsListRequest | ThreadInjectItemsRequest | SkillsListRequest | SkillsExtraRootsSetRequest | HooksListRequest | MarketplaceAddRequest | MarketplaceRemoveRequest | MarketplaceUpgradeRequest | PluginListRequest | PluginInstalledRequest | PluginReconcileRequest | PluginReadRequest | PluginSkillReadRequest | PluginShareSaveRequest | PluginShareUpdateTargetsRequest | PluginShareListRequest | PluginShareCheckoutRequest | PluginShareDeleteRequest | AppReadRequest | AppListRequest | AppInstalledRequest | FsReadFileRequest | FsWriteFileRequest | FsCreateDirectoryRequest | FsGetMetadataRequest | FsReadDirectoryRequest | FsRemoveRequest | FsCopyRequest | FsWatchRequest | FsUnwatchRequest | SkillsConfigWriteRequest | PluginInstallRequest | PluginUninstallRequest | TurnStartRequest | TurnSteerRequest | TurnInterruptRequest | ReviewStartRequest | ModelListRequest | AccountGatewayOAuthReadRequest | AccountGatewayOAuthLoginRequest | AccountGatewayOAuthCancelRequest | ModelProviderCapabilitiesReadRequest | ExperimentalFeatureListRequest | PermissionProfileListRequest | ExperimentalFeatureEnablementSetRequest | McpServerOauthLoginRequest | ConfigMcpServerReloadRequest | McpServerStatusListRequest | McpServerResourceReadRequest | McpServerToolCallRequest | WindowsSandboxSetupStartRequest | WindowsSandboxReadinessRequest | AccountLoginStartRequest | AccountLoginCancelRequest | AccountLogoutRequest | AccountRateLimitsReadRequest | AccountRateLimitResetCreditConsumeRequest | AccountUsageReadRequest | AccountWorkspaceMessagesReadRequest | AccountSendAddCreditsNudgeEmailRequest | FeedbackUploadRequest | CommandExecRequest | CommandExecWriteRequest | CommandExecTerminateRequest | CommandExecResizeRequest | ServerReadRequest | ConfigReadRequest | ExternalAgentConfigDetectRequest | ExternalAgentConfigImportRequest | ExternalAgentConfigImportRecordHistoryRequest | ExternalAgentConfigImportReadHistoriesRequest | ConfigValueWriteRequest | ConfigBatchWriteRequest | ConfigRequirementsReadRequest | AccountReadRequest | FuzzyFileSearchRequest, Field(description='Request from the client to the server.', title='ClientRequest')]
+    root: Annotated[
+        InitializeRequest
+        | ThreadStartRequest
+        | ThreadResumeRequest
+        | ThreadForkRequest
+        | ThreadArchiveRequest
+        | ThreadDeleteRequest
+        | ThreadUnsubscribeRequest
+        | ThreadUnloadRequest
+        | ThreadNameSetRequest
+        | ThreadGoalSetRequest
+        | ThreadMcpServerActivateRequest
+        | ThreadGoalGetRequest
+        | ThreadGoalClearRequest
+        | ThreadMetadataUpdateRequest
+        | ThreadAttachmentAddRequest
+        | ThreadAttachmentListRequest
+        | ThreadAttachmentRemoveRequest
+        | ThreadSectionMoveRequest
+        | ThreadUnarchiveRequest
+        | ThreadCompactStartRequest
+        | ThreadShellCommandRequest
+        | ThreadApproveGuardianDeniedActionRequest
+        | ThreadRollbackRequest
+        | ThreadRevertRequest
+        | ThreadListRequest
+        | ThreadSectionListRequest
+        | ThreadSectionCreateRequest
+        | ThreadSectionUpdateRequest
+        | ThreadSectionDeleteRequest
+        | ThreadLoadedListRequest
+        | ThreadReadRequest
+        | ThreadTurnsListRequest
+        | ThreadItemsListRequest
+        | ThreadInjectItemsRequest
+        | SkillsListRequest
+        | SkillsExtraRootsSetRequest
+        | HooksListRequest
+        | MarketplaceAddRequest
+        | MarketplaceRemoveRequest
+        | MarketplaceUpgradeRequest
+        | PluginListRequest
+        | PluginInstalledRequest
+        | PluginReconcileRequest
+        | PluginReadRequest
+        | PluginSkillReadRequest
+        | PluginShareSaveRequest
+        | PluginShareUpdateTargetsRequest
+        | PluginShareListRequest
+        | PluginShareCheckoutRequest
+        | PluginShareDeleteRequest
+        | AppReadRequest
+        | AppListRequest
+        | AppInstalledRequest
+        | FsReadFileRequest
+        | FsWriteFileRequest
+        | FsCreateDirectoryRequest
+        | FsGetMetadataRequest
+        | FsReadDirectoryRequest
+        | FsRemoveRequest
+        | FsCopyRequest
+        | FsWatchRequest
+        | FsUnwatchRequest
+        | SkillsConfigWriteRequest
+        | PluginInstallRequest
+        | PluginUninstallRequest
+        | TurnStartRequest
+        | TurnSteerRequest
+        | TurnInterruptRequest
+        | ReviewStartRequest
+        | ModelListRequest
+        | AccountGatewayOAuthReadRequest
+        | AccountGatewayOAuthLoginRequest
+        | AccountGatewayOAuthCancelRequest
+        | ModelProviderCapabilitiesReadRequest
+        | ExperimentalFeatureListRequest
+        | PermissionProfileListRequest
+        | ExperimentalFeatureEnablementSetRequest
+        | McpServerOauthLoginRequest
+        | ConfigMcpServerReloadRequest
+        | McpServerStatusListRequest
+        | McpServerResourceReadRequest
+        | McpServerToolCallRequest
+        | WindowsSandboxSetupStartRequest
+        | WindowsSandboxReadinessRequest
+        | AccountLoginStartRequest
+        | AccountLoginCancelRequest
+        | AccountLogoutRequest
+        | AccountRateLimitsReadRequest
+        | AccountRateLimitResetCreditConsumeRequest
+        | AccountUsageReadRequest
+        | AccountWorkspaceMessagesReadRequest
+        | AccountSendAddCreditsNudgeEmailRequest
+        | FeedbackUploadRequest
+        | CommandExecRequest
+        | CommandExecWriteRequest
+        | CommandExecTerminateRequest
+        | CommandExecResizeRequest
+        | ServerReadRequest
+        | ConfigReadRequest
+        | ExternalAgentConfigDetectRequest
+        | ExternalAgentConfigImportRequest
+        | ExternalAgentConfigImportRecordHistoryRequest
+        | ExternalAgentConfigImportReadHistoriesRequest
+        | ConfigValueWriteRequest
+        | ConfigBatchWriteRequest
+        | ConfigRequirementsReadRequest
+        | AccountReadRequest
+        | FuzzyFileSearchRequest,
+        Field(description="Request from the client to the server.", title="ClientRequest"),
+    ]
 
 
 class RequestPermissionsGuardianApprovalReviewAction(BaseModel):

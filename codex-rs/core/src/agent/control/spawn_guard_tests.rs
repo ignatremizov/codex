@@ -43,14 +43,12 @@ async fn provisional_cleanup_joins_once_and_preserves_uncertain_history(ambiguou
     }));
     assert_eq!(pending.wait_for_edge().await.is_err(), ambiguous);
     assert!(Arc::clone(&parent_lock).try_lock_owned().is_err());
-    let _error = timeout(
-        Duration::from_secs(/*secs*/ 5),
-        pending.rollback(CodexErr::InvalidRequest(
-            "input was rejected before enqueue".into(),
-        )),
-    )
-    .await
-    .expect("cleanup does not repoll an already completed graph worker");
+    let rejection = CodexErr::InvalidRequest("input was rejected before enqueue".into());
+    let expected_error = rejection.to_string();
+    let error = timeout(Duration::from_secs(/*secs*/ 5), pending.rollback(rejection))
+        .await
+        .expect("cleanup does not repoll an already completed graph worker");
+    assert_eq!(error.to_string(), expected_error);
     assert!(Arc::clone(&parent_lock).try_lock_owned().is_ok());
     assert!(!fixture.child.thread.is_running());
     assert!(state.get_thread(child).await.is_err());
@@ -77,6 +75,11 @@ async fn provisional_cleanup_joins_once_and_preserves_uncertain_history(ambiguou
                 ThreadSpawnEdgeStatus::Closed
             }
         ))
+    );
+    assert_eq!(
+        fixture.graph.revocations.load(Ordering::Acquire),
+        usize::from(!ambiguous),
+        "only acknowledged graph cleanup revokes authority",
     );
     assert!(
         fixture
@@ -144,6 +147,7 @@ async fn dropping_provisional_setup_retains_parent_gate_until_edge_and_cleanup_f
             .copied(),
         Some((fixture.parent.thread_id, ThreadSpawnEdgeStatus::Closed))
     );
+    assert_eq!(fixture.graph.revocations.load(Ordering::Acquire), 1);
     assert!(state.get_thread(child).await.is_err());
     assert_eq!(fixture.store.calls().await.discard_thread, 0);
     fixture

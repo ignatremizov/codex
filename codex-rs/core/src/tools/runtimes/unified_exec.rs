@@ -59,6 +59,7 @@ use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -115,7 +116,7 @@ pub struct UnifiedExecRuntime<'a> {
 }
 
 pub(crate) struct UnifiedExecAttempt {
-    pub(crate) process: UnifiedExecProcess,
+    pub(crate) process: Arc<UnifiedExecProcess>,
     pub(crate) metrics_sidecar: Option<PluginMetricsSidecar>,
     pub(crate) permissions: TerminalPermissions,
 }
@@ -682,6 +683,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                             /*network_policy_decider*/ None,
                             req.tty,
                             prepared.spawn_lifecycle,
+                            shell_snapshot,
                             req.turn_environment.environment.as_ref(),
                         )
                         .await
@@ -694,8 +696,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                             }
                             other => ToolError::Rejected(other.to_string()),
                         });
-                    let mut process = with_launch_failure_events(process, req, ctx).await?;
-                    process._shell_snapshot = shell_snapshot;
+                    let process = with_launch_failure_events(process, req, ctx).await?;
                     return Ok(UnifiedExecAttempt {
                         process,
                         metrics_sidecar,
@@ -739,11 +740,11 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                 windows_sandbox_proxy_settings_mode,
                 req.tty,
                 Box::new(NoopSpawnLifecycle),
+                shell_snapshot,
                 req.turn_environment.environment.as_ref(),
             )
             .await;
-        let mut process = with_launch_failure_events(process, req, ctx).await?;
-        process._shell_snapshot = shell_snapshot;
+        let process = with_launch_failure_events(process, req, ctx).await?;
         Ok(UnifiedExecAttempt {
             process,
             metrics_sidecar,

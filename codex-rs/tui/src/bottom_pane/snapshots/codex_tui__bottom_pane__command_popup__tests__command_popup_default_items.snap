@@ -45,6 +45,7 @@ expression: commands
 /mcp - list MCP tools; /mcp use <server> requests explicit context
 /logout - log out of Codex
 /exit - exit Codex
+/disconnect - detach from a shared server and leave work running
 /feedback - send logs to maintainers
 /rollout-path - print the rollout file path
 /ps - list background terminals

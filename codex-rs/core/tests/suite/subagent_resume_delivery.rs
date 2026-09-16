@@ -126,8 +126,7 @@ async fn unloaded_agent_resumes_at_capacity_without_reallocating_its_registratio
     let original_source = child.config_snapshot().await.session_source;
     child.ensure_rollout_materialized().await;
     child.flush_rollout().await?;
-    child.shutdown_and_wait().await?;
-    child.wait_until_terminated().await;
+    child.shutdown_durably_and_wait().await?;
     assert!(
         test.thread_manager
             .remove_thread(&spawned.target_thread_id)

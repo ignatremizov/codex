@@ -10,6 +10,7 @@ use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
 
+use crate::session::TurnInput;
 use crate::session::command_approval::CommandApprovalClaim;
 use crate::session::command_approval::QueuedSubmission;
 use crate::session::session::Session;
@@ -25,6 +26,7 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandPlacement;
 use crate::tasks::execute_user_shell_command;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -347,20 +349,13 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
 }
 
 pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
-    let startup_prewarm = {
-        let mut state = sess.state.lock().await;
-        // Stop admission and take the current warmup together so resume cannot replace it.
-        state.shutting_down = true;
-        state.take_session_startup_prewarm()
-    };
-    sess.services.unified_exec_manager.shutdown_user_shell_commands().await;
-    if let Some(startup_prewarm) = startup_prewarm {
-        startup_prewarm.abort().await;
-    }
-    let _ = sess.conversation.shutdown().await;
-    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
-    // Cancellation is only a request. Detached output producers still own their final records.
-    sess.services.unified_exec_manager.drain_user_shell_commands().await;
+    stop_session_execution(sess).await;
+    // The legacy path still drains already accepted shell and completion producers.
+    // It does not promise the durable path's authoritative process-exit acknowledgement.
+    sess.services
+        .unified_exec_manager
+        .drain_user_shell_commands()
+        .await;
     sess.drain_observed_communications().await;
     sess.submission_admission.drain_accepted_completions().await;
     if !sess.submission_admission.requires_reload()
@@ -368,14 +363,6 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     {
         sess.quarantine_history(format!("completion shutdown drain failed: {error}"));
     }
-    let shell_snapshot_prewarm = sess.state.lock().await.shell_snapshot_prewarm.take();
-    if let Some(shell_snapshot_prewarm) = shell_snapshot_prewarm {
-        shell_snapshot_prewarm.abort();
-        let _ = shell_snapshot_prewarm.await;
-    }
-    sess.hooks().shutdown().await;
-    sess.async_hook_results.close();
-    while sess.async_hook_results.try_recv().is_ok() {}
     sess.services
         .unified_exec_manager
         .terminate_all_processes()
@@ -383,23 +370,63 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     if let Err(err) = sess.services.code_mode_service.shutdown().await {
         warn!("failed to shutdown code mode session: {err}");
     }
+    shutdown_session_services(sess).await;
+    sess.drain_code_mode_messages().await;
+    sess.close_history_publication().await;
+    crate::hook_runtime::run_session_end_hooks(sess).await;
+    emit_thread_stop_lifecycle(sess).await;
+}
+
+pub(super) async fn stop_session_execution(sess: &Arc<Session>) {
+    let startup_prewarm = {
+        let mut state = sess.state.lock().await;
+        // Stop admission and take the current warmup together so resume cannot replace it.
+        state.shutting_down = true;
+        state.take_session_startup_prewarm()
+    };
+    sess.services
+        .unified_exec_manager
+        .shutdown_user_shell_commands()
+        .await;
+    if let Some(startup_prewarm) = startup_prewarm {
+        startup_prewarm.abort().await;
+    }
+    let _ = sess.conversation.shutdown().await;
+    sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    let shell_snapshot_prewarm = sess.state.lock().await.shell_snapshot_prewarm.take();
+    if let Some(shell_snapshot_prewarm) = shell_snapshot_prewarm {
+        shell_snapshot_prewarm.abort();
+        let _ = shell_snapshot_prewarm.await;
+    }
+}
+
+pub(super) async fn persist_completion_mailbox_before_shutdown(
+    sess: &Arc<Session>,
+) -> CodexResult<()> {
+    sess.drain_observed_communications().await;
+    sess.submission_admission.drain_accepted_completions().await;
+    // Code Mode's accepted source-aware receipts use the canonical publisher too.
+    // Their producers are stopped by the preceding runtime teardown, not by closing history.
+    sess.drain_code_mode_messages().await;
+    sess.check_history_publication()?;
+    sess.drain_completion_mailbox().await?;
+    sess.close_history_publication().await;
+    Ok(())
+}
+
+pub(super) async fn shutdown_session_services(sess: &Arc<Session>) {
+    sess.hooks().shutdown().await;
+    sess.async_hook_results.close();
+    while sess.async_hook_results.try_recv().is_ok() {}
     sess.stop_mcp_prewarm_worker().await;
     {
         let _refresh = sess.mcp_refresh.acquire().await;
         sess.mcp_refresh.close();
         sess.services.mcp_runtime.shutdown().await;
     }
-
-    sess.drain_code_mode_messages().await;
-    // Accepted Code Mode receipts use the canonical publisher too. Stop their
-    // producers and drain them before closing publication admission.
-    sess.close_history_publication().await;
-
-    crate::hook_runtime::run_session_end_hooks(sess).await;
-    emit_thread_stop_lifecycle(sess).await;
 }
 
-async fn emit_thread_stop_lifecycle(sess: &Session) {
+pub(super) async fn emit_thread_stop_lifecycle(sess: &Session) {
     for contributor in sess.services.extensions.thread_lifecycle_contributors() {
         contributor
             .on_thread_stop(codex_extension_api::ThreadStopInput {
@@ -502,6 +529,7 @@ pub(super) async fn submission_loop(
 ) {
     // To break out of this loop, send Op::Shutdown.
     let mut shutdown_received = false;
+    let mut durable_shutdown = super::durable_shutdown::DurableShutdown::default();
     while let Ok(QueuedSubmission {
         submission: sub,
         approval,
@@ -511,7 +539,10 @@ pub(super) async fn submission_loop(
         if sess.submission_admission.requires_reload()
             && !matches!(
                 &sub.op,
-                Op::Shutdown | Op::ThreadRollback { .. } | Op::ThreadRollbackMaterialized { .. }
+                Op::Shutdown
+                    | Op::ShutdownDurably { .. }
+                    | Op::ThreadRollback { .. }
+                    | Op::ThreadRollbackMaterialized { .. }
             )
         {
             rx_sub.close();
@@ -743,7 +774,25 @@ pub(super) async fn submission_loop(
                         .await;
                     false
                 }
-                Op::Shutdown => shutdown(&sess, sub.id.clone()).await,
+                Op::Shutdown => {
+                    if durable_shutdown.has_started() {
+                        match durable_shutdown.run(&sess, sub.id.clone()).await {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "durable shutdown remains pending");
+                                false
+                            }
+                        }
+                    } else {
+                        shutdown(&sess, sub.id.clone()).await
+                    }
+                }
+                Op::ShutdownDurably { reply } => {
+                    let result = durable_shutdown.run(&sess, sub.id.clone()).await;
+                    let complete = result.is_ok();
+                    let _ = reply.send(result);
+                    complete
+                }
                 Op::Review { review_request } => {
                     review(&sess, &config, sub.id.clone(), review_request).await;
                     false

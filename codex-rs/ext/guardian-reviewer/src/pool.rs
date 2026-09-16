@@ -1,7 +1,7 @@
 //! Owns the reusable reviewer and temporary forks for one parent thread.
 //! Guardian supplies agent startup; the host supplies captured context. Selection stays serialized;
 //! concurrent reviews fork committed context. Lifetime guards cancel agents; ThreadManager
-//! performs cleanup and tracks its completion. The pool never runs a second shutdown protocol.
+//! performs cleanup while the pool retains every actor until its durable acknowledgement.
 //! Startup and fork futures stay boxed to bound the orchestration stack frames.
 
 use std::future::Future;
@@ -18,6 +18,9 @@ use tokio_util::sync::CancellationToken;
 use crate::GuardianReviewSessionOutcome;
 use crate::run_before_review_deadline;
 
+#[path = "pool_lifecycle.rs"]
+mod lifecycle;
+
 /// Background work owned by Guardian for one parent runtime.
 /// Stop cancels the work and joins this tracker before the parent closes its history.
 #[derive(Default)]
@@ -30,12 +33,16 @@ pub struct ReviewerTasks {
 /// Context and snapshots remain opaque while the host context builder is being A/B tested.
 pub trait ReviewerSession: Send + Sync + 'static {
     type Setup: Send + Sync + 'static;
-    type Context: Clone + PartialEq + Send + Sync;
-    type Snapshot: Send + Sync;
+    type Context: Clone + PartialEq + Send + Sync + 'static;
+    type Snapshot: Send + Sync + 'static;
 
     fn context(&self) -> &Self::Context;
     fn snapshot(&self) -> impl Future<Output = Option<Self::Snapshot>> + Send;
     fn commit_snapshot(&self) -> impl Future<Output = ()> + Send;
+    /// Acknowledges actor termination and writer release, retaining failed phases for retry.
+    fn shutdown_durably(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
+    /// Allows retirement only after the actor's durable writer acknowledgement.
+    fn durable_shutdown_complete(&self) -> bool;
 }
 
 /// Executes one approval on a selected session. The host must drain the submitted
@@ -74,8 +81,9 @@ pub enum SessionDisposition {
 /// Per-parent reviewer state. The same pool serves prewarm, review, invalidation and shutdown.
 pub struct ReviewerPool<S: ReviewerSession> {
     trunk: Mutex<Option<Arc<Trunk<S>>>>,
+    lifecycle: Arc<lifecycle::Lifecycle<S>>,
     runtime: Arc<ReviewerTasks>,
-    spawn: Box<SpawnReviewer<S>>,
+    spawn: Arc<SpawnReviewer<S>>,
 }
 
 type SpawnReviewer<S> = dyn Fn(
@@ -118,8 +126,9 @@ impl<S: ReviewerSession> ReviewerPool<S> {
     ) -> Self {
         Self {
             trunk: Mutex::new(None),
+            lifecycle: Arc::new(lifecycle::Lifecycle::default()),
             runtime,
-            spawn: Box::new(spawn),
+            spawn: Arc::new(spawn),
         }
     }
 }
@@ -136,20 +145,22 @@ impl<S: ReviewerSession> ReviewerPool<S> {
 
     /// Prepares the first reviewer without replacing a review that won the startup race.
     pub async fn prewarm(&self, setup: Arc<S::Setup>, context: S::Context) -> anyhow::Result<()> {
+        let _accepted = self.lifecycle.admit()?;
         let cancellation = self.runtime.cancellation.child_token();
         let guard = cancellation.clone().drop_guard();
-        let session = (self.spawn)(
-            setup,
-            context,
-            GuardianReviewSessionKind::TrunkNew,
-            /*snapshot*/ None,
-            cancellation.clone(),
-        )
-        .await?;
+        let session = self
+            .spawn_session(
+                setup,
+                context,
+                GuardianReviewSessionKind::TrunkNew,
+                /*snapshot*/ None,
+                cancellation.clone(),
+            )
+            .await?;
         let mut trunk = self.trunk.lock().await;
         if !cancellation.is_cancelled() && trunk.is_none() {
             *trunk = Some(Arc::new(Trunk {
-                session: Arc::new(session),
+                session,
                 review_lock: Semaphore::new(/*permits*/ 1),
                 cancellation: guard.disarm(),
             }));
@@ -159,10 +170,20 @@ impl<S: ReviewerSession> ReviewerPool<S> {
 
     /// Permanently stops this parent's reviewer pool and waits for tracked runtimes.
     pub async fn shutdown(&self) {
-        self.runtime.cancellation.cancel();
+        if let Err(error) = self.shutdown_durably().await {
+            tracing::warn!("failed to durably stop Guardian reviewers: {error:#}");
+        }
+    }
+
+    /// Closes admission and acknowledges every accepted actor's durable writer release.
+    ///
+    /// The owned attempt and exact actor inventory survive dropped callers.
+    /// Failed phases remain retryable; runtime task completion is checked only
+    /// after actor acknowledgements and accepted startup/review work settle.
+    pub async fn shutdown_durably(&self) -> anyhow::Result<()> {
+        self.lifecycle.shutdown(Arc::clone(&self.runtime)).await?;
         self.trunk.lock().await.take();
-        self.runtime.tasks.close();
-        self.runtime.tasks.wait().await;
+        Ok(())
     }
 
     /// Selects one reviewer; busy or incompatible trunks use an isolated temporary session.
@@ -177,6 +198,15 @@ impl<S: ReviewerSession> ReviewerPool<S> {
     where
         R: ReviewerRequest<Session = S>,
     {
+        let _accepted = match self.lifecycle.admit() {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                return (
+                    GuardianReviewSessionOutcome::PromptBuildFailed(error),
+                    GuardianReviewAnalyticsResult::without_session(),
+                );
+            }
+        };
         let mut spawned_trunk = false;
         let (trunk, context) = match run_before_review_deadline(
             request.deadline(),
@@ -199,7 +229,7 @@ impl<S: ReviewerSession> ReviewerPool<S> {
                     let session = match run_before_review_deadline(
                         request.deadline(),
                         request.cancellation(),
-                        (self.spawn)(
+                        self.spawn_session(
                             request.setup(),
                             context.clone(),
                             GuardianReviewSessionKind::TrunkNew,
@@ -209,7 +239,7 @@ impl<S: ReviewerSession> ReviewerPool<S> {
                     )
                     .await
                     {
-                        Ok(Ok(session)) => Arc::new(session),
+                        Ok(Ok(session)) => session,
                         Ok(Err(error)) => {
                             return (
                                 GuardianReviewSessionOutcome::PromptBuildFailed(error),
@@ -302,7 +332,7 @@ impl<S: ReviewerSession> ReviewerPool<S> {
         let session = match run_before_review_deadline(
             request.deadline(),
             request.cancellation(),
-            (self.spawn)(
+            self.spawn_session(
                 request.setup(),
                 context,
                 GuardianReviewSessionKind::EphemeralForked,
@@ -312,7 +342,7 @@ impl<S: ReviewerSession> ReviewerPool<S> {
         )
         .await
         {
-            Ok(Ok(session)) => Arc::new(session),
+            Ok(Ok(session)) => session,
             Ok(Err(error)) => {
                 return (
                     GuardianReviewSessionOutcome::PromptBuildFailed(error),

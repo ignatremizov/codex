@@ -203,23 +203,30 @@ impl LocalAgentControl {
         thread: &Arc<CodexThread>,
         error: CodexErr,
     ) -> CodexErr {
+        // The detached restoration transaction retains its lifecycle gates through
+        // this cleanup. Failure publishes only a sealed cleanup owner, never a
+        // usable replacement runtime or authority to close an unrelated alias.
+        thread.session.submission_admission.seal_for_unload();
         let disarm = thread.session.disarm_terminal_presentation();
         thread
             .session
             .retire_agent_status_observers(crate::session::AgentStatusRetirement::RestoreRollback);
-        let shutdown = thread.shutdown_and_wait().await;
-        if shutdown.is_err() {
-            // Retain the runtime and the caller's restoration gate until the session-loop
-            // barrier completes. A failed shutdown request is not proof of writer release.
-            thread.wait_until_terminated().await;
-        }
+        let shutdown = thread.shutdown_durably_and_wait().await;
         disarm.commit();
-        self.forget_v2_residency(thread.session.thread_id());
         match shutdown {
-            Ok(()) => error,
-            Err(cleanup) => CodexErr::Fatal(format!(
-                "{error}; unpublished runtime shutdown failed: {cleanup}"
-            )),
+            Ok(()) => {
+                self.forget_v2_residency(thread.session.thread_id());
+                error
+            }
+            Err(cleanup) => {
+                let retained = match self.runtime.upgrade() {
+                    Ok(state) => state.retain_failed_spawn_cleanup(thread).await,
+                    Err(error) => Err(error),
+                };
+                CodexErr::Fatal(format!(
+                    "{error}; unpublished runtime durable shutdown failed: {cleanup}; unload-retry retention: {retained:?}"
+                ))
+            }
         }
     }
 }
