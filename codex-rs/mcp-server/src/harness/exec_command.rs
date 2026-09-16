@@ -4,6 +4,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use codex_arg0::Arg0DispatchPaths;
+use codex_config::SandboxModeRequirement;
+use codex_config::sandbox_mode_requirement_for_permission_profile;
 use codex_core::config::Config;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -26,6 +28,16 @@ use crate::harness::process_manager::HarnessProcessManager;
 use crate::harness::process_manager::start_output_collectors;
 use crate::harness::types::ExecCommandParams;
 use crate::harness::types::ExecCommandResponse;
+
+pub(crate) fn sandbox_ceiling_from_profile(profile: &PermissionProfile) -> SandboxMode {
+    match sandbox_mode_requirement_for_permission_profile(profile) {
+        SandboxModeRequirement::ReadOnly => SandboxMode::ReadOnly,
+        SandboxModeRequirement::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+        SandboxModeRequirement::DangerFullAccess | SandboxModeRequirement::ExternalSandbox => {
+            SandboxMode::DangerFullAccess
+        }
+    }
+}
 
 pub(crate) fn resolve_sandbox_ceiling(
     requested: Option<CodexToolCallSandboxMode>,
@@ -60,25 +72,26 @@ pub async fn handle_exec_command(
     let start_time = Instant::now();
 
     // 1. Sandbox ceiling check
-    let effective_sandbox =
-        match resolve_sandbox_ceiling(params.sandbox, runtime_config.sandbox_mode) {
-            Ok(mode) => mode,
-            Err(rejection_reason) => {
-                return ExecCommandResponse {
-                    status: "rejected".to_string(),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    output: String::new(),
-                    output_truncated: false,
-                    output_bytes_total: 0,
-                    exit_code: None,
-                    pid: None,
-                    session_id: None,
-                    wall_time_ms: start_time.elapsed().as_millis() as u64,
-                    rejection_reason: Some(rejection_reason),
-                };
-            }
-        };
+    let server_ceiling =
+        sandbox_ceiling_from_profile(runtime_config.permissions.permission_profile());
+    let effective_sandbox = match resolve_sandbox_ceiling(params.sandbox, server_ceiling) {
+        Ok(mode) => mode,
+        Err(rejection_reason) => {
+            return ExecCommandResponse {
+                status: "rejected".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                output: String::new(),
+                output_truncated: false,
+                output_bytes_total: 0,
+                exit_code: None,
+                pid: None,
+                session_id: None,
+                wall_time_ms: start_time.elapsed().as_millis() as u64,
+                rejection_reason: Some(rejection_reason),
+            };
+        }
+    };
 
     // 2. Prepare command and shell tokens
     let shell_str = params.shell.as_deref().unwrap_or("/bin/bash -lc");

@@ -3,17 +3,33 @@ use std::fs;
 use std::time::Duration;
 
 use codex_arg0::Arg0DispatchPaths;
+use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_protocol::config_types::SandboxMode;
+use codex_protocol::models::PermissionProfile;
+use codex_utils_json_to_toml::json_to_toml;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 use tokio::sync::mpsc;
 
 use crate::codex_tool_config::CodexToolCallSandboxMode;
 use crate::harness::exec_command::resolve_sandbox_ceiling;
+use crate::harness::exec_command::sandbox_ceiling_from_profile;
 use crate::harness::process_manager::start_output_collectors;
 use crate::harness::types::ProcessSignalParam;
 use crate::harness::*;
+
+async fn build_test_config(codex_home: std::path::PathBuf, sandbox_mode: &str) -> Config {
+    ConfigBuilder::default()
+        .codex_home(codex_home)
+        .cli_overrides(vec![(
+            "sandbox_mode".to_string(),
+            json_to_toml(serde_json::json!(sandbox_mode)),
+        )])
+        .build()
+        .await
+        .expect("build config")
+}
 
 #[test]
 fn test_tool_schemas_and_properties() {
@@ -160,6 +176,21 @@ fn test_sandbox_ceiling_resolution_logic() {
     );
 }
 
+#[test]
+fn test_sandbox_ceiling_from_profile_logic() {
+    let read_only = PermissionProfile::read_only();
+    assert_eq!(
+        sandbox_ceiling_from_profile(&read_only),
+        SandboxMode::ReadOnly
+    );
+
+    let disabled = PermissionProfile::Disabled;
+    assert_eq!(
+        sandbox_ceiling_from_profile(&disabled),
+        SandboxMode::DangerFullAccess
+    );
+}
+
 #[tokio::test]
 async fn test_harness_process_manager_basics() {
     let manager = HarnessProcessManager::new();
@@ -203,12 +234,7 @@ async fn test_output_buffers_collection_and_truncation() {
 #[tokio::test]
 async fn test_exec_command_run_to_completion() {
     let tmp = tempdir().expect("tempdir");
-    let mut config = ConfigBuilder::default()
-        .codex_home(tmp.path().to_path_buf())
-        .build()
-        .await
-        .expect("build config");
-    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let config = build_test_config(tmp.path().to_path_buf(), "danger-full-access").await;
 
     let arg0_paths = Arg0DispatchPaths::default();
     let manager = HarnessProcessManager::new();
@@ -236,12 +262,7 @@ async fn test_exec_command_run_to_completion() {
 #[tokio::test]
 async fn test_exec_command_custom_env_and_exit_code() {
     let tmp = tempdir().expect("tempdir");
-    let mut config = ConfigBuilder::default()
-        .codex_home(tmp.path().to_path_buf())
-        .build()
-        .await
-        .expect("build config");
-    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let config = build_test_config(tmp.path().to_path_buf(), "danger-full-access").await;
 
     let arg0_paths = Arg0DispatchPaths::default();
     let manager = HarnessProcessManager::new();
@@ -273,12 +294,7 @@ async fn test_exec_command_custom_env_and_exit_code() {
 #[tokio::test]
 async fn test_exec_command_sandbox_ceiling_rejection() {
     let tmp = tempdir().expect("tempdir");
-    let mut config = ConfigBuilder::default()
-        .codex_home(tmp.path().to_path_buf())
-        .build()
-        .await
-        .expect("build config");
-    config.sandbox_mode = SandboxMode::ReadOnly;
+    let config = build_test_config(tmp.path().to_path_buf(), "read-only").await;
 
     let arg0_paths = Arg0DispatchPaths::default();
     let manager = HarnessProcessManager::new();
@@ -303,12 +319,7 @@ async fn test_exec_command_sandbox_ceiling_rejection() {
 #[tokio::test]
 async fn test_interactive_session_yield_and_write_stdin_flow() {
     let tmp = tempdir().expect("tempdir");
-    let mut config = ConfigBuilder::default()
-        .codex_home(tmp.path().to_path_buf())
-        .build()
-        .await
-        .expect("build config");
-    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let config = build_test_config(tmp.path().to_path_buf(), "danger-full-access").await;
 
     let arg0_paths = Arg0DispatchPaths::default();
     let manager = HarnessProcessManager::new();
@@ -378,12 +389,7 @@ async fn test_interactive_session_yield_and_write_stdin_flow() {
 #[tokio::test]
 async fn test_write_stdin_signal_termination() {
     let tmp = tempdir().expect("tempdir");
-    let mut config = ConfigBuilder::default()
-        .codex_home(tmp.path().to_path_buf())
-        .build()
-        .await
-        .expect("build config");
-    config.sandbox_mode = SandboxMode::DangerFullAccess;
+    let config = build_test_config(tmp.path().to_path_buf(), "danger-full-access").await;
 
     let arg0_paths = Arg0DispatchPaths::default();
     let manager = HarnessProcessManager::new();
