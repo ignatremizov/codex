@@ -39,6 +39,7 @@ fn main() -> anyhow::Result<()> {
                 true
             }
             ExitReason::UserRequested
+            | ExitReason::Disconnected
             | ExitReason::Archived(_)
             | ExitReason::TurnInterrupted
             | ExitReason::ThreadRemoved => false,
