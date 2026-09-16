@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -27,7 +28,7 @@ pub struct OutputBuffers {
 pub struct ActiveSession {
     pub session_id: i32,
     pub process: ProcessHandle,
-    pub buffers: Arc<Mutex<OutputBuffers>>,
+    pub buffers: Arc<StdMutex<OutputBuffers>>,
     pub stdout_offset: usize,
     pub stderr_offset: usize,
     pub exit_rx: Option<oneshot::Receiver<i32>>,
@@ -49,11 +50,11 @@ impl ActiveSession {
         if let Some(code) = self.exit_code {
             return Some(code);
         }
-        if let Some(rx) = &mut self.exit_rx {
-            if let Ok(code) = rx.try_recv() {
-                self.exit_code = Some(code);
-                return Some(code);
-            }
+        if let Some(rx) = &mut self.exit_rx
+            && let Ok(code) = rx.try_recv()
+        {
+            self.exit_code = Some(code);
+            return Some(code);
         }
         if self.process.has_exited() {
             let code = self.process.exit_code().unwrap_or(-1);
@@ -63,8 +64,8 @@ impl ActiveSession {
         None
     }
 
-    pub async fn read_delta(&mut self) -> (String, String, String, bool, usize) {
-        let buffers = self.buffers.lock().await;
+    pub fn read_delta(&mut self) -> (String, String, String, bool, usize) {
+        let buffers = self.buffers.lock().unwrap();
 
         let new_stdout = if self.stdout_offset < buffers.stdout.len() {
             &buffers.stdout[self.stdout_offset..]
@@ -152,14 +153,14 @@ impl Drop for ActiveSession {
 
 #[derive(Clone, Default)]
 pub struct HarnessProcessManager {
-    sessions: Arc<Mutex<HashMap<i32, Arc<Mutex<ActiveSession>>>>>,
+    sessions: Arc<StdMutex<HashMap<i32, Arc<Mutex<ActiveSession>>>>>,
     next_session_id: Arc<AtomicI32>,
 }
 
 impl HarnessProcessManager {
     pub fn new() -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(StdMutex::new(HashMap::new())),
             next_session_id: Arc::new(AtomicI32::new(100)),
         }
     }
@@ -168,11 +169,11 @@ impl HarnessProcessManager {
         self.next_session_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub async fn register_session(
+    pub fn register_session(
         &self,
         session_id: i32,
         process: ProcessHandle,
-        buffers: Arc<Mutex<OutputBuffers>>,
+        buffers: Arc<StdMutex<OutputBuffers>>,
         stdout_offset: usize,
         stderr_offset: usize,
         exit_rx: Option<oneshot::Receiver<i32>>,
@@ -190,22 +191,25 @@ impl HarnessProcessManager {
         };
         self.sessions
             .lock()
-            .await
+            .unwrap()
             .insert(session_id, Arc::new(Mutex::new(session)));
     }
 
-    pub async fn get_session(&self, session_id: i32) -> Option<Arc<Mutex<ActiveSession>>> {
-        let map = self.sessions.lock().await;
+    pub fn get_session(&self, session_id: i32) -> Option<Arc<Mutex<ActiveSession>>> {
+        let map = self.sessions.lock().unwrap();
         map.get(&session_id).cloned()
     }
 
-    pub async fn remove_session(&self, session_id: i32) -> Option<Arc<Mutex<ActiveSession>>> {
-        self.sessions.lock().await.remove(&session_id)
+    pub fn remove_session(&self, session_id: i32) -> Option<Arc<Mutex<ActiveSession>>> {
+        self.sessions.lock().unwrap().remove(&session_id)
     }
 
     pub async fn terminate_all(&self) {
-        let mut sessions = self.sessions.lock().await;
-        for (_, session_arc) in sessions.drain() {
+        let to_terminate: Vec<Arc<Mutex<ActiveSession>>> = {
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions.drain().map(|(_, arc)| arc).collect()
+        };
+        for session_arc in to_terminate {
             let mut session = session_arc.lock().await;
             session.terminate();
         }
@@ -217,8 +221,8 @@ pub fn start_output_collectors(
     stdout_rx: mpsc::Receiver<Vec<u8>>,
     stderr_rx: mpsc::Receiver<Vec<u8>>,
     max_bytes: usize,
-) -> Arc<Mutex<OutputBuffers>> {
-    let buffers = Arc::new(Mutex::new(OutputBuffers::default()));
+) -> Arc<StdMutex<OutputBuffers>> {
+    let buffers = Arc::new(StdMutex::new(OutputBuffers::default()));
 
     let buf_out = Arc::clone(&buffers);
     tokio::spawn(async move {
@@ -235,12 +239,12 @@ pub fn start_output_collectors(
 
 async fn collect_stream(
     mut rx: mpsc::Receiver<Vec<u8>>,
-    buffers: Arc<Mutex<OutputBuffers>>,
+    buffers: Arc<StdMutex<OutputBuffers>>,
     max_bytes: usize,
     is_stdout: bool,
 ) {
     while let Some(chunk) = rx.recv().await {
-        let mut b = buffers.lock().await;
+        let mut b = buffers.lock().unwrap();
         if is_stdout {
             b.total_stdout_bytes += chunk.len();
             if b.stdout.len() < max_bytes {

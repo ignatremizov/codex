@@ -44,8 +44,8 @@ pub(crate) fn resolve_sandbox_ceiling(
     server_ceiling: SandboxMode,
 ) -> Result<SandboxMode, String> {
     let effective: SandboxMode = requested.map(Into::into).unwrap_or(server_ceiling);
-    let effective_level = sandbox_rank(&effective);
-    let ceiling_level = sandbox_rank(&server_ceiling);
+    let effective_level = sandbox_rank(effective);
+    let ceiling_level = sandbox_rank(server_ceiling);
 
     if effective_level > ceiling_level {
         return Err(format!(
@@ -55,7 +55,7 @@ pub(crate) fn resolve_sandbox_ceiling(
     Ok(effective)
 }
 
-fn sandbox_rank(mode: &SandboxMode) -> u8 {
+fn sandbox_rank(mode: SandboxMode) -> u8 {
     match mode {
         SandboxMode::ReadOnly => 1,
         SandboxMode::WorkspaceWrite => 2,
@@ -358,7 +358,7 @@ pub async fn handle_exec_command(
             // Allow brief drain of pipe readers
             tokio::time::sleep(Duration::from_millis(50)).await;
 
-            let b = buffers.lock().await;
+            let b = buffers.lock().unwrap();
             let stdout = String::from_utf8_lossy(&b.stdout).to_string();
             let stderr = String::from_utf8_lossy(&b.stderr).to_string();
             let mut output = String::with_capacity(stdout.len() + stderr.len());
@@ -370,6 +370,7 @@ pub async fn handle_exec_command(
 
             let truncated = b.stdout_truncated || b.stderr_truncated;
             let total = b.total_stdout_bytes + b.total_stderr_bytes;
+            drop(b);
 
             ExecCommandResponse {
                 status,
@@ -398,7 +399,7 @@ pub async fn handle_exec_command(
 
             if let Some(code) = exit_opt {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                let b = buffers.lock().await;
+                let b = buffers.lock().unwrap();
                 let stdout = String::from_utf8_lossy(&b.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&b.stderr).to_string();
                 let mut output = String::with_capacity(stdout.len() + stderr.len());
@@ -410,6 +411,7 @@ pub async fn handle_exec_command(
 
                 let truncated = b.stdout_truncated || b.stderr_truncated;
                 let total = b.total_stdout_bytes + b.total_stderr_bytes;
+                drop(b);
 
                 ExecCommandResponse {
                     status: "completed".to_string(),
@@ -427,7 +429,7 @@ pub async fn handle_exec_command(
             } else {
                 // Process is still alive; yield session_id
                 let session_id = process_manager.allocate_session_id();
-                let b = buffers.lock().await;
+                let b = buffers.lock().unwrap();
                 let stdout = String::from_utf8_lossy(&b.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&b.stderr).to_string();
                 let mut output = String::with_capacity(stdout.len() + stderr.len());
@@ -443,16 +445,14 @@ pub async fn handle_exec_command(
                 let total = b.total_stdout_bytes + b.total_stderr_bytes;
                 drop(b);
 
-                process_manager
-                    .register_session(
-                        session_id,
-                        spawned.session,
-                        buffers,
-                        stdout_len,
-                        stderr_len,
-                        Some(spawned.exit_rx),
-                    )
-                    .await;
+                process_manager.register_session(
+                    session_id,
+                    spawned.session,
+                    buffers,
+                    stdout_len,
+                    stderr_len,
+                    Some(spawned.exit_rx),
+                );
 
                 ExecCommandResponse {
                     status: "running".to_string(),

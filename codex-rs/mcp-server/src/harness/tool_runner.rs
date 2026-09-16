@@ -15,7 +15,7 @@ use crate::harness::types::WriteStdinParams;
 use crate::harness::write_stdin::handle_write_stdin;
 use crate::outgoing_message::OutgoingMessageSender;
 
-pub fn dispatch_harness_tool_call(
+pub(crate) fn dispatch_harness_tool_call(
     tool_name: &str,
     id: RequestId,
     arguments: Option<rmcp::model::JsonObject>,

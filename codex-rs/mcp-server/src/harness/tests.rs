@@ -199,8 +199,8 @@ async fn test_harness_process_manager_basics() {
     assert_eq!(id1, 100);
     assert_eq!(id2, 101);
 
-    assert!(manager.get_session(id1).await.is_none());
-    assert!(manager.remove_session(id1).await.is_none());
+    assert!(manager.get_session(id1).is_none());
+    assert!(manager.remove_session(id1).is_none());
 }
 
 #[tokio::test]
@@ -220,7 +220,7 @@ async fn test_output_buffers_collection_and_truncation() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let b = buffers.lock().await;
+    let b = buffers.lock().unwrap();
     assert_eq!(b.stdout.len(), 10);
     assert_eq!(String::from_utf8_lossy(&b.stdout), "hello worl");
     assert!(b.stdout_truncated);
