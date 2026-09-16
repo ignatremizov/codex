@@ -16,6 +16,7 @@ use tempfile::TempDir;
 
 pub(super) struct TestDaemon {
     pub(super) home: TempDir,
+    pub(super) state: PathBuf,
     pub(super) codex: PathBuf,
     pub(super) unmanaged: Option<Child>,
 }
@@ -65,8 +66,16 @@ impl TestDaemon {
         let state = home.path().join("app-server-daemon");
         std::fs::create_dir(&state)?;
         std::fs::write(state.join("app-server.stderr.log"), b"")?;
+        let resolved_home = home.path().canonicalize()?;
+        let profile = codex_login::AuthFileSelection::Default
+            .profile_identity(&resolved_home, codex_login::AuthCredentialsStoreMode::File);
+        let state = resolved_home
+            .join("app-server-daemon")
+            .join(profile.profile_opaque_id);
+        std::fs::create_dir(&state)?;
         Ok(Self {
             home,
+            state,
             codex,
             unmanaged: None,
         })
@@ -75,6 +84,8 @@ impl TestDaemon {
     pub(super) fn command(&self) -> Command {
         let mut command = Command::new(&self.codex);
         command.env("CODEX_HOME", self.home.path());
+        command.env_remove("CODEX_AUTH_FILE");
+        command.args(["-c", "cli_auth_credentials_store=\"file\""]);
         command
     }
 
@@ -92,7 +103,7 @@ impl TestDaemon {
     }
 
     pub(super) fn pid(&self, name: &str) -> Result<u32> {
-        let record = std::fs::read(self.home.path().join("app-server-daemon").join(name))
+        let record = std::fs::read(self.state.join(name))
             .with_context(|| format!("failed to read {name}"))?;
         Ok(serde_json::from_slice::<Value>(&record)?["pid"]
             .as_u64()
@@ -107,8 +118,10 @@ impl Drop for TestDaemon {
             let _ = child.wait();
         }
         let _ = self.lifecycle("stop");
-        if let Ok(pid) = self.pid("app-server-updater.pid") {
-            let _ = signal(pid, libc::SIGTERM);
+        for name in ["app-server-updater.pid", "daemon-updater.pid"] {
+            if let Ok(pid) = self.pid(name) {
+                let _ = signal(pid, libc::SIGTERM);
+            }
         }
     }
 }

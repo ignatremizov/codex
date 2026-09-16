@@ -34,6 +34,23 @@ fn access_token(expires_at: i64) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn environment_discovery_refreshes_after_cloud_startup() {
+    environment_discovery_refresh_case(
+        "backend_auth_tests::environment_discovery_refreshes_after_cloud_startup",
+        /*selected*/ false,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_file_environment_discovery_retains_source_through_refresh() {
+    environment_discovery_refresh_case(
+        "backend_auth_tests::selected_file_environment_discovery_retains_source_through_refresh",
+        /*selected*/ true,
+    )
+    .await;
+}
+
+async fn environment_discovery_refresh_case(test_name: &str, selected: bool) {
     const SERVER: &str = "CODEX_CLOUD_REFRESH_TEST_SERVER";
     if let Ok(server) = std::env::var(SERVER) {
         let overrides = CliConfigOverrides {
@@ -62,12 +79,22 @@ async fn environment_discovery_refreshes_after_cloud_startup() {
 
     let server = MockServer::start().await;
     let home = tempfile::tempdir().expect("isolated Cloud credentials");
+    let credential_name = if selected {
+        "auth-selected.json"
+    } else {
+        "auth.json"
+    };
+    let default_bytes = b"not the selected credential source";
+    if selected {
+        std::fs::write(home.path().join("auth.json"), default_bytes)
+            .expect("unrelated default credentials");
+    }
     let expired = access_token(Utc::now().timestamp() - 60);
     // The startup token is near expiry, so discovery must refresh it through AuthManager.
     let startup = access_token(Utc::now().timestamp() + 240);
     let current = access_token(Utc::now().timestamp() + 3_600);
     std::fs::write(
-        home.path().join("auth.json"),
+        home.path().join(credential_name),
         json!({
             "tokens": {
                 "id_token": expired, "access_token": expired,
@@ -115,11 +142,7 @@ async fn environment_discovery_refreshes_after_cloud_startup() {
 
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
-        .args([
-            "--exact",
-            "backend_auth_tests::environment_discovery_refreshes_after_cloud_startup",
-            "--nocapture",
-        ])
+        .args(["--exact", test_name, "--nocapture"])
         .current_dir(home.path())
         .env(SERVER, server.uri())
         .env("CODEX_HOME", home.path())
@@ -134,11 +157,21 @@ async fn environment_discovery_refreshes_after_cloud_startup() {
         .env_remove("CODEX_CLOUD_TASKS_MODE")
         .env_remove("CODEX_ACCESS_TOKEN")
         .env_remove("CODEX_API_KEY")
-        .env_remove("OPENAI_API_KEY");
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_AUTH_FILE");
+    if selected {
+        command.env("CODEX_AUTH_FILE", credential_name);
+    }
     let output = tokio::task::spawn_blocking(move || command.output())
         .await
         .expect("Cloud test child task")
         .expect("Cloud test child process");
+    if selected {
+        assert_eq!(
+            std::fs::read(home.path().join("auth.json")).expect("default bytes"),
+            default_bytes
+        );
+    }
     assert!(
         output.status.success(),
         "Cloud startup regression failed:\n{}\n{}",

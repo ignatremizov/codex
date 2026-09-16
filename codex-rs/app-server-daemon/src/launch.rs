@@ -13,20 +13,24 @@ use std::collections::BTreeMap;
 /// or leave a running daemon unchanged.
 /// Callers must check the running server's configuration before using it.
 /// Startup diagnostics go to tracing, so a caller with a live TUI can keep rendering.
-pub async fn start_with_features(features: &BTreeMap<String, bool>) -> Result<LifecycleOutput> {
-    start_with_features_classified(features)
+pub async fn start_with_features(
+    launch: &crate::DaemonLaunchOptions,
+    features: &BTreeMap<String, bool>,
+) -> Result<LifecycleOutput> {
+    start_with_features_classified(launch, features)
         .await
         .map_err(|err| err.error)
 }
 
 /// Starts the daemon and classifies failures for the TUI startup counter.
 pub async fn start_with_features_classified(
+    launch: &crate::DaemonLaunchOptions,
     features: &BTreeMap<String, bool>,
 ) -> Result<LifecycleOutput, StartError> {
     ensure_supported_platform()?;
     #[cfg(windows)]
     crate::backend::windows::ensure_not_elevated()?;
-    let mut daemon = Daemon::from_environment()?;
+    let mut daemon = Daemon::from_options(launch)?;
     daemon.log_diagnostics = true;
     let _operation_lock = daemon.acquire_operation_lock().await?;
     let selected = daemon.current_installation()?;
@@ -38,11 +42,14 @@ pub async fn start_with_features_classified(
 /// Apply confirmed feature settings to an existing managed daemon and restart it.
 /// Callers must obtain consent for changes to shared services and interrupted work,
 /// then verify effective server compatibility after this operation completes.
-pub async fn restart_with_features(features: &BTreeMap<String, bool>) -> Result<LifecycleOutput> {
+pub async fn restart_with_features(
+    launch: &crate::DaemonLaunchOptions,
+    features: &BTreeMap<String, bool>,
+) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
     #[cfg(windows)]
     crate::backend::windows::ensure_not_elevated()?;
-    let daemon = Daemon::from_environment()?;
+    let daemon = Daemon::from_options(launch)?;
     let _operation_lock = daemon.acquire_operation_lock().await?;
     let selected = daemon.current_installation()?;
     Box::pin(selected.restart_with_features_locked(features)).await

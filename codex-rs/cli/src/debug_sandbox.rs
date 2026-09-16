@@ -536,13 +536,19 @@ async fn spawn_debug_sandbox_child(
 async fn load_debug_sandbox_config(
     cli_overrides: Vec<(String, TomlValue)>,
     codex_linux_sandbox_exe: Option<PathBuf>,
-    options: DebugSandboxConfigOptions,
+    mut options: DebugSandboxConfigOptions,
     strict_config: bool,
 ) -> anyhow::Result<Config> {
+    let codex_home = find_codex_home()?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+    if options.cwd.is_none() {
+        options.cwd = Some(std::env::current_dir()?);
+    }
     let cloud_config_bundle = cloud_config::bootstrap_cloud_config_bundle(
         &cli_overrides,
         &options,
-        find_codex_home,
+        || Ok(codex_home.clone()),
+        &auth_file_selection,
         strict_config,
     )
     .await?;
@@ -551,7 +557,8 @@ async fn load_debug_sandbox_config(
         cli_overrides,
         codex_linux_sandbox_exe,
         options,
-        /*codex_home*/ None,
+        Some(codex_home.into_path_buf()),
+        auth_file_selection,
         cloud_config_bundle,
         strict_config,
     )
@@ -563,6 +570,7 @@ async fn load_debug_sandbox_config_with_codex_home(
     codex_linux_sandbox_exe: Option<PathBuf>,
     options: DebugSandboxConfigOptions,
     codex_home: Option<PathBuf>,
+    auth_file_selection: codex_login::AuthFileSelection,
     cloud_config_bundle: CloudConfigBundleLoader,
     strict_config: bool,
 ) -> anyhow::Result<Config> {
@@ -591,6 +599,7 @@ async fn load_debug_sandbox_config_with_codex_home(
         cli_overrides.clone(),
         ConfigOverrides {
             cwd: cwd.clone(),
+            auth_file_selection: Some(auth_file_selection.clone()),
             codex_linux_sandbox_exe: codex_linux_sandbox_exe.clone(),
             ..Default::default()
         },
@@ -610,6 +619,7 @@ async fn load_debug_sandbox_config_with_codex_home(
         cli_overrides,
         ConfigOverrides {
             sandbox_mode: Some(SandboxMode::ReadOnly),
+            auth_file_selection: Some(auth_file_selection),
             cwd,
             codex_linux_sandbox_exe,
             ..Default::default()
@@ -782,6 +792,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::default(),
             },
             Some(codex_home_path),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleLoader::default(),
             /*strict_config*/ false,
         )
@@ -853,6 +864,7 @@ enabled = true
                 loader_overrides,
             },
             Some(codex_home_path),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleLoader::default(),
             /*strict_config*/ false,
         )
@@ -912,6 +924,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::default(),
             },
             Some(codex_home_path),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleLoader::default(),
             /*strict_config*/ false,
         )
@@ -972,6 +985,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::default(),
             },
             Some(codex_home_path),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleLoader::default(),
             /*strict_config*/ false,
         )
@@ -1001,6 +1015,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::default(),
             },
             Some(codex_home.path().to_path_buf()),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleLoader::default(),
             /*strict_config*/ false,
         )
@@ -1039,6 +1054,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::without_managed_config_for_tests(),
             },
             Some(codex_home.path().to_path_buf()),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleFixture::loader_with_enterprise_requirement(
                 CLOUD_MANAGED_PERMISSION_PROFILE_REQUIREMENTS,
             ),
@@ -1083,6 +1099,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::without_managed_config_for_tests(),
             },
             Some(codex_home.path().to_path_buf()),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleFixture::loader_with_enterprise_requirement(
                 CLOUD_MANAGED_PERMISSION_PROFILE_REQUIREMENTS,
             ),
@@ -1128,6 +1145,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::default(),
             },
             Some(codex_home.path().to_path_buf()),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleLoader::default(),
             /*strict_config*/ false,
         )
@@ -1169,6 +1187,7 @@ enabled = true
                 loader_overrides: LoaderOverrides::default(),
             },
             Some(codex_home.path().to_path_buf()),
+            codex_login::AuthFileSelection::Default,
             CloudConfigBundleLoader::default(),
             /*strict_config*/ false,
         )

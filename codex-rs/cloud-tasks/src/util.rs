@@ -4,10 +4,14 @@ use chrono::Utc;
 use http::header::HeaderMap;
 
 use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
+use codex_core::config::find_codex_home;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use codex_login::AuthFileSelection;
 use codex_login::AuthManager;
 use codex_utils_cli::CliConfigOverrides;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn set_user_agent_suffix(suffix: &str) {
@@ -84,7 +88,13 @@ pub async fn load_auth_manager(
     let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let config = match Config::load_with_cli_overrides(overrides).await {
+    let codex_home = find_codex_home()?;
+    let auth_file_selection = AuthFileSelection::from_env(codex_home.as_path())?;
+    let config = match config_builder_with_selection(codex_home.to_path_buf(), auth_file_selection)
+        .cli_overrides(overrides)
+        .build()
+        .await
+    {
         Ok(config) => config,
         Err(error) => {
             append_error_log(format!(
@@ -110,6 +120,15 @@ pub async fn load_auth_manager(
         }
     };
     Ok((Some(auth_manager), http_client_factory, Some(config)))
+}
+
+fn config_builder_with_selection(
+    codex_home: PathBuf,
+    auth_file_selection: AuthFileSelection,
+) -> ConfigBuilder {
+    ConfigBuilder::default()
+        .codex_home(codex_home)
+        .auth_file_selection(auth_file_selection)
 }
 
 /// Non-authentication headers shared by environment requests. The client resolves auth per GET.
@@ -167,34 +186,5 @@ pub fn format_relative_time_now(ts: DateTime<Utc>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use pretty_assertions::assert_eq;
-
-    use super::normalize_base_url;
-
-    #[test]
-    fn normalize_base_url_normalizes_urls() {
-        for (input, expected) in [
-            ("https://example.com/path", "https://example.com/path"),
-            ("https://example.com/path/", "https://example.com/path"),
-            ("https://example.com/path///", "https://example.com/path"),
-            ("", ""),
-            ("///", ""),
-            ("https://chatgpt.com///", "https://chatgpt.com/backend-api"),
-            (
-                "https://chatgpt.com/backend-api///",
-                "https://chatgpt.com/backend-api",
-            ),
-            (
-                "https://chat.openai.com///",
-                "https://chat.openai.com/backend-api",
-            ),
-            (
-                "https://chat.openai.com/backend-api///",
-                "https://chat.openai.com/backend-api",
-            ),
-        ] {
-            assert_eq!(normalize_base_url(input), expected, "input: {input:?}");
-        }
-    }
-}
+#[path = "util_tests.rs"]
+mod tests;

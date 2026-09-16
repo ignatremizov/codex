@@ -55,9 +55,11 @@ pub(super) fn should_delay_startup_composer_for_first_login(
                 }
             }
 
-            let Ok(daemon_socket) =
-                codex_app_server_client::app_server_control_socket_path(codex_home)
-            else {
+            let Ok(daemon_socket) = crate::auth_profile_connection::daemon_socket_path(
+                codex_home,
+                &codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::default(),
+            ) else {
                 return false;
             };
             if !matches!(daemon_socket.as_path().try_exists(), Ok(false)) {

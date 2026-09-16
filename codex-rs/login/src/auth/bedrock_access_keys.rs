@@ -5,9 +5,10 @@ use codex_protocol::auth::AuthMode;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::manager::save_auth;
+use super::manager::save_auth_for_selection;
 use super::storage::AuthDotJson;
 use super::storage::AuthKeyringBackendKind;
+use crate::AuthFileSelection;
 
 /// Managed Amazon Bedrock AWS access keys persisted in auth storage.
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -40,6 +41,27 @@ pub fn login_with_bedrock_access_keys(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<()> {
+    login_with_bedrock_access_keys_for_selection(
+        codex_home,
+        &AuthFileSelection::Default,
+        access_key_id,
+        secret_access_key,
+        session_token,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
+}
+
+/// Save explicitly supplied AWS access keys to the selected credential store.
+pub fn login_with_bedrock_access_keys_for_selection(
+    codex_home: &Path,
+    selection: &AuthFileSelection,
+    access_key_id: &str,
+    secret_access_key: &str,
+    session_token: Option<&str>,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> std::io::Result<()> {
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(AuthMode::BedrockAccessKeys),
         openai_api_key: None,
@@ -54,8 +76,9 @@ pub fn login_with_bedrock_access_keys(
             session_token: session_token.map(str::to_string),
         }),
     };
-    save_auth(
+    save_auth_for_selection(
         codex_home,
+        selection,
         &auth_dot_json,
         auth_credentials_store_mode,
         keyring_backend_kind,

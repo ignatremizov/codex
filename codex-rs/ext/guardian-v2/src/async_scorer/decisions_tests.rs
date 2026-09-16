@@ -653,6 +653,7 @@ async fn decisions_preserves_platform_wif_credentials() -> anyhow::Result<()> {
         let credentials = AuthManager::shared_from_auth_config(
             AuthConfig {
                 codex_home: home.path().to_path_buf(),
+                auth_file_selection: Default::default(),
                 auth_credentials_store_mode: AuthCredentialsStoreMode::File,
                 keyring_backend_kind: Default::default(),
                 forced_login_method: None,

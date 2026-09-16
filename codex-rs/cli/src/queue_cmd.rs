@@ -123,7 +123,7 @@ pub(crate) async fn run_queue_command(
         remote,
         config_overrides,
     } = command;
-    let cli =
+    let mut cli =
         finalize_session_archive_interactive(interactive, root_config_overrides, config_overrides);
     if cli.config_overrides.raw_overrides.iter().any(|entry| {
         entry
@@ -134,8 +134,10 @@ pub(crate) async fn run_queue_command(
             "`codex queue` does not support a `model` config override; queued messages use the thread's model"
         );
     }
+    let remote_addr = remote.remote.or(root_remote);
+    cli.remote_addr = remote_addr.clone();
     let explicit_remote_endpoint = resolve_remote_endpoint(
-        remote.remote.or(root_remote),
+        remote_addr,
         remote.remote_auth_token_env.or(root_remote_auth_token_env),
     )?;
     codex_tui::run_session_queue_command(

@@ -90,7 +90,6 @@ use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
-use codex_models_manager::manager::ModelCatalogSettings;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -150,6 +149,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
+    server_metadata: codex_app_server_protocol::ServerReadResponse,
     pub(crate) turn_admission: TurnAdmission,
     user_verification: Arc<crate::user_verification::Service>,
     outgoing: Arc<OutgoingMessageSender>,
@@ -379,7 +379,7 @@ impl MessageProcessor {
                 config.as_ref(),
                 auth_manager.clone(),
                 installation_id,
-                Arc::new(ModelCatalogSettings::disk(config.codex_home.to_path_buf())),
+                Arc::new(codex_core::default_model_catalog_settings(&config)),
             );
             let manager = ThreadManager::new(
                 config.as_ref(),
@@ -643,6 +643,7 @@ impl MessageProcessor {
         );
 
         Self {
+            server_metadata: crate::request_processors::startup_server_metadata(&config),
             turn_admission,
             user_verification,
             outgoing,
@@ -1209,6 +1210,7 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::ServerRead { .. } => Ok(Some(self.server_metadata.clone().into())),
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)

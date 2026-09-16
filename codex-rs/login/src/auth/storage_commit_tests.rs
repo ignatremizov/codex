@@ -71,31 +71,43 @@ fn deleting_absent_file_store_does_not_create_home() -> anyhow::Result<()> {
 #[test]
 fn write_lock_coordinates_with_existing_auth_lock() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
-    let storage = create_auth_storage(
-        home.path().to_path_buf(),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    );
-    let _guard = storage.lock_for_write()?;
-    let other_writer = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(home.path().join("auth.lock"))?;
-    assert!(matches!(
-        other_writer.try_lock(),
-        Err(TryLockError::WouldBlock)
-    ));
+    let selected_home = tempfile::tempdir()?;
+    let selected_file = selected_home.path().join("office.json");
+    let selected = AuthFileSelection::resolve(home.path(), Some(selected_file.as_os_str()))?;
+    for selection in [AuthFileSelection::Default, selected] {
+        let storage = create_auth_storage_for_selection(
+            home.path().to_path_buf(),
+            &selection,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        );
+        let lock_home = match &selection {
+            AuthFileSelection::Default => home.path(),
+            AuthFileSelection::Selected(path) => path.as_path().parent().unwrap(),
+        };
+        let _guard = storage.lock_for_write()?;
+        let other_writer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_home.join("auth.lock"))?;
+        assert!(matches!(
+            other_writer.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+    }
     Ok(())
 }
 
 #[test]
 fn commits_respect_another_process_lock() -> anyhow::Result<()> {
-    const CHILD_HOME: &str = "CODEX_AUTH_COMMIT_TEST_HOME";
-    if let Some(home) = std::env::var_os(CHILD_HOME) {
-        let home = PathBuf::from(home);
+    const CHILD_AUTH_FILE: &str = "CODEX_AUTH_COMMIT_TEST_FILE";
+    if let Some(auth_file) = std::env::var_os(CHILD_AUTH_FILE) {
+        let auth_file = PathBuf::from(auth_file);
         let storage = CommittedStorage {
-            inner: Arc::new(FileAuthStorage::new(home.clone())),
-            home,
+            inner: Arc::new(FileAuthStorage {
+                auth_file: auth_file.clone(),
+            }),
+            auth_file,
             mode: AuthCredentialsStoreMode::File,
         };
         let _guard = storage.lock()?;
@@ -105,44 +117,54 @@ fn commits_respect_another_process_lock() -> anyhow::Result<()> {
         return Ok(());
     }
     let home = tempfile::tempdir()?;
-    let storage = create_auth_storage(
-        home.path().to_path_buf(),
-        AuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-    );
-    let old: AuthDotJson = serde_json::from_value(serde_json::json!({"OPENAI_API_KEY":"old"}))?;
-    let new: AuthDotJson = serde_json::from_value(serde_json::json!({"OPENAI_API_KEY":"new"}))?;
-    storage.save(&old)?;
-    let mut child = codex_utils_process::background_command(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "auth::storage::storage_commit::tests::commits_respect_another_process_lock",
-            "--nocapture",
-        ])
-        .env(CHILD_HOME, home.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let input = child.stdin.take();
-    let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
-    loop {
-        let mut line = String::new();
-        anyhow::ensure!(
-            output.read_line(&mut line)? > 0,
-            "lock holder exited before acquiring the lock"
+    let selected_home = tempfile::tempdir()?;
+    let selected_file = selected_home.path().join("office.json");
+    let selected = AuthFileSelection::resolve(home.path(), Some(selected_file.as_os_str()))?;
+    for selection in [AuthFileSelection::Default, selected] {
+        let storage = create_auth_storage_for_selection(
+            home.path().to_path_buf(),
+            &selection,
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
         );
-        if line.contains("LOCK_HELD") {
-            break;
+        let auth_file = match &selection {
+            AuthFileSelection::Default => get_auth_file(home.path()),
+            AuthFileSelection::Selected(path) => path.to_path_buf(),
+        };
+        let old: AuthDotJson = serde_json::from_value(serde_json::json!({"OPENAI_API_KEY":"old"}))?;
+        let new: AuthDotJson = serde_json::from_value(serde_json::json!({"OPENAI_API_KEY":"new"}))?;
+        storage.save(&old)?;
+        let mut child = codex_utils_process::background_command(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "auth::storage::storage_commit::tests::commits_respect_another_process_lock",
+                "--nocapture",
+            ])
+            .env(CHILD_AUTH_FILE, &auth_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let input = child.stdin.take();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            anyhow::ensure!(
+                output.read_line(&mut line)? > 0,
+                "lock holder exited before acquiring the lock"
+            );
+            if line.contains("LOCK_HELD") {
+                break;
+            }
         }
+        let result = storage.compare_and_save(&old, &new);
+        drop(input);
+        let status = child.wait()?;
+        assert!(status.success());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(storage.load()?, Some(old.clone()));
+        storage.compare_and_save(&old, &new)?;
+        assert_eq!(storage.load()?, Some(new));
     }
-    let result = storage.compare_and_save(&old, &new);
-    drop(input);
-    let status = child.wait()?;
-    assert!(status.success());
-    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
-    assert_eq!(storage.load()?, Some(old.clone()));
-    storage.compare_and_save(&old, &new)?;
-    assert_eq!(storage.load()?, Some(new));
     Ok(())
 }
 
@@ -159,7 +181,7 @@ fn keyring_logout_coordinates_with_refresh_through_chained_symlinks() -> anyhow:
         let home = PathBuf::from(home);
         let storage = CommittedStorage {
             inner: Arc::new(FileAuthStorage::new(home.clone())),
-            home,
+            auth_file: get_auth_file(&home),
             mode: AuthCredentialsStoreMode::File,
         };
         let _write_guard = storage.lock_for_write()?;

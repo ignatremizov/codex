@@ -5,6 +5,7 @@ use crate::runtime_auth::RuntimeAuthSlot;
 use crate::runtime_auth::runtime_for_config;
 use codex_features::Feature;
 use codex_features::RuntimeAuthMode;
+use codex_login::AuthFileSelection;
 use codex_login::AuthManager;
 use codex_model_provider::ModelCatalogFactory;
 use codex_model_provider::ProviderAuthContext;
@@ -74,6 +75,16 @@ pub(super) struct ThreadModelCatalog {
     runtime_mode: Option<RuntimeAuthMode>,
 }
 
+/// Default host cache policy for the captured credential source.
+/// Selected files share history, not the default account's disk catalog. Hosts with an
+/// explicit custom catalog/cache still pass their own factory to `build_startup_models`.
+pub fn default_model_catalog_settings(config: &Config) -> ModelCatalogSettings {
+    match &config.auth_file_selection {
+        AuthFileSelection::Default => ModelCatalogSettings::disk(config.codex_home.to_path_buf()),
+        AuthFileSelection::Selected(_) => ModelCatalogSettings::default(),
+    }
+}
+
 pub fn build_models_manager(
     config: &Config,
     credentials: Arc<AuthManager>,
@@ -85,7 +96,7 @@ pub fn build_models_manager(
             .filter(|_| config.features.enabled(Feature::RuntimeAgentInstances))
             .map(|runtime| (runtime, config.runtime_auth_mode)),
     };
-    ModelCatalogSettings::disk(config.codex_home.to_path_buf()).build(
+    default_model_catalog_settings(config).build(
         auth.model_provider(config.model_provider.clone()),
         config.model_catalog.clone(),
         config.features.enabled(Feature::ApiKeyModelDiscovery),

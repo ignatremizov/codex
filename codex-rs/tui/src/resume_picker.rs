@@ -2567,7 +2567,7 @@ fn thread_list_params(
 ) -> ThreadListParams {
     ThreadListParams {
         include_attached_threads: false,
-        current_account_only: true,
+        current_account_only: false,
         excluded_thread_ids: None,
         attached_to_thread_id: None,
         originators: None,
@@ -4476,6 +4476,7 @@ mod tests {
             /*include_non_interactive*/ false,
             crate::LatestSessionLookupMode::StateDbOnly,
         );
+        assert!(!local.current_account_only);
         assert_eq!(local.cwd, Some(single.clone()));
         assert_eq!(
             crate::latest_session_lookup_params(
@@ -4530,6 +4531,7 @@ mod tests {
             params.cwd,
             Some(ThreadListCwdFilter::One(String::from("/tmp/project")))
         );
+        assert!(!params.current_account_only);
         assert!(params.use_state_db_only);
     }
 
@@ -4937,6 +4939,7 @@ mod tests {
             /*use_state_db_only*/ false,
         );
 
+        assert!(!params.current_account_only);
         assert_eq!(params.cursor, Some(String::from("cursor-1")));
         assert_eq!(params.model_providers, None);
         assert_eq!(

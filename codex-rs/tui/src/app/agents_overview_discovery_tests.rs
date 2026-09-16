@@ -82,6 +82,10 @@ async fn check_discovery(mixed_sources: bool) -> Result<()> {
                 "initialize" => json!({"userAgent": "overview-test/1.0"}),
                 "thread/loaded/list" => json!({"data": [], "nextCursor": null}),
                 "thread/list" => {
+                    assert!(
+                        !params["currentAccountOnly"].as_bool().unwrap_or(false),
+                        "shared-home discovery must not hide another credential profile"
+                    );
                     if params["sortKey"] == "section_position" {
                         assert_eq!(params["sectionId"], codex_state::PINNED_THREAD_SECTION_ID);
                         let interactive = params["sourceKinds"] == json!([]);

@@ -6,10 +6,13 @@ use codex_install_context::InstallMethod;
 use codex_install_context::StandalonePlatform;
 
 /// Update action the CLI should perform after the TUI exits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateAction {
     /// Replace the local daemon after restoring the terminal.
-    Daemon(DaemonUpdateSource),
+    Daemon {
+        source: DaemonUpdateSource,
+        launch: codex_app_server_daemon::DaemonLaunchOptions,
+    },
     /// Update via `npm install -g @openai/codex@latest`.
     NpmGlobalLatest,
     /// Update via `bun install -g @openai/codex@latest`.
@@ -44,9 +47,9 @@ impl UpdateAction {
     }
 
     /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
+    pub fn command_args(&self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::Daemon(source) => ("codex", source.command_args()),
+            UpdateAction::Daemon { source, .. } => ("codex", source.command_args()),
             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
             UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
@@ -72,7 +75,7 @@ impl UpdateAction {
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.
-    pub fn command_str(self) -> String {
+    pub fn command_str(&self) -> String {
         let (command, args) = self.command_args();
         shlex::try_join(std::iter::once(command).chain(args.iter().copied()))
             .unwrap_or_else(|_| format!("{command} {}", args.join(" ")))

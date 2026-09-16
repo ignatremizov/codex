@@ -67,6 +67,10 @@ async fn slow_repairing_chat_listing_keeps_estimate_budget_and_ranks_across_page
                 }
                 Some("thread/list") => {
                     let params = &request["params"];
+                    assert!(
+                        !params["currentAccountOnly"].as_bool().unwrap_or(false),
+                        "local history is shared; remote estimate eligibility is checked separately"
+                    );
                     pages.push(json!([
                         params["cursor"],
                         params["limit"],

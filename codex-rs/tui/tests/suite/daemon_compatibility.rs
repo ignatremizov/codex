@@ -6,6 +6,8 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
 use codex_app_server_protocol::JSONRPCMessage;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthFileSelection;
 use futures::SinkExt;
 use futures::StreamExt;
 use serde_json::json;
@@ -18,8 +20,15 @@ async fn incompatible_daemon_can_run_embedded_for_explicit_features() -> Result<
         let cwd = codex_utils_cargo_bin::repo_root()?;
         let home = tempfile::tempdir_in("/tmp")?;
         write_test_config(home.path(), &cwd)?;
-        let socket = codex_app_server_client::app_server_control_socket_path(home.path())?;
-        std::fs::create_dir_all(socket.parent().unwrap())?;
+        let resolved_home = home.path().canonicalize()?;
+        let profile = AuthFileSelection::Default
+            .profile_identity(&resolved_home, AuthCredentialsStoreMode::default());
+        let socket = codex_app_server_client::app_server_profile_socket_path(
+            &resolved_home,
+            &profile.profile_opaque_id,
+        )?;
+        std::fs::create_dir_all(socket.parent().context("profile socket directory")?)?;
+        let codex_home = resolved_home.display().to_string();
         let listener = UnixListener::bind(socket.as_path())?;
         let server = tokio::spawn(async move {
             let mut socket = loop {
@@ -34,7 +43,10 @@ async fn incompatible_daemon_can_run_embedded_for_explicit_features() -> Result<
                 };
                 let response = match request.method.as_str() {
                     "initialize" => {
-                        json!({"id": request.id, "result": {"userAgent": "daemon-test/0.0.0"}})
+                        json!({"id": request.id, "result": {"userAgent": "daemon-test/0.0.0", "codexHome": codex_home, "platformFamily": std::env::consts::FAMILY, "platformOs": std::env::consts::OS}})
+                    }
+                    "server/read" => {
+                        json!({"id": request.id, "result": {"authProfile": {"profileOpaqueId": profile.profile_opaque_id, "displayLabel": profile.display_label}}})
                     }
                     "config/read" => {
                         json!({"id": request.id, "result": {"config": {}, "layers": []}})
@@ -66,6 +78,12 @@ async fn incompatible_daemon_can_run_embedded_for_explicit_features() -> Result<
         terminal.wait_for_startup()?;
         terminal.wait_for_screen("warning")?;
         terminal.write_input(b"\x14")?;
+        terminal.wait_for_screen("Review ·")?;
+        // Startup diagnostics have no compact rows; inspect their retained Full presentation.
+        terminal.write_input(b"v")?;
+        terminal.wait_for_screen("Full ·")?;
+        // Full mode preserves the Review anchor; older startup warnings can be above it.
+        terminal.write_input(b"\x1b[1;5H")?;
         let (snapshot, warning_end) = match scenario {
             "explicit enable" => (
                 "daemon_feature_mismatch",

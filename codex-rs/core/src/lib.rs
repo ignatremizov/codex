@@ -221,6 +221,7 @@ pub use thread_manager::ThreadRegistration;
 pub use thread_manager::ThreadShutdownReport;
 pub use thread_manager::build_models_manager;
 pub use thread_manager::build_startup_models;
+pub use thread_manager::default_model_catalog_settings;
 pub use thread_manager::local_agent_graph_store_from_state_db;
 pub use thread_manager::passthrough_image_store;
 pub use thread_store_builder::ThreadStoreBuilder;

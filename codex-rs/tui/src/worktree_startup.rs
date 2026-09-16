@@ -207,6 +207,7 @@ pub(super) async fn prepare(
                 &bootstrap,
                 &source.codex_home,
                 embedded_network_policy,
+                &source.auth_file_selection,
             )
             .await?;
             overrides.cwd = Some(cwd.into_path_buf());
@@ -279,6 +280,7 @@ pub(super) async fn prepare(
         &bootstrap,
         &source.codex_home,
         embedded_network_policy,
+        &source.auth_file_selection,
     )
     .await?;
     managed

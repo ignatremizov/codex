@@ -923,13 +923,14 @@ impl TestCodexBuilder {
             .code_mode_host_program
             .take()
             .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
-        let factory =
-            match &self.models_manager {
-                Some(models) => codex_core::test_support::fixed_model_catalog(Arc::clone(models)),
-                None => Arc::new(self.model_catalog_settings.clone().unwrap_or_else(|| {
-                    ModelCatalogSettings::disk(config.codex_home.to_path_buf())
-                })),
-            };
+        let factory = match &self.models_manager {
+            Some(models) => codex_core::test_support::fixed_model_catalog(Arc::clone(models)),
+            None => Arc::new(
+                self.model_catalog_settings
+                    .clone()
+                    .unwrap_or_else(|| codex_core::default_model_catalog_settings(&config)),
+            ),
+        };
         let startup = codex_core::build_startup_models(
             &config,
             Arc::clone(&auth_manager),

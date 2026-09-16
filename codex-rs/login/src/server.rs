@@ -25,10 +25,11 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
+use crate::AuthFileSelection;
 use crate::auth::AuthDotJson;
 use crate::auth::AuthKeyringBackendKind;
 use crate::auth::WorkspaceLogin;
-use crate::auth::save_auth;
+use crate::auth::save_auth_for_selection;
 use crate::callback_params::LIFE_SCIENCES_OAUTH_STATE_SUFFIX;
 use crate::callback_params::LoginCallbackResult;
 use crate::callback_params::LoginOnboardingEntrypoint;
@@ -88,6 +89,8 @@ static LOGIN_ERROR_PAGE_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     pub codex_home: PathBuf,
+    /// Credential store captured before the browser or device-code flow starts.
+    pub auth_file_selection: AuthFileSelection,
     pub client_id: String,
     pub issuer: String,
     pub port: u16,
@@ -114,6 +117,7 @@ impl ServerOptions {
     ) -> Self {
         Self {
             codex_home,
+            auth_file_selection: AuthFileSelection::Default,
             client_id,
             issuer: DEFAULT_ISSUER.to_string(),
             port: DEFAULT_PORT,
@@ -849,6 +853,7 @@ pub(crate) async fn persist_tokens_async(
         issuer: opts.issuer.clone(),
         client_id: opts.client_id.clone(),
     };
+    let auth_file_selection = opts.auth_file_selection.clone();
     // Blocking tasks don't inherit task-local context.
     // Preserve the initiating client for credential-storage metrics.
     let originator = AuthStorageOriginator::current();
@@ -882,8 +887,9 @@ pub(crate) async fn persist_tokens_async(
             if let Some(login) = workspace_login {
                 return login.save(auth);
             }
-            save_auth(
+            save_auth_for_selection(
                 &codex_home,
+                &auth_file_selection,
                 &auth,
                 auth_credentials_store_mode,
                 keyring_backend_kind,

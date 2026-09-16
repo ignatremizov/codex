@@ -8,7 +8,7 @@ use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::LoaderOverrides;
-use codex_core::config::bootstrap_auth_config;
+use codex_core::config::bootstrap_auth_config_for_selection;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_toml_with_layer_stack;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -37,11 +37,53 @@ pub async fn config_builder(
     loader_overrides: LoaderOverrides,
     harness_overrides: ConfigOverrides,
 ) -> Result<ConfigBuilder> {
+    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
+    config_builder_for_selection(
+        config_overrides,
+        loader_overrides,
+        harness_overrides,
+        codex_home,
+        auth_file_selection,
+    )
+    .await
+}
+
+/// Reloads configuration using the already captured credential source.
+pub async fn load_config_for_selection(
+    config_overrides: &CliConfigOverrides,
+    loader_overrides: LoaderOverrides,
+    harness_overrides: ConfigOverrides,
+    codex_home: AbsolutePathBuf,
+    auth_file_selection: codex_login::AuthFileSelection,
+) -> Result<Config> {
+    let mut config = config_builder_for_selection(
+        config_overrides,
+        loader_overrides,
+        harness_overrides,
+        codex_home,
+        auth_file_selection,
+    )
+    .await?
+    .build()
+    .await
+    .context("failed to load configuration")?;
+    config.config_layer_stack.ensure_config_server_applied()?;
+    EmbeddedNetworkPolicy::default().activate(&mut config);
+    Ok(config)
+}
+
+async fn config_builder_for_selection(
+    config_overrides: &CliConfigOverrides,
+    loader_overrides: LoaderOverrides,
+    harness_overrides: ConfigOverrides,
+    codex_home: AbsolutePathBuf,
+    auth_file_selection: codex_login::AuthFileSelection,
+) -> Result<ConfigBuilder> {
     let network_policy = EmbeddedNetworkPolicy::load(&loader_overrides).await;
     let cli_overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
     let cwd = match harness_overrides.cwd.as_deref() {
         Some(cwd) => AbsolutePathBuf::relative_to_current_dir(cwd),
         None => AbsolutePathBuf::current_dir(),
@@ -61,8 +103,12 @@ pub async fn config_builder(
     .context("failed to load bootstrap configuration")?;
     let cloud_config_bundle = managed_config_bundle_loader_for_storage(
         network_policy.bind_bootstrap_auth(
-            bootstrap_auth_config(codex_home.as_path(), &bootstrap_config)
-                .context("failed to resolve cloud configuration authentication")?,
+            bootstrap_auth_config_for_selection(
+                codex_home.as_path(),
+                &bootstrap_config,
+                &auth_file_selection,
+            )
+            .context("failed to resolve cloud configuration authentication")?,
         ),
         bootstrap_config.config_layer_stack.requirements_toml(),
         /*enable_codex_api_key_env*/ false,
@@ -71,10 +117,18 @@ pub async fn config_builder(
     .context("failed to initialize cloud configuration authentication")?;
 
     Ok(ConfigBuilder::default()
+        .auth_file_selection(auth_file_selection)
         .codex_home(codex_home.to_path_buf())
         .cli_overrides(cli_overrides)
         .loader_overrides(loader_overrides)
-        .harness_overrides(harness_overrides)
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(cwd.to_path_buf()),
+            ..harness_overrides
+        })
         .cloud_config_bundle(cloud_config_bundle)
         .fallback_cwd(Some(cwd.to_path_buf())))
 }
+
+#[cfg(test)]
+#[path = "cloud_config_tests.rs"]
+mod tests;

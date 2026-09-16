@@ -13,6 +13,7 @@ use codex_core_api::AltScreenMode;
 use codex_core_api::ApprovalsReviewer;
 use codex_core_api::Arg0DispatchPaths;
 use codex_core_api::AskForApproval;
+use codex_core_api::AuthFileSelection;
 use codex_core_api::AuthKeyringBackendKind;
 use codex_core_api::AuthManager;
 use codex_core_api::AutoCompactTokenLimitScope;
@@ -36,7 +37,6 @@ use codex_core_api::GhostSnapshotConfig;
 use codex_core_api::History;
 use codex_core_api::MemoriesConfig;
 use codex_core_api::ModelAvailabilityNuxConfig;
-use codex_core_api::ModelCatalogSettings;
 use codex_core_api::MultiAgentV2Config;
 use codex_core_api::NewThread;
 use codex_core_api::Notice;
@@ -65,7 +65,7 @@ use codex_core_api::UriBasedFileOpener;
 use codex_core_api::UserInput;
 use codex_core_api::WebSearchMode;
 use codex_core_api::arg0_dispatch_or_else;
-use codex_core_api::bootstrap_auth_config;
+use codex_core_api::bootstrap_auth_config_for_selection;
 use codex_core_api::built_in_model_providers;
 use codex_core_api::find_codex_home;
 use codex_core_api::init_state_db;
@@ -151,7 +151,7 @@ async fn run_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         &config,
         Arc::clone(&auth_manager),
         installation_id,
-        Arc::new(ModelCatalogSettings::disk(config.codex_home.to_path_buf())),
+        Arc::new(codex_core_api::default_model_catalog_settings(&config)),
     );
     let thread_manager = ThreadManager::new(
         &config,
@@ -203,7 +203,12 @@ async fn new_config(
     )
     .await
     .context("load authentication configuration")?;
-    let auth_config = bootstrap_auth_config(codex_home.as_path(), &bootstrap)?;
+    let auth_file_selection = AuthFileSelection::from_env(codex_home.as_path())?;
+    let auth_config = bootstrap_auth_config_for_selection(
+        codex_home.as_path(),
+        &bootstrap,
+        &auth_file_selection,
+    )?;
     let requirements = bootstrap.config_layer_stack.requirements();
     let requirements_toml = bootstrap.config_layer_stack.requirements_toml();
     // Preserve auth restrictions for every manager rebuilt from Config without importing
@@ -373,6 +378,7 @@ async fn new_config(
         ),
         log_dir: codex_home.join("log").to_path_buf(),
         codex_home,
+        auth_file_selection,
         history: History::default(),
         ephemeral: true,
         allow_persistent_dynamic_tool_updates: false,

@@ -610,6 +610,7 @@ async fn resolved_product_obeys_login_and_workspace_restrictions() {
         let manager = AuthManager::shared_from_auth_config(
             AuthConfig {
                 codex_home: temp_dir.path().to_path_buf(),
+                auth_file_selection: Default::default(),
                 auth_credentials_store_mode: AuthCredentialsStoreMode::Ephemeral,
                 keyring_backend_kind: Default::default(),
                 forced_login_method: Some(login_method),

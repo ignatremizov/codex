@@ -5,7 +5,6 @@ use codex_exec_server::ExecServerRuntimeOptions;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::UserInstructionsProvider;
 use codex_login::AuthManager;
-use codex_models_manager::manager::ModelCatalogSettings;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
@@ -49,7 +48,7 @@ pub async fn build_prompt_input(
         &config,
         Arc::clone(&auth_manager),
         installation_id,
-        Arc::new(ModelCatalogSettings::disk(config.codex_home.to_path_buf())),
+        Arc::new(crate::default_model_catalog_settings(&config)),
     );
     let thread_manager = ThreadManager::new(
         &config,

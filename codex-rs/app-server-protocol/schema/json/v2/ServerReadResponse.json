@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ServerAuthProfile": {
+      "description": "Startup credential selection, without credentials or absolute auth paths.\n\nThe opaque ID describes host-local configuration, not an authenticated account, and cannot be used to compare credential paths across hosts.",
+      "properties": {
+        "displayLabel": {
+          "type": "string"
+        },
+        "profileOpaqueId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "displayLabel",
+        "profileOpaqueId"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "authProfile": {
+      "$ref": "#/definitions/ServerAuthProfile"
+    }
+  },
+  "required": [
+    "authProfile"
+  ],
+  "title": "ServerReadResponse",
+  "type": "object"
+}

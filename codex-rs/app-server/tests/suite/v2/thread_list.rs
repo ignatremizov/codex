@@ -3364,6 +3364,50 @@ async fn current_account_history_refills_list_and_search() -> Result<()> {
         );
     }
 
+    // Ordinary shared-home discovery includes locally accessible history from either profile.
+    // Explicit account-only requests above remain restricted; this does not change resume auth.
+    for db_only in [false, true] {
+        let request = server
+            .send_raw_request(
+                "thread/list",
+                Some(json!({
+                    "currentAccountOnly": false,
+                    "sortKey": "created_at",
+                    "limit": 100,
+                    "useStateDbOnly": db_only,
+                })),
+            )
+            .await?;
+        let list: ThreadListResponse = server.read_response(request).await?;
+        assert_eq!(
+            list.data
+                .into_iter()
+                .map(|thread| thread.id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+    }
+    let request = server
+        .send_raw_request(
+            "thread/search",
+            Some(json!({
+                "currentAccountOnly": false,
+                "sortKey": "created_at",
+                "limit": 100,
+                "searchTerm": "needle",
+            })),
+        )
+        .await?;
+    let search: ThreadSearchResponse = server.read_response(request).await?;
+    assert_eq!(
+        search
+            .data
+            .into_iter()
+            .map(|row| row.thread.id)
+            .collect::<Vec<_>>(),
+        vec![ids[0].clone(), ids[1].clone(), ids[4].clone()],
+    );
+
     // The foreign header matches the raw search, but reading its snippet would hit invalid UTF-8.
     let foreign = rollout_path(home.path(), &stamp, &ids[0]);
     let intact = fs::read_to_string(&foreign)?;

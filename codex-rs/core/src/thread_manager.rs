@@ -683,6 +683,7 @@ pub(crate) struct ThreadManagerState {
 pub use model_catalog::StartupModels;
 pub use model_catalog::build_models_manager;
 pub use model_catalog::build_startup_models;
+pub use model_catalog::default_model_catalog_settings;
 
 /// Constructs the default image store that preserves inline images.
 pub fn passthrough_image_store() -> Arc<dyn AttachmentStore> {
