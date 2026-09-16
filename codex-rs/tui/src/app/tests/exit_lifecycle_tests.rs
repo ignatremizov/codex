@@ -36,7 +36,10 @@ async fn embedded_disconnect_refuses_before_canceling_client_work() -> Result<()
     let request_id = AppServerRequestId::Integer(1);
     app.dynamic_tool_tasks.insert(
         request_id.clone(),
-        (ThreadId::new(), tokio::spawn(std::future::pending::<()>())),
+        (
+            ThreadId::new().to_string(),
+            tokio::spawn(std::future::pending::<()>()),
+        ),
     );
     while events.try_recv().is_ok() {}
     let result = app

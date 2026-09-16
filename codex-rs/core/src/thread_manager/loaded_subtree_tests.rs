@@ -8,7 +8,6 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
-use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use futures::FutureExt;
 use pretty_assertions::assert_eq;

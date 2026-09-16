@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::control::spawn::SpawnInitialInput;
 use futures::FutureExt;
+use pretty_assertions::assert_eq;
 use std::future::Future;
 use std::task::Poll;
 

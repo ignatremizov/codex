@@ -28,6 +28,7 @@ use codex_config::LoaderOverrides;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
 use codex_protocol::ThreadId;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_home_dir::find_codex_home;
 use codex_utils_oss::get_default_model_for_oss_provider;

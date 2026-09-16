@@ -4,6 +4,7 @@ use codex_features::Feature;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
 use futures::FutureExt;
+use pretty_assertions::assert_eq;
 
 enum SpawnResolution {
     Publish,

@@ -1,8 +1,8 @@
 use super::*;
 use crate::app_server_session::AppServerSession;
+use crate::legacy_core::config::ConfigBuilder;
 use codex_app_server_protocol::JSONRPCMessage;
-use codex_core::config::ConfigBuilder;
-use codex_core::config::LoaderOverrides;
+use codex_config::LoaderOverrides;
 #[cfg(unix)]
 use futures::FutureExt;
 use futures::SinkExt;
