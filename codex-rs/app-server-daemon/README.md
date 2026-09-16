@@ -45,8 +45,14 @@ should parse that JSON rather than relying on human-readable text. Lifecycle
 responses report the resolved backend, socket path, local CLI version, and
 running app-server version when applicable.
 
+## Auth-profile scope
+
+Each started server captures one credential selection. Profile-scoped state, PID records, updater state, lifecycle locks, and control sockets are isolated under the selected profile identity. Child servers and updater restarts retain the captured home, auth-file selection, and credential-store policy.
+
+Clients reuse an existing local server only after verifying its home and profile metadata on the same connection. Legacy servers without profile metadata are not eligible for implicit reuse.
+
 Eligible managed daemons check for updates after five minutes, then hourly by
-default. Edit `CODEX_HOME/app-server-daemon/settings.json` to change this:
+default. Edit `CODEX_HOME/app-server-daemon/<profileOpaqueId>/settings.json` to change this:
 
 ```json
 {"remoteControlEnabled": false,
@@ -96,7 +102,7 @@ prints an installation message without asking for confirmation. Existing daemon
 packages are reused, including legacy installations; a broken selection is not
 silently replaced. A bare executable cannot supply a new installation.
 
-It records the daemon settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
+It records the daemon settings under `CODEX_HOME/app-server-daemon/<profileOpaqueId>/`, starts app-server as a
 pidfile-backed detached process. It launches a detached updater loop when
 automatic updates are enabled, the installer selected the stable `latest`
 channel, and the managed binary supports the updater command.
@@ -178,15 +184,15 @@ sets it according to `--remote-control` (disabled when omitted).
 `stop` sends a graceful termination request first, then force-terminates the
 process after the configured grace window if it is still alive.
 
-All mutating lifecycle commands are serialized per `CODEX_HOME`, so a concurrent
+All mutating lifecycle commands are serialized per home and auth profile, so a concurrent
 `start`, `restart`, `enable-remote-control`, `disable-remote-control`, `stop`,
 or `bootstrap` does not race another in-flight lifecycle operation.
 
 ## State
 
-The daemon stores its local state under `CODEX_HOME/app-server-daemon/`:
+The daemon stores its local state under `CODEX_HOME/app-server-daemon/<profileOpaqueId>/`:
 
 - `settings.json` for remote-control launch settings and updater preferences
 - `app-server.pid` for the app-server process record
 - `app-server-updater.pid` for the pid-backed standalone updater loop
-- `daemon.lock` for daemon-wide lifecycle serialization
+- `daemon.lock` for profile-local lifecycle serialization

@@ -197,6 +197,11 @@ impl App {
         tui.prepare_owned_screen(config.tui_fullscreen_transcript)?;
         let mut local_settings = crate::local_settings::LocalSettings::for_tui(&config, tui);
         let startup_started_at = Instant::now();
+        let app_server_target = if app_server.uses_embedded_app_server() {
+            AppServerTarget::Embedded
+        } else {
+            app_server_target
+        };
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
         if let Some(message) = project_config_warning(&config) {
@@ -702,6 +707,7 @@ impl App {
             chat_widget.empty_state_animation.borrow_mut().start_fresh();
         }
         chat_widget.remote_connection = remote_connection;
+        chat_widget.auth_profile_label = app_server.auth_profile_label(&config);
         chat_widget.snapshot_local_images = app_server_target.uses_remote_workspace();
         chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
             &app_server_target,

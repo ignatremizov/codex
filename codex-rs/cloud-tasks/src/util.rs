@@ -3,10 +3,13 @@ use chrono::Local;
 use chrono::Utc;
 use http::header::HeaderMap;
 
-use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
+use codex_core::config::find_codex_home;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use codex_login::AuthFileSelection;
 use codex_login::AuthManager;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn set_user_agent_suffix(suffix: &str) {
@@ -82,8 +85,43 @@ pub(crate) fn validate_chatgpt_base_url(input: &str) -> anyhow::Result<String> {
 pub async fn load_auth_manager(
     chatgpt_base_url: Option<String>,
 ) -> (Option<Arc<AuthManager>>, HttpClientFactory) {
-    // TODO: pass in cli overrides once cloud tasks properly support them.
-    let config = match Config::load_with_cli_overrides(Vec::new()).await {
+    let codex_home = match find_codex_home() {
+        Ok(codex_home) => codex_home,
+        Err(error) => {
+            append_error_log(format!(
+                "failed to find codex home; using transport-default proxy handling: {error}"
+            ));
+            let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+            return (None, http_client_factory);
+        }
+    };
+    let auth_file_selection = match AuthFileSelection::from_env(codex_home.as_path()) {
+        Ok(selection) => selection,
+        Err(error) => {
+            append_error_log(format!(
+                "failed to capture auth file selection; using transport-default proxy handling: {error}"
+            ));
+            let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
+            return (None, http_client_factory);
+        }
+    };
+    load_auth_manager_with_selection(
+        chatgpt_base_url,
+        codex_home.to_path_buf(),
+        auth_file_selection,
+    )
+    .await
+}
+
+async fn load_auth_manager_with_selection(
+    chatgpt_base_url: Option<String>,
+    codex_home: PathBuf,
+    auth_file_selection: AuthFileSelection,
+) -> (Option<Arc<AuthManager>>, HttpClientFactory) {
+    let config = match config_builder_with_selection(codex_home, auth_file_selection)
+        .build()
+        .await
+    {
         Ok(config) => config,
         Err(error) => {
             append_error_log(format!(
@@ -111,9 +149,18 @@ pub async fn load_auth_manager(
     (Some(auth_manager), http_client_factory)
 }
 
+fn config_builder_with_selection(
+    codex_home: PathBuf,
+    auth_file_selection: AuthFileSelection,
+) -> ConfigBuilder {
+    ConfigBuilder::default()
+        .codex_home(codex_home)
+        .auth_file_selection(auth_file_selection)
+}
+
 /// Build headers for ChatGPT-backed requests: `User-Agent`, optional `Authorization`,
 /// and optional `ChatGPT-Account-Id`.
-pub async fn build_chatgpt_headers() -> HeaderMap {
+pub async fn build_chatgpt_headers(auth_manager: Option<&AuthManager>) -> HeaderMap {
     use http::header::HeaderValue;
     use http::header::USER_AGENT;
 
@@ -124,8 +171,8 @@ pub async fn build_chatgpt_headers() -> HeaderMap {
         USER_AGENT,
         HeaderValue::from_str(&ua).unwrap_or(HeaderValue::from_static("codex-cli")),
     );
-    if let Some(am) = load_auth_manager(/*chatgpt_base_url*/ None).await.0
-        && let Some(auth) = am.auth().await
+    if let Some(auth_manager) = auth_manager
+        && let Some(auth) = auth_manager.auth().await
         && auth.uses_codex_backend()
     {
         headers.extend(codex_model_provider::auth_provider_from_auth(&auth).to_auth_headers());
@@ -171,3 +218,7 @@ pub fn format_relative_time(reference: DateTime<Utc>, ts: DateTime<Utc>) -> Stri
 pub fn format_relative_time_now(ts: DateTime<Utc>) -> String {
     format_relative_time(Utc::now(), ts)
 }
+
+#[cfg(test)]
+#[path = "util_tests.rs"]
+mod tests;

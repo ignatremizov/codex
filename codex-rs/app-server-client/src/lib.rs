@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
+pub use codex_app_server::app_server_profile_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;

@@ -9,6 +9,7 @@ pub use daemon_shutdown::daemon_shutdown_signal;
 pub const DAEMON_SHUTDOWN_SOCKET_ENV: &str = "CODEX_DAEMON_SHUTDOWN_SOCKET";
 mod connection_auth;
 mod outgoing_message;
+mod profile_socket;
 mod transport;
 
 pub use connection_auth::ConnectionAuth;
@@ -17,6 +18,8 @@ pub use outgoing_message::OutgoingError;
 pub use outgoing_message::OutgoingMessage;
 pub use outgoing_message::OutgoingResponse;
 pub use outgoing_message::QueuedOutgoingMessage;
+pub use profile_socket::app_server_profile_socket_path;
+pub use profile_socket::app_server_socket_startup_lock_path;
 pub use transport::AppServerStartupLock;
 pub use transport::AppServerTransport;
 pub use transport::AppServerTransportParseError;

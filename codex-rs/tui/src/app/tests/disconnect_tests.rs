@@ -285,7 +285,19 @@ async fn remote_disconnect_retires_voice_before_reconnecting() -> Result<()> {
 
 // Common framing/bootstrap for both transports. Returning None deliberately loses a reply.
 pub(super) async fn serve_reconnect_requests<S, F>(
+    socket: tokio_tungstenite::WebSocketStream<S>,
+    respond: impl FnMut(JSONRPCRequest) -> F,
+) -> Result<Vec<String>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    F: std::future::Future<Output = Option<serde_json::Value>>,
+{
+    serve_reconnect_requests_with_profile(socket, /*profile*/ None, respond).await
+}
+
+pub(super) async fn serve_reconnect_requests_with_profile<S, F>(
     mut socket: tokio_tungstenite::WebSocketStream<S>,
+    profile: Option<(String, codex_app_server_protocol::ServerAuthProfile)>,
     mut respond: impl FnMut(JSONRPCRequest) -> F,
 ) -> Result<Vec<String>>
 where
@@ -301,7 +313,14 @@ where
         methods.push(request.method.clone());
         let request_id = request.id.clone();
         let response = match request.method.as_str() {
-            "initialize" => Some(json!({"result": {"userAgent": "reconnect-test/2.0.0"}})),
+            "initialize" => Some(json!({"result": {
+                "userAgent": "reconnect-test/2.0.0",
+                "codexHome": profile.as_ref().map(|(home, _)| home),
+            }})),
+            "server/read" => Some(match &profile {
+                Some((_, profile)) => json!({"result": {"authProfile": profile}}),
+                None => json!({"error": {"code": -32601, "message": "Method not found"}}),
+            }),
             "account/read" => {
                 Some(json!({"result": {"account": null, "requiresOpenaiAuth": false}}))
             }

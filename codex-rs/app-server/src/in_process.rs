@@ -479,7 +479,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             args.cloud_config_bundle,
             args.arg0_paths.clone(),
             args.thread_config_loader,
-        );
+        )
+        .auth_file_selection(args.config.auth_file_selection.clone());
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {

@@ -21,6 +21,10 @@ pub struct Cli {
     #[arg(long = "strict-config", default_value_t = false)]
     pub strict_config: bool,
 
+    /// Internal: preserve the bare local-socket alias until auth configuration resolves.
+    #[clap(skip)]
+    pub remote_addr: Option<String>,
+
     // Internal controls set by the top-level `codex resume` subcommand.
     // These are not exposed as user flags on the base `codex` command.
     #[clap(skip)]

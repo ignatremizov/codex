@@ -199,6 +199,17 @@ status_line = ["codex-home", "model-with-reasoning", "context-remaining"]
 
 `/status` shows the full resolved local Codex home. Use `/rollout-path` to print the current rollout path reported by the app-server as a standalone plain-text line, outside the status box. With a remote app-server, this path belongs to the server and need not exist on the TUI machine; an unavailable path is reported explicitly.
 
+Select `auth-profile` in `/status-line` to show the credential profile used by the connected runtime, such as `codex` or `codex-office`. Embedded sessions use the selection captured at startup. Shared sessions use metadata read from the actual server connection; the item is omitted when an older remote server does not provide that metadata. This does not replace `codex-home`, which continues to identify the local TUI's home.
+
+For example, one home can retain the same configuration and sessions while the status line distinguishes credential files:
+
+```toml
+[tui]
+status_line = ["codex-home", "auth-profile", "model-with-reasoning"]
+```
+
+Local server discovery checks only an already-running matching socket and verifies its home and auth profile before use. An unavailable, incompatible, or mismatched implicitly discovered server causes startup to use an embedded runtime; an explicitly selected local server fails instead. Reconnecting an existing session never switches to another runtime on a profile mismatch. An explicit `features.daemon_auto_start = true` opt-in may start a matching profile-scoped daemon using the captured launch options; this does not change the non-starting implicit discovery behavior. `CODEX_AUTH_FILE` cannot select credentials on a remote WebSocket server: configure the selection on that server and omit the local selector. Ephemeral credential storage remains process-local and does not reuse a local server, including through an explicit local socket. The explicit `--remote unix://` alias resolves to the selected profile's socket after configuration is loaded. A concrete `--remote unix://PATH` is used exactly as supplied and must pass the same home/profile verification.
+
 Normal resume appends to the existing rollout: sessions do not move into a new `sessions/YYYY/MM/DD` directory each day. The dated path is selected when a rollout is created. Operations such as paginated revert can create a replacement rollout for the same thread, and archive/unarchive can move it, so use the current reported path rather than reconstructing one from the thread's creation date.
 
 ## V1 agent discovery

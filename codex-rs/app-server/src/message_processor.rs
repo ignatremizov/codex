@@ -138,6 +138,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
+    server_metadata: codex_app_server_protocol::ServerReadResponse,
     pub(crate) turn_admission: TurnAdmission,
     user_verification: Arc<crate::user_verification::Service>,
     outgoing: Arc<OutgoingMessageSender>,
@@ -577,6 +578,7 @@ impl MessageProcessor {
         );
 
         Self {
+            server_metadata: crate::request_processors::startup_server_metadata(&config),
             turn_admission,
             user_verification,
             outgoing,
@@ -1121,6 +1123,7 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::ServerRead { .. } => Ok(Some(self.server_metadata.clone().into())),
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)

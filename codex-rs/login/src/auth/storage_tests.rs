@@ -14,6 +14,90 @@ use tempfile::tempdir;
 use codex_keyring_store::tests::MockKeyringStore;
 use keyring::Error as KeyringError;
 
+#[test]
+fn selected_file_storage_never_uses_default_credentials_or_keyring() -> anyhow::Result<()> {
+    let home = tempdir()?;
+    let auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
+        openai_api_key: None,
+        tokens: Some(TokenData {
+            id_token: IdTokenInfo {
+                raw_jwt: "e30.e30.signature".to_string(),
+                ..Default::default()
+            },
+            access_token: "selected-access-token".to_string(),
+            refresh_token: "selected-refresh-token".to_string(),
+            account_id: None,
+        }),
+        last_refresh: None,
+        agent_identity: None,
+        personal_access_token: None,
+        bedrock_api_key: None,
+        bedrock_access_keys: None,
+    };
+    let default = FileAuthStorage::new(home.path().to_path_buf());
+    default.save(&auth)?;
+    let selection =
+        AuthFileSelection::resolve(home.path(), Some(std::ffi::OsStr::new("auth-office.json")))?;
+    for mode in [
+        AuthCredentialsStoreMode::File,
+        AuthCredentialsStoreMode::Auto,
+        AuthCredentialsStoreMode::Keyring,
+    ] {
+        let selected = create_auth_storage_for_selection(
+            home.path().to_path_buf(),
+            &selection,
+            mode,
+            AuthKeyringBackendKind::default(),
+        );
+        assert_eq!(selected.load()?, None);
+        selected.save(&auth)?;
+        assert_eq!(selected.load()?, Some(auth.clone()));
+        assert!(selected.delete()?);
+        assert_eq!(default.load()?, Some(auth.clone()));
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_ephemeral_credentials_are_shared_only_by_the_same_selection() -> anyhow::Result<()> {
+    let home = tempdir()?;
+    let auth: AuthDotJson = serde_json::from_value(json!({
+        "OPENAI_API_KEY": "test-key"
+    }))?;
+    let office =
+        AuthFileSelection::resolve(home.path(), Some(std::ffi::OsStr::new("auth-office.json")))?;
+    let other =
+        AuthFileSelection::resolve(home.path(), Some(std::ffi::OsStr::new("auth-other.json")))?;
+    let storage = create_auth_storage_for_selection(
+        home.path().to_path_buf(),
+        &office,
+        AuthCredentialsStoreMode::Ephemeral,
+        AuthKeyringBackendKind::default(),
+    );
+    storage.save(&auth)?;
+    for selection in [&AuthFileSelection::Default, &other] {
+        let other_storage = create_auth_storage_for_selection(
+            home.path().to_path_buf(),
+            selection,
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+        );
+        assert_eq!(other_storage.load()?, None);
+        assert!(!other_storage.delete()?);
+    }
+    let same = create_auth_storage_for_selection(
+        home.path().to_path_buf(),
+        &office,
+        AuthCredentialsStoreMode::Ephemeral,
+        AuthKeyringBackendKind::default(),
+    );
+    assert_eq!(same.load()?, Some(auth));
+    assert!(same.delete()?);
+    assert_eq!(storage.load()?, None);
+    Ok(())
+}
+
 #[tokio::test]
 async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {
     let codex_home = tempdir()?;

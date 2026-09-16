@@ -36,6 +36,7 @@ const STDERR_LOG_TAIL_BYTES: u64 = 4096;
 #[derive(Debug)]
 #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
 pub(crate) struct PidBackend {
+    launch: Option<crate::DaemonLaunchOptions>,
     pub(super) feature_overrides: BTreeMap<String, bool>,
     codex_bin: PathBuf,
     pid_file: PathBuf,
@@ -100,8 +101,18 @@ impl PidBackend {
     }
 
     pub(crate) fn new(codex_bin: PathBuf, pid_file: PathBuf, remote_control_enabled: bool) -> Self {
+        Self::new_with_launch(codex_bin, pid_file, remote_control_enabled, None)
+    }
+
+    pub(crate) fn new_with_launch(
+        codex_bin: PathBuf,
+        pid_file: PathBuf,
+        remote_control_enabled: bool,
+        launch: Option<crate::DaemonLaunchOptions>,
+    ) -> Self {
         let lock_file = pid_file.with_extension("pid.lock");
         Self {
+            launch,
             feature_overrides: BTreeMap::new(),
             codex_bin,
             pid_file,
@@ -117,8 +128,18 @@ impl PidBackend {
         pid_file: PathBuf,
         restore_release: Option<String>,
     ) -> Self {
+        Self::new_update_loop_with_launch(codex_bin, pid_file, restore_release, None)
+    }
+
+    pub(crate) fn new_update_loop_with_launch(
+        codex_bin: PathBuf,
+        pid_file: PathBuf,
+        restore_release: Option<String>,
+        launch: Option<crate::DaemonLaunchOptions>,
+    ) -> Self {
         let lock_file = pid_file.with_extension("pid.lock");
         Self {
+            launch,
             feature_overrides: BTreeMap::new(),
             codex_bin,
             pid_file,
@@ -141,6 +162,23 @@ impl PidBackend {
                         PidFileState::Starting | PidFileState::Running(_) => continue,
                     }
                 }
+            }
+        }
+    }
+
+    /// Return a PID only after its reservation has been matched to a live
+    /// process identity.
+    pub(crate) async fn verified_running_pid(&self) -> Result<Option<u32>> {
+        loop {
+            let Some(record) = self.wait_for_pid_start().await? else {
+                return Ok(None);
+            };
+            if self.record_is_active(&record).await? {
+                return Ok(Some(record.pid));
+            }
+            match self.refresh_after_stale_record(&record).await? {
+                PidFileState::Missing => return Ok(None),
+                PidFileState::Starting | PidFileState::Running(_) => {}
             }
         }
     }

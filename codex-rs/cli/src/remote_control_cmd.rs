@@ -68,27 +68,49 @@ pub(crate) async fn run(
 ) -> anyhow::Result<()> {
     match command.subcommand {
         None => {
+            let config = crate::cloud_config::load_config(
+                &root_config_overrides,
+                LoaderOverrides::default(),
+            )
+            .await?;
+            let launch = crate::daemon_profile::launch_options(&config)?;
             print_remote_control_progress(
                 command.json,
                 "Starting app-server with remote control enabled...",
             )?;
-            run_foreground_remote_control(command.json, arg0_paths, root_config_overrides).await?;
+            run_foreground_remote_control(
+                command.json,
+                arg0_paths,
+                root_config_overrides,
+                config,
+                launch,
+            )
+            .await?;
         }
         Some(RemoteControlSubcommand::Start) => {
+            let config = crate::cloud_config::load_config(
+                &root_config_overrides,
+                LoaderOverrides::default(),
+            )
+            .await?;
+            let launch = crate::daemon_profile::launch_options(&config)?;
             print_remote_control_progress(
                 command.json,
                 "Starting app-server daemon with remote control enabled...",
             )?;
-            let output = codex_app_server_daemon::ensure_remote_control_ready().await?;
+            let output = codex_app_server_daemon::ensure_remote_control_ready(&launch).await?;
             print_remote_control_start_output(&output, command.json)?;
         }
         Some(RemoteControlSubcommand::Stop) => {
+            let launch = crate::daemon_profile::existing_launch(&root_config_overrides).await?;
             print_remote_control_progress(command.json, "Stopping remote control...")?;
-            let output = codex_app_server_daemon::run(AppServerLifecycleCommand::Stop).await?;
+            let output =
+                codex_app_server_daemon::run(&launch, AppServerLifecycleCommand::Stop).await?;
             print_remote_control_stop_output(&output, command.json)?;
         }
         Some(RemoteControlSubcommand::Pair) => {
-            let output = codex_app_server_daemon::start_remote_control_pairing().await?;
+            let launch = crate::daemon_profile::existing_launch(&root_config_overrides).await?;
+            let output = codex_app_server_daemon::start_remote_control_pairing(&launch).await?;
             print_remote_control_pairing_output(&output, command.json)?;
         }
     }
@@ -110,8 +132,14 @@ fn print_remote_control_progress(json: bool, message: &str) -> anyhow::Result<()
 async fn run_foreground_remote_control(
     json: bool,
     arg0_paths: Arg0DispatchPaths,
-    root_config_overrides: CliConfigOverrides,
+    mut root_config_overrides: CliConfigOverrides,
+    config: codex_core::config::Config,
+    launch: codex_app_server_daemon::DaemonLaunchOptions,
 ) -> anyhow::Result<()> {
+    root_config_overrides.raw_overrides.push(format!(
+        "cli_auth_credentials_store={}",
+        serde_json::to_string(&config.cli_auth_credentials_store_mode)?,
+    ));
     let socket_dir = tempfile::Builder::new()
         .prefix("codex-rc-")
         .tempdir_in("/tmp")
@@ -124,6 +152,10 @@ async fn run_foreground_remote_control(
         socket_path: socket_path.clone(),
     };
     let runtime_options = AppServerRuntimeOptions {
+        startup_auth: Some(codex_app_server::AppServerStartupAuth {
+            codex_home: config.codex_home,
+            auth_file_selection: config.auth_file_selection,
+        }),
         remote_control_startup_mode: codex_app_server::RemoteControlStartupMode::EnabledEphemeral,
         install_shutdown_signal_handler: false,
         ..Default::default()
@@ -144,7 +176,7 @@ async fn run_foreground_remote_control(
 
     let summary = match wait_for_foreground_remote_control_start(
         &mut app_server_task,
-        wait_for_foreground_remote_control_ready(socket_path),
+        wait_for_foreground_remote_control_ready(launch, socket_path),
         stop_rx.clone(),
     )
     .await
@@ -267,9 +299,11 @@ async fn abort_foreground_app_server(app_server_task: JoinHandle<std::io::Result
 }
 
 async fn wait_for_foreground_remote_control_ready(
+    launch: codex_app_server_daemon::DaemonLaunchOptions,
     socket_path: AbsolutePathBuf,
 ) -> anyhow::Result<AppServerRemoteControlReadyStatus> {
     codex_app_server_daemon::enable_remote_control_on_socket(
+        &launch,
         socket_path.as_path(),
         FOREGROUND_SOCKET_CONNECT_TIMEOUT,
         FOREGROUND_SOCKET_CONNECT_RETRY_DELAY,

@@ -28,6 +28,7 @@ pub(crate) use codex_app_server_transport::RemoteControlUnavailable;
 pub(crate) use codex_app_server_transport::TransportEvent;
 pub(crate) use codex_app_server_transport::acquire_app_server_startup_lock;
 pub use codex_app_server_transport::app_server_control_socket_path;
+pub use codex_app_server_transport::app_server_profile_socket_path;
 pub(crate) use codex_app_server_transport::app_server_startup_lock_path;
 pub use codex_app_server_transport::auth;
 pub(crate) use codex_app_server_transport::start_control_socket_acceptor;

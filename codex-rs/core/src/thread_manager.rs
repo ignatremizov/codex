@@ -51,6 +51,7 @@ use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_history::rollout_without_exact_rollback_ranges;
+use codex_login::AuthFileSelection;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
@@ -479,10 +480,15 @@ pub fn build_models_manager(
     auth_manager: Arc<AuthManager>,
 ) -> SharedModelsManager {
     let provider = create_model_provider(config.model_provider.clone(), Some(auth_manager));
-    let manager = provider.models_manager(
-        config.codex_home.to_path_buf(),
-        config.model_catalog.clone(),
-    );
+    let manager = match &config.auth_file_selection {
+        AuthFileSelection::Default => provider.models_manager(
+            config.codex_home.to_path_buf(),
+            config.model_catalog.clone(),
+        ),
+        AuthFileSelection::Selected(_) => {
+            provider.models_manager_without_cache(config.model_catalog.clone())
+        }
+    };
     manager.set_api_key_model_discovery_enabled(
         config.features.enabled(Feature::ApiKeyModelDiscovery),
     );

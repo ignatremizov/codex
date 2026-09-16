@@ -432,8 +432,9 @@ impl AccountRequestProcessor {
             }
         }
 
-        match login_with_api_key(
+        match login_with_api_key_for_selection(
             &self.config.codex_home,
+            &self.config.auth_file_selection,
             &params.api_key,
             self.config.cli_auth_credentials_store_mode,
             self.config.auth_keyring_backend_kind(),
@@ -508,13 +509,16 @@ impl AccountRequestProcessor {
             .await?;
 
             match credentials {
-                BedrockLoginCredentials::ApiKey(api_key) => login_with_bedrock_api_key(
-                    &self.config.codex_home,
-                    api_key.trim(),
-                    region,
-                    self.config.cli_auth_credentials_store_mode,
-                    self.config.auth_keyring_backend_kind(),
-                ),
+                BedrockLoginCredentials::ApiKey(api_key) => {
+                    login_with_bedrock_api_key_for_selection(
+                        &self.config.codex_home,
+                        &self.config.auth_file_selection,
+                        api_key.trim(),
+                        region,
+                        self.config.cli_auth_credentials_store_mode,
+                        self.config.auth_keyring_backend_kind(),
+                    )
+                }
                 BedrockLoginCredentials::AccessKeys {
                     access_key_id,
                     secret_access_key,
@@ -524,8 +528,9 @@ impl AccountRequestProcessor {
                         .as_deref()
                         .map(str::trim)
                         .filter(|token| !token.is_empty());
-                    login_with_bedrock_access_keys(
+                    login_with_bedrock_access_keys_for_selection(
                         &self.config.codex_home,
+                        &self.config.auth_file_selection,
                         access_key_id.trim(),
                         secret_access_key.trim(),
                         session_token,

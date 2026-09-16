@@ -30,6 +30,7 @@ async fn file_session(
     storage.save(&stored).expect("save synthetic auth");
     let auth = CodexAuth::from_auth_dot_json(
         home.path(),
+        &AuthFileSelection::Default,
         stored.clone(),
         AuthCredentialsStoreMode::File,
         /*chatgpt_base_url*/ None,

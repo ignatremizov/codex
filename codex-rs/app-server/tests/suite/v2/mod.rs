@@ -120,6 +120,8 @@ mod safety_check_downgrade;
 mod selected_capability_stack;
 mod selected_environment;
 mod server_diagnostics;
+#[path = "server_read_tests.rs"]
+mod server_read;
 #[cfg(not(target_os = "windows"))]
 mod session_end;
 mod skills_list;

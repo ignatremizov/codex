@@ -52,6 +52,7 @@ async fn locked_empty_pid_file_is_treated_as_active_reservation() {
         temp_dir.path().join("codex"),
         pid_file.clone(),
         /*remote_control_enabled*/ false,
+        launch_options()?,
     );
     let reservation = tokio::fs::OpenOptions::new()
         .create(true)
@@ -67,10 +68,11 @@ async fn locked_empty_pid_file_is_treated_as_active_reservation() {
         PidFileState::Starting
     );
     assert!(pid_file.exists());
+    Ok(())
 }
 
 #[tokio::test]
-async fn unlocked_empty_pid_file_is_treated_as_stale_reservation() {
+async fn unlocked_empty_pid_file_is_treated_as_stale_reservation() -> std::io::Result<()> {
     let temp_dir = TempDir::new().expect("temp dir");
     let pid_file = temp_dir.path().join("app-server.pid");
     tokio::fs::write(&pid_file, "")
@@ -80,6 +82,7 @@ async fn unlocked_empty_pid_file_is_treated_as_stale_reservation() {
         temp_dir.path().join("codex"),
         pid_file.clone(),
         /*remote_control_enabled*/ false,
+        launch_options()?,
     );
 
     assert_eq!(
@@ -87,10 +90,11 @@ async fn unlocked_empty_pid_file_is_treated_as_stale_reservation() {
         PidFileState::Missing
     );
     assert!(!pid_file.exists());
+    Ok(())
 }
 
 #[tokio::test]
-async fn stop_waits_for_live_reservation_to_resolve() {
+async fn stop_waits_for_live_reservation_to_resolve() -> std::io::Result<()> {
     let temp_dir = TempDir::new().expect("temp dir");
     let pid_file = temp_dir.path().join("app-server.pid");
     tokio::fs::write(&pid_file, "")
@@ -100,6 +104,7 @@ async fn stop_waits_for_live_reservation_to_resolve() {
         temp_dir.path().join("codex"),
         pid_file.clone(),
         /*remote_control_enabled*/ false,
+        launch_options()?,
     );
     let reservation = tokio::fs::OpenOptions::new()
         .create(true)
@@ -136,6 +141,7 @@ async fn start_retries_stale_empty_pid_file_under_its_own_lock() {
         temp_dir.path().join("missing-codex"),
         pid_file,
         /*remote_control_enabled*/ false,
+        launch_options()?,
     );
 
     let err = backend.start().await.expect_err("start");
@@ -339,6 +345,7 @@ async fn stop_reaps_untracked_app_server_child() {
         temp_dir.path().join("codex"),
         pid_file.clone(),
         /*remote_control_enabled*/ false,
+        launch,
     );
 
     let result = tokio::time::timeout(Duration::from_secs(2), backend.stop()).await;
@@ -590,28 +597,33 @@ fn update_loop_uses_hidden_app_server_subcommand() {
         backend.command_args(),
         vec!["app-server", "daemon", "pid-update-loop"]
     );
+    Ok(())
 }
 
 #[test]
-fn app_server_remote_control_uses_runtime_flag() {
+fn app_server_remote_control_uses_runtime_flag() -> std::io::Result<()> {
     let backend = PidBackend::new(
         "codex".into(),
         "app-server.pid".into(),
         /*remote_control_enabled*/ true,
+        launch_options()?,
     );
 
     assert_eq!(
         backend.command_args(),
         vec!["app-server", "--remote-control", "--listen", "unix://"]
     );
+    Ok(())
 }
 
 #[test]
-fn app_server_disabled_remote_control_uses_compatible_args_and_runtime_env() {
+fn app_server_disabled_remote_control_uses_compatible_args_and_runtime_env() -> std::io::Result<()>
+{
     let backend = PidBackend::new(
         "codex".into(),
         "app-server.pid".into(),
         /*remote_control_enabled*/ false,
+        launch_options()?,
     );
 
     assert_eq!(
@@ -622,6 +634,7 @@ fn app_server_disabled_remote_control_uses_compatible_args_and_runtime_env() {
         backend.command_env(),
         Some((REMOTE_CONTROL_DISABLED_ENV_VAR, "1"))
     );
+    Ok(())
 }
 
 #[tokio::test]
