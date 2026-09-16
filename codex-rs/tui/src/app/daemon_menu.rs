@@ -34,10 +34,19 @@ impl App {
             && connection.is_local_daemon
             && !connection.is_managed_daemon
         {
-            connection.is_managed_daemon =
-                codex_app_server_daemon::run(codex_app_server_daemon::LifecycleCommand::Version)
-                    .await
-                    .is_ok_and(|output| output.backend.is_some());
+            connection.is_managed_daemon = match codex_app_server_daemon::DaemonLaunchOptions::new(
+                self.config.codex_home.to_path_buf(),
+                self.config.auth_file_selection.clone(),
+                self.config.cli_auth_credentials_store_mode,
+            ) {
+                Ok(launch) => codex_app_server_daemon::run(
+                    &launch,
+                    codex_app_server_daemon::LifecycleCommand::Version,
+                )
+                .await
+                .is_ok_and(|output| output.backend.is_some()),
+                Err(_) => false,
+            };
         }
     }
 

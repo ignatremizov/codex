@@ -17,6 +17,9 @@ use std::process::Output;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+#[path = "worktree_auth_file_selection.rs"]
+mod auth_file_selection;
+
 fn git(cwd: &Path, args: &[&str]) -> anyhow::Result<()> {
     let output = Command::new("git")
         .current_dir(cwd)

@@ -755,30 +755,25 @@ fn resolve_remote_addr_rejects_invalid_remote_addresses() {
 async fn default_daemon_auto_connect_skips_missing_socket() -> color_eyre::Result<()> {
     let codex_home = TempDir::new()?;
     assert!(
-        maybe_probe_default_daemon_socket(codex_home.path())
-            .await
-            .is_none()
+        maybe_probe_daemon_socket(
+            codex_home.path(),
+            &codex_login::AuthFileSelection::Default,
+            codex_login::AuthCredentialsStoreMode::File,
+        )
+        .await
+        .is_none()
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn default_daemon_auto_connect_probes_socket_only() -> color_eyre::Result<()> {
+async fn default_daemon_auto_connect_probes_profile_socket_only() -> color_eyre::Result<()> {
     let codex_home = TempDir::new()?;
-    let socket_path = codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
-    #[cfg(windows)]
-    {
-        let parent = socket_path.as_path().parent().expect("socket parent");
-        std::fs::create_dir_all(parent)?;
-        let listener = codex_uds::UnixListener::bind(socket_path.as_path()).await?;
-        assert!(
-            maybe_probe_default_daemon_socket(codex_home.path())
-                .await
-                .is_none()
-        );
-        drop(listener);
-        std::fs::remove_dir_all(parent)?;
-    }
+    let socket_path = auth_profile_connection::daemon_socket_path(
+        codex_home.path(),
+        &codex_login::AuthFileSelection::Default,
+        codex_login::AuthCredentialsStoreMode::File,
+    )?;
     codex_uds::prepare_private_socket_directory(
         socket_path.as_path().parent().expect("socket parent"),
     )
@@ -788,11 +783,10 @@ async fn default_daemon_auto_connect_probes_socket_only() -> color_eyre::Result<
     let expected = Some(socket_path);
     #[cfg(windows)]
     let expected = {
-        // Existing Windows CI may run elevated; an elevated listener must
-        // never be selected implicitly, even when its directory is private.
+        // A private socket does not make an elevated daemon eligible for implicit reuse.
         let output = std::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", "([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
-                .output()?;
+            .args(["-NoProfile", "-NonInteractive", "-Command", "([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
+            .output()?;
         assert!(output.status.success());
         match String::from_utf8(output.stdout)?.trim() {
             "True" => None,
@@ -801,7 +795,12 @@ async fn default_daemon_auto_connect_probes_socket_only() -> color_eyre::Result<
         }
     };
     assert_eq!(
-        maybe_probe_default_daemon_socket(codex_home.path()).await,
+        maybe_probe_daemon_socket(
+            codex_home.path(),
+            &codex_login::AuthFileSelection::Default,
+            codex_login::AuthCredentialsStoreMode::File,
+        )
+        .await,
         expected
     );
     Ok(())

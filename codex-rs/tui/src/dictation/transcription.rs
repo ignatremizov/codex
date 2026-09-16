@@ -131,10 +131,11 @@ fn validate_browser_source(config: &Config) -> Result<(), String> {
     {
         return Err(BROWSER_AUTH_REQUIRED.into());
     }
-    // These two reads and manager construction must share the captured profile selection when
-    // profile-aware storage is introduced. Never replace them with per-chunk global selection.
-    let external = codex_login::load_auth_dot_json(
+    // Preflight and the recording's retained manager use the same captured profile.
+    // Neither reads the default store or rediscovers ambient selection per chunk.
+    let external = codex_login::load_auth_dot_json_for_selection(
         config.codex_home.as_path(),
+        &config.auth_file_selection,
         AuthCredentialsStoreMode::Ephemeral,
         config.auth_keyring_backend_kind(),
     )
@@ -142,8 +143,9 @@ fn validate_browser_source(config: &Config) -> Result<(), String> {
     if external.is_some() {
         return Err("Dictation does not support external authentication tokens.".into());
     }
-    let stored = codex_login::load_auth_dot_json(
+    let stored = codex_login::load_auth_dot_json_for_selection(
         config.codex_home.as_path(),
+        &config.auth_file_selection,
         config.cli_auth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
     )
@@ -400,3 +402,7 @@ fn encode_audio(audio: RecordedAudio) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 #[path = "transcription_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transcription_profile_tests.rs"]
+mod profile_tests;

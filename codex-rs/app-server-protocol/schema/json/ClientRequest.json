@@ -4720,6 +4720,9 @@
       ],
       "type": "object"
     },
+    "ServerReadParams": {
+      "type": "object"
+    },
     "SessionMigration": {
       "properties": {
         "cwd": {
@@ -9275,6 +9278,30 @@
         "params"
       ],
       "title": "Command/exec/resizeRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "server/read"
+          ],
+          "title": "Server/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ServerReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Server/readRequest",
       "type": "object"
     },
     {

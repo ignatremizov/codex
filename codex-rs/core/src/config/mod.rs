@@ -81,6 +81,7 @@ use codex_features::TokenBudgetConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use codex_login::AuthFileSelection;
 use codex_login::AuthManagerConfig;
 use codex_login::AuthRouteConfig;
 use codex_mcp::DEFAULT_OPTIONAL_MCP_STARTUP_GRACE;
@@ -184,6 +185,7 @@ mod schema;
 mod token_budget_startup;
 mod windows_sandbox_config;
 pub use auth_keyring::bootstrap_auth_config;
+pub use auth_keyring::bootstrap_auth_config_for_selection;
 pub use auth_keyring::resolve_bootstrap_auth_keyring_backend_kind;
 pub use codex_agent_roles::AgentRoleConfig;
 pub use codex_config::ConfigLoadOptions;
@@ -1060,6 +1062,9 @@ pub struct Config {
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: AbsolutePathBuf,
 
+    /// Immutable credential-file selection captured by the runtime at startup.
+    pub auth_file_selection: AuthFileSelection,
+
     /// Resolved configuration shared by all Codex SQLite databases.
     pub sqlite: codex_state::SqliteConfig,
 
@@ -1519,6 +1524,10 @@ pub struct TerminalResizeReflowConfig {
 }
 
 impl AuthManagerConfig for Config {
+    fn auth_file_selection(&self) -> AuthFileSelection {
+        self.auth_file_selection.clone()
+    }
+
     fn codex_home(&self) -> PathBuf {
         self.codex_home.to_path_buf()
     }
@@ -1555,6 +1564,7 @@ impl AuthManagerConfig for Config {
 #[derive(Clone, Default)]
 pub struct ConfigBuilder {
     codex_home: Option<PathBuf>,
+    auth_file_selection: Option<AuthFileSelection>,
     cli_overrides: Option<Vec<(String, TomlValue)>>,
     harness_overrides: Option<ConfigOverrides>,
     loader_overrides: Option<LoaderOverrides>,
@@ -1566,6 +1576,11 @@ pub struct ConfigBuilder {
 }
 
 impl ConfigBuilder {
+    pub fn auth_file_selection(mut self, selection: AuthFileSelection) -> Self {
+        self.auth_file_selection = Some(selection);
+        self
+    }
+
     pub fn codex_home(mut self, codex_home: PathBuf) -> Self {
         self.codex_home = Some(codex_home);
         self
@@ -1623,6 +1638,7 @@ impl ConfigBuilder {
     async fn build_inner(self) -> std::io::Result<Config> {
         let Self {
             codex_home,
+            auth_file_selection,
             cli_overrides,
             harness_overrides,
             loader_overrides,
@@ -1638,6 +1654,9 @@ impl ConfigBuilder {
         };
         let cli_overrides = cli_overrides.unwrap_or_default();
         let mut harness_overrides = harness_overrides.unwrap_or_default();
+        if harness_overrides.auth_file_selection.is_none() {
+            harness_overrides.auth_file_selection = auth_file_selection;
+        }
         let loader_overrides = loader_overrides.unwrap_or_default();
         let cwd_override = harness_overrides.cwd.as_deref().or(fallback_cwd.as_deref());
         let cwd = match cwd_override {
@@ -2069,6 +2088,23 @@ impl Config {
         refreshed_layers: &ConfigLayerStack,
         codex_home: AbsolutePathBuf,
     ) -> std::io::Result<Self> {
+        Self::rebuild_with_session_layers_and_auth_file_selection(
+            session_layers,
+            cwd,
+            refreshed_layers,
+            codex_home,
+            AuthFileSelection::default(),
+        )
+        .await
+    }
+
+    pub async fn rebuild_with_session_layers_and_auth_file_selection(
+        session_layers: &ConfigLayerStack,
+        cwd: PathBuf,
+        refreshed_layers: &ConfigLayerStack,
+        codex_home: AbsolutePathBuf,
+        auth_file_selection: AuthFileSelection,
+    ) -> std::io::Result<Self> {
         let config_layer_stack =
             Self::layer_stack_preserving_session(session_layers, refreshed_layers)?;
         let cfg = config_toml_from_layers(&config_layer_stack).await?;
@@ -2077,6 +2113,7 @@ impl Config {
             cfg,
             ConfigOverrides {
                 cwd: Some(cwd),
+                auth_file_selection: Some(auth_file_selection),
                 ..Default::default()
             },
             codex_home,
@@ -2778,6 +2815,7 @@ fn resolve_permission_config_syntax(
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
+    pub auth_file_selection: Option<AuthFileSelection>,
     pub model: Option<String>,
     pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
@@ -3538,6 +3576,7 @@ impl Config {
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
+            auth_file_selection,
             model,
             review_model: override_review_model,
             cwd,
@@ -4732,6 +4771,7 @@ impl Config {
             memories: memories_config,
             agent_interrupt_message_enabled,
             codex_home,
+            auth_file_selection: auth_file_selection.unwrap_or_default(),
             sqlite,
             log_dir,
             config_layer_stack,
