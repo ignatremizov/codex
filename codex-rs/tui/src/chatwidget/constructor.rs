@@ -174,6 +174,7 @@ impl ChatWidget {
             adaptive_chunking: AdaptiveChunkingPolicy::default(),
             stream_controller: None,
             plan_stream_controller: None,
+            active_streaming_phase: None,
             pending_stream_consolidations: 0,
             clipboard_lease: None,
             copy_last_response_binding,

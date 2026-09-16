@@ -420,6 +420,9 @@ impl ChatWidget {
         let turn_id = notification.turn_id;
         let started_at_ms = notification.started_at_ms;
         match notification.item {
+            ThreadItem::AgentMessage { phase, .. } if !from_replay => {
+                self.active_streaming_phase = phase;
+            }
             item @ ThreadItem::CommandExecution { .. } => {
                 self.on_command_execution_started(item, deadline_at_ms);
             }

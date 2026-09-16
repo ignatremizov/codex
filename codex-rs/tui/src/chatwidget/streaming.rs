@@ -19,8 +19,16 @@ impl ChatWidget {
         }
     }
 
+    pub(super) fn is_streaming_final_answer(&self) -> bool {
+        self.plan_stream_controller.is_some()
+            || (self.stream_controller.is_some()
+                && self.active_streaming_phase != Some(MessagePhase::Commentary))
+    }
+
     pub(super) fn flush_answer_stream_with_separator(&mut self) {
-        self.flush_answer_stream(/*completed_message*/ None, /*phase*/ None);
+        let phase = self.active_streaming_phase.take();
+        self.flush_answer_stream(/*completed_message*/ None, phase);
+        self.flush_async_agent_notices();
     }
 
     fn flush_answer_stream(
@@ -28,6 +36,7 @@ impl ChatWidget {
         completed_message: Option<&str>,
         phase: Option<MessagePhase>,
     ) {
+        self.active_streaming_phase = None;
         let had_stream_controller = self.stream_controller.is_some();
         if let Some(mut controller) = self.stream_controller.take() {
             let had_live_tail = controller.has_live_tail();
@@ -313,6 +322,7 @@ impl ChatWidget {
             self.status_state.pending_status_indicator_restore = true;
             self.maybe_restore_status_indicator_after_stream_idle();
             self.request_pending_usage_output_insertion_after_stream_shutdown();
+            self.flush_async_agent_notices();
         }
     }
 
@@ -578,7 +588,7 @@ impl ChatWidget {
         // Preserve deterministic FIFO across queued interrupts: once anything
         // is queued due to an active write cycle, continue queueing until the
         // queue is flushed to avoid reordering (e.g., ExecEnd before ExecBegin).
-        if self.stream_controller.is_some() || !self.interrupts.is_empty() {
+        if self.stream_controller.is_some() || self.interrupts.has_pending_lifecycle_or_prompt() {
             push(&mut self.interrupts, payload);
         } else {
             handle(self, payload);

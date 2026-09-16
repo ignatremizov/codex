@@ -43,6 +43,21 @@ fn deliver(chat: &mut ChatWidget, item: AppServerThreadItem) {
     );
 }
 
+fn start_item(chat: &mut ChatWidget, item: AppServerThreadItem) {
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: chat
+                .thread_id
+                .map_or_else(|| "thread-1".to_string(), |id| id.to_string()),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            deadline_at_ms: None,
+            item,
+        }),
+        /*replay_kind*/ None,
+    );
+}
+
 // Observe consolidation and notice insertion order, including any premature partial
 // consolidation. Streaming continuation cells are owned by the consolidation event.
 fn output(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> Vec<String> {
@@ -392,9 +407,72 @@ async fn own_collab_tool_lifecycle_is_not_queued_as_an_async_notice() {
         /*deadline_at_ms*/ None,
     );
     assert!(chat.stream_controller.is_none());
-    assert!(!chat.interrupts.is_empty());
+    assert!(chat.interrupts.is_empty());
     let rendered = output(&mut rx);
-    assert_eq!(rendered.len(), 2);
+    assert_eq!(rendered.len(), 3);
     assert_eq!(rendered[0], "answer: Before the tool");
-    assert!(rendered[1].contains("Spawned"));
+    assert!(rendered[1].contains("completed"));
+    assert!(rendered[2].contains("Spawned"));
+}
+
+#[tokio::test]
+async fn commentary_streaming_does_not_defer_async_notices() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    start_item(
+        &mut chat,
+        AppServerThreadItem::AgentMessage {
+            id: "commentary-item".to_string(),
+            text: String::new(),
+            attribution: None,
+            input: None,
+            phase: Some(MessagePhase::Commentary),
+            memory_citation: None,
+            delivery: None,
+            questions: None,
+        },
+    );
+    chat.on_agent_message_delta("Interim commentary".to_string());
+    assert!(chat.stream_controller.is_some());
+    assert!(!chat.is_streaming_final_answer());
+
+    deliver(
+        &mut chat,
+        completion(SubAgentCompletionModelVisibility::NotVisible),
+    );
+    assert!(chat.interrupts.is_empty());
+    let rendered = output(&mut rx);
+    assert_eq!(
+        rendered,
+        vec![
+            "answer: Interim commentary".to_string(),
+            "• /root/reviewer completed: (○ not visible)\n  └ Finished review.".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn plan_streaming_defers_async_notices_until_plan_completed() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let plan_mask = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
+        .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+    chat.on_task_started();
+    chat.on_plan_delta("- Step 1\n".to_string());
+    assert!(chat.is_streaming_final_answer());
+
+    deliver(
+        &mut chat,
+        completion(SubAgentCompletionModelVisibility::NotVisible),
+    );
+    assert!(!chat.interrupts.is_empty());
+    assert!(output(&mut rx).is_empty());
+
+    chat.on_plan_item_completed("- Step 1\n".to_string());
+    assert!(chat.interrupts.is_empty());
+    let rendered = output(&mut rx);
+    assert_eq!(
+        rendered,
+        vec!["• /root/reviewer completed: (○ not visible)\n  └ Finished review.".to_string()]
+    );
 }

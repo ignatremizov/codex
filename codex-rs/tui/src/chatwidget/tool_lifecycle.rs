@@ -121,9 +121,12 @@ impl ChatWidget {
         &mut self,
         cell: impl crate::history_cell::HistoryCell + 'static,
     ) {
-        if self.stream_controller.is_some() {
+        if self.is_streaming_final_answer() {
             self.interrupts.push_agent_notice(Box::new(cell));
         } else {
+            if self.stream_controller.is_some() {
+                self.flush_answer_stream_with_separator();
+            }
             // Retained prompts must not strand notices after cancellation. Keep notice FIFO
             // without opening unrelated prompts or deferred tool activity.
             self.flush_async_agent_notices();

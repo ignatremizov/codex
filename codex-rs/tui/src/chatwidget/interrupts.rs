@@ -41,6 +41,7 @@ impl InterruptManager {
         }
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.queue.is_empty()
@@ -58,6 +59,14 @@ impl InterruptManager {
                     | QueuedInterrupt::RequestUserInput(_)
             )
         })
+    }
+
+    /// Excludes agent presentation notices that do not claim interactive input or
+    /// belong to an active execution write cycle.
+    pub(crate) fn has_pending_lifecycle_or_prompt(&self) -> bool {
+        self.queue
+            .iter()
+            .any(|interrupt| !matches!(interrupt, QueuedInterrupt::AgentNotice(_)))
     }
 
     pub(crate) fn push_exec_approval(&mut self, ev: ExecApprovalRequestEvent) {
