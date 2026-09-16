@@ -154,8 +154,7 @@ async fn sealed_child_prevents_recreating_its_absent_root_during_unload() {
     )
     .await
     .expect("controlled resume does not deadlock")
-    .err()
-    .expect("sealed observer cannot resume Main");
+    .expect_err("sealed observer cannot resume Main");
     assert!(matches!(
         error.details(),
         CodexErrorDetails::InvalidRequest(_)
@@ -172,8 +171,7 @@ async fn sealed_child_prevents_recreating_its_absent_root_during_unload() {
     )
     .await
     .expect("cold resume does not deadlock")
-    .err()
-    .expect("cold resume cannot recreate sealed subtree root");
+    .expect_err("cold resume cannot recreate sealed subtree root");
     assert!(matches!(
         error.details(),
         CodexErrorDetails::InvalidRequest(_)

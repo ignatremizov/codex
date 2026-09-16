@@ -1105,6 +1105,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                         tx.clone(),
                                         base_url.clone(),
                                         environment_http.clone(),
+                                        auth_manager.clone(),
                                     );
                                     let _ = frame_tx.send(Instant::now());
                                 }
@@ -1485,6 +1486,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                     tx.clone(),
                                     base_url.clone(),
                                     environment_http.clone(),
+                                    auth_manager.clone(),
                                 );
                             }
                             // Render after opening env modal to show it instantly.
@@ -1669,6 +1671,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                             tx.clone(),
                                             base_url.clone(),
                                             environment_http.clone(),
+                                            auth_manager.clone(),
                                         );
                                     }
                                 }
@@ -1843,6 +1846,7 @@ pub async fn run_main(cli: Cli, _codex_linux_sandbox_exe: Option<PathBuf>) -> an
                                             tx.clone(),
                                             base_url.clone(),
                                             environment_http.clone(),
+                                            auth_manager.clone(),
                                         );
                                     }
                                 }
