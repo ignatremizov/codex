@@ -38,6 +38,11 @@ use super::head_tail_buffer::HeadTailBuffer;
 use super::process_state::ProcessState;
 use crate::shell_snapshot::ShellSnapshotFile;
 
+#[path = "process_shutdown.rs"]
+mod shutdown;
+use shutdown::ActualExit;
+use shutdown::ExitConfirmationGuard;
+
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
 const REMOTE_OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
@@ -104,9 +109,11 @@ pub(crate) struct UnifiedExecProcess {
     output_rx: StdMutex<Option<mpsc::Receiver<Vec<u8>>>>,
     output: OutputHandles,
     output_stream_complete: CancellationToken,
+    output_task_complete: CancellationToken,
     interaction_lock: Arc<Mutex<()>>,
     state_tx: watch::Sender<ProcessState>,
     state_rx: watch::Receiver<ProcessState>,
+    actual_exit: watch::Sender<ActualExit>,
     output_task: Option<JoinHandle<()>>,
     sandbox_type: Option<SandboxType>,
     timed_out: AtomicBool,
@@ -151,6 +158,8 @@ impl UnifiedExecProcess {
             output_rx: StdMutex::new(Some(output_rx)),
             output,
             output_stream_complete,
+            output_task_complete: CancellationToken::new(),
+            actual_exit: watch::channel(ActualExit::Pending).0,
             interaction_lock: Arc::new(Mutex::new(())),
             state_tx,
             state_rx,
@@ -204,6 +213,10 @@ impl UnifiedExecProcess {
 
     pub(super) fn output_stream_completion(&self) -> CancellationToken {
         self.output_stream_complete.clone()
+    }
+
+    pub(super) fn output_task_completion(&self) -> CancellationToken {
+        self.output_task_complete.clone()
     }
 
     pub(super) fn output_task_abort_handle(&self) -> Option<tokio::task::AbortHandle> {
@@ -360,7 +373,18 @@ impl UnifiedExecProcess {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) async fn from_spawned(
+        spawned: SpawnedPty,
+        sandbox_type: SandboxType,
+    ) -> Result<Self, UnifiedExecError> {
+        let managed = Self::from_spawned_before_classification(spawned, sandbox_type).await?;
+        managed.check_for_sandbox_denial().await?;
+        Ok(managed)
+    }
+
+    /// Construct before fallible sandbox classification so the manager can retain ownership.
+    pub(super) async fn from_spawned_before_classification(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
     ) -> Result<Self, UnifiedExecError> {
@@ -381,33 +405,46 @@ impl UnifiedExecProcess {
             stderr_rx,
             output_handles,
             managed.output_tx.clone(),
+            managed.output_task_complete.clone(),
         ));
 
         match exit_rx.try_recv() {
             Ok(exit_code) => {
+                managed.actual_exit.send_replace(ActualExit::Exited);
                 managed.signal_exit(Some(exit_code));
-                managed.check_for_sandbox_denial().await?;
                 return Ok(managed);
             }
             Err(TryRecvError::Closed) => {
+                managed.actual_exit.send_replace(ActualExit::Unknown);
                 managed.signal_exit(/*exit_code*/ None);
-                managed.check_for_sandbox_denial().await?;
                 return Ok(managed);
             }
             Err(TryRecvError::Empty) => {}
         }
 
         if let Ok(exit_result) = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, &mut exit_rx).await {
+            managed.actual_exit.send_replace(if exit_result.is_ok() {
+                ActualExit::Exited
+            } else {
+                ActualExit::Unknown
+            });
             managed.signal_exit(exit_result.ok());
-            managed.check_for_sandbox_denial().await?;
             return Ok(managed);
         }
 
         tokio::spawn({
             let state_tx = managed.state_tx.clone();
             let cancellation_token = managed.output.cancellation_token.clone();
+            let actual_exit = managed.actual_exit.clone();
+            let confirmation_guard = ExitConfirmationGuard(actual_exit.clone());
             async move {
+                let _confirmation_guard = confirmation_guard;
                 let exit_code = exit_rx.await.ok();
+                actual_exit.send_replace(if exit_code.is_some() {
+                    ActualExit::Exited
+                } else {
+                    ActualExit::Unknown
+                });
                 let state = state_tx.borrow().clone();
                 let _ = state_tx.send_replace(state.exited(exit_code));
                 cancellation_token.cancel();
@@ -417,7 +454,19 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
+    #[cfg(test)]
     pub(super) async fn from_exec_server_started(
+        started: StartedExecProcess,
+        output_drain_policy: OutputDrainPolicy,
+    ) -> Result<Self, UnifiedExecError> {
+        let managed =
+            Self::from_exec_server_before_classification(started, output_drain_policy).await?;
+        managed.check_for_sandbox_denial().await?;
+        Ok(managed)
+    }
+
+    /// Construct before fallible sandbox classification so the manager can retain ownership.
+    pub(super) async fn from_exec_server_before_classification(
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
     ) -> Result<Self, UnifiedExecError> {
@@ -429,15 +478,16 @@ impl UnifiedExecProcess {
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
-            output_drain_policy,
             output_handles,
             managed.output_tx.clone(),
             managed.state_tx.clone(),
             managed.interaction_lock(),
+            managed.actual_exit.clone(),
+            managed.output_task_complete.clone(),
         ));
 
         let mut state_rx = managed.state_rx.clone();
-        if tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, async {
+        let _ = tokio::time::timeout(EARLY_EXIT_GRACE_PERIOD, async {
             loop {
                 let state = state_rx.borrow().clone();
                 if state.has_exited || state.failure_message.is_some() {
@@ -448,22 +498,19 @@ impl UnifiedExecProcess {
                 }
             }
         })
-        .await
-        .is_ok()
-        {
-            managed.check_for_sandbox_denial().await?;
-        }
+        .await;
 
         Ok(managed)
     }
 
     fn spawn_exec_server_output_task(
         started: StartedExecProcess,
-        output_drain_policy: OutputDrainPolicy,
         output_handles: OutputHandles,
         output_tx: mpsc::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
         interaction_lock: Arc<Mutex<()>>,
+        actual_exit: watch::Sender<ActualExit>,
+        output_task_complete: CancellationToken,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -471,8 +518,8 @@ impl UnifiedExecProcess {
             output_closed,
             output_closed_notify,
             cancellation_token,
+            drain_policy: output_drain_policy,
             collection_finished,
-            ..
         } = output_handles;
         let process = started.process;
         let mut events = process.subscribe_events();
@@ -481,8 +528,12 @@ impl UnifiedExecProcess {
             output_closed: Arc::clone(&output_closed),
             output_closed_notify: Arc::clone(&output_closed_notify),
         };
+        let completion = output_task_complete.drop_guard();
+        let confirmation_guard = ExitConfirmationGuard(actual_exit.clone());
         tokio::spawn(async move {
             let _output_task_guard = output_task_guard;
+            let _completion = completion;
+            let _confirmation_guard = confirmation_guard;
             let drain = async {
                 collection_finished.cancelled().await;
                 let _ = state_rx.wait_for(|state| state.has_exited).await;
@@ -593,6 +644,9 @@ impl UnifiedExecProcess {
                         } else {
                             state
                         });
+                        if exited {
+                            actual_exit.send_replace(ActualExit::Exited);
+                        }
                     }
                     if exited && output_drain_policy == OutputDrainPolicy::BoundedAfterExit {
                         cancellation_token.cancel();
@@ -636,6 +690,7 @@ impl UnifiedExecProcess {
                         let mut state = state_tx.borrow().clone();
                         state.sandbox_denied |= sandbox_denied.unwrap_or(false);
                         let _ = state_tx.send_replace(state.exited(Some(exit_code)));
+                        actual_exit.send_replace(ActualExit::Exited);
                         if output_drain_policy == OutputDrainPolicy::BoundedAfterExit {
                             cancellation_token.cancel();
                         }
@@ -673,6 +728,7 @@ impl UnifiedExecProcess {
         mut stderr_rx: mpsc::Receiver<Vec<u8>>,
         output_handles: OutputHandles,
         output_tx: mpsc::Sender<Vec<u8>>,
+        output_task_complete: CancellationToken,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -685,8 +741,10 @@ impl UnifiedExecProcess {
             output_closed: Arc::clone(&output_closed),
             output_closed_notify: Arc::clone(&output_closed_notify),
         };
+        let completion = output_task_complete.drop_guard();
         tokio::spawn(async move {
             let _output_task_guard = output_task_guard;
+            let _completion = completion;
             let mut stdout_open = true;
             let mut stderr_open = true;
             loop {

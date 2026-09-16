@@ -113,23 +113,22 @@ async fn exec_command_with_tty(
     let command = vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()];
     let request = test_exec_request(turn, command.clone(), cwd.clone(), shell_env());
 
-    let process = Arc::new(
-        manager
-            .open_session_with_prepared_exec_env(
-                process_id,
-                &request,
-                /*tool_ctx*/ None,
-                codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
-                /*network_policy_decider*/ None,
-                tty,
-                turn.initial_environments
-                    .primary()
-                    .expect("turn environment")
-                    .environment
-                    .as_ref(),
-            )
-            .await?,
-    );
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            process_id,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            tty,
+            /*shell_snapshot_file*/ None,
+            turn.initial_environments
+                .primary()
+                .expect("turn environment")
+                .environment
+                .as_ref(),
+        )
+        .await?;
     let context = UnifiedExecContext::new(
         Arc::clone(session),
         crate::session::step_context::StepContext::for_test(Arc::clone(turn)),
@@ -851,6 +850,7 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit(
             .await
             .expect("poll lifecycle event should arrive")
         };
+        let polls_started = Instant::now();
         let poll_task = spawn_poll("cancelled-poll");
         let first_begin = next_interaction().await;
         assert!(process.interaction_lock().try_lock_owned().is_err());
@@ -930,6 +930,7 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit(
             else {
                 panic!("each poll must identify its own wait start");
             };
+            assert!(started_at_ms > 0);
             assert_eq!(
                 started,
                 codex_protocol::protocol::TerminalInteractionEvent {
@@ -950,6 +951,7 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit(
         else {
             panic!("the resumed poll must complete its exact wait");
         };
+        assert!(u128::from(elapsed_ms) <= polls_started.elapsed().as_millis());
         assert_eq!(
             clear,
             codex_protocol::protocol::TerminalInteractionEvent {
@@ -1024,7 +1026,9 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
             tty: true,
             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             permissions: TerminalPermissions::for_launch(
-                turn.environments.primary().expect("turn environment"),
+                turn.initial_environments
+                    .primary()
+                    .expect("turn environment"),
                 &turn,
                 TerminalSandboxSource::Native,
                 SandboxPermissions::UseDefault,
@@ -1112,6 +1116,68 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_process_retains_shell_snapshot_until_durable_shutdown() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    let (session, turn) = make_session_and_context().await;
+    let directory = tempfile::tempdir()?;
+    let cwd = AbsolutePathBuf::try_from(directory.path())?;
+    let environment = Arc::new(codex_exec_server::Environment::default_for_tests());
+    let shell = crate::shell::Shell {
+        shell_type: crate::shell::ShellType::Bash,
+        shell_path: which::which("bash")?,
+    };
+    let snapshot = crate::shell_snapshot::ShellSnapshot::new(
+        cwd.clone(),
+        session.thread_id(),
+        turn.session_telemetry.clone(),
+        /*state_db*/ None,
+        /*credential_broker*/ None,
+        /*prefer_executor_snapshots*/ false,
+    )
+    .build(
+        Arc::clone(&environment),
+        PathUri::from_abs_path(&cwd),
+        Some(shell.clone()),
+        /*allow_login_shell*/ false,
+        codex_protocol::config_types::ShellEnvironmentPolicy::default(),
+        /*sandbox*/ None,
+    )
+    .await
+    .ok_or_else(|| anyhow::anyhow!("test shell snapshot must be created"))?;
+    let retained_snapshot = Arc::downgrade(&snapshot);
+    let request = test_exec_request(
+        &turn,
+        shell.derive_exec_args("sleep 30", /*use_login_shell*/ false),
+        cwd,
+        shell_env(),
+    );
+    let manager = UnifiedExecProcessManager::default();
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            /*process_id*/ 1234,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            /*tty*/ false,
+            Some(snapshot),
+            environment.as_ref(),
+        )
+        .await?;
+    // Neither abandoning the caller's handle nor an additional shared owner can
+    // release the replay file while the manager still owns the live process.
+    let shared_process = Arc::clone(&process);
+    drop(process);
+    assert!(retained_snapshot.upgrade().is_some());
+    drop(shared_process);
+    assert!(retained_snapshot.upgrade().is_some());
+    manager.shutdown_durably().await?;
+    assert!(retained_snapshot.upgrade().is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     #[allow(deprecated)]
@@ -1132,6 +1198,7 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
             /*network_policy_decider*/ None,
             /*tty*/ false,
+            /*shell_snapshot_file*/ None,
             &environment,
         )
         .await?;
@@ -1174,6 +1241,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
             /*network_policy_decider*/ None,
             /*tty*/ true,
+            /*shell_snapshot_file*/ None,
             remote_test_env.environment(),
         )
         .await?;

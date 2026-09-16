@@ -67,7 +67,8 @@ impl Session {
         let active = self.active_turn.lock().await;
         // A previously accepted producer may finish after shutdown has closed fresh input.
         // Its result remains canonical, but cannot enter a closing task or start another turn.
-        let closing = self.submission_admission.completion_is_closing();
+        let closing = self.submission_admission.completion_is_closing()
+            || self.submission_admission.is_sealed_for_unload();
         if !closing
             && let Some(active_turn) = active.as_ref()
             && active_turn.task.as_ref().is_some_and(|task| {

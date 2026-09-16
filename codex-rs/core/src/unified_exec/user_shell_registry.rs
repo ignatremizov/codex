@@ -21,7 +21,18 @@ impl UnifiedExecProcessManager {
                 "user-shell command admission is closed".to_string(),
             ));
         }
-        drop(self.user_shell_tasks.spawn(command));
+        // One producer owns both the legacy shell drain and the durable execution
+        // receipt. Capture the token before scheduling, including rejected scheduling.
+        let tracked = self.user_shell_tasks.token();
+        let execution = async move {
+            let _tracked = tracked;
+            command.await;
+        };
+        drop(
+            self.start_execution(execution).map_err(|error| {
+                codex_protocol::error::CodexErr::InvalidRequest(error.to_string())
+            })?,
+        );
         Ok(())
     }
 

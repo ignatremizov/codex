@@ -584,38 +584,39 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
         test.codex.shutdown_and_wait().await?;
         return Ok(());
     }
-    let mock = responses::mount_sse_sequence(
-        &server,
-        vec![
-            responses::sse(vec![
-                responses::ev_function_call_with_namespace(
-                    "enterprise-call",
-                    "mcp__enterprise",
-                    "calendar_list_events",
-                    "{}",
-                ),
-                responses::ev_completed("enterprise-response"),
-            ]),
-            responses::sse(vec![
-                responses::ev_assistant_message("answer-1", "Here are your work events."),
-                responses::ev_completed("answer-1-response"),
-            ]),
-            responses::sse(vec![
-                responses::ev_function_call_with_namespace(
-                    "ordinary-call",
-                    "mcp__ordinary",
-                    "calendar_list_events",
-                    "{}",
-                ),
-                responses::ev_completed("ordinary-response"),
-            ]),
-            responses::sse(vec![
-                responses::ev_assistant_message("answer-2", "Here are your other events."),
-                responses::ev_completed("answer-2-response"),
-            ]),
-        ],
-    )
-    .await;
+    let mut model_responses = vec![
+        responses::sse(vec![
+            responses::ev_function_call_with_namespace(
+                "enterprise-call",
+                "mcp__enterprise",
+                "calendar_list_events",
+                "{}",
+            ),
+            responses::ev_completed("enterprise-response"),
+        ]),
+        responses::sse(vec![
+            responses::ev_assistant_message("answer-1", "Here are your work events."),
+            responses::ev_completed("answer-1-response"),
+        ]),
+        responses::sse(vec![
+            responses::ev_function_call_with_namespace(
+                "ordinary-call",
+                "mcp__ordinary",
+                "calendar_list_events",
+                "{}",
+            ),
+            responses::ev_completed("ordinary-response"),
+        ]),
+        responses::sse(vec![
+            responses::ev_assistant_message("answer-2", "Here are your other events."),
+            responses::ev_completed("answer-2-response"),
+        ]),
+    ];
+    if matches!(scenario, EnterpriseLifecycle::Removal) {
+        // Removal closes all admission on this exact runtime, including ordinary work.
+        model_responses.truncate(2);
+    }
+    let mock = responses::mount_sse_sequence(&server, model_responses).await;
     test.submit_text_turn("List my work events.").await?;
     let pending_request = Mock::given(method("POST"))
         .and(path("/api/codex/ps/mcp"))
@@ -685,6 +686,17 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
         result["_meta"]["mcp/www_authenticate"],
         "Bearer error=\"invalid_token\""
     );
+    if matches!(scenario, EnterpriseLifecycle::Removal) {
+        assert_eq!(mock.requests().len(), 2);
+        assert!(
+            test.thread_manager
+                .get_thread(test.session_configured.thread_id)
+                .await
+                .is_err()
+        );
+        test.codex.shutdown_and_wait().await?;
+        return Ok(());
+    }
     // The pending response is already cancelled. Apply the config update before
     // building the next turn's tool catalog, preserving the original history check.
     test.codex.disable_mcp_enterprise_auth().await;

@@ -89,6 +89,25 @@ struct PendingCheckpoint {
     complete: oneshot::Sender<()>,
 }
 
+struct StoppedThreadRecorder {
+    stopped: mpsc::UnboundedSender<ThreadId>,
+}
+
+impl codex_extension_api::ThreadLifecycleContributor<codex_core::config::Config>
+    for StoppedThreadRecorder
+{
+    fn on_thread_stop<'a>(
+        &'a self,
+        input: codex_extension_api::ThreadStopInput<'a>,
+    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let thread_id = ThreadId::from_string(input.thread_store.level_id())
+                .expect("thread lifecycle carries its owning identity");
+            let _ = self.stopped.send(thread_id);
+        })
+    }
+}
+
 /// Records one checkpoint and gates it only when its persistence must be synchronous.
 struct GatedCheckpointStore {
     inner: InMemoryThreadStore,
@@ -624,6 +643,9 @@ enum SpawnCaller {
 async fn cancelled_spawn_discards_provisional_child(caller: SpawnCaller) -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
     let (checkpoints, mut checkpoint_requests) = mpsc::unbounded_channel();
+    let (stopped, mut stopped_threads) = mpsc::unbounded_channel();
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(StoppedThreadRecorder { stopped }));
     let store = Arc::new(GatedCheckpointStore {
         inner: InMemoryThreadStore::default(),
         policy: CheckpointPolicy::Synchronous,
@@ -633,7 +655,8 @@ async fn cancelled_spawn_discards_provisional_child(caller: SpawnCaller) -> anyh
         checkpoints,
     });
     let test = test_codex()
-        .with_thread_store(store)
+        .with_thread_store(store.clone())
+        .with_extensions(Arc::new(extensions.build()))
         .with_history_mode(ThreadHistoryMode::Legacy)
         .with_config(move |config| {
             config.agent_max_depth = 1;
@@ -686,7 +709,15 @@ async fn cancelled_spawn_discards_provisional_child(caller: SpawnCaller) -> anyh
         .await
         .context("authorized child did not reach its durability checkpoint")?
         .expect("child history should reach its durability barrier");
-    let child = test.thread_manager.get_thread(checkpoint.thread_id).await?;
+    // The provisional owner keeps this actor private until durability and graph
+    // publication finish. Looking it up here would fail before cancellation is tested.
+    assert!(
+        test.thread_manager
+            .get_thread(checkpoint.thread_id)
+            .await
+            .is_err()
+    );
+    assert_eq!(store.inner.calls().await.shutdown_thread, 0);
     let state_db = codex_core::init_state_db(&test.config)
         .await
         .expect("state db should be enabled");
@@ -696,9 +727,25 @@ async fn cancelled_spawn_discards_provisional_child(caller: SpawnCaller) -> anyh
         matches!(event, EventMsg::TurnAborted(_))
     })
     .await;
-    timeout(Duration::from_secs(10), child.wait_until_terminated())
+    // Cancellation abandons the caller, not accepted persistence. Release its actual
+    // gate so the retained spawn owner can acknowledge the write and close its edge.
+    checkpoint
+        .complete
+        .send(())
+        .expect("release accepted child persistence");
+    let stopped = timeout(Duration::from_secs(10), stopped_threads.recv())
         .await
-        .context("cancelled provisional child did not terminate")?;
+        .context("cancelled provisional child did not enter teardown")?
+        .context("thread lifecycle recorder closed before child teardown")?;
+    assert_eq!(stopped, checkpoint.thread_id);
+    timeout(Duration::from_secs(10), async {
+        while store.inner.calls().await.shutdown_thread == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .context("cancelled provisional child did not close its writer")?;
+    assert_eq!(store.inner.calls().await.shutdown_thread, 1);
     timeout(Duration::from_secs(10), async {
         while test
             .thread_manager

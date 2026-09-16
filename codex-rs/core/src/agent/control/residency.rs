@@ -292,6 +292,11 @@ impl V2Residency {
                     }
                 }
             };
+            if candidate_thread.ensure_not_unloading().is_err() {
+                continue;
+            }
+            // Queue insertion and admission share the lifecycle gate held above. Pending
+            // source or target work pins this exact runtime until admission or cancellation.
             if manager
                 .agent_turn_queue
                 .has_pending_involving(candidate_thread_id)

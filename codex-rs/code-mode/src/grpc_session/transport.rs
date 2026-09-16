@@ -18,6 +18,10 @@ use tower::util::BoxCloneSyncService;
 
 use super::GrpcClient;
 
+#[cfg(test)]
+#[path = "opening_shutdown_tests.rs"]
+mod opening_shutdown_tests;
+
 pub(super) type GrpcTransport = BoxCloneSyncService<Request<Body>, Response<Body>, Status>;
 
 pub(super) enum SharedTransport {
