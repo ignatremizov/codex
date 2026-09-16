@@ -242,7 +242,7 @@ pub async fn handle_exec_command(
                     windows_sandbox_proxy_settings_mode: WindowsSandboxProxySettingsMode::default(),
                     transform: SandboxTransformRequest {
                         command: SandboxCommand {
-                            program: OsString::from(program),
+                            program: OsString::from(program.clone()),
                             args,
                             cwd: cwd_uri.clone(),
                             env: effective_env,
