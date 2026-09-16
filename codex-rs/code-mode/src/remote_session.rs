@@ -541,6 +541,10 @@ impl Default for ProcessOwnedCodeModeSession {
 }
 
 impl CodeModeSession for ProcessOwnedCodeModeSession {
+    fn prewarm<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async move { self.connection().await.map(|_| ()) })
+    }
+
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,

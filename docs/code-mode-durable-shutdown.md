@@ -24,11 +24,21 @@ Built-in providers expose a logical session owner before starting backend work t
 The service retains accepted factory work independently of callers and publishes its
 session before closing it.
 
+Startup prewarming first retains that logical owner, then calls the session's
+`prewarm` operation to initialize its backend without executing a cell. Canceling
+the prewarm waiter does not abandon accepted initialization.
+
 The gRPC logical session owns each accepted opening attempt before its first RPC.
 After the remote session ID arrives, it retains that exact generation before awaiting
 the tool subscription. A subscription failure or dropped execution caller therefore
 does not discard the cleanup owner. Durable shutdown joins accepted opening work and
 does not admit another generation after its fence.
+
+Fast gRPC shutdown fences new operations immediately. It waits for fast closure
+of an already registered binding, but does not wait for an opening that has not
+returned a session ID. An owned background task retains that opening and closes
+its eventual binding. Fast completion is not closure proof: durable shutdown still
+joins the opening, checks unresolved outcomes, and confirms backend closure.
 
 An opening RPC that fails before returning an identifiable session remains unresolved.
 A later execution request cannot replace that failure with a successful generation.

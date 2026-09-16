@@ -122,6 +122,108 @@ fn request() -> ExecuteRequest {
 }
 
 #[tokio::test]
+async fn fast_shutdown_during_prewarm_returns_before_owned_opening_finishes() {
+    let host = Arc::new(Host::default());
+    let provider = provider(Arc::clone(&host));
+    let session = provider
+        .create_owned_session(Arc::new(crate::NoopCodeModeSessionDelegate))
+        .await
+        .expect("logical session");
+    let warming = Arc::clone(&session);
+    let prewarm = tokio::spawn(async move { warming.prewarm().await });
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), host.opening.cancelled())
+        .await
+        .expect("prewarm should contact the backend");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 5), session.shutdown())
+            .await
+            .expect("fast shutdown must not wait for an unidentified opening"),
+        Ok(())
+    );
+    assert!(prewarm.await.expect("prewarm waiter").is_err());
+    let closing = Arc::clone(&session);
+    let mut shutdown = tokio::spawn(async move { closing.shutdown_durably().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(/*millis*/ 20), &mut shutdown)
+            .await
+            .is_err()
+    );
+    host.release_open.cancel();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 5), shutdown)
+            .await
+            .expect("released opening should finish cleanup")
+            .expect("durable shutdown"),
+        Ok(())
+    );
+    assert_eq!(
+        (
+            host.opens.load(Ordering::SeqCst),
+            host.closes.load(Ordering::SeqCst)
+        ),
+        (1, 2)
+    );
+}
+
+#[tokio::test]
+async fn fast_shutdown_of_prewarm_does_not_hide_an_unidentified_opening_failure() {
+    let host = Arc::new(Host::default());
+    host.fail_open.store(true, Ordering::SeqCst);
+    let provider = provider(Arc::clone(&host));
+    let session = provider
+        .create_owned_session(Arc::new(crate::NoopCodeModeSessionDelegate))
+        .await
+        .expect("logical session");
+    let warming = Arc::clone(&session);
+    let prewarm = tokio::spawn(async move { warming.prewarm().await });
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 5), host.opening.cancelled())
+        .await
+        .expect("prewarm should contact the backend");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 5), session.shutdown())
+            .await
+            .expect("fast shutdown"),
+        Ok(())
+    );
+    host.release_open.cancel();
+    assert!(prewarm.await.expect("prewarm waiter").is_err());
+    let error = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), session.shutdown_durably())
+        .await
+        .expect("failed opening should finish")
+        .expect_err("unidentified backend cannot establish closure");
+    assert!(error.contains("opening result was lost"), "{error}");
+    assert_eq!(session.shutdown_durably().await, Err(error));
+    assert_eq!(
+        (
+            host.opens.load(Ordering::SeqCst),
+            host.closes.load(Ordering::SeqCst)
+        ),
+        (1, 0)
+    );
+}
+
+#[tokio::test]
+async fn fast_shutdown_preserves_an_established_prewarm_binding_close_failure() {
+    let host = Arc::new(Host::default());
+    host.release_open.cancel();
+    let provider = provider(Arc::clone(&host));
+    let session = provider
+        .create_owned_session(Arc::new(crate::NoopCodeModeSessionDelegate))
+        .await
+        .expect("logical session");
+    assert!(session.prewarm().await.is_err());
+    assert!(session.shutdown().await.is_err());
+    assert_eq!(session.shutdown_durably().await, Ok(()));
+    assert_eq!(
+        (
+            host.opens.load(Ordering::SeqCst),
+            host.closes.load(Ordering::SeqCst)
+        ),
+        (1, 2)
+    );
+}
+
+#[tokio::test]
 async fn subscription_failure_retains_created_session_when_fast_close_fails() {
     let host = Arc::new(Host::default());
     host.release_open.cancel();

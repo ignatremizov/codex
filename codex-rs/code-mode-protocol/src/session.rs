@@ -149,6 +149,14 @@ impl CodeModeSessionDelegate for NoopCodeModeSessionDelegate {
 /// must keep those values isolated. Implementations may execute cells
 /// in-process or remotely.
 pub trait CodeModeSession: Send + Sync {
+    /// Initializes the backend without executing a cell, after its cleanup owner is retained.
+    ///
+    /// Eager providers need no additional work. Lazy implementations must retain accepted
+    /// initialization independently of this waiter so shutdown can still account for it.
+    fn prewarm<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,

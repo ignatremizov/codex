@@ -78,6 +78,10 @@ impl ReconnectableSession {
 }
 
 impl CodeModeSession for ReconnectableSession {
+    fn prewarm<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {
+        Box::pin(self.initialize())
+    }
+
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,
@@ -138,14 +142,14 @@ impl ReconnectInner {
     }
 
     fn request_shutdown(self: &Arc<Self>) -> ShutdownResultReceiver {
-        {
+        let established_shutdown = {
             let _opening = self.opening.lock().unwrap_or_else(PoisonError::into_inner);
             let binding = self.binding.lock().unwrap_or_else(PoisonError::into_inner);
             self.shutdown_requested.cancel();
-            if let Some(binding) = binding.as_ref() {
-                binding.session.inner.request_shutdown();
-            }
-        }
+            binding
+                .as_ref()
+                .map(|binding| binding.session.inner.request_shutdown())
+        };
         let mut result = self
             .shutdown_result
             .lock()
@@ -154,16 +158,17 @@ impl ReconnectInner {
             return receiver.clone();
         }
 
-        let (sender, receiver) = watch::channel(None);
+        // Fast shutdown still waits for an established binding's fast close, but
+        // an opening without an ID must not delay interruption. The owned task
+        // below retains cleanup; only durable shutdown proves it has completed.
+        let receiver = established_shutdown.unwrap_or_else(|| watch::channel(Some(Ok(()))).1);
         *result = Some(receiver.clone());
         let inner = Arc::clone(self);
         tokio::spawn(async move {
             let opening_permit = match inner.opening_permit.acquire().await {
                 Ok(permit) => permit,
                 Err(_) => {
-                    sender.send_replace(Some(Err(
-                        "gRPC code-mode session opening coordinator closed".to_string(),
-                    )));
+                    tracing::warn!("gRPC code-mode session opening coordinator closed");
                     return;
                 }
             };
@@ -173,11 +178,11 @@ impl ReconnectInner {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone();
             drop(opening_permit);
-            let result = match binding {
-                Some(binding) => wait_for_watch(binding.session.inner.request_shutdown()).await,
-                None => Ok(()),
-            };
-            sender.send_replace(Some(result));
+            if let Some(binding) = binding
+                && let Err(error) = wait_for_watch(binding.session.inner.request_shutdown()).await
+            {
+                tracing::warn!(%error, "gRPC code-mode background fast close failed");
+            }
         });
         receiver
     }

@@ -101,3 +101,20 @@ async fn owned_factory_returns_a_cleanup_handle_without_starting_the_host() {
         .expect("logical owner");
     assert_eq!(session.shutdown_durably().await, Ok(()));
 }
+
+#[tokio::test]
+async fn prewarm_starts_the_host_after_the_logical_owner_is_returned() {
+    let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
+        "codex-code-mode-host-does-not-exist".into(),
+    );
+    let session = provider
+        .create_owned_session(Arc::new(NoopCodeModeSessionDelegate))
+        .await
+        .expect("logical owner");
+    let error = session.prewarm().await.expect_err("missing host");
+    assert!(
+        error.contains("codex-code-mode-host-does-not-exist"),
+        "{error}"
+    );
+    assert_eq!(session.shutdown_durably().await, Ok(()));
+}

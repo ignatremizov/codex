@@ -189,7 +189,12 @@ impl Session {
         {
             let session = Arc::clone(self);
             tokio::spawn(async move {
-                if session.services.code_mode_service.session().await.is_err() {
+                let result = async {
+                    let owned_session = session.services.code_mode_service.session().await?;
+                    owned_session.prewarm().await
+                }
+                .await;
+                if result.is_err() {
                     warn!("code-mode host startup prewarm failed");
                 }
             });
