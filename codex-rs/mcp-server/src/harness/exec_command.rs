@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use codex_arg0::Arg0DispatchPaths;
-use codex_config::Config;
+use codex_core::config::Config;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;

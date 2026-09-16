@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use codex_arg0::Arg0DispatchPaths;
-use codex_config::Config;
+use codex_core::config::Config;
 use rmcp::model::CallToolResult;
 use rmcp::model::ContentBlock;
 use rmcp::model::RequestId;
