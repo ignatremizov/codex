@@ -146,7 +146,6 @@ jobs:
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: nextest
-          version: 0.9.140
 
       - name: Enable unprivileged user namespaces (Linux)
         shell: bash
@@ -386,6 +385,18 @@ jobs:
             manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
             manual-rust-cargo-home-${{ runner.os }}-
 
+      - name: Restore ci-test sccache cache
+        id: cache_ci_test_sccache_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: manual-rust-ci-test-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          restore-keys: |
+            manual-rust-ci-test-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-verify-sccache-${{ runner.os }}-
+
       - name: Install sccache
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
@@ -395,20 +406,13 @@ jobs:
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: nextest
-          version: 0.9.140
 
-      - name: Configure shared sccache backend
+      - name: Configure persistent ci-test sccache
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-            echo "Using repository-wide sccache GitHub Actions backend"
-          else
-            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
-            echo "SCCACHE_DIR=${CI_BUILD_ROOT}/sccache" >> "$GITHUB_ENV"
-            echo "GitHub sccache backend unavailable; using runner-local cache"
-          fi
+          echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
 
       - name: Build nextest archive
@@ -491,6 +495,14 @@ jobs:
             ~/.cargo/git/db/
           key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
+      - name: Save ci-test sccache cache
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cache/sccache
+          key: manual-rust-ci-test-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+
   shard:
     name: Tests shard ${{ matrix.shard }}/4
     if: ${{ !inputs.regenerate_app_server_schema && !inputs.regenerate_config_schema && !inputs.regenerate_bazel_lock && !inputs.regenerate_tui_snapshots }}
@@ -530,7 +542,6 @@ jobs:
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: nextest
-          version: 0.9.140
 
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -574,7 +585,7 @@ jobs:
             --no-fail-fast
             --archive-file "${archive_file}"
             --workspace-remap "$(pwd)"
-            --partition "slice:${{ matrix.shard }}/4"
+            --partition "hash:${{ matrix.shard }}/4"
           )
           if [[ -n "${NEXTEST_FILTER}" ]]; then
             args+=(-E "${NEXTEST_FILTER}")
