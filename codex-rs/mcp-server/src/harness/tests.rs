@@ -16,6 +16,7 @@ use crate::codex_tool_config::CodexToolCallSandboxMode;
 use crate::harness::exec_command::resolve_sandbox_ceiling;
 use crate::harness::exec_command::sandbox_ceiling_from_profile;
 use crate::harness::process_manager::start_output_collectors;
+use crate::harness::tool_runner::structured_process_response;
 use crate::harness::types::ProcessSignalParam;
 use crate::harness::*;
 
@@ -52,6 +53,19 @@ fn test_tool_schemas_and_properties() {
         .as_array()
         .expect("exec required array");
     assert!(exec_req.iter().any(|v| v == "command"));
+    let exec_out_props = exec_json["outputSchema"]["properties"]
+        .as_object()
+        .expect("exec output properties object");
+    assert!(exec_out_props.contains_key("status"));
+    assert!(exec_out_props.contains_key("stdout"));
+    assert!(exec_out_props.contains_key("stderr"));
+    assert!(exec_out_props.contains_key("output"));
+    assert!(exec_out_props.contains_key("outputTruncated"));
+    assert!(exec_out_props.contains_key("wallTimeMs"));
+    let exec_out_req = exec_json["outputSchema"]["required"]
+        .as_array()
+        .expect("exec output required array");
+    assert!(!exec_out_req.iter().any(|v| v == "output"));
 
     let stdin_tool = create_tool_for_write_stdin();
     assert_eq!(stdin_tool.name, "write_stdin");
@@ -70,6 +84,18 @@ fn test_tool_schemas_and_properties() {
         .as_array()
         .expect("stdin required array");
     assert!(stdin_req.iter().any(|v| v == "sessionId"));
+    let stdin_out_props = stdin_json["outputSchema"]["properties"]
+        .as_object()
+        .expect("stdin output properties object");
+    assert!(stdin_out_props.contains_key("status"));
+    assert!(stdin_out_props.contains_key("stdout"));
+    assert!(stdin_out_props.contains_key("stderr"));
+    assert!(stdin_out_props.contains_key("output"));
+    assert!(stdin_out_props.contains_key("outputTruncated"));
+    let stdin_out_req = stdin_json["outputSchema"]["required"]
+        .as_array()
+        .expect("stdin output required array");
+    assert!(!stdin_out_req.iter().any(|v| v == "output"));
 
     let patch_tool = create_tool_for_apply_patch();
     assert_eq!(patch_tool.name, "apply_patch");
@@ -84,6 +110,38 @@ fn test_tool_schemas_and_properties() {
         .as_array()
         .expect("patch required array");
     assert!(patch_req.iter().any(|v| v == "patch"));
+    let patch_out_props = patch_json["outputSchema"]["properties"]
+        .as_object()
+        .expect("patch output properties object");
+    assert!(patch_out_props.contains_key("success"));
+    assert!(patch_out_props.contains_key("summary"));
+    assert!(patch_out_props.contains_key("files"));
+}
+
+#[test]
+fn test_structured_process_response_omits_only_redundant_combined_output() {
+    let stdout_only = serde_json::json!({
+        "status": "completed",
+        "stdout": "hello\n",
+        "stderr": "",
+        "output": "hello\n"
+    });
+    assert_eq!(
+        structured_process_response(&stdout_only),
+        Some(serde_json::json!({
+            "status": "completed",
+            "stdout": "hello\n",
+            "stderr": ""
+        }))
+    );
+
+    let interleaved = serde_json::json!({
+        "status": "completed",
+        "stdout": "out\n",
+        "stderr": "err\n",
+        "output": "out\nerr\n"
+    });
+    assert_eq!(structured_process_response(&interleaved), Some(interleaved));
 }
 
 #[test]

@@ -26,7 +26,8 @@ pub struct ExecCommandParams {
     pub shell: Option<String>,
 
     /// Requested sandbox mode: `read-only`, `workspace-write`, or `danger-full-access`.
-    /// Cannot exceed the server's configured maximum sandbox ceiling.
+    /// Omit this parameter by default unless the user explicitly requests sandboxing.
+    /// When omitted, runs under the server's default configuration without restricting PID namespaces or device access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<CodexToolCallSandboxMode>,
 
@@ -62,7 +63,8 @@ pub struct ExecCommandResponse {
     /// Captured standard error.
     pub stderr: String,
 
-    /// Combined standard output and standard error.
+    /// Combined standard output and standard error. The MCP structured result may omit this
+    /// field when it is identical to stdout or stderr.
     pub output: String,
 
     /// Whether output exceeded max_output_bytes and was truncated.
@@ -147,7 +149,8 @@ pub struct WriteStdinResponse {
     /// New standard error delta emitted since the last call.
     pub stderr: String,
 
-    /// Combined standard output and error delta.
+    /// Combined standard output and error delta. The MCP structured result may omit this field
+    /// when it is identical to stdout or stderr.
     pub output: String,
 
     /// Whether output exceeded max_output_bytes and was truncated.

@@ -15,6 +15,26 @@ use crate::harness::types::WriteStdinParams;
 use crate::harness::write_stdin::handle_write_stdin;
 use crate::outgoing_message::OutgoingMessageSender;
 
+pub(crate) fn structured_process_response<T: serde::Serialize>(
+    response: &T,
+) -> Option<serde_json::Value> {
+    let mut structured = serde_json::to_value(response).ok()?;
+    if let Some(object) = structured.as_object_mut() {
+        let stdout = object.get("stdout").and_then(serde_json::Value::as_str);
+        let stderr = object.get("stderr").and_then(serde_json::Value::as_str);
+        let output = object.get("output").and_then(serde_json::Value::as_str);
+        let redundant_output = match (stdout, stderr, output) {
+            (Some(stdout), Some(""), Some(output)) => output == stdout,
+            (Some(""), Some(stderr), Some(output)) => output == stderr,
+            _ => false,
+        };
+        if redundant_output {
+            object.remove("output");
+        }
+    }
+    Some(structured)
+}
+
 pub(crate) fn dispatch_harness_tool_call(
     tool_name: &str,
     id: RequestId,
@@ -72,7 +92,7 @@ pub(crate) fn dispatch_harness_tool_call(
                 };
                 let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
                 result.is_error = is_error;
-                result.structured_content = serde_json::to_value(&resp).ok();
+                result.structured_content = structured_process_response(&resp);
                 outgoing.send_response(id, result);
             });
         }
@@ -117,7 +137,7 @@ pub(crate) fn dispatch_harness_tool_call(
                 };
                 let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
                 result.is_error = is_error;
-                result.structured_content = serde_json::to_value(&resp).ok();
+                result.structured_content = structured_process_response(&resp);
                 outgoing.send_response(id, result);
             });
         }
