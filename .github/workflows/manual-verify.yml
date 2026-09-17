@@ -316,134 +316,15 @@ jobs:
           key: manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
   static:
-    name: Static checks
     if: ${{ !inputs.regenerate_app_server_schema && !inputs.regenerate_config_schema && !inputs.regenerate_bazel_lock && !inputs.regenerate_tui_snapshots }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      CARGO_INCREMENTAL: "0"
-      RUST_MIN_STACK: "16777216"
-      SCCACHE_CACHE_SIZE: 4G
-    defaults:
-      run:
-        working-directory: codex-rs
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Free runner disk space
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/share/dotnet
-          docker system prune -af >/dev/null 2>&1 || true
-
-      - uses: ./.github/actions/setup-ci
-
-      - name: Install Linux build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash "${GITHUB_WORKSPACE}/.github/scripts/install-apt-packages.sh" \
-            pkg-config libcap-dev libasound2-dev bubblewrap
-
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          components: clippy, rustfmt
-
-      - name: Configure rusty_v8 artifact overrides and verify checksums
-        uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: x86_64-unknown-linux-gnu
-
-      - name: Compute lockfile hash
-        id: lockhash
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore cargo home cache
-        id: cache_cargo_home_restore
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-          restore-keys: |
-            manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
-            manual-verify-cargo-home-${{ runner.os }}-
-
-      - name: Restore sccache cache
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}-static
-          restore-keys: |
-            manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
-            manual-verify-sccache-${{ runner.os }}-
-
-      - name: Install sccache
-        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: sccache
-
-      - name: Configure sccache
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
-
-      - name: cargo fmt --check
-        run: cargo fmt -- --config imports_granularity=Item --check
-
-      - name: cargo clippy --workspace --tests
-        if: inputs.nextest_packages == ''
-        run: cargo clippy --workspace --tests --timings -- -D warnings
-
-      - name: Upload Cargo timings
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: cargo-timings-manual-verify-static-${{ github.run_id }}
-          path: ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats || true
-
-      - name: Save cargo home cache
-        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-
-      - name: Save sccache cache
-        if: always() && !cancelled()
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}-static
+    uses: ./.github/workflows/rust-static-checks.yml
+    with:
+      run_clippy: ${{ inputs.nextest_packages == '' }}
 
   archive:
     name: Build nextest archive
     if: ${{ !inputs.regenerate_app_server_schema && !inputs.regenerate_config_schema && !inputs.regenerate_bazel_lock && !inputs.regenerate_tui_snapshots }}
+    needs: static
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -500,20 +381,10 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
           restore-keys: |
-            manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
-            manual-verify-cargo-home-${{ runner.os }}-
-
-      - name: Restore sccache cache
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}-archive
-          restore-keys: |
-            manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
-            manual-verify-sccache-${{ runner.os }}-
+            manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-rust-cargo-home-${{ runner.os }}-
 
       - name: Install sccache
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
@@ -525,12 +396,19 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: Configure sccache
+      - name: Configure shared sccache backend
         shell: bash
         run: |
           set -euo pipefail
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+            echo "Using repository-wide sccache GitHub Actions backend"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=${CI_BUILD_ROOT}/sccache" >> "$GITHUB_ENV"
+            echo "GitHub sccache backend unavailable; using runner-local cache"
+          fi
+          echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
 
       - name: Build nextest archive
         env:
@@ -606,15 +484,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-verify-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-
-      - name: Save sccache cache
-        if: always() && !cancelled()
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-verify-sccache-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}-archive
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
   shard:
     name: Tests shard ${{ matrix.shard }}/4

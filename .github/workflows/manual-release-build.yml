@@ -27,13 +27,20 @@ env:
   CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0
 
 jobs:
+  static:
+    if: ${{ inputs.build_linux || inputs.build_macos_intel }}
+    uses: ./.github/workflows/rust-static-checks.yml
+    with:
+      run_clippy: true
+
   linux:
     name: Release build — x86_64-unknown-linux-gnu
     if: ${{ inputs.build_linux }}
+    needs: static
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      CARGO_BUILD_JOBS: "1"
+      CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 10G
     defaults:
@@ -84,32 +91,29 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
           restore-keys: |
-            manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-
-            manual-release-linux-cargo-home-
-
-      - name: Restore sccache cache
-        id: cache_sccache_restore
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-release-linux-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-          restore-keys: |
-            manual-release-linux-sccache-${{ steps.lockhash.outputs.hash }}-
-            manual-release-linux-sccache-
+            manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-rust-cargo-home-${{ runner.os }}-
 
       - name: Install sccache
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: sccache
 
-      - name: Configure sccache
+      - name: Configure shared sccache backend
         shell: bash
         run: |
           set -euo pipefail
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+            echo "Using repository-wide sccache GitHub Actions backend"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=${CI_BUILD_ROOT}/sccache" >> "$GITHUB_ENV"
+            echo "GitHub sccache backend unavailable; using runner-local cache"
+          fi
+          echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
           mkdir -p "$HOME/.cargo"
           cat > "$HOME/.cargo/config.toml" <<'EOF'
           [net]
@@ -260,19 +264,12 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-release-linux-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-
-      - name: Save sccache cache
-        if: always() && !cancelled() && steps.cache_sccache_restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-release-linux-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
   macos_intel_build:
     name: Release build — x86_64-apple-darwin (${{ matrix.bundle }})
     if: ${{ inputs.build_macos_intel }}
+    needs: static
     runs-on: macos-15-intel
     timeout-minutes: 360
     env:
@@ -326,32 +323,29 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
           restore-keys: |
-            manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-
-            manual-release-macos-intel-cargo-home-
-
-      - name: Restore sccache cache
-        id: cache_sccache_restore
-        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-release-macos-intel-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-          restore-keys: |
-            manual-release-macos-intel-sccache-${{ steps.lockhash.outputs.hash }}-
-            manual-release-macos-intel-sccache-
+            manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
+            manual-rust-cargo-home-${{ runner.os }}-
 
       - name: Install sccache
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: sccache
 
-      - name: Configure sccache
+      - name: Configure shared sccache backend
         shell: bash
         run: |
           set -euo pipefail
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+            echo "Using repository-wide sccache GitHub Actions backend"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=${CI_BUILD_ROOT}/sccache" >> "$GITHUB_ENV"
+            echo "GitHub sccache backend unavailable; using runner-local cache"
+          fi
+          echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
           mkdir -p "$HOME/.cargo"
           cat > "$HOME/.cargo/config.toml" <<'EOF'
           [net]
@@ -436,15 +430,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-release-macos-intel-cargo-home-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
-
-      - name: Save sccache cache
-        if: always() && !cancelled() && steps.cache_sccache_restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: ~/.cache/sccache
-          key: manual-release-macos-intel-sccache-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
   macos_intel_package:
     name: Package release — x86_64-apple-darwin
