@@ -54,7 +54,7 @@ pub fn create_tool_for_exec_command() -> Tool {
 
     Tool::new(
         "exec_command",
-        "Execute a shell command on the host. Before substantial repo work, read applicable AGENTS.md files and referenced/applicable SKILL.md files. Omit 'sandbox' by default unless the user explicitly requests sandboxing. For long commands, prefer yieldTimeMs and retain sessionId.",
+        "Execute a shell command on the host. Before substantial repo work, read applicable AGENTS.md files and referenced/applicable SKILL.md files. Omit 'sandbox' by default unless the user explicitly requests sandboxing. A still-running command yields a resumable session after 60 seconds by default; retain sessionId and continue with write_stdin instead of starting the command again.",
         input_schema,
     )
     .with_title("Execute Command")

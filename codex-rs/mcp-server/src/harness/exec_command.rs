@@ -339,136 +339,88 @@ pub async fn handle_exec_command(
     let max_output_bytes = params.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
     let buffers = start_output_collectors(spawned.stdout_rx, spawned.stderr_rx, max_output_bytes);
 
-    // 9. Execution flow: Wait to completion vs. Yield mode
-    match params.yield_time_ms {
-        None => {
-            // Wait to completion up to timeout_ms
-            let timeout_ms = params.timeout_ms.unwrap_or(120_000);
-            let timeout_duration = Duration::from_millis(timeout_ms);
-
-            let (status, exit_code) = tokio::select! {
-                exit_res = &mut spawned.exit_rx => {
-                    ("completed".to_string(), Some(exit_res.unwrap_or(-1)))
-                }
-                _ = tokio::time::sleep(timeout_duration) => {
-                    spawned.session.terminate();
-                    ("timed_out".to_string(), Some(124))
-                }
-            };
-
-            // Allow brief drain of pipe readers
-            tokio::time::sleep(Duration::from_millis(50)).await;
-
-            let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
-            let stdout = String::from_utf8_lossy(&b.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&b.stderr).to_string();
-            let mut output = String::with_capacity(stdout.len() + stderr.len());
-            output.push_str(&stdout);
-            if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') {
-                output.push('\n');
-            }
-            output.push_str(&stderr);
-
-            let truncated = b.stdout_truncated || b.stderr_truncated;
-            let total = b.total_stdout_bytes + b.total_stderr_bytes;
-            drop(b);
-
-            ExecCommandResponse {
-                status,
-                stdout,
-                stderr,
-                output,
-                output_truncated: truncated,
-                output_bytes_total: total,
-                exit_code,
-                pid,
-                session_id: None,
-                wall_time_ms: start_time.elapsed().as_millis() as u64,
-                rejection_reason: None,
-            }
+    // 9. Wait for completion up to the initial yield deadline. A still-running
+    // process becomes a resumable session and is not terminated merely because
+    // the exec_command call yielded.
+    let yield_ms = params.yield_time_ms.unwrap_or(60_000);
+    let yield_duration = Duration::from_millis(yield_ms);
+    let exit_opt = tokio::select! {
+        exit_res = &mut spawned.exit_rx => {
+            Some(exit_res.unwrap_or(-1))
         }
-        Some(yield_ms) => {
-            let yield_duration = Duration::from_millis(yield_ms);
-            let exit_opt = tokio::select! {
-                exit_res = &mut spawned.exit_rx => {
-                    Some(exit_res.unwrap_or(-1))
-                }
-                _ = tokio::time::sleep(yield_duration) => {
-                    None
-                }
-            };
+        _ = tokio::time::sleep(yield_duration) => {
+            None
+        }
+    };
 
-            if let Some(code) = exit_opt {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
-                let stdout = String::from_utf8_lossy(&b.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&b.stderr).to_string();
-                let mut output = String::with_capacity(stdout.len() + stderr.len());
-                output.push_str(&stdout);
-                if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') {
-                    output.push('\n');
-                }
-                output.push_str(&stderr);
+    if let Some(code) = exit_opt {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
+        let stdout = String::from_utf8_lossy(&b.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&b.stderr).to_string();
+        let mut output = String::with_capacity(stdout.len() + stderr.len());
+        output.push_str(&stdout);
+        if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&stderr);
 
-                let truncated = b.stdout_truncated || b.stderr_truncated;
-                let total = b.total_stdout_bytes + b.total_stderr_bytes;
-                drop(b);
+        let truncated = b.stdout_truncated || b.stderr_truncated;
+        let total = b.total_stdout_bytes + b.total_stderr_bytes;
+        drop(b);
 
-                ExecCommandResponse {
-                    status: "completed".to_string(),
-                    stdout,
-                    stderr,
-                    output,
-                    output_truncated: truncated,
-                    output_bytes_total: total,
-                    exit_code: Some(code),
-                    pid,
-                    session_id: None,
-                    wall_time_ms: start_time.elapsed().as_millis() as u64,
-                    rejection_reason: None,
-                }
-            } else {
-                // Process is still alive; yield session_id
-                let session_id = process_manager.allocate_session_id();
-                let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
-                let stdout = String::from_utf8_lossy(&b.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&b.stderr).to_string();
-                let mut output = String::with_capacity(stdout.len() + stderr.len());
-                output.push_str(&stdout);
-                if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') {
-                    output.push('\n');
-                }
-                output.push_str(&stderr);
+        ExecCommandResponse {
+            status: "completed".to_string(),
+            stdout,
+            stderr,
+            output,
+            output_truncated: truncated,
+            output_bytes_total: total,
+            exit_code: Some(code),
+            pid,
+            session_id: None,
+            wall_time_ms: start_time.elapsed().as_millis() as u64,
+            rejection_reason: None,
+        }
+    } else {
+        let session_id = process_manager.allocate_session_id();
+        let b = buffers.lock().unwrap_or_else(PoisonError::into_inner);
+        let stdout = String::from_utf8_lossy(&b.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&b.stderr).to_string();
+        let mut output = String::with_capacity(stdout.len() + stderr.len());
+        output.push_str(&stdout);
+        if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&stderr);
 
-                let stdout_len = b.stdout.len();
-                let stderr_len = b.stderr.len();
-                let truncated = b.stdout_truncated || b.stderr_truncated;
-                let total = b.total_stdout_bytes + b.total_stderr_bytes;
-                drop(b);
+        let stdout_len = b.stdout.len();
+        let stderr_len = b.stderr.len();
+        let truncated = b.stdout_truncated || b.stderr_truncated;
+        let total = b.total_stdout_bytes + b.total_stderr_bytes;
+        drop(b);
 
-                process_manager.register_session(
-                    session_id,
-                    spawned.session,
-                    buffers,
-                    stdout_len,
-                    stderr_len,
-                    Some(spawned.exit_rx),
-                );
+        process_manager.register_session(
+            session_id,
+            spawned.session,
+            buffers,
+            stdout_len,
+            stderr_len,
+            Some(spawned.exit_rx),
+        );
 
-                ExecCommandResponse {
-                    status: "running".to_string(),
-                    stdout,
-                    stderr,
-                    output,
-                    output_truncated: truncated,
-                    output_bytes_total: total,
-                    exit_code: None,
-                    pid,
-                    session_id: Some(session_id),
-                    wall_time_ms: start_time.elapsed().as_millis() as u64,
-                    rejection_reason: None,
-                }
-            }
+        ExecCommandResponse {
+            status: "running".to_string(),
+            stdout,
+            stderr,
+            output,
+            output_truncated: truncated,
+            output_bytes_total: total,
+            exit_code: None,
+            pid,
+            session_id: Some(session_id),
+            wall_time_ms: start_time.elapsed().as_millis() as u64,
+            rejection_reason: None,
         }
     }
 }

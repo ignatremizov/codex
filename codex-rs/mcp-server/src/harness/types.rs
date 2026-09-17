@@ -31,15 +31,11 @@ pub struct ExecCommandParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<CodexToolCallSandboxMode>,
 
-    /// If omitted or null, runs to completion (up to timeout_ms) and returns final output and exit code.
-    /// If provided, yields after this many milliseconds, returning an active session_id if still running.
+    /// Initial wait before returning a still-running process as a resumable session.
+    /// Defaults to 60,000 ms (60 seconds). Set to 0 to yield immediately.
+    /// Yielding does not terminate the process; continue it with write_stdin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yield_time_ms: Option<u64>,
-
-    /// Maximum execution time in milliseconds before terminating the process group.
-    /// Defaults to 120,000 (2 minutes).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
 
     /// Whether to allocate a pseudo-terminal (PTY) for interactive programs. Defaults to false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,7 +50,7 @@ pub struct ExecCommandParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecCommandResponse {
-    /// Status of the execution: "completed", "running", "timed_out", "rejected", or "error".
+    /// Status of the execution: "completed", "running", "rejected", or "error".
     pub status: String,
 
     /// Captured standard output.

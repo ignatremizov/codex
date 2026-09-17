@@ -43,10 +43,10 @@ fn test_tool_schemas_and_properties() {
     assert!(exec_props.contains_key("command"));
     assert!(exec_props.contains_key("cwd"));
     assert!(exec_props.contains_key("env"));
+    assert!(exec_props.contains_key("yieldTimeMs"));
+    assert!(!exec_props.contains_key("timeoutMs"));
     assert!(exec_props.contains_key("shell"));
     assert!(exec_props.contains_key("sandbox"));
-    assert!(exec_props.contains_key("yieldTimeMs"));
-    assert!(exec_props.contains_key("timeoutMs"));
     assert!(exec_props.contains_key("tty"));
     assert!(exec_props.contains_key("maxOutputBytes"));
     let exec_req = exec_json["inputSchema"]["required"]
@@ -304,7 +304,6 @@ async fn test_exec_command_run_to_completion() {
         shell: None,
         sandbox: Some(CodexToolCallSandboxMode::DangerFullAccess),
         yield_time_ms: None,
-        timeout_ms: Some(10_000),
         tty: None,
         max_output_bytes: None,
     };
@@ -338,7 +337,6 @@ async fn test_exec_command_custom_env_and_exit_code() {
         shell: None,
         sandbox: Some(CodexToolCallSandboxMode::DangerFullAccess),
         yield_time_ms: None,
-        timeout_ms: Some(10_000),
         tty: None,
         max_output_bytes: None,
     };
@@ -364,7 +362,6 @@ async fn test_exec_command_sandbox_ceiling_rejection() {
         shell: None,
         sandbox: Some(CodexToolCallSandboxMode::DangerFullAccess),
         yield_time_ms: None,
-        timeout_ms: None,
         tty: None,
         max_output_bytes: None,
     };
@@ -390,7 +387,6 @@ async fn test_interactive_session_yield_and_write_stdin_flow() {
         shell: None,
         sandbox: Some(CodexToolCallSandboxMode::DangerFullAccess),
         yield_time_ms: Some(150),
-        timeout_ms: Some(10_000),
         tty: None,
         max_output_bytes: None,
     };
@@ -460,7 +456,6 @@ async fn test_write_stdin_signal_termination() {
         shell: None,
         sandbox: Some(CodexToolCallSandboxMode::DangerFullAccess),
         yield_time_ms: Some(150),
-        timeout_ms: Some(10_000),
         tty: None,
         max_output_bytes: None,
     };
