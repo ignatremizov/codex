@@ -32,7 +32,8 @@ pub struct ExecCommandParams {
     pub sandbox: Option<CodexToolCallSandboxMode>,
 
     /// Initial wait before returning a still-running process as a resumable session.
-    /// Defaults to 60,000 ms (60 seconds). Set to 0 to yield immediately.
+    /// Defaults to 60,000 ms (60 seconds) and is clamped to 100,000 ms (100 seconds)
+    /// to leave headroom below upstream MCP transport timeouts. Set to 0 to yield immediately.
     /// Yielding does not terminate the process; continue it with write_stdin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yield_time_ms: Option<u64>,
@@ -115,7 +116,8 @@ pub struct WriteStdinParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<ProcessSignalParam>,
 
-    /// Milliseconds to wait for output delta after writing or signaling. Defaults to 10,000 (10 seconds).
+    /// Milliseconds to wait for output delta after writing or signaling. Defaults to 2,000 (2 seconds)
+    /// and is clamped to 120,000 ms (2 minutes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yield_time_ms: Option<u64>,
 
@@ -123,7 +125,8 @@ pub struct WriteStdinParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_until_exit: Option<bool>,
 
-    /// Timeout in milliseconds when wait_until_exit is true. Defaults to 120,000 (2 minutes).
+    /// Timeout in milliseconds when wait_until_exit is true. Defaults to 120,000 (2 minutes)
+    /// and values above 120,000 ms are clamped to 120,000 ms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 

@@ -24,6 +24,7 @@ use codex_utils_pty::spawn_pipe_process;
 use codex_utils_pty::spawn_pty_process;
 
 use crate::codex_tool_config::CodexToolCallSandboxMode;
+use crate::harness::bounded_wait_ms;
 use crate::harness::process_manager::DEFAULT_MAX_OUTPUT_BYTES;
 use crate::harness::process_manager::HarnessProcessManager;
 use crate::harness::process_manager::start_output_collectors;
@@ -342,7 +343,7 @@ pub async fn handle_exec_command(
     // 9. Wait for completion up to the initial yield deadline. A still-running
     // process becomes a resumable session and is not terminated merely because
     // the exec_command call yielded.
-    let yield_ms = params.yield_time_ms.unwrap_or(60_000);
+    let yield_ms = bounded_wait_ms(params.yield_time_ms, 60_000, 100_000);
     let yield_duration = Duration::from_millis(yield_ms);
     let exit_opt = tokio::select! {
         exit_res = &mut spawned.exit_rx => {

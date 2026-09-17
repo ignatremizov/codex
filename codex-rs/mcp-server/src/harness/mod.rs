@@ -23,6 +23,10 @@ pub use types::WriteStdinParams;
 pub use types::WriteStdinResponse;
 pub use write_stdin::handle_write_stdin;
 
+pub(crate) fn bounded_wait_ms(requested: Option<u64>, default_ms: u64, max_ms: u64) -> u64 {
+    requested.unwrap_or(default_ms).min(max_ms)
+}
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
@@ -54,7 +58,7 @@ pub fn create_tool_for_exec_command() -> Tool {
 
     Tool::new(
         "exec_command",
-        "Execute a shell command on the host. Before substantial repo work, read applicable AGENTS.md files and referenced/applicable SKILL.md files. Omit 'sandbox' by default unless the user explicitly requests sandboxing. A still-running command yields a resumable session after 60 seconds by default; retain sessionId and continue with write_stdin instead of starting the command again.",
+        "Execute a shell command on the host. Before substantial repo work, read applicable AGENTS.md files and referenced/applicable SKILL.md files. Omit 'sandbox' by default unless the user explicitly requests sandboxing. A still-running command yields a resumable session after 60 seconds by default; requested yieldTimeMs values above 100 seconds are clamped so the MCP call returns before upstream transport timeouts. Yielding does not stop the process: retain sessionId and continue with write_stdin instead of starting the command again.",
         input_schema,
     )
     .with_title("Execute Command")
@@ -88,7 +92,7 @@ pub fn create_tool_for_write_stdin() -> Tool {
 
     Tool::new(
         "write_stdin",
-        "Send input/signals or retrieve output deltas from a running process session. Reading output advances the session's unread-output offsets; do not poll merely to monitor a long job when the user's local observer can watch it non-consumingly.",
+        "Send input/signals or retrieve output deltas from a running process session. Any requested wait is capped at 120 seconds because the upstream MCP transport can time out longer calls; for longer jobs, poll again using the same sessionId. Reading output advances the session's unread-output offsets; do not poll merely to monitor a long job when the user's local observer can watch it non-consumingly.",
         input_schema,
     )
     .with_title("Write Stdin")

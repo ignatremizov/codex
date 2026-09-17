@@ -2,9 +2,12 @@ use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::harness::bounded_wait_ms;
 use crate::harness::process_manager::HarnessProcessManager;
 use crate::harness::types::WriteStdinParams;
 use crate::harness::types::WriteStdinResponse;
+
+const MAX_WAIT_MS: u64 = 120_000;
 
 pub async fn handle_write_stdin(
     params: WriteStdinParams,
@@ -81,7 +84,7 @@ pub async fn handle_write_stdin(
     }
 
     // 3. Waiting logic: wait_until_exit vs yield_time_ms
-    let timeout_ms = params.timeout_ms.unwrap_or(120_000);
+    let timeout_ms = bounded_wait_ms(params.timeout_ms, 120_000, MAX_WAIT_MS);
     let wait_until_exit = params.wait_until_exit.unwrap_or(false);
     let (initial_stdout_len, initial_stderr_len) = {
         let session = session_arc.lock().await;
@@ -101,7 +104,7 @@ pub async fn handle_write_stdin(
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     } else {
-        let yield_ms = params.yield_time_ms.unwrap_or(2_000);
+        let yield_ms = bounded_wait_ms(params.yield_time_ms, 2_000, MAX_WAIT_MS);
         let deadline = Instant::now() + Duration::from_millis(yield_ms);
         while Instant::now() < deadline {
             let (exited, has_new_output) = {

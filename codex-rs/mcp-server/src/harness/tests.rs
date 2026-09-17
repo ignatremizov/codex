@@ -119,6 +119,15 @@ fn test_tool_schemas_and_properties() {
 }
 
 #[test]
+fn bounded_wait_ms_defaults_and_clamps_requested_waits() {
+    assert_eq!(bounded_wait_ms(None, 60_000, 100_000), 60_000);
+    assert_eq!(bounded_wait_ms(Some(0), 60_000, 100_000), 0);
+    assert_eq!(bounded_wait_ms(Some(90_000), 60_000, 100_000), 90_000);
+    assert_eq!(bounded_wait_ms(Some(180_000), 60_000, 100_000), 100_000);
+    assert_eq!(bounded_wait_ms(Some(300_000), 120_000, 120_000), 120_000);
+}
+
+#[test]
 fn test_structured_process_response_omits_only_redundant_combined_output() {
     let stdout_only = serde_json::json!({
         "status": "completed",
