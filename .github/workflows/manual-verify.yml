@@ -145,7 +145,8 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
-          tool: cargo-nextest
+          tool: nextest
+          version: 0.9.140
 
       - name: Enable unprivileged user namespaces (Linux)
         shell: bash
@@ -324,7 +325,6 @@ jobs:
   archive:
     name: Build nextest archive
     if: ${{ !inputs.regenerate_app_server_schema && !inputs.regenerate_config_schema && !inputs.regenerate_bazel_lock && !inputs.regenerate_tui_snapshots }}
-    needs: static
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -394,7 +394,8 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
-          tool: cargo-nextest
+          tool: nextest
+          version: 0.9.140
 
       - name: Configure shared sccache backend
         shell: bash
@@ -435,7 +436,7 @@ jobs:
           fi
           env -u CODEX_SANDBOX_NETWORK_DISABLED cargo nextest "${args[@]}"
 
-      - name: Build runtime test helper
+      - name: Build runtime test helpers
         env:
           CARGO_PROFILE_CI_TEST_DEBUG: "0"
         run: |
@@ -443,7 +444,9 @@ jobs:
           helper_dir="${RUNNER_TEMP}/${TEST_HELPERS_ARTIFACT}"
           mkdir -p "${helper_dir}"
           cargo build --profile ci-test -p codex-linux-sandbox --bin codex-linux-sandbox
+          cargo build --profile ci-test -p codex-cli --bin codex
           cp "${CARGO_TARGET_DIR}/ci-test/codex-linux-sandbox" "${helper_dir}/"
+          cp "${CARGO_TARGET_DIR}/ci-test/codex" "${helper_dir}/"
 
       - name: Upload Cargo timings
         if: always()
@@ -466,7 +469,9 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ env.TEST_HELPERS_ARTIFACT }}
-          path: ${{ runner.temp }}/${{ env.TEST_HELPERS_ARTIFACT }}/codex-linux-sandbox
+          path: |
+            ${{ runner.temp }}/${{ env.TEST_HELPERS_ARTIFACT }}/codex-linux-sandbox
+            ${{ runner.temp }}/${{ env.TEST_HELPERS_ARTIFACT }}/codex
           if-no-files-found: error
           retention-days: 1
 
@@ -489,7 +494,9 @@ jobs:
   shard:
     name: Tests shard ${{ matrix.shard }}/4
     if: ${{ !inputs.regenerate_app_server_schema && !inputs.regenerate_config_schema && !inputs.regenerate_bazel_lock && !inputs.regenerate_tui_snapshots }}
-    needs: archive
+    needs:
+      - static
+      - archive
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -522,7 +529,8 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
-          tool: cargo-nextest
+          tool: nextest
+          version: 0.9.140
 
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -541,6 +549,8 @@ jobs:
         run: |
           set -euo pipefail
           export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${{ github.run_id }}-${{ matrix.shard }}"
+          export CODEX_TEST_REMOTE_CODEX_BINARY="${RUNNER_TEMP}/${TEST_HELPERS_ARTIFACT}/codex"
+          chmod +x "${CODEX_TEST_REMOTE_CODEX_BINARY}"
           source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
           echo "CODEX_TEST_ENVIRONMENT=${CODEX_TEST_ENVIRONMENT}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
