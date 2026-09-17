@@ -117,6 +117,24 @@ Example:
 }
 ```
 
+### Wrapper-side tool rejection
+
+An MCP transport wrapper may intentionally reject a `tools/call` before it
+reaches Codex. For user-controlled connector pausing, prefer a normal
+`CallToolResult` with `isError: true` and an actionable text content block over
+a JSON-RPC transport error. This lets the model distinguish an intentional
+local pause from a broken connector and ask the user for clarification instead
+of retrying blindly.
+
+The local ChatGPT observer integration uses this behavior to gate tool calls by
+a hashed source-session identifier. That source identifier is not a Codex
+thread, turn, generation, or worker identifier, and JSON-RPC request IDs may be
+reused after completion. A wrapper must therefore avoid inferring remote
+generation lifecycle from either value.
+
+Wrapper-side pausing prevents new requests from reaching Codex; it does not
+terminate work that Codex already accepted before the pause.
+
 ## Approvals (server -> client)
 
 When Codex needs approval to apply changes or run commands, the server issues JSON-RPC requests to the client:
