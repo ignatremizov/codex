@@ -54,7 +54,7 @@ pub fn create_tool_for_exec_command() -> Tool {
 
     Tool::new(
         "exec_command",
-        "Execute a shell command on the host. Always check for and read any AGENTS.md files in the working directory before modifying files or executing project tasks. By default, omit the 'sandbox' parameter unless the user explicitly requests sandboxing (omitting it runs under the server ceiling with unconstrained host process/hardware visibility).",
+        "Execute a shell command on the host. Before substantial repo work, read applicable AGENTS.md files and referenced/applicable SKILL.md files. Omit 'sandbox' by default unless the user explicitly requests sandboxing. For long commands, prefer yieldTimeMs and retain sessionId.",
         input_schema,
     )
     .with_title("Execute Command")
@@ -88,7 +88,7 @@ pub fn create_tool_for_write_stdin() -> Tool {
 
     Tool::new(
         "write_stdin",
-        "Send standard input characters, signals, or poll output deltas from a running process session.",
+        "Send input/signals or retrieve output deltas from a running process session. Reading output advances the session's unread-output offsets; do not poll merely to monitor a long job when the user's local observer can watch it non-consumingly.",
         input_schema,
     )
     .with_title("Write Stdin")
@@ -122,7 +122,7 @@ pub fn create_tool_for_apply_patch() -> Tool {
 
     Tool::new(
         "apply_patch",
-        "Apply or dry-run validate a unified diff patch against the workspace. Always check for and read any AGENTS.md files in the working directory first.",
+        "Apply or dry-run validate a unified diff patch against the workspace. Before patching, read applicable AGENTS.md files and referenced/applicable SKILL.md files.",
         input_schema,
     )
     .with_title("Apply Patch")
