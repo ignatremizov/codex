@@ -35,9 +35,19 @@ runs:
         checksums_path="${binding_dir}/${checksums_name}"
 
         mkdir -p "${binding_dir}"
-        curl -fsSL "${base_url}/${archive_name}" -o "${archive_path}"
-        curl -fsSL "${base_url}/${binding_name}" -o "${binding_path}"
-        curl -fsSL "${base_url}/${checksums_name}" -o "${checksums_path}"
+        curl_retry=(
+          --fail
+          --silent
+          --show-error
+          --location
+          --retry 5
+          --retry-all-errors
+          --retry-delay 2
+          --retry-max-time 120
+        )
+        curl "${curl_retry[@]}" "${base_url}/${archive_name}" -o "${archive_path}"
+        curl "${curl_retry[@]}" "${base_url}/${binding_name}" -o "${binding_path}"
+        curl "${curl_retry[@]}" "${base_url}/${checksums_name}" -o "${checksums_path}"
 
         if [[ "$(wc -l < "${checksums_path}")" -ne 2 ]]; then
           echo "Expected exactly two checksums for ${TARGET} in ${checksums_path}" >&2
