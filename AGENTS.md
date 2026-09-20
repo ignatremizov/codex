@@ -96,6 +96,34 @@ Unless the user explicitly requests local compilation or tests, statically prefl
 - In async integration tests, do not assume that completion of a parent turn means independently spawned child work has already reached a mock server. Poll captured requests with a bounded timeout using an existing test helper or the established `tokio::time::timeout` pattern.
 - Before pushing follow-up fixes, statically re-check every failure reported by remote fmt, Clippy, and tests together; avoid fixing only the first diagnostic when the same log identifies related snapshot metadata or test-state mismatches.
 
+### Static pre-commit checks learned from CI
+
+Apply these checks to the final combined change before committing, including work integrated from other agents. Formatting and independent source review are not evidence that compilation or tests passed. Report the exact checks performed and leave executable validation to remote CI.
+
+#### Rust change propagation
+
+- For a changed struct, enum, or function signature, use workspace-wide searches to inventory constructors, exhaustive patterns, forwarding/reconstruction code, and callers. Include standalone binaries, samples, test modules, and platform-gated code, not just the owning crate. Added optional fields still require updating Rust literals; live and replay reconstruction must forward actual metadata rather than substitute `None`.
+- Resolve imported types and methods against the actual crate facade, public re-exports, enabled features, and lockfile-pinned dependency source. Do not guess a path from a similarly named type or API in another version, and do not add a dependency merely to bypass an existing facade. Distinguish enum variants from associated compatibility constructors when matching errors.
+- Check assertion trait bounds and borrow lifetimes before choosing a test idiom: whole-object `assert_eq!` needs `PartialEq`, `expect_err` needs `Debug` on the success type, and borrowed text must not outlive a temporary parsed body. Prefer a complete serialized comparison when that is the contract under test and the Rust type deliberately lacks equality.
+- Import assertion and parameterization macros explicitly in new test files; do not rely on `super::*` to resolve macros unambiguously. Keep test-only imports in test modules and verify new sibling modules are registered. Use fallible test helpers with propagated errors where workspace lints disallow `expect` or `unwrap`.
+- Inspect lexical guard scopes at every changed `.await`, including after explicit `drop` calls. Where a guard must end before awaiting, return owned data from a block and reacquire only at the intended boundary. Recheck existing lint expectations when changing borrowed guards to owned guards; do not mechanically suppress warnings or alter lock ownership just to satisfy a lint.
+
+#### Fixtures and asynchronous contracts
+
+- Compare fixtures with the current serialized contract, including `serde(skip)`, defaulted internal fields, raw CLI parsing versus resolved values, wire IDs versus typed IDs, and intermediate handshake RPCs. Update mock protocols and expected socket/profile identity together while retaining the original behavioral assertions.
+- Gate race tests on the actual event or admission boundary being tested, not an earlier HTTP request or parent completion. A future polled once may remain queued on a FIFO mutex; continue polling it concurrently with work that must reacquire that mutex, or cancel it deliberately.
+- Trace cancellation and completion ownership through success, explicit error, dropped caller, queued duplicate request, and actor exit. Channel closure may leave queued reply senders alive; termination is not proof of durable acknowledgement. A termination request or synthetic exit flag is not proof that a process and its output/event producers have stopped.
+- Keep fast interruption, durable draining, and lazy initialization/prewarming distinct. If construction becomes lazy, audit every caller that previously relied on construction starting backend work. If cleanup stops sending a redundant RPC, finish test servers through an explicit test-owned signal after assertions rather than waiting for the obsolete RPC or increasing timeouts.
+- Isolate configuration fixtures with owned temporary home and working directories and the existing managed-config overrides. Negative connection tests must assert the intended validation error or prove that no connection occurred; connection refusal from an already-stopped mock must not make them pass.
+
+#### Workflows and generated artifacts
+
+- Read changed workflows together with their composite actions, invoked recipes, and sourced scripts. Check job dependencies, skipped-job behavior, regeneration inputs, failure/cancellation upload conditions, working directories, and actual action/tool input names. Inspect supported CLI flags from available help or pinned documentation without invoking a build.
+- For archived or sharded tests, trace each runtime helper from producer to upload to extraction to the exact path embedded in test binaries. Check executable permissions, profile/target directories, workspace remapping, remote-environment helpers, and environment variables that alter snapshots. A nextest archive alone may not contain every runtime dependency.
+- Verify that sharding covers the intended test set and gates on both static checks and archive availability. Check cache restore/save paths and keys together; calculate dependency/toolchain hashes after any lockfile refresh, and retain useful artifacts when later checks fail without uploading stale files after failed generation.
+- Audit changed manifests, workspace versions, Cargo dependency references, and paired Bazel lock updates together. For schemas, include standalone definitions, aggregate JSON, TypeScript imports/exports, and stable/experimental precomputed bundles. When generation requires compilation, use remote generation and inspect its full artifact diff; never claim that hand-edited source alone closes the generated-artifact gate.
+- Read the complete failed CI log and account for every diagnostic across crates and targets before committing a repair. Compiler failures can hide later errors: proactively repeat the constructor/caller/import audit for the affected API. Fix confirmed errors first and inspect suspected cascading diagnostics rather than renaming genuinely used variables or weakening assertions.
+
 ## The `codex-core` crate
 
 Over time, the `codex-core` crate (defined in `codex-rs/core/`) has become bloated because it is the largest crate, so it is often easier to add something new to `codex-core` rather than refactor out the library code you need so your new code neither takes a dependency on, nor contributes to the size of, `codex-core`.
