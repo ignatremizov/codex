@@ -54,8 +54,8 @@ const MAX_CHANNEL_BYTES: usize = 128;
 const MAX_READ_CHARS: usize = 20_000;
 const DATABASE_FILE: &str = "agent_message_board_1.sqlite";
 
-// Weak entries let the last board handle release its pool. Initialization and
-// recovery share one lock so concurrent starts cannot open duplicate or stale pools.
+// Weak entries let the last board handle release its pool. Initialization is
+// serialized so concurrent starts cannot open duplicate pools.
 static POOLS: LazyLock<Mutex<HashMap<PathBuf, Weak<SqlitePool>>>> = LazyLock::new(Mutex::default);
 
 const SCHEMA: &str = "
