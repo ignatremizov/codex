@@ -1,7 +1,10 @@
 use std::fs;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -27,6 +30,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -61,6 +65,10 @@ use super::RolloutMigrationStatus;
 #[cfg(unix)]
 use super::decompress_rollout_to_path;
 use super::migration_journal_path;
+use super::publish::compressed_staged_rollout_path;
+use super::publish::decompressed_staged_rollout_path;
+use super::publish::rewritten_staged_rollout_path;
+use super::publish::staged_rollout_path;
 use super::telemetry::RolloutMigrationTrigger;
 use super::thread_history;
 use super::write_migration_journal;
@@ -264,10 +272,21 @@ fn completed(turn_id: &str) -> RolloutItem {
 }
 
 fn read_rollout(path: &Path) -> Vec<RolloutLine> {
-    fs::read_to_string(path)
-        .expect("read migrated rollout")
+    let mut contents = String::new();
+    codex_rollout::open_rollout_seekable_reader(path)
+        .expect("open migrated rollout")
+        .read_to_string(&mut contents)
+        .expect("read migrated rollout");
+    contents
         .lines()
         .map(|line| codex_rollout::parse_rollout_line(line).expect("parse migrated rollout"))
+        .collect()
+}
+
+fn serialize_rollout(lines: &[RolloutLine]) -> String {
+    lines
+        .iter()
+        .map(|line| serde_json::to_string(line).expect("serialize rollout line") + "\n")
         .collect()
 }
 
@@ -604,9 +623,21 @@ async fn migration_keeps_late_completions_in_their_original_turn() {
 
 #[tokio::test]
 async fn migration_hoists_delayed_session_meta_before_paginated_history() {
+    assert_delayed_session_meta_migration(SessionSource::Cli).await;
+}
+
+#[tokio::test]
+async fn migration_hoists_delayed_subagent_session_meta_before_paginated_history() {
+    assert_delayed_session_meta_migration(SessionSource::SubAgent(SubAgentSource::Other(
+        "test".to_string(),
+    )))
+    .await;
+}
+
+async fn assert_delayed_session_meta_migration(source: SessionSource) {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();
-    let path = write_rollout(home.path(), thread_id, SessionSource::Cli, Vec::new());
+    let path = write_rollout(home.path(), thread_id, source, Vec::new());
     let existing = fs::read_to_string(&path).expect("read legacy rollout");
     let pre_header = RolloutLine {
         timestamp: TIMESTAMP.to_string(),
@@ -974,12 +1005,24 @@ async fn migration_does_not_coalesce_distinct_adjacent_user_records() {
 
 #[tokio::test]
 async fn migration_keeps_late_completions_for_surviving_turns_across_rollback() {
+    assert_late_completion_migration(SessionSource::Cli).await;
+}
+
+#[tokio::test]
+async fn migration_keeps_late_subagent_completions_for_surviving_turns_across_rollback() {
+    assert_late_completion_migration(SessionSource::SubAgent(SubAgentSource::Other(
+        "test".to_string(),
+    )))
+    .await;
+}
+
+async fn assert_late_completion_migration(source: SessionSource) {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();
     let path = write_rollout(
         home.path(),
         thread_id,
-        SessionSource::Cli,
+        source,
         vec![
             started("old"),
             user_message("old question"),
@@ -1696,6 +1739,12 @@ async fn migration_drops_copied_user_fork_metadata_without_creating_a_history_ba
         timestamp: TIMESTAMP.to_string(),
         cwd: home.path().to_path_buf(),
         source: SessionSource::Cli,
+        history_base: Some(HistoryPosition {
+            thread_id: ThreadId::new(),
+            end_ordinal_exclusive: 3,
+            end_byte_offset: 512,
+        }),
+        subagent_history_start_ordinal: Some(2),
         ..SessionMeta::default()
     };
     let copied_response =
@@ -1763,14 +1812,35 @@ async fn migration_drops_copied_user_fork_metadata_without_creating_a_history_ba
 }
 
 #[tokio::test]
-async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
+async fn migration_preserves_subagent_transcript_independently_of_bounded_context() {
+    assert_subagent_transcript_migration(SubagentMigrationScenario::Fresh).await;
+}
+
+#[tokio::test]
+async fn migration_rebuilds_old_unpublished_bounded_subagent_stages_from_the_source() {
+    assert_subagent_transcript_migration(SubagentMigrationScenario::PendingPlain).await;
+    assert_subagent_transcript_migration(SubagentMigrationScenario::PendingCompressed).await;
+}
+
+#[derive(Clone, Copy)]
+enum SubagentMigrationScenario {
+    Fresh,
+    PendingPlain,
+    PendingCompressed,
+}
+
+async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenario) {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();
-    let path = write_rollout(
+    let mut path = write_rollout(
         home.path(),
         thread_id,
         SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
         vec![
+            started("old-turn"),
+            user_message("OLD_USER_SENTINEL"),
+            agent_message("OLD_ASSISTANT_SENTINEL"),
+            completed("old-turn"),
             RolloutItem::Compacted(CompactedItem {
                 message: "superseded checkpoint".repeat(1024),
                 replacement_history: Some(Vec::new()),
@@ -1784,6 +1854,13 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 compaction_response_id: None,
                 latest_token_usage_record: None,
             }),
+            started("removed-turn"),
+            user_message("ROLLED_BACK_SENTINEL"),
+            completed("removed-turn"),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+            })),
+            exec_completion("old-turn", "OLD_TOOL_SENTINEL"),
             RolloutItem::Compacted(CompactedItem {
                 message: "latest checkpoint".to_string(),
                 replacement_history: Some(vec![
@@ -1840,6 +1917,34 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
             completed("child-turn"),
         ],
     );
+    let mut source_lines = read_rollout(&path);
+    let late_completion = source_lines
+        .iter_mut()
+        .find(|line| {
+            matches!(&line.item, RolloutItem::EventMsg(EventMsg::ExecCommandEnd(event))
+                if event.call_id == "OLD_TOOL_SENTINEL")
+        })
+        .expect("late completion fixture");
+    late_completion.timestamp = "2025-01-03T12:02:00Z".to_string();
+    fs::write(&path, serialize_rollout(&source_lines))
+        .expect("write distinct completion timestamp");
+    let mut staged_metadata = source_lines[0].clone();
+    let RolloutItem::SessionMeta(metadata) = &mut staged_metadata.item else {
+        panic!("source should start with metadata");
+    };
+    metadata.meta.history_mode = ThreadHistoryMode::Paginated;
+    metadata.meta.subagent_history_start_ordinal = Some(2);
+    staged_metadata.ordinal = Some(0);
+    let bounded_stage = format!(
+        "{}\n{}\n",
+        serde_json::to_string(&staged_metadata).expect("serialize bounded metadata"),
+        serde_json::to_string(&RolloutLine {
+            timestamp: TIMESTAMP.to_string(),
+            ordinal: Some(1),
+            item: compacted(vec![input_response_message("user", "STALE_BOUNDED_STAGE")]),
+        })
+        .expect("serialize bounded checkpoint"),
+    );
     writeln!(
         fs::OpenOptions::new()
             .append(true)
@@ -1848,6 +1953,46 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
         "{{not valid rollout json"
     )
     .expect("append malformed record");
+    if matches!(scenario, SubagentMigrationScenario::PendingCompressed) {
+        path = compress_rollout(&path);
+    }
+    let store = indexed_store(home.path()).await;
+    let staged_path = staged_rollout_path(&path).expect("staged path");
+    let rewritten_path = rewritten_staged_rollout_path(&staged_path).expect("rewritten path");
+    let journal_path = migration_journal_path(home.path(), thread_id);
+    match scenario {
+        SubagentMigrationScenario::Fresh => {}
+        SubagentMigrationScenario::PendingPlain | SubagentMigrationScenario::PendingCompressed => {
+            fs::write(&staged_path, &bounded_stage).expect("write old bounded stage");
+            fs::write(&rewritten_path, &bounded_stage).expect("write old rewritten stage");
+            store
+                .project_rollout_in_batches(
+                    thread_id,
+                    &staged_path,
+                    &mut super::RolloutMigrationRateLimiter::new(/*max_mib_per_second*/ None)
+                        .expect("rate limiter"),
+                )
+                .await
+                .expect("project old bounded stage");
+            write_migration_journal(&journal_path)
+                .await
+                .expect("write old pending journal");
+            if matches!(scenario, SubagentMigrationScenario::PendingCompressed) {
+                fs::write(
+                    decompressed_staged_rollout_path(&path).expect("decompressed stage path"),
+                    &bounded_stage,
+                )
+                .expect("write stale decompressed stage");
+                fs::write(
+                    compressed_staged_rollout_path(&path).expect("compressed stage path"),
+                    zstd::stream::encode_all(bounded_stage.as_bytes(), /*level*/ 0)
+                        .expect("compress old stage"),
+                )
+                .expect("write old compressed stage");
+            }
+        }
+    }
+    drop(store);
     let store = indexed_store(home.path()).await;
 
     store
@@ -1859,15 +2004,31 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
     let RolloutItem::SessionMeta(metadata) = &lines[0].item else {
         panic!("migrated rollout should start with session metadata");
     };
-    assert_eq!(
-        metadata.meta.subagent_history_start_ordinal,
-        Some(lines.len() as u64)
-    );
-    assert!(
-        !fs::read_to_string(&path)
-            .expect("read migrated rollout")
-            .contains("superseded checkpoint")
-    );
+    assert_eq!(metadata.meta.subagent_history_start_ordinal, None);
+    let canonical = serde_json::to_string(&lines).expect("serialize canonical transcript");
+    for sentinel in [
+        "OLD_USER_SENTINEL",
+        "OLD_ASSISTANT_SENTINEL",
+        "OLD_TOOL_SENTINEL",
+        "superseded checkpoint",
+        "latest checkpoint",
+    ] {
+        assert!(canonical.contains(sentinel), "missing canonical {sentinel}");
+    }
+    assert!(!canonical.contains("ROLLED_BACK_SENTINEL"));
+    assert!(!canonical.contains("STALE_BOUNDED_STAGE"));
+    let late_completion = lines
+        .iter()
+        .find_map(|line| match &line.item {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                if event.item.id() == "OLD_TOOL_SENTINEL" =>
+            {
+                Some((line.timestamp.as_str(), event.completed_at_ms))
+            }
+            _ => None,
+        })
+        .expect("canonical late completion");
+    assert_eq!(late_completion, ("2025-01-03T12:02:00Z", 1_735_905_720_000));
     let context = store
         .load_latest_model_context(LoadThreadHistoryParams {
             thread_id,
@@ -1878,26 +2039,135 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
     assert!(context.items.iter().any(|item| {
         matches!(item, RolloutItem::Compacted(compacted) if compacted.message == "latest checkpoint")
     }));
-    assert!(
-        list_active_summary_turns(&store, thread_id)
-            .await
+    let model_context = serde_json::to_string(&context.items).expect("serialize model context");
+    assert!(!model_context.contains("OLD_USER_SENTINEL"));
+    assert!(!model_context.contains("OLD_ASSISTANT_SENTINEL"));
+    assert!(!model_context.contains("superseded checkpoint"));
+    let turns = list_active_summary_turns(&store, thread_id).await;
+    assert_eq!(
+        turns
             .turns
-            .is_empty()
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["old-turn", "child-turn"]
+    );
+    let items = store
+        .list_items(ListItemsParams {
+            thread_id,
+            turn_id: Some("old-turn".to_string()),
+            include_archived: false,
+            cursor: None,
+            page_size: 20,
+            sort_direction: SortDirection::Asc,
+            sort_key: ItemSortKey::CreatedAtOrdinal,
+            after_updated_at_ordinal: None,
+        })
+        .await
+        .expect("read old audit items");
+    assert_eq!(
+        items
+            .items
+            .iter()
+            .find(|item| item.item_id == "OLD_TOOL_SENTINEL")
+            .map(|item| (item.turn_id.as_str(), item.created_at_ms)),
+        Some(("old-turn", 1_735_905_720_000))
+    );
+    let audit = items
+        .items
+        .iter()
+        .map(|item| serde_json::from_slice::<serde_json::Value>(&item.item_json))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decode old audit items");
+    let audit = serde_json::to_string(&audit).expect("serialize old audit items");
+    for sentinel in [
+        "OLD_USER_SENTINEL",
+        "OLD_ASSISTANT_SENTINEL",
+        "OLD_TOOL_SENTINEL",
+    ] {
+        assert!(audit.contains(sentinel), "missing projected {sentinel}");
+    }
+    assert!(!journal_path.exists());
+    assert!(!staged_path.exists());
+    assert!(!rewritten_path.exists());
+    let published = fs::read(&path).expect("read published bytes");
+    let repeated = store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("retry migration");
+    assert_eq!(
+        repeated.outcomes[0].status,
+        RolloutMigrationStatus::AlreadyPaginated
+    );
+    assert_eq!(
+        fs::read(&path).expect("read unchanged publication"),
+        published
+    );
+
+    thread_history::delete_thread(&store, thread_id)
+        .await
+        .expect("simulate lost published projection");
+    write_migration_journal(&journal_path)
+        .await
+        .expect("simulate interrupted publication");
+    drop(store);
+    let store = indexed_store(home.path()).await;
+    let recovered = store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("recover full published transcript");
+    assert_eq!(
+        recovered.outcomes[0].status,
+        RolloutMigrationStatus::Migrated
+    );
+    assert_eq!(
+        fs::read(&path).expect("read recovered publication"),
+        published
+    );
+    assert_eq!(
+        serde_json::to_value(list_active_summary_turns(&store, thread_id).await)
+            .expect("serialize recovered audit history"),
+        serde_json::to_value(turns).expect("serialize original audit history")
+    );
+    assert!(!journal_path.exists());
+    assert!(
+        !decompressed_staged_rollout_path(&path)
+            .expect("decompressed path")
+            .exists()
+    );
+    assert!(
+        !compressed_staged_rollout_path(&path)
+            .expect("compressed path")
+            .exists()
     );
 }
 
 #[tokio::test]
-async fn migration_keeps_small_uncompacted_subagent_replay_as_prefix() {
+async fn migration_keeps_full_uncompacted_subagent_history_and_resume_context() {
+    assert_subagent_full_replay_fallback(Vec::new()).await;
+}
+
+#[tokio::test]
+async fn migration_keeps_full_subagent_context_when_checkpoint_lacks_window_metadata() {
+    let RolloutItem::Compacted(mut checkpoint) = compacted(Vec::new()) else {
+        panic!("compaction fixture");
+    };
+    checkpoint.window_number = None;
+    assert_subagent_full_replay_fallback(vec![RolloutItem::Compacted(checkpoint)]).await;
+}
+
+async fn assert_subagent_full_replay_fallback(mut prefix: Vec<RolloutItem>) {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();
+    prefix.extend([
+        user_message("child question"),
+        agent_message("child answer"),
+    ]);
     let path = write_rollout(
         home.path(),
         thread_id,
         SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
-        vec![
-            user_message("child question"),
-            agent_message("child answer"),
-        ],
+        prefix,
     );
     let store = indexed_store(home.path()).await;
 
@@ -1910,10 +2180,7 @@ async fn migration_keeps_small_uncompacted_subagent_replay_as_prefix() {
     let RolloutItem::SessionMeta(metadata) = &lines[0].item else {
         panic!("migrated rollout should start with session metadata");
     };
-    assert_eq!(
-        metadata.meta.subagent_history_start_ordinal,
-        Some(lines.len() as u64)
-    );
+    assert_eq!(metadata.meta.subagent_history_start_ordinal, None);
     assert_eq!(
         lines
             .iter()
@@ -1921,6 +2188,325 @@ async fn migration_keeps_small_uncompacted_subagent_replay_as_prefix() {
             .count(),
         2
     );
+    let context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load full fallback context");
+    let canonical_items = lines.into_iter().map(|line| line.item).collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(context.items).expect("serialize fallback"),
+        serde_json::to_value(canonical_items).expect("serialize full canonical history")
+    );
+    let turns = list_active_summary_turns(&store, thread_id).await;
+    assert_eq!(turns.turns.len(), 1);
+    assert_eq!(turns.turns[0].items.len(), 2);
+}
+
+#[tokio::test]
+async fn migration_rejects_legacy_lineage_without_changing_source_or_recovery_state() {
+    let history_base = HistoryPosition {
+        thread_id: ThreadId::new(),
+        end_ordinal_exclusive: 5,
+        end_byte_offset: 1024,
+    };
+    for (history_base, inherited_start) in [
+        (Some(history_base), None),
+        (None, Some(3)),
+        (Some(history_base), Some(3)),
+    ] {
+        let home = TempDir::new().expect("create Codex home");
+        let thread_id = ThreadId::new();
+        let path = write_rollout(
+            home.path(),
+            thread_id,
+            SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+            vec![user_message("SOURCE_SENTINEL"), agent_message("answer")],
+        );
+        let mut legacy = read_rollout(&path);
+        let store = indexed_store(home.path()).await;
+        store
+            .migrate_rollouts(apply_options())
+            .await
+            .expect("seed projection");
+        let projection = thread_history::projection_state(&store, thread_id)
+            .await
+            .expect("read seeded projection")
+            .expect("seeded projection");
+        let RolloutItem::SessionMeta(metadata) = &mut legacy[0].item else {
+            panic!("legacy header");
+        };
+        metadata.meta.history_base = history_base;
+        metadata.meta.subagent_history_start_ordinal = inherited_start;
+        let original = serialize_rollout(&legacy);
+        fs::write(&path, &original).expect("restore legacy source with ambiguous lineage");
+        let journal = migration_journal_path(home.path(), thread_id);
+        write_migration_journal(&journal)
+            .await
+            .expect("pending journal");
+        let staged = staged_rollout_path(&path).expect("stage path");
+        let rewritten = rewritten_staged_rollout_path(&staged).expect("rewritten path");
+        fs::write(&staged, b"staged recovery bytes").expect("stage");
+        fs::write(&rewritten, b"rewritten recovery bytes").expect("rewritten stage");
+        let recovery_before = [&journal, &staged, &rewritten]
+            .map(|path| fs::read(path).expect("read recovery artifact"));
+
+        for mode in [RolloutMigrationMode::DryRun, RolloutMigrationMode::Apply] {
+            let report = store
+                .migrate_rollouts(RolloutMigrationOptions {
+                    mode,
+                    ..apply_options()
+                })
+                .await
+                .expect("report unsupported lineage");
+            assert_failed_with_reason(
+                &report.outcomes[0],
+                RolloutMigrationFailureReason::LegacyRolloutConversionFailed,
+            );
+            assert!(
+                report.outcomes[0]
+                    .message
+                    .as_ref()
+                    .is_some_and(|message| message.contains("inherited history boundaries"))
+            );
+            assert_eq!(
+                fs::read(&path).expect("preserved source"),
+                original.as_bytes()
+            );
+            assert_eq!(
+                [&journal, &staged, &rewritten]
+                    .map(|path| fs::read(path).expect("preserved recovery artifact")),
+                recovery_before
+            );
+            let after = thread_history::projection_state(&store, thread_id)
+                .await
+                .expect("read preserved projection")
+                .expect("projection was not deleted");
+            assert_eq!(
+                (after.next_byte_offset, after.next_ordinal),
+                (projection.next_byte_offset, projection.next_ordinal)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn migration_revalidates_metadata_after_waiting_for_the_writer() {
+    enum MetadataChange {
+        Identity,
+        Mode,
+        HistoryBase,
+        InheritedBoundary,
+    }
+
+    for change in [
+        MetadataChange::Identity,
+        MetadataChange::Mode,
+        MetadataChange::HistoryBase,
+        MetadataChange::InheritedBoundary,
+    ] {
+        let home = TempDir::new().expect("create Codex home");
+        let thread_id = ThreadId::new();
+        let path = write_rollout(
+            home.path(),
+            thread_id,
+            SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+            vec![user_message("source sentinel"), agent_message("answer")],
+        );
+        let mut legacy = read_rollout(&path);
+        let store = Arc::new(indexed_store(home.path()).await);
+        store
+            .migrate_rollouts(apply_options())
+            .await
+            .expect("seed existing projection");
+        let before = thread_history::projection_state(&store, thread_id)
+            .await
+            .expect("read seeded projection")
+            .expect("seeded projection");
+        fs::write(&path, serialize_rollout(&legacy)).expect("restore legacy source");
+        let journal = migration_journal_path(home.path(), thread_id);
+        write_migration_journal(&journal)
+            .await
+            .expect("pending journal");
+        let staged = staged_rollout_path(&path).expect("stage path");
+        fs::write(&staged, b"prior recovery stage").expect("prior stage");
+        let recovery_before =
+            [&journal, &staged].map(|path| fs::read(path).expect("read prior recovery artifact"));
+        let coordination = store.live_writer_locks.coordination(thread_id).await;
+        let guard = coordination.writer.clone().lock_owned().await;
+        let writer_owners = Arc::strong_count(&coordination.writer);
+        let migrating_store = Arc::clone(&store);
+        let migration =
+            tokio::spawn(async move { migrating_store.migrate_rollouts(apply_options()).await });
+        // lock() clones this writer only after the first header inspection. Holding the guard
+        // and observing that clone proves the migration reached writer acquisition; the spawned
+        // future continues being polled while we change the source. No timing-only sleep gate.
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
+            while Arc::strong_count(&coordination.writer) == writer_owners {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("migration should reach writer acquisition");
+        let RolloutItem::SessionMeta(metadata) = &mut legacy[0].item else {
+            panic!("legacy header");
+        };
+        let expected_reason = match change {
+            MetadataChange::Identity => {
+                metadata.meta.id = ThreadId::new();
+                RolloutMigrationFailureReason::InvalidSessionMetadata
+            }
+            MetadataChange::Mode => {
+                metadata.meta.history_mode = ThreadHistoryMode::Paginated;
+                RolloutMigrationFailureReason::InvalidSessionMetadata
+            }
+            MetadataChange::HistoryBase => {
+                metadata.meta.history_base = Some(HistoryPosition {
+                    thread_id: ThreadId::new(),
+                    end_ordinal_exclusive: 3,
+                    end_byte_offset: 512,
+                });
+                RolloutMigrationFailureReason::LegacyRolloutConversionFailed
+            }
+            MetadataChange::InheritedBoundary => {
+                metadata.meta.subagent_history_start_ordinal = Some(3);
+                RolloutMigrationFailureReason::LegacyRolloutConversionFailed
+            }
+        };
+        let changed_source = serialize_rollout(&legacy);
+        fs::write(&path, &changed_source).expect("change source while holding writer");
+        drop(guard);
+        let report = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), migration)
+            .await
+            .expect("migration should finish after writer release")
+            .expect("join migration")
+            .expect("report locked validation failure");
+        assert_failed_with_reason(&report.outcomes[0], expected_reason);
+        assert_eq!(
+            fs::read(&path).expect("preserved changed source"),
+            changed_source.as_bytes()
+        );
+        assert_eq!(
+            [&journal, &staged].map(|path| fs::read(path).expect("preserved recovery artifact")),
+            recovery_before
+        );
+        let after = thread_history::projection_state(&store, thread_id)
+            .await
+            .expect("read preserved projection")
+            .expect("projection was not deleted");
+        assert_eq!(
+            (after.next_byte_offset, after.next_ordinal),
+            (before.next_byte_offset, before.next_ordinal)
+        );
+    }
+}
+
+#[tokio::test]
+async fn migration_recovers_paginated_subagent_without_rewriting_trusted_lineage() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let parent_id = ThreadId::new();
+    let parent_path = write_rollout(
+        home.path(),
+        parent_id,
+        SessionSource::Cli,
+        vec![
+            started("ancestor"),
+            user_message("ancestor sentinel"),
+            completed("ancestor"),
+        ],
+    );
+    let path = write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
+        vec![
+            started("inherited"),
+            user_message("inherited sentinel"),
+            completed("inherited"),
+            started("own"),
+            user_message("own sentinel"),
+            completed("own"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+    store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("seed canonical shapes");
+    let parent_lines = read_rollout(&parent_path);
+    let history_base = HistoryPosition {
+        thread_id: parent_id,
+        end_ordinal_exclusive: parent_lines.len() as u64,
+        end_byte_offset: fs::metadata(&parent_path).expect("parent metadata").len(),
+    };
+    let mut lines = read_rollout(&path);
+    let boundary = lines
+        .iter()
+        .find(|line| {
+            matches!(
+                &line.item,
+                RolloutItem::EventMsg(EventMsg::TurnStarted(event)) if event.turn_id == "own"
+            )
+        })
+        .and_then(|line| line.ordinal)
+        .expect("own turn boundary");
+    for (history_base, inherited_start) in [(None, Some(boundary)), (Some(history_base), None)] {
+        let RolloutItem::SessionMeta(metadata) = &mut lines[0].item else {
+            panic!("paginated header");
+        };
+        metadata.meta.history_base = history_base;
+        metadata.meta.subagent_history_start_ordinal = inherited_start;
+        metadata.meta.forked_from_id = history_base.map(|base| base.thread_id);
+        let initial_ordinal =
+            history_base.map_or(/*default*/ 0, |base| base.end_ordinal_exclusive);
+        for (index, line) in lines.iter_mut().enumerate() {
+            line.ordinal = Some(initial_ordinal + index as u64);
+        }
+        let published = serialize_rollout(&lines);
+        fs::write(&path, &published).expect("write trusted paginated lineage");
+        let journal = migration_journal_path(home.path(), thread_id);
+        let expected_status = if history_base.is_none() {
+            thread_history::delete_thread(&store, thread_id)
+                .await
+                .expect("remove projection");
+            write_migration_journal(&journal)
+                .await
+                .expect("simulate published interruption");
+            RolloutMigrationStatus::Migrated
+        } else {
+            // Reference-backed native paginated histories are not legacy migration outputs:
+            // they have shifted ordinals and no migration journal.
+            RolloutMigrationStatus::AlreadyPaginated
+        };
+
+        let report = store
+            .migrate_rollouts(RolloutMigrationOptions {
+                thread_ids: vec![thread_id],
+                ..apply_options()
+            })
+            .await
+            .expect("recover");
+        assert_eq!(report.outcomes[0].status, expected_status);
+        assert_eq!(
+            fs::read(&path).expect("unchanged canonical bytes"),
+            published.as_bytes()
+        );
+        if history_base.is_none() {
+            let turns = list_active_summary_turns(&store, thread_id).await;
+            assert_eq!(
+                turns
+                    .turns
+                    .iter()
+                    .map(|turn| turn.turn_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["own"]
+            );
+        }
+        assert!(!journal.exists());
+    }
 }
 
 #[tokio::test]
