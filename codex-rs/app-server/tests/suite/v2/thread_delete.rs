@@ -8,8 +8,6 @@ use app_test_support::create_mock_responses_server_sequence;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::ThreadArchiveParams;
-use codex_app_server_protocol::ThreadArchiveResponse;
 use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadDeletedNotification;
@@ -345,45 +343,10 @@ async fn thread_delete_handles_live_threads_before_rollout_exists() -> Result<()
 }
 
 #[tokio::test]
-async fn thread_delete_removes_persisted_board_even_with_feature_disabled() -> Result<()> {
-    let server = create_mock_responses_server_sequence(vec![
-        responses::sse(vec![
-            responses::ev_function_call_with_namespace(
-                "post",
-                "collaboration",
-                "post",
-                &json!({"new_channel_name":"design", "text":"Persist this decision"}).to_string(),
-            ),
-            responses::ev_completed("post"),
-        ]),
-        responses::sse(vec![
-            responses::ev_assistant_message("done", "Done"),
-            responses::ev_completed("done"),
-        ]),
-    ])
-    .await;
+async fn thread_delete_preserves_boards_even_with_feature_disabled() -> Result<()> {
     let home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::AgentMessageBoard)
-        .enable_feature(Feature::MultiAgentV2)
-        .write(home.path())?;
-    let mut app = TestAppServer::builder()
-        .with_codex_home(home.path())
-        .build_initialized()
-        .await?;
-    let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
-    let completed = app
-        .start_turn_and_wait_for_completion(TurnStartParams {
-            thread_id: thread.id.clone(),
-            input: vec![UserInput::Text {
-                text: "Post the decision".into(),
-                text_elements: Vec::new(),
-            }],
-            ..Default::default()
-        })
-        .await?;
-    assert_eq!(completed.turn.status, TurnStatus::Completed);
-
+    let thread_ids = seed_delete_test_boards(home.path()).await?;
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
     let sqlite = SqliteConfig::new_for_testing(home.path().abs());
     let pool = sqlite
         .open_read_only_pool(
@@ -391,17 +354,7 @@ async fn thread_delete_removes_persisted_board_even_with_feature_disabled() -> R
             /*busy_timeout*/ None,
         )
         .await?;
-    assert_eq!(board_counts(&pool).await?, (1, 1, 1));
-    let _: ThreadArchiveResponse = app
-        .request(|request_id| ClientRequest::ThreadArchive {
-            request_id,
-            params: ThreadArchiveParams {
-                thread_id: thread.id.clone(),
-            },
-        })
-        .await?;
-    app.shutdown_gracefully().await?;
-
+    let before = board_snapshot(&pool).await?;
     MockResponsesConfig::new(&server.uri())
         .disable_feature(Feature::AgentMessageBoard)
         .write(home.path())?;
@@ -409,41 +362,9 @@ async fn thread_delete_removes_persisted_board_even_with_feature_disabled() -> R
         .with_codex_home(home.path())
         .build_initialized()
         .await?;
-    assert_eq!(board_counts(&pool).await?, (1, 1, 1));
-    let _: ThreadDeleteResponse = app
-        .request(|request_id| ClientRequest::ThreadDelete {
-            request_id,
-            params: ThreadDeleteParams {
-                thread_id: thread.id,
-            },
-        })
-        .await?;
-    assert_eq!(board_counts(&pool).await?, (0, 0, 0));
-    app.shutdown_gracefully().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn thread_delete_recovers_only_corrupt_board_with_feature_disabled() -> Result<()> {
-    let server = create_mock_responses_server_repeating_assistant("Done").await;
-    let home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .disable_feature(Feature::AgentMessageBoard)
-        .write(home.path())?;
-    let thread_id = create_delete_test_rollout(home.path(), /*minute*/ 0, "Delete me")?;
-    let retained_id = create_delete_test_rollout(home.path(), /*minute*/ 1, "Keep me")?;
-    let corrupt = b"not a SQLite database";
-    let database = home.path().join("agent_message_board_1.sqlite");
-    std::fs::create_dir(&database)?;
-    let mut app = TestAppServer::builder()
-        .with_codex_home(home.path())
-        .build_initialized()
-        .await?;
-
-    // An ordinary open failure must leave both storage and the thread intact.
     let request_id = app
         .send_thread_delete_request(ThreadDeleteParams {
-            thread_id: thread_id.clone(),
+            thread_id: thread_ids[0].clone(),
         })
         .await?;
     let error = timeout(
@@ -452,62 +373,223 @@ async fn thread_delete_recovers_only_corrupt_board_with_feature_disabled() -> Re
     )
     .await??;
     assert_eq!(error.error.code, -32603);
-    assert!(database.is_dir());
-    assert!(!home.path().join("db-backups").exists());
-    assert!(
-        find_thread_path_by_id_str(home.path(), &thread_id, /*state_db_ctx*/ None)
-            .await?
-            .is_some()
-    );
-    std::fs::remove_dir(&database)?;
-    std::fs::write(&database, corrupt)?;
-
+    assert!(error.error.message.contains("exclusive cleanup ownership"));
+    for thread_id in &thread_ids {
+        assert!(
+            find_thread_path_by_id_str(home.path(), thread_id, /*state_db_ctx*/ None)
+                .await?
+                .is_some()
+        );
+    }
+    // A thread without board records needs no destructive cleanup, even though
+    // unrelated roots have populated boards in the same database.
+    let empty_id = create_delete_test_rollout(home.path(), /*minute*/ 2, "No board records")?;
     let _: ThreadDeleteResponse = app
         .request(|request_id| ClientRequest::ThreadDelete {
             request_id,
             params: ThreadDeleteParams {
-                thread_id: thread_id.clone(),
+                thread_id: empty_id.clone(),
             },
         })
         .await?;
     assert_eq!(
-        find_thread_path_by_id_str(home.path(), &thread_id, /*state_db_ctx*/ None).await?,
+        find_thread_path_by_id_str(home.path(), &empty_id, /*state_db_ctx*/ None).await?,
         None
     );
-    assert!(
-        find_thread_path_by_id_str(home.path(), &retained_id, /*state_db_ctx*/ None)
-            .await?
-            .is_some()
-    );
-    let backups =
-        std::fs::read_dir(home.path().join("db-backups"))?.collect::<std::io::Result<Vec<_>>>()?;
-    assert_eq!(backups.len(), 1);
-    assert_eq!(
-        std::fs::read(backups[0].path().join("agent_message_board_1.sqlite"))?,
-        corrupt
-    );
-    let sqlite = SqliteConfig::new_for_testing(home.path().abs());
-    let pool = sqlite
-        .open_read_only_pool(&database, /*busy_timeout*/ None)
-        .await?;
-    assert_eq!(board_counts(&pool).await?, (0, 0, 0));
-    assert_eq!(
-        sqlx::query_scalar::<_, String>("SELECT board FROM deleted_boards")
-            .fetch_all(&pool)
-            .await?,
-        vec![thread_id]
-    );
+    assert_eq!(board_snapshot(&pool).await?, before);
     pool.close().await;
     app.shutdown_gracefully().await?;
     Ok(())
 }
 
-async fn board_counts(pool: &sqlx::SqlitePool) -> Result<(i64, i64, i64)> {
-    Ok(sqlx::query_as(
-        "SELECT (SELECT COUNT(*) FROM channels),
-                (SELECT COUNT(*) FROM posts),
-                (SELECT COUNT(*) FROM subscriptions)",
-    )
-    .fetch_one(pool)
-    .await?)
+#[tokio::test]
+async fn thread_delete_preserves_corrupt_shared_board_with_either_feature_setting() -> Result<()> {
+    for enabled in [false, true] {
+        let home = TempDir::new()?;
+        let thread_ids = seed_delete_test_boards(home.path()).await?;
+        let sqlite = SqliteConfig::new_for_testing(home.path().abs());
+        let database = home.path().join("agent_message_board_1.sqlite");
+        let pool = sqlite.open_read_write_pool(&database).await?;
+        let before = board_snapshot(&pool).await?;
+        let checkpoint: (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(checkpoint, (0, 0, 0));
+        pool.close().await;
+        let original = std::fs::read(&database)?;
+        let recovery_dir = home.path().join("db-backups").join("preserved-fixture");
+        std::fs::create_dir_all(&recovery_dir)?;
+        let recovery_file = recovery_dir.join("agent_message_board_1.sqlite");
+        std::fs::write(&recovery_file, &original)?;
+        let mut corrupt = original.clone();
+        corrupt[..16].fill(/*value*/ 0);
+        std::fs::write(&database, &corrupt)?;
+
+        let server = create_mock_responses_server_repeating_assistant("Done").await;
+        let config = MockResponsesConfig::new(&server.uri());
+        let config = if enabled {
+            config
+                .enable_feature(Feature::AgentMessageBoard)
+                .enable_feature(Feature::MultiAgentV2)
+        } else {
+            config.disable_feature(Feature::AgentMessageBoard)
+        };
+        config.write(home.path())?;
+        let mut app = TestAppServer::builder()
+            .with_codex_home(home.path())
+            .build_initialized()
+            .await?;
+        let state = StateRuntime::init(sqlite.clone(), "mock_provider".into()).await?;
+        let mut saved_threads = Vec::new();
+        for id in &thread_ids {
+            let thread_id = ThreadId::from_string(id)?;
+            let rollout = find_thread_path_by_id_str(home.path(), id, /*state_db_ctx*/ None)
+                .await?
+                .expect("seeded rollout");
+            let metadata = state.get_thread(thread_id).await?.expect("seeded state");
+            saved_threads.push((thread_id, std::fs::read(&rollout)?, rollout, metadata));
+        }
+        let request_id = app
+            .send_thread_delete_request(ThreadDeleteParams {
+                thread_id: thread_ids[0].clone(),
+            })
+            .await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            app.read_stream_until_error_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, -32603);
+        assert!(
+            error
+                .error
+                .message
+                .contains("cleanup blocked thread deletion")
+        );
+        assert_eq!(std::fs::read(&database)?, corrupt);
+        assert_eq!(std::fs::read(&recovery_file)?, original);
+        assert_eq!(
+            std::fs::read_dir(home.path().join("db-backups"))?.count(),
+            1
+        );
+        assert_eq!(std::fs::read_dir(&recovery_dir)?.count(), 1);
+        for (id, bytes, rollout, metadata) in &saved_threads {
+            assert_eq!(std::fs::read(rollout)?, *bytes);
+            assert_eq!(state.get_thread(*id).await?, Some(metadata.clone()));
+        }
+        app.shutdown_gracefully().await?;
+
+        // Explicit fixture restoration is not a recovery side effect of deletion.
+        // Verify both roots' complete records and subscriptions before retrying.
+        std::fs::copy(&recovery_file, &database)?;
+        let pool = sqlite
+            .open_read_only_pool(&database, /*busy_timeout*/ None)
+            .await?;
+        assert_eq!(board_snapshot(&pool).await?, before);
+        let mut app = TestAppServer::builder()
+            .with_codex_home(home.path())
+            .build_initialized()
+            .await?;
+        let request_id = app
+            .send_thread_delete_request(ThreadDeleteParams {
+                thread_id: thread_ids[0].clone(),
+            })
+            .await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            app.read_stream_until_error_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, -32603);
+        assert!(error.error.message.contains("exclusive cleanup ownership"));
+        assert_eq!(board_snapshot(&pool).await?, before);
+        for (id, bytes, rollout, metadata) in &saved_threads {
+            assert_eq!(std::fs::read(rollout)?, *bytes);
+            assert_eq!(state.get_thread(*id).await?, Some(metadata.clone()));
+        }
+        pool.close().await;
+        state.close().await;
+        app.shutdown_gracefully().await?;
+    }
+    Ok(())
+}
+
+async fn seed_delete_test_boards(home: &Path) -> Result<Vec<String>> {
+    let mut events = Vec::new();
+    for label in ["A", "B"] {
+        events.extend([
+            responses::sse(vec![
+                responses::ev_function_call_with_namespace(
+                    label,
+                    "collaboration",
+                    "post",
+                    &json!({"new_channel_name":"design", "text":format!("Decision {label}")})
+                        .to_string(),
+                ),
+                responses::ev_completed(label),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("done", "Done"),
+                responses::ev_completed("done"),
+            ]),
+        ]);
+    }
+    let server = create_mock_responses_server_sequence(events).await;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::AgentMessageBoard)
+        .enable_feature(Feature::MultiAgentV2)
+        .write(home)?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(home)
+        .build_initialized()
+        .await?;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
+        let completed = app
+            .start_turn_and_wait_for_completion(TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![UserInput::Text {
+                    text: "Post the decision".into(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(completed.turn.status, TurnStatus::Completed);
+        ids.push(thread.id);
+    }
+    app.shutdown_gracefully().await?;
+    let sqlite = SqliteConfig::new_for_testing(home.abs());
+    let pool = sqlite
+        .open_read_only_pool(
+            &home.join("agent_message_board_1.sqlite"),
+            /*busy_timeout*/ None,
+        )
+        .await?;
+    let snapshot = board_snapshot(&pool).await?;
+    assert_eq!(
+        snapshot.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![2, 2, 2, 0]
+    );
+    pool.close().await;
+    Ok(ids)
+}
+
+async fn board_snapshot(pool: &sqlx::SqlitePool) -> Result<Vec<Vec<serde_json::Value>>> {
+    let mut snapshot = Vec::new();
+    for query in [
+        "SELECT json_group_array(json_array(board,name,name_search,created_at,timestamp,author))
+         FROM (SELECT * FROM channels ORDER BY board,name)",
+        "SELECT json_group_array(json_array(seq,board,id,channel,root,author,timestamp,
+                                           body_search,payload,request_id,request))
+         FROM (SELECT * FROM posts ORDER BY seq)",
+        "SELECT json_group_array(json_array(board,target,agent))
+         FROM (SELECT * FROM subscriptions ORDER BY board,target,agent)",
+        "SELECT json_group_array(board) FROM (SELECT board FROM deleted_boards ORDER BY board)",
+    ] {
+        let rows: String = sqlx::query_scalar(query).fetch_one(pool).await?;
+        snapshot.push(serde_json::from_str(&rows)?);
+    }
+    Ok(snapshot)
 }
