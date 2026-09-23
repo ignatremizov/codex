@@ -3,6 +3,8 @@
 //! This is the high-level migration state machine: find rollout files, decide whether each one is
 //! eligible, take the maintenance and writer locks, canonicalize into a staged JSONL file,
 //! project that staged file into SQLite, verify the projection, then atomically publish it.
+//! Canonicalization always replays the complete surviving transcript. Bounded model context is
+//! selected independently by the model-context reader, never used as replacement audit history.
 //!
 //! The important invariant is that we always leave behind either the original legacy rollout or a
 //! recoverable paginated rollout. Once the rollout path is replaced, the durable `.pending`
@@ -17,11 +19,8 @@ use std::time::Duration;
 use chrono::DateTime;
 use codex_app_server_protocol::project_rollout_line;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::InternalSessionSource;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::ThreadHistoryMode;
-use codex_protocol::protocol::ThreadSource;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
 use serde::Serialize;
@@ -49,7 +48,6 @@ mod rollback;
 mod rollback_plan;
 mod rollback_replay;
 mod startup;
-mod subagent;
 mod telemetry;
 
 use canonicalizer::LegacyRolloutCanonicalizer;
@@ -60,7 +58,6 @@ use publish::decompressed_staged_rollout_path;
 use publish::migration_journal_path;
 use publish::pending_migration_thread_ids;
 use publish::remove_file_if_present;
-use publish::rewrite_subagent_history_boundary;
 use publish::rewritten_staged_rollout_path;
 use publish::staged_rollout_path;
 use publish::sync_parent_directory;
@@ -188,12 +185,6 @@ struct RolloutMigrationRateLimiter {
 struct RolloutRecord {
     line: Option<RolloutLine>,
     byte_count: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RolloutMigrationKind {
-    Ordinary,
-    Subagent,
 }
 
 struct RolloutMigrationFailure {
@@ -454,23 +445,6 @@ impl LocalThreadStore {
         if !matches_selection(&options.thread_ids, Some(thread_id)) {
             return Ok(None);
         }
-        let is_memory_consolidation = matches!(
-            metadata.meta.source,
-            SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
-                | SessionSource::SubAgent(SubAgentSource::MemoryConsolidation)
-        ) || matches!(
-            metadata.meta.thread_source,
-            Some(ThreadSource::MemoryConsolidation)
-        );
-        let kind = if !is_memory_consolidation
-            && (matches!(metadata.meta.source, SessionSource::SubAgent(_))
-                || matches!(metadata.meta.thread_source, Some(ThreadSource::Subagent)))
-        {
-            RolloutMigrationKind::Subagent
-        } else {
-            RolloutMigrationKind::Ordinary
-        };
-
         let journal_path = migration_journal_path(&self.config.codex_home, thread_id);
         let pending_published_migration = metadata.meta.history_mode
             == ThreadHistoryMode::Paginated
@@ -525,6 +499,18 @@ impl LocalThreadStore {
             )));
         }
 
+        // Legacy canonicalization rewrites ordinals and cannot translate reference-backed
+        // lineage. Reject only the authoritative header, not copied ancestor metadata, before
+        // touching any source, recovery artifacts, or SQLite projection.
+        if let Err(failure) = validate_legacy_migration_metadata(&metadata.meta, thread_id) {
+            return Ok(Some(migration_outcome(
+                thread_id,
+                path,
+                Err(failure),
+                /*bytes_processed*/ 0,
+            )));
+        }
+
         if options.mode == RolloutMigrationMode::DryRun {
             return Ok(Some(migration_outcome(
                 thread_id,
@@ -564,9 +550,28 @@ impl LocalThreadStore {
         {
             path = current_path;
         }
+        // The earlier header was read before writer exclusion and path revalidation. Validate
+        // the authoritative source again before deleting projection state or touching recovery
+        // files. Return directly: unpublished-migration cleanup must not run for this rejection.
+        let locked_metadata = with_failure_reason(
+            codex_rollout::read_session_meta_line(&path)
+                .await
+                .map_err(migration_error),
+            RolloutMigrationFailureReason::RolloutReadFailed,
+        );
+        if let Err(failure) = locked_metadata
+            .and_then(|metadata| validate_legacy_migration_metadata(&metadata.meta, thread_id))
+        {
+            return Ok(Some(migration_outcome(
+                thread_id,
+                path,
+                Err(failure),
+                /*bytes_processed*/ 0,
+            )));
+        }
         let bytes_before = limiter.bytes_processed;
         let result = match self
-            .migrate_one_rollout(thread_id, &path, &journal_path, kind, legacy_names, limiter)
+            .migrate_one_rollout(thread_id, &path, &journal_path, legacy_names, limiter)
             .await
         {
             Ok(()) => Ok(RolloutMigrationStatus::Migrated),
@@ -602,7 +607,6 @@ impl LocalThreadStore {
         thread_id: ThreadId,
         rollout_path: &Path,
         journal_path: &Path,
-        kind: RolloutMigrationKind,
         legacy_names: &HashMap<ThreadId, String>,
         limiter: &mut RolloutMigrationRateLimiter,
     ) -> ClassifiedMigrationResult<()> {
@@ -711,30 +715,11 @@ impl LocalThreadStore {
         // Everything up through a durable staged file is one legacy-to-paginated conversion
         // phase. Keep the individual operations readable and tag the phase once if it fails.
         let conversion_result = async {
-            let bounded_subagent_context = if kind == RolloutMigrationKind::Subagent {
-                let RolloutItem::SessionMeta(session_meta) = &canonical_session_meta.item else {
-                    return Err(migration_error("canonical session metadata is missing"));
-                };
-                let context = subagent::select_bounded_context(
-                    source_path.to_path_buf(),
-                    session_meta.clone(),
-                )
-                .await?;
-                limiter.account(source_metadata.len()).await;
-                context
-            } else {
-                None
-            };
-            let (_, expected_ordinal) = if let Some(items) = bounded_subagent_context {
-                Self::write_bounded_subagent_rollout(&canonicalization_source, items, limiter)
-                    .await?
-            } else {
-                Self::write_rollout_with_rollback_plan(&canonicalization_source, limiter).await?
-            };
-
-            if kind == RolloutMigrationKind::Subagent {
-                rewrite_subagent_history_boundary(&staged_path, expected_ordinal).await?;
-            }
+            // An interrupted older migrator may have left a bounded stage and projection.
+            // Neither is authoritative: rebuild from the intact legacy source, including
+            // rollback normalization, before publishing any replacement.
+            let (_, expected_ordinal) =
+                Self::write_rollout_with_rollback_plan(&canonicalization_source, limiter).await?;
             let expected_length = tokio::fs::metadata(&staged_path)
                 .await
                 .map_err(migration_error)?
@@ -823,6 +808,9 @@ impl LocalThreadStore {
                     .map_err(migration_error)?;
             }
             sync_parent_directory(rollout_path).await?;
+            // Older interrupted migrations may have left a rewritten bounded header stage.
+            // It is never a publication source, but can be retired once the full rollout is durable.
+            remove_file_if_present(&rewritten_staged_rollout_path(&staged_path)?).await?;
             self.finish_published_migration(thread_id, journal_path, legacy_names)
                 .await
         }
@@ -875,48 +863,6 @@ impl LocalThreadStore {
                 Ok((expected_length, expected_ordinal))
             }
         }
-    }
-
-    async fn write_bounded_subagent_rollout(
-        input: &CanonicalizationSource<'_>,
-        items: Vec<RolloutItem>,
-        limiter: &mut RolloutMigrationRateLimiter,
-    ) -> ThreadStoreResult<(u64, u64)> {
-        let staged_file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(input.staged_path)
-            .await
-            .map_err(migration_error)?;
-        staged_file
-            .set_permissions(input.source_permissions.clone())
-            .await
-            .map_err(migration_error)?;
-        let mut staged = BufWriter::with_capacity(PROJECTION_BATCH_BYTES as usize, staged_file);
-        let mut canonicalizer = LegacyRolloutCanonicalizer::new(input.thread_id);
-        let written = canonicalizer
-            .write_head_session_meta(input.canonical_session_meta.clone(), &mut staged)
-            .await?;
-        limiter.account(written).await;
-        for item in items {
-            let line = RolloutLine {
-                timestamp: input.canonical_session_meta.timestamp.clone(),
-                ordinal: None,
-                item,
-            };
-            let written = canonicalizer.process_line(line, &mut staged).await?;
-            limiter.account(written).await;
-        }
-        let written = canonicalizer
-            .finish(&mut staged, &input.canonical_session_meta.timestamp)
-            .await?;
-        limiter.account(written).await;
-        staged.flush().await.map_err(migration_error)?;
-        Ok((
-            canonicalizer.output_byte_offset(),
-            canonicalizer.next_ordinal(),
-        ))
     }
 
     async fn write_canonical_rollout(
@@ -1036,7 +982,9 @@ impl LocalThreadStore {
             self.project_rollout_in_batches(thread_id, projection_path, limiter)
                 .await?;
         }
-        remove_file_if_present(&staged_rollout_path(rollout_path)?).await?;
+        let staged_path = staged_rollout_path(rollout_path)?;
+        remove_file_if_present(&staged_path).await?;
+        remove_file_if_present(&rewritten_staged_rollout_path(&staged_path)?).await?;
         remove_file_if_present(&compressed_staged_rollout_path(rollout_path)?).await?;
         if let Some(decompressed_path) = decompressed_path.as_ref() {
             remove_file_if_present(decompressed_path).await?;
@@ -1374,6 +1322,29 @@ fn skipped_busy_outcome(
         bytes_processed,
         message: Some(message),
     }
+}
+
+fn validate_legacy_migration_metadata(
+    metadata: &SessionMeta,
+    thread_id: ThreadId,
+) -> ClassifiedMigrationResult<()> {
+    if metadata.id != thread_id || metadata.history_mode != ThreadHistoryMode::Legacy {
+        return Err(RolloutMigrationFailure::new(
+            RolloutMigrationFailureReason::InvalidSessionMetadata,
+            migration_error(
+                "rollout identity or history mode changed before migration; source and recovery artifacts were left unchanged",
+            ),
+        ));
+    }
+    if metadata.history_base.is_some() || metadata.subagent_history_start_ordinal.is_some() {
+        return Err(RolloutMigrationFailure::new(
+            RolloutMigrationFailureReason::LegacyRolloutConversionFailed,
+            migration_error(
+                "legacy rollout contains inherited history boundaries that cannot be safely translated; source and recovery artifacts were left unchanged",
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn migration_error(error: impl std::fmt::Display) -> ThreadStoreError {
