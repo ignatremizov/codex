@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn mcp_use_after_reference_context_persists_for_post_start_server() {

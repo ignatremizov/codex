@@ -4,6 +4,7 @@ use codex_protocol::protocol::AgentResponseObservation;
 use codex_protocol::protocol::AgentResponsePromotedTaskContext;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::ThreadStore;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn acknowledged_completion_survives_stale_checkpoint_before_or_after_consumption() {
