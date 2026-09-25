@@ -685,13 +685,20 @@ fn hidden_observation_freezes_a_trusted_row_without_replacing_the_native_receipt
         Some(codex_protocol::protocol::SubAgentCompletionModelVisibility::NotVisible),
     );
     assert_eq!(
-        &presentation
-            .hidden_observation_presentation("/different/later/reference")
-            .expect("already frozen row")
-            .item,
-        &hidden.item,
+        serde_json::to_value(
+            &presentation
+                .hidden_observation_presentation("/different/later/reference")
+                .expect("already frozen row")
+                .item,
+        )
+        .expect("serialize frozen row"),
+        serde_json::to_value(&hidden.item).expect("serialize original hidden row"),
     );
-    assert_eq!(presentation.completion_presentation().item, native);
+    assert_eq!(
+        serde_json::to_value(&presentation.completion_presentation().item)
+            .expect("serialize native completion"),
+        serde_json::to_value(&native).expect("serialize original native completion")
+    );
     assert_eq!(
         presentation.completion_context_response_item_id(),
         context_id
