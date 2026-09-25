@@ -6,7 +6,6 @@ use crate::items::AgentMessageItem;
 use crate::items::CollabAgentTool;
 use crate::items::CollabAgentToolCallItem;
 use crate::items::CollabAgentToolCallStatus;
-use crate::items::TurnItem;
 use crate::models::MessagePhase;
 use crate::protocol::AgentStatus;
 use schemars::JsonSchema;
@@ -441,31 +440,10 @@ impl CollabAgentToolCallItem {
     }
 }
 
-impl TurnItem {
-    /// Whether this canonical item owns a validated subagent completion presentation.
-    pub fn is_sub_agent_completion_presentation(&self) -> bool {
-        match self {
-            Self::AgentMessage(item) => item.has_sub_agent_completion_identity(),
-            Self::CollabAgentToolCall(item) => item.owns_completion_presentation(),
-            Self::UserMessage(_)
-            | Self::FunctionCallOutput(_)
-            | Self::HookPrompt(_)
-            | Self::Plan(_)
-            | Self::Reasoning(_)
-            | Self::CommandExecution(_)
-            | Self::DynamicToolCall(_)
-            | Self::SubAgentActivity(_)
-            | Self::WebSearch(_)
-            | Self::ImageView(_)
-            | Self::Extension(_)
-            | Self::ImageGeneration(_)
-            | Self::EnteredReviewMode(_)
-            | Self::ExitedReviewMode(_)
-            | Self::FileChange(_)
-            | Self::McpToolCall(_)
-            | Self::ContextCompaction(_) => false,
-        }
-    }
+fn sub_agent_completion_transcript_text(agent_reference: &str, payload: &str) -> String {
+    format!(
+        "{SUB_AGENT_COMPLETION_TRANSCRIPT_PREFIX}{agent_reference}{SUB_AGENT_COMPLETION_TRANSCRIPT_SEPARATOR}{payload}"
+    )
 }
 
 /// Parses a canonical parent-thread completion transcript into its agent reference and payload.
