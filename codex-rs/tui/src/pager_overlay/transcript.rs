@@ -13,6 +13,7 @@ use crate::transcript_view::TranscriptBookmark;
 use crate::transcript_view::TranscriptView;
 use crate::transcript_view::ViewAction;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 use crossterm::event::MouseEventKind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

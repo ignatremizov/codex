@@ -714,7 +714,7 @@ fn title_spans_line(mut spans: Vec<Span<'static>>) -> Line<'static> {
     title.into()
 }
 
-fn parse_thread_id(thread_id: &str) -> Option<ThreadId> {
+pub(crate) fn parse_thread_id(thread_id: &str) -> Option<ThreadId> {
     ThreadId::from_string(thread_id).ok()
 }
 

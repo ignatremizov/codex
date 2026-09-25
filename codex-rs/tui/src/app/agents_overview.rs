@@ -440,7 +440,6 @@ impl App {
                     thread_id: root_thread_id,
                     cwd: Some(target_thread.cwd.to_path_buf()),
                     history_mode: Some(target_thread.history_mode),
-                    source_rollout_path: None,
                 };
                 match self
                     .resume_config_for_target(tui, app_server, &target_session)
