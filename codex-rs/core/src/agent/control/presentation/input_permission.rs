@@ -43,12 +43,7 @@ impl LocalAgentControl {
         let mut visited = HashSet::new();
         while visited.insert(cursor) {
             let target = manager.get_thread(cursor).await?;
-            if !target
-                .session
-                .services
-                .agent_control
-                .matches_session_id(self.session_id())
-            {
+            if target.session.services.agent_control.bound_session_id() != Some(self.session_id()) {
                 return Ok(false);
             }
             let Some(parent) = target.session_source.parent_thread_id() else {
@@ -73,11 +68,7 @@ impl LocalAgentControl {
         let manager = self.upgrade()?;
         let source = manager.get_thread(sender.thread_id).await?;
         if source.session.presentation_id() != sender
-            || !source
-                .session
-                .services
-                .agent_control
-                .matches_session_id(self.session_id())
+            || source.session.services.agent_control.bound_session_id() != Some(self.session_id())
             || sender == recipient
         {
             return Err(CodexErr::InvalidRequest(

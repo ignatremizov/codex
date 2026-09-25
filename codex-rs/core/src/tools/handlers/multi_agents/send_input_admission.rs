@@ -7,6 +7,7 @@ use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::QueuedInputObservationParams;
+use crate::agent::control::ResponseObservationSubmission;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_protocol::WakeEventMailboxSubscription;
@@ -175,6 +176,7 @@ pub(super) async fn admit_input(
                         response_observation,
                     )
                     .await
+                    .and_then(ResponseObservationSubmission::into_strict_result)
                     .map(|submission_id| SendInputResult {
                         submission_id,
                         status: SendInputAdmissionStatus::Submitted,

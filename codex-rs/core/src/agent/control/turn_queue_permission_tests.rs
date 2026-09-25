@@ -90,12 +90,7 @@ async fn revoked_queued_message_is_not_admitted_and_warns_without_waking_source(
     let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
     let (proceed_tx, proceed_rx) = tokio::sync::oneshot::channel();
     if matches!(revoke, Revoke::ExpiredBeforeEligibility) {
-        control.rollback_target_message_wake_reservation(
-            target,
-            source,
-            "queued-source-turn",
-            reservation_id,
-        );
+        control.rollback_target_message_wake(target, source, "queued-source-turn", reservation_id);
     } else {
         *control
             .wait_agent_presentations
@@ -159,7 +154,7 @@ async fn revoked_queued_message_is_not_admitted_and_warns_without_waking_source(
                         .expect("subtree disable");
                 }
                 Revoke::ExpiredAfterEligibility => {
-                    control.rollback_target_message_wake_reservation(
+                    control.rollback_target_message_wake(
                         target,
                         source,
                         "queued-source-turn",

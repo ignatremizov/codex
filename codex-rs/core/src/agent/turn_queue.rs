@@ -43,7 +43,7 @@ pub(crate) struct QueuedTargetMessageWake {
 impl QueuedAgentTurn {
     pub(crate) fn rollback_target_message_wake(&self) {
         if let Some(reservation) = self.target_message_wake.as_ref() {
-            self.control.rollback_target_message_wake_reservation(
+            self.control.rollback_target_message_wake(
                 reservation.observer,
                 reservation.target,
                 &reservation.target_turn_id,

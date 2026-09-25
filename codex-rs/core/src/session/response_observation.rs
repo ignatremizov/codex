@@ -206,6 +206,19 @@ impl Drop for CommunicationDeliveryReceipt {
 }
 
 impl Session {
+    /// Return only an active turn admitted by this runtime, never a replayed turn.
+    pub(crate) fn active_agent_response_turn_id(&self) -> Option<String> {
+        let state = self
+            .response_observation_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .active_turn_id
+            .as_ref()
+            .filter(|turn_id| state.live_turn_id.as_ref() == Some(*turn_id))
+            .cloned()
+    }
+
     pub(crate) fn begin_agent_response_turn(&self, turn_id: &str) -> bool {
         let _terminal_guard = self
             .terminal_publication_lock
@@ -566,3 +579,7 @@ impl Session {
 #[cfg(test)]
 #[path = "response_observation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "response_observation/active_turn_tests.rs"]
+mod active_turn_tests;

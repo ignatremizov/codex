@@ -214,11 +214,12 @@ impl LocalAgentControl {
             };
             if sender_thread.session.presentation_id() != sender
                 || sender_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
-                || !sender_thread
+                || sender_thread
                     .session
                     .services
                     .agent_control
-                    .matches_session_id(self.session_id())
+                    .bound_session_id()
+                    != Some(self.session_id())
             {
                 return Ok(MessagingContextSnapshot::default());
             }
@@ -245,11 +246,8 @@ impl LocalAgentControl {
                     published.insert(id, thread.session.presentation_id());
                 }
                 if let Ok(thread) = manager.get_thread(id).await
-                    && thread
-                        .session
-                        .services
-                        .agent_control
-                        .matches_session_id(self.session_id())
+                    && thread.session.services.agent_control.bound_session_id()
+                        == Some(self.session_id())
                 {
                     if let Some(parent) = thread.session_source.parent_thread_id() {
                         parents.insert(id, parent);

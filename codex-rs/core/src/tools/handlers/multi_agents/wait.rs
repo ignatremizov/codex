@@ -8,7 +8,6 @@ use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use crate::tools::registry::MailboxToolResult;
 use crate::turn_timing::now_unix_timestamp_ms;
-use codex_history::RolloutItem;
 use codex_protocol::error::CodexErrorDetails;
 use codex_thread_store::MailboxSelection;
 use codex_thread_store::MailboxSender;

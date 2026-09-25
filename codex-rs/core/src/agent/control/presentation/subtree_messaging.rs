@@ -250,11 +250,8 @@ impl LocalAgentControl {
                     continue;
                 }
                 for recipient in threads.values() {
-                    if !sender
-                        .session
-                        .services
-                        .agent_control
-                        .matches_session_id(recipient.session.services.agent_control.session_id())
+                    if sender.session.services.agent_control.bound_session_id()
+                        != Some(recipient.session.services.agent_control.session_id())
                     {
                         continue;
                     }
@@ -305,11 +302,12 @@ impl LocalAgentControl {
             let Some(sender_thread) = threads.get(&sender.thread_id) else {
                 continue;
             };
-            if !sender_thread
+            if sender_thread
                 .session
                 .services
                 .agent_control
-                .matches_session_id(self.session_id())
+                .bound_session_id()
+                != Some(self.session_id())
             {
                 continue;
             }
@@ -357,22 +355,19 @@ impl LocalAgentControl {
             .clone();
         for sender_thread in threads.values() {
             if sender_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
-                || !sender_thread
+                || sender_thread
                     .session
                     .services
                     .agent_control
-                    .matches_session_id(self.session_id())
+                    .bound_session_id()
+                    != Some(self.session_id())
             {
                 continue;
             }
             let sender = sender_thread.session.presentation_id();
             let active_turn = sender_thread.session.active_agent_response_turn_id();
             let recipients = threads.values().filter(|thread| {
-                thread
-                    .session
-                    .services
-                    .agent_control
-                    .matches_session_id(self.session_id())
+                thread.session.services.agent_control.bound_session_id() == Some(self.session_id())
             });
             let context = SenderMessagingContext::derive(
                 sender,

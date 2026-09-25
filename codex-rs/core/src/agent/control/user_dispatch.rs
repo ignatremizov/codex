@@ -62,7 +62,7 @@ impl ResponseObservationSubmission {
         }
     }
 
-    pub(super) fn into_strict_result(self) -> CodexResult<String> {
+    pub(crate) fn into_strict_result(self) -> CodexResult<String> {
         match self.post_admission_warning {
             Some(warning) => Err(CodexErr::InvalidRequest(warning)),
             None => Ok(self.submission_id),
@@ -329,10 +329,12 @@ impl LocalAgentControl {
                 .ensure_model_input_authorized(request.observer, child, &attribution.sender_turn_id)
                 .await
             {
-                return Ok(ObservedInputResult::PermissionRejected(match error {
-                    CodexErr::InvalidRequest(reason) => reason,
-                    error => error.to_string(),
-                }));
+                return Ok(ObservedInputResult::PermissionRejected(
+                    match error.details() {
+                        CodexErrorDetails::InvalidRequest(reason) => reason.clone(),
+                        _ => error.to_string(),
+                    },
+                ));
             }
         }
         if let Some(wake) = &request.target_message_wake

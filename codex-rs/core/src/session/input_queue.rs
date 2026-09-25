@@ -634,7 +634,7 @@ impl InputQueue {
             let mut mailbox = self.mailbox.lock().await;
             Self::restore_completion_communications(&mut mailbox, completion_communications)
         };
-        self.queue_turn_inputs_for_next_turn(persistent_context)
+        self.queue_turn_inputs_for_next_turn(persistent_context, TurnStartOptions::default())
             .await;
         if restored {
             self.activity_tx.send_replace(InputQueueActivity::Mailbox);

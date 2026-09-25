@@ -105,7 +105,12 @@ impl LocalAgentControl {
             ));
         }
         let agent = self
-            .model_visible_agent_identity(&observer_thread, observer.thread_id)
+            .model_visible_agent_identity_for_version(
+                target_thread
+                    .multi_agent_version()
+                    .unwrap_or(MultiAgentVersion::V1),
+                observer.thread_id,
+            )
             .await?;
         Ok(match lifetime {
             AgentReplyRouteLifetime::CurrentTurn => {
@@ -247,13 +252,13 @@ impl LocalAgentControl {
                 Ok(super::user_dispatch::ObservedInputResult::Submitted { submission, input_persisted }) => (submission, input_persisted),
                 Ok(super::user_dispatch::ObservedInputResult::PermissionRejected(reason)) => {
                     if let TargetMessageAdmission::Wake(id) = admission {
-                        receiver_control.rollback_target_message_wake_reservation(receiver, sender, &sender_turn_id, id);
+                        receiver_control.rollback_target_message_wake(receiver, sender, &sender_turn_id, id);
                     }
                     return Err(CodexErr::InvalidRequest(reason));
                 }
                 Ok(super::user_dispatch::ObservedInputResult::NotSubmitted(reason)) => {
                     if let TargetMessageAdmission::Wake(id) = admission {
-                        receiver_control.rollback_target_message_wake_reservation(receiver, sender, &sender_turn_id, id);
+                        receiver_control.rollback_target_message_wake(receiver, sender, &sender_turn_id, id);
                     }
                     return Err(CodexErr::InvalidRequest(format!("scoped message was not submitted: {reason:?}")));
                 }
