@@ -92,6 +92,7 @@ async fn collaboration_live_and_replay_use_local_limits_and_keep_full_raw_source
             status: AppServerCollabAgentToolCallStatus::Completed,
             observe_commentary: None,
             wake_on_completion: None,
+            mailbox_input: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,

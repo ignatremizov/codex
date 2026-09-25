@@ -464,6 +464,7 @@ fn agent_tool_fallbacks_preserve_status_without_duplicating_v2_activity() {
             target_messages: None,
             queue_input: None,
             input_batch: None,
+            mailbox_input: None,
             sender_thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
             receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".to_string()],
             receiver_agents: Vec::new(),

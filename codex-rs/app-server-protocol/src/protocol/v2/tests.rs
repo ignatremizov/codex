@@ -3583,6 +3583,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         id: "collab-1".to_string(),
         tool: CoreCollabAgentTool::SendInput,
         status: CoreCollabAgentToolCallStatus::Completed,
+        observe_commentary: None,
+        wake_on_completion: None,
         target_messages: None,
         queue_input: None,
         input_batch: None,

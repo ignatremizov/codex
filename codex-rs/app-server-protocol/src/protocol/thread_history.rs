@@ -603,10 +603,10 @@ impl ThreadHistoryBuilder {
             self.current_rollout_index,
             &fallback_turn_id,
         ) {
-            if !self
+            if self
                 .current_turn
                 .as_ref()
-                .is_some_and(|turn| turn.id == update.turn_id)
+                .is_none_or(|turn| turn.id != update.turn_id)
                 && !self.turns.iter().any(|turn| turn.id == update.turn_id)
             {
                 self.finish_current_turn();
@@ -5244,6 +5244,8 @@ mod tests {
                 id: "resume-1".into(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
                 input_batch: None,
@@ -5309,6 +5311,8 @@ mod tests {
                 id: "spawn-1".into(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
                 input_batch: None,
@@ -5386,6 +5390,8 @@ mod tests {
                 id: "send-1".into(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
+                observe_commentary: None,
+                wake_on_completion: None,
                 target_messages: None,
                 queue_input: None,
                 input_batch: None,
@@ -5712,6 +5718,12 @@ mod tests {
             deadline_at_ms: None,
             tool: codex_protocol::items::CollabAgentTool::Wait,
             status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+            observe_commentary: None,
+            wake_on_completion: None,
+            target_messages: None,
+            queue_input: None,
+            input_batch: None,
+            mailbox_input: None,
             sender_thread_id: parent,
             receiver_thread_ids: vec![owner, other],
             receiver_agents: vec![
