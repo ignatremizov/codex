@@ -737,10 +737,18 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
 }
 
 #[cfg(test)]
+#[path = "compact_remote_v2_context_tests.rs"]
+mod context_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::CompactedImageOmission;
+    use crate::context::sanitize_compacted_media_prefix;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ContentItemKind;
+    use codex_protocol::models::FunctionCallOutputContentItem;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::InternalChatMessageMetadataPassthrough;
     use codex_protocol::models::MessagePhase;
     use pretty_assertions::assert_eq;
@@ -1142,7 +1150,10 @@ mod tests {
                 output,
             ]
         );
-        assert!(should_keep_compacted_history_item(&history[0]));
+        assert!(is_retained_for_remote_compaction_v2(
+            &ResponseItemEnvelope::new(history[0].clone()),
+            /*retain_client_developer_messages*/ false,
+        ));
         assert!(!crate::context_manager::is_user_turn_boundary(&history[0]));
     }
 
