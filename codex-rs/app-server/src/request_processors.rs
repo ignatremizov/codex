@@ -4,14 +4,13 @@ use crate::command_exec::StartCommandExecParams;
 use crate::config_manager::ConfigManager;
 use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 use crate::error_code::invalid_params;
-use crate::image_url::REMOTE_IMAGE_URL_ERROR;
-use crate::image_url::is_remote_image_url;
 use crate::models::supported_models;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::request_processors::turn_processor::validate_user_input_image_urls;
 use crate::skills_watcher::SkillsWatcher;
 use crate::thread_status::ThreadWatchManager;
 use crate::thread_status::resolve_thread_status;
@@ -607,18 +606,6 @@ mod thread_sections;
 mod token_usage_replay;
 mod turn_processor;
 mod windows_sandbox_processor;
-
-fn validate_user_input_image_urls(input: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
-    if input.iter().any(|item| {
-        matches!(
-            item,
-            V2UserInput::Image { url, .. } if is_remote_image_url(url)
-        )
-    }) {
-        return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
-    }
-    Ok(())
-}
 
 fn validate_v2_input_limit(items: &[V2UserInput]) -> Result<(), JSONRPCErrorError> {
     let actual_chars: usize = items.iter().map(V2UserInput::text_char_count).sum();
