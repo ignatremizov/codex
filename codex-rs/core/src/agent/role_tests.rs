@@ -353,13 +353,106 @@ personality = "none"
 }
 
 #[tokio::test]
+async fn apply_role_omitting_model_instructions_preserves_inherited_base() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.base_instructions = Some("Inherited custom base.".to_string());
+    config.base_instructions_provenance = Some(BaseInstructionsProvenance::Custom);
+    config.model = Some("parent-model".to_string());
+    let role_path = write_role_config(
+        &home,
+        "developer-only.toml",
+        "developer_instructions = \"Role dev\"\n",
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("role should apply");
+
+    assert_eq!(
+        (
+            config.base_instructions.as_deref(),
+            config.base_instructions_provenance.clone(),
+            config.model.as_deref(),
+            config.developer_instructions.as_deref(),
+        ),
+        (
+            Some("Inherited custom base."),
+            Some(BaseInstructionsProvenance::Custom),
+            Some("parent-model"),
+            Some("Role dev"),
+        )
+    );
+}
+
+#[tokio::test]
+async fn apply_role_loads_absolute_model_instructions_file() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.base_instructions = Some("Inherited custom base.".to_string());
+    config.base_instructions_provenance = Some(BaseInstructionsProvenance::Custom);
+    let instructions_path = home.path().join("absolute-base.md");
+    fs::write(&instructions_path, "Absolute role instructions")
+        .expect("write absolute role instructions");
+    let role_path = write_role_config(
+        &home,
+        "absolute-role.toml",
+        &format!(
+            "model_instructions_file = {:?}\n",
+            instructions_path.to_string_lossy()
+        ),
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("absolute role path should apply");
+
+    assert_eq!(
+        (
+            config.base_instructions.as_deref(),
+            config.base_instructions_provenance,
+        ),
+        (
+            Some("Absolute role instructions"),
+            Some(BaseInstructionsProvenance::Custom),
+        )
+    );
+}
+
+#[tokio::test]
 async fn apply_role_rejects_missing_or_blank_model_instructions_file() {
-    for (file_name, contents) in [("missing.md", None), ("blank.md", Some("  \n\t"))] {
+    for (file_name, contents) in [
+        ("missing.md", None),
+        ("blank.md", Some(b"  \n\t".as_slice())),
+        ("empty.md", Some(b"".as_slice())),
+        ("invalid-utf8.md", Some(b"\xff".as_slice())),
+    ] {
         let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+        config.base_instructions = Some("Inherited custom base.".to_string());
+        config.base_instructions_provenance = Some(BaseInstructionsProvenance::Custom);
+        config.developer_instructions = Some("Inherited developer instructions.".to_string());
+        config.model = Some("parent-model".to_string());
+        config.agent_allow_history_forks = false;
         let role_path = write_role_config(
             &home,
             "custom.toml",
-            &format!("model_instructions_file = {file_name:?}\n"),
+            &format!(
+                "model_instructions_file = {file_name:?}\nmodel = \"role-model\"\ndeveloper_instructions = \"Role developer instructions\"\n[agents]\nallow_history_forks = true\n"
+            ),
         )
         .await;
         if let Some(contents) = contents {
@@ -374,11 +467,36 @@ async fn apply_role_rejects_missing_or_blank_model_instructions_file() {
             },
         );
 
+        let inherited = (
+            config.base_instructions.clone(),
+            config.base_instructions_provenance.clone(),
+            config.developer_instructions.clone(),
+            config.model.clone(),
+            config.agent_allow_history_forks,
+            config.permissions.approval_policy.value(),
+            config.permissions.permission_profile().clone(),
+            session_flags_layer_count(&config),
+        );
         let err = apply_role_to_config(&mut config, Some("custom"))
             .await
             .expect_err("invalid role base instructions should fail");
 
-        assert_eq!(err, AGENT_TYPE_UNAVAILABLE_ERROR);
+        assert!(err.contains("agent role `custom`"));
+        assert!(err.contains("model instructions file"));
+        assert!(err.contains(home.path().join(file_name).to_string_lossy().as_ref()));
+        assert_eq!(
+            (
+                config.base_instructions.clone(),
+                config.base_instructions_provenance.clone(),
+                config.developer_instructions.clone(),
+                config.model.clone(),
+                config.agent_allow_history_forks,
+                config.permissions.approval_policy.value(),
+                config.permissions.permission_profile().clone(),
+                session_flags_layer_count(&config),
+            ),
+            inherited,
+        );
     }
 }
 

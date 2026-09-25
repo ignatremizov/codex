@@ -131,6 +131,8 @@ use wiremock::ResponseTemplate;
 
 #[path = "subagent_reply_route_tests.rs"]
 mod reply_route_tests;
+#[path = "subagent_role_model_instructions_tests.rs"]
+mod role_model_instructions_tests;
 
 const SPAWN_CALL_ID: &str = "spawn-call-1";
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";

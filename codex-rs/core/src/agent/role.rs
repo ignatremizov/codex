@@ -30,6 +30,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::fmt;
 use std::path::Path;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
@@ -37,6 +38,27 @@ use toml::Value as TomlValue;
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
+
+#[derive(Debug)]
+struct RoleInstructionsFileError {
+    role_name: String,
+    path: AbsolutePathBuf,
+    source: String,
+}
+
+impl fmt::Display for RoleInstructionsFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "agent role `{}` model instructions file `{}`: {}",
+            self.role_name,
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for RoleInstructionsFileError {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AgentRoleApplication {
@@ -85,7 +107,10 @@ pub(crate) async fn apply_role_to_config(
         .await
         .map_err(|err| {
             tracing::warn!("failed to apply role to config: {err}");
-            AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
+            err.downcast_ref::<RoleInstructionsFileError>().map_or_else(
+                || AGENT_TYPE_UNAVAILABLE_ERROR.to_string(),
+                ToString::to_string,
+            )
         })
 }
 
@@ -102,12 +127,24 @@ async fn apply_role_to_config_inner(
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
     // Agent role files are host configuration, even when the child executes remotely. Read their
     // relative instruction files through the local executor filesystem, matching ordinary config.
+    let instruction_path = role_config.model_instructions_file.clone();
     let base_instructions = Config::try_read_non_empty_file(
         LOCAL_FS.as_ref(),
-        role_config.model_instructions_file.as_ref(),
+        instruction_path.as_ref(),
         "agent role model instructions file",
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        instruction_path
+            .map(|path| {
+                anyhow::Error::new(RoleInstructionsFileError {
+                    role_name: role_name.to_owned(),
+                    path,
+                    source: err.to_string(),
+                })
+            })
+            .unwrap_or_else(|| anyhow::Error::msg(err.to_string()))
+    })?;
     let application = AgentRoleApplication {
         overrides_model: role_config.model.is_some(),
         overrides_reasoning_effort: role_config.model_reasoning_effort.is_some(),

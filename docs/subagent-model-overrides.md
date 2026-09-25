@@ -16,3 +16,9 @@ creating a child, and its error lists the complete loaded catalog.
 Existing role, history-inheritance, reasoning-effort, and service-tier precedence and validation
 still apply. This change does not change delegation-mode instructions or authorize a broader
 history/role combination.
+
+When a role specifies `model_instructions_file`, the file path is resolved relative to the role
+configuration file (or may be absolute). Its non-empty contents replace inherited base
+instructions for that child and are marked as custom; developer instructions remain a separate
+layer. Missing, unreadable, empty, or invalid-text files identify the selected role and resolved
+path in the error, without partially applying the role.
