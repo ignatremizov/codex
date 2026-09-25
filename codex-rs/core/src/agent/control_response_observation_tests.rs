@@ -1,6 +1,7 @@
 //! Exact observer reservations remain independent even when they share a native terminal.
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn observation_failure_releases_only_its_exact_observer_and_shared_native_receipt() {
