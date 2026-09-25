@@ -98,6 +98,17 @@ pub(super) struct OutputCollectionInterrupts {
     pub user_input_wait: Option<UserInputWait>,
 }
 
+#[tracing::instrument(
+    name = "unified_exec.collect_output",
+    level = "info",
+    skip_all,
+    fields(
+        outcome = tracing::field::Empty,
+        stop_reason = tracing::field::Empty,
+        exit_signaled = tracing::field::Empty,
+        output_closed = tracing::field::Empty,
+    )
+)]
 pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
     output: &OutputHandles<MAX_BYTES>,
     mut pause_state: Option<watch::Receiver<bool>>,
@@ -183,7 +194,7 @@ pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
                 _ = &mut notified => {}
                 _ = &mut closed => {}
                 _ = tokio::time::sleep(close_wait_remaining) => break,
-                _ = wait_for_pause_change(pause_state.as_ref()) => {}
+                _ = wait_for_pause_change(&mut pause_state) => {}
             }
             continue;
         }
@@ -227,14 +238,14 @@ pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
                         completion_reason = TerminalWaitCompletionReason::Timeout;
                         break;
                     }
-                    _ = wait_for_pause_change(pause_state.as_ref()) => {}
+                    _ = wait_for_pause_change(&mut pause_state) => {}
                 }
             } else {
                 tokio::select! {
                     _ = &mut notified => {}
                     _ = &mut exit_notified => exit_signal_received = true,
                     _ = tokio::time::sleep(remaining) => break,
-                    _ = wait_for_pause_change(pause_state.as_ref()) => {}
+                    _ = wait_for_pause_change(&mut pause_state) => {}
                 }
             }
         } else if interrupts.is_some() {
@@ -249,13 +260,13 @@ pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
                     break 'collect;
                 }
                 _ = &mut notified => {}
-                _ = wait_for_pause_change(pause_state.as_ref()) => {}
+                _ = wait_for_pause_change(&mut pause_state) => {}
             }
         } else {
             tokio::select! {
                 _ = &mut notified => {}
                 _ = &mut exit_notified => exit_signal_received = true,
-                _ = wait_for_pause_change(pause_state.as_ref()) => {}
+                _ = wait_for_pause_change(&mut pause_state) => {}
             }
         }
     }
@@ -264,6 +275,26 @@ pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
         let mut guard = output_buffer.lock().await;
         collected.push_buffer(guard.drain());
     }
+
+    let span = tracing::Span::current();
+    let output_closed = output_closed.load(std::sync::atomic::Ordering::Acquire);
+    span.record(
+        "stop_reason",
+        match completion_reason {
+            TerminalWaitCompletionReason::Exited if output_closed => "output_closed",
+            TerminalWaitCompletionReason::Exited => "post_exit_deadline",
+            TerminalWaitCompletionReason::Timeout => "deadline",
+            TerminalWaitCompletionReason::Input => "input",
+            TerminalWaitCompletionReason::Cancelled => "cancelled",
+            TerminalWaitCompletionReason::Failed => "failed",
+        },
+    );
+    span.record(
+        "exit_signaled",
+        exit_signal_received || cancellation_token.is_cancelled(),
+    );
+    span.record("output_closed", output_closed);
+    span.record("outcome", "completed");
 
     OutputCollection {
         collected,
@@ -280,12 +311,13 @@ async fn wait_for_interrupt_while_paused(
     let Some(receiver) = pause_state.as_mut() else {
         return take_ready_interrupt(interrupts);
     };
-    if !*receiver.borrow() {
+    if !*receiver.borrow_and_update() {
         return take_ready_interrupt(interrupts);
     }
 
     let paused_at = Instant::now();
-    while *receiver.borrow() {
+    let mut pause_channel_closed = false;
+    while *receiver.borrow_and_update() {
         let wait_for_interrupt = wait_for_interrupt(interrupts);
         tokio::pin!(wait_for_interrupt);
         tokio::select! {
@@ -293,6 +325,7 @@ async fn wait_for_interrupt_while_paused(
             reason = &mut wait_for_interrupt => return Some(reason),
             changed = receiver.changed() => {
                 if changed.is_err() {
+                    pause_channel_closed = true;
                     break;
                 }
             }
@@ -300,18 +333,19 @@ async fn wait_for_interrupt_while_paused(
     }
 
     let paused_for = paused_at.elapsed();
-    if let Some(deadline) = deadline.as_mut()
-        && let Some(extended_deadline) = deadline.checked_add(paused_for)
-    {
-        *deadline = extended_deadline;
-    }
-    if let Some(post_exit_deadline) = post_exit_deadline.as_mut()
-        && let Some(extended_deadline) = post_exit_deadline.checked_add(paused_for)
-    {
-        *post_exit_deadline = extended_deadline;
+    extend_deadline(deadline, paused_for);
+    extend_deadline(post_exit_deadline, paused_for);
+    if pause_channel_closed {
+        *pause_state = None;
     }
 
     take_ready_interrupt(interrupts)
+}
+
+fn extend_deadline(deadline: &mut Option<Instant>, extension: Duration) {
+    if let Some(current_deadline) = *deadline {
+        *deadline = current_deadline.checked_add(extension);
+    }
 }
 
 fn take_ready_interrupt(
@@ -365,12 +399,17 @@ async fn wait_for_user_input(user_input_wait: Option<&mut UserInputWait>) {
     }
 }
 
-async fn wait_for_pause_change(pause_state: Option<&watch::Receiver<bool>>) {
-    match pause_state {
-        Some(pause_state) => {
-            let mut receiver = pause_state.clone();
-            let _ = receiver.changed().await;
+async fn wait_for_pause_change(pause_state: &mut Option<watch::Receiver<bool>>) {
+    match pause_state.as_mut() {
+        Some(receiver) => {
+            if receiver.changed().await.is_err() {
+                *pause_state = None;
+            }
         }
         None => std::future::pending::<()>().await,
     }
 }
+
+#[cfg(test)]
+#[path = "output_collection_tests.rs"]
+mod tests;

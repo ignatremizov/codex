@@ -114,8 +114,9 @@ pub(crate) struct UnifiedExecProcess {
     sandbox_type: SandboxType,
     timed_out: AtomicBool,
     _spawn_lifecycle: Option<SpawnLifecycleHandle>,
-    // The shell may still need to replay this file after process startup returns.
-    pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
+    // Install before publishing the shared process or awaiting sandbox classification.
+    // The shell may still replay this file even if classification rejects the launch.
+    pub(super) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
 }
 
 impl std::fmt::Debug for UnifiedExecProcess {

@@ -122,6 +122,7 @@ async fn exec_command_with_tty(
             /*network_policy_decider*/ None,
             tty,
             Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
             turn.initial_environments
                 .primary()
                 .expect("turn environment")
@@ -1041,6 +1042,69 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_process_retains_shell_snapshot_until_durable_shutdown() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    let (session, turn) = make_session_and_context().await;
+    let directory = tempfile::tempdir()?;
+    let cwd = AbsolutePathBuf::try_from(directory.path())?;
+    let environment = Arc::new(codex_exec_server::Environment::default_for_tests());
+    let shell = crate::shell::Shell {
+        shell_type: crate::shell::ShellType::Bash,
+        shell_path: which::which("bash")?,
+    };
+    let snapshot = crate::shell_snapshot::ShellSnapshot::new(
+        cwd.clone(),
+        session.thread_id(),
+        turn.session_telemetry.clone(),
+        /*state_db*/ None,
+        /*credential_broker*/ None,
+        /*prefer_executor_snapshots*/ false,
+    )
+    .build(
+        Arc::clone(&environment),
+        PathUri::from_abs_path(&cwd),
+        Some(shell.clone()),
+        /*allow_login_shell*/ false,
+        codex_protocol::config_types::ShellEnvironmentPolicy::default(),
+        /*sandbox*/ None,
+    )
+    .await
+    .ok_or_else(|| anyhow::anyhow!("test shell snapshot must be created"))?;
+    let retained_snapshot = Arc::downgrade(&snapshot);
+    let request = test_exec_request(
+        &turn,
+        shell.derive_exec_args("sleep 30", /*use_login_shell*/ false),
+        cwd,
+        shell_env(),
+    );
+    let manager = UnifiedExecProcessManager::default();
+    let process = manager
+        .open_session_with_prepared_exec_env(
+            /*process_id*/ 1234,
+            &request,
+            /*tool_ctx*/ None,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*network_policy_decider*/ None,
+            /*tty*/ false,
+            Box::new(NoopSpawnLifecycle),
+            Some(snapshot),
+            environment.as_ref(),
+        )
+        .await?;
+    // Neither abandoning the caller's handle nor an additional shared owner can
+    // release the replay file while the manager still owns the live process.
+    let shared_process = Arc::clone(&process);
+    drop(process);
+    assert!(retained_snapshot.upgrade().is_some());
+    drop(shared_process);
+    assert!(retained_snapshot.upgrade().is_some());
+    manager.shutdown_durably().await?;
+    assert!(retained_snapshot.upgrade().is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
     let (_, turn) = make_session_and_context().await;
     #[allow(deprecated)]
@@ -1062,6 +1126,7 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
             /*network_policy_decider*/ None,
             /*tty*/ false,
             Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
             &environment,
         )
         .await?;
@@ -1105,6 +1170,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
             /*network_policy_decider*/ None,
             /*tty*/ true,
             Box::new(NoopSpawnLifecycle),
+            /*shell_snapshot_file*/ None,
             remote_test_env.environment(),
         )
         .await?;
@@ -1160,6 +1226,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
             Box::new(TestSpawnLifecycle {
                 inherited_fds: vec![42],
             }),
+            /*shell_snapshot_file*/ None,
             turn.initial_environments
                 .primary()
                 .expect("turn environment")

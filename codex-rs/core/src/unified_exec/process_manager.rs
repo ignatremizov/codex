@@ -29,6 +29,7 @@ use crate::plugins::metrics::finish_and_track_measurements;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecRequest;
 use crate::sandboxing::ExecServerEnvConfig;
+use crate::shell_snapshot::ShellSnapshotFile;
 use crate::tools::ApprovalContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::events::ToolEmitter;
@@ -122,11 +123,6 @@ fn advisory_deadline_at_ms(now_ms: i64, wait: Duration) -> Option<i64> {
         .and_then(|wait_ms| now_ms.checked_add(wait_ms))
 }
 
-fn extend_deadline(deadline: &mut Option<Instant>, extension: Duration) {
-    if let Some(current_deadline) = *deadline {
-        *deadline = current_deadline.checked_add(extension);
-    }
-}
 /// Test-only override for deterministic unified exec process IDs.
 ///
 /// In production builds this value should remain at its default (`false`) and
@@ -1515,6 +1511,7 @@ impl UnifiedExecProcessManager {
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         tty: bool,
         spawn_lifecycle: SpawnLifecycleHandle,
+        shell_snapshot_file: Option<Arc<ShellSnapshotFile>>,
         environment: &codex_exec_server::Environment,
     ) -> Result<Arc<UnifiedExecProcess>, ToolError> {
         let mut request = if environment.is_remote() || shell_snapshot.is_some() {
@@ -1541,6 +1538,7 @@ impl UnifiedExecProcessManager {
             network_policy_decider,
             tty,
             spawn_lifecycle,
+            shell_snapshot_file,
             environment,
         )
         .await
@@ -1565,6 +1563,7 @@ impl UnifiedExecProcessManager {
         network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
         tty: bool,
         mut spawn_lifecycle: SpawnLifecycleHandle,
+        shell_snapshot_file: Option<Arc<ShellSnapshotFile>>,
         environment: &codex_exec_server::Environment,
     ) -> Result<Arc<UnifiedExecProcess>, UnifiedExecError> {
         let inherited_fds = spawn_lifecycle.inherited_fds();
@@ -1603,9 +1602,10 @@ impl UnifiedExecProcessManager {
             }
             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
             spawn_lifecycle.after_spawn();
-            let process = Arc::new(
-                UnifiedExecProcess::from_exec_server_before_classification(started).await?,
-            );
+            let mut process =
+                UnifiedExecProcess::from_exec_server_before_classification(started).await?;
+            process._shell_snapshot = shell_snapshot_file;
+            let process = Arc::new(process);
             self.retain_process_for_shutdown(Arc::clone(&process));
             if let Err(error) = process.check_for_sandbox_denial().await {
                 process.terminate();
@@ -1683,14 +1683,14 @@ impl UnifiedExecProcessManager {
         spawn_lifecycle.after_spawn();
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        let process = Arc::new(
-            UnifiedExecProcess::from_spawned_before_classification(
-                spawned,
-                request.sandbox,
-                spawn_lifecycle,
-            )
-            .await?,
-        );
+        let mut process = UnifiedExecProcess::from_spawned_before_classification(
+            spawned,
+            request.sandbox,
+            spawn_lifecycle,
+        )
+        .await?;
+        process._shell_snapshot = shell_snapshot_file;
+        let process = Arc::new(process);
         self.retain_process_for_shutdown(Arc::clone(&process));
         if let Err(error) = process.check_for_sandbox_denial().await {
             process.terminate();
@@ -1829,153 +1829,6 @@ impl UnifiedExecProcessManager {
         };
         tracing::Span::current().record("outcome", outcome);
         result
-    }
-
-    #[tracing::instrument(
-        name = "unified_exec.collect_output",
-        level = "info",
-        skip_all,
-        fields(
-            outcome = tracing::field::Empty,
-            stop_reason = tracing::field::Empty,
-            exit_signaled = tracing::field::Empty,
-            output_closed = tracing::field::Empty,
-        )
-    )]
-    pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
-        output: &OutputHandles<MAX_BYTES>,
-        mut pause_state: Option<watch::Receiver<bool>>,
-        mut deadline: Option<Instant>,
-    ) -> HeadTailBuffer<MAX_BYTES> {
-        const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_secs(1);
-
-        enum StopReason {
-            OutputClosed,
-            Deadline,
-            PostExitDeadline,
-        }
-
-        let OutputHandles {
-            output_buffer,
-            output_notify,
-            output_closed,
-            output_closed_notify,
-            cancellation_token,
-        } = output;
-        let mut collected = HeadTailBuffer::default();
-        let mut exit_signal_received = cancellation_token.is_cancelled();
-        let mut post_exit_deadline: Option<Instant> = None;
-        let stop_reason = loop {
-            Self::extend_deadlines_while_paused(
-                &mut pause_state,
-                &mut deadline,
-                &mut post_exit_deadline,
-            )
-            .await;
-            let drained_output: HeadTailBuffer<MAX_BYTES>;
-            let has_drained_output: bool;
-            let mut wait_for_output = None;
-            {
-                let mut guard = output_buffer.lock().await;
-                drained_output = std::mem::take(&mut *guard);
-                has_drained_output =
-                    drained_output.retained_bytes() > 0 || drained_output.omitted_bytes() > 0;
-                if !has_drained_output {
-                    wait_for_output = Some(output_notify.notified());
-                }
-            }
-
-            collected.push_buffer(drained_output);
-
-            exit_signal_received |= cancellation_token.is_cancelled();
-            if exit_signal_received {
-                if output_closed.load(Ordering::Acquire) {
-                    break StopReason::OutputClosed;
-                }
-
-                let now = Instant::now();
-                let close_wait_deadline = *post_exit_deadline.get_or_insert_with(|| {
-                    let remaining = deadline
-                        .map(|deadline| deadline.saturating_duration_since(now))
-                        .unwrap_or(POST_EXIT_CLOSE_WAIT_CAP);
-                    now + if remaining == Duration::ZERO {
-                        POST_EXIT_CLOSE_WAIT_CAP
-                    } else {
-                        remaining.min(POST_EXIT_CLOSE_WAIT_CAP)
-                    }
-                });
-                let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
-                if close_wait_remaining == Duration::ZERO {
-                    break StopReason::PostExitDeadline;
-                }
-                if has_drained_output {
-                    continue;
-                }
-                let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-                let closed = output_closed_notify.notified();
-                tokio::pin!(notified);
-                tokio::pin!(closed);
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut closed => {}
-                    _ = tokio::time::sleep(close_wait_remaining) => break StopReason::PostExitDeadline,
-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                }
-                continue;
-            }
-
-            if has_drained_output {
-                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                    break StopReason::Deadline;
-                }
-                continue;
-            }
-
-            let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-            tokio::pin!(notified);
-            let exit_notified = cancellation_token.cancelled();
-            tokio::pin!(exit_notified);
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining == Duration::ZERO {
-                    break StopReason::Deadline;
-                }
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut exit_notified => exit_signal_received = true,
-                    _ = tokio::time::sleep(remaining) => break StopReason::Deadline,
-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                }
-            } else {
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut exit_notified => exit_signal_received = true,
-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                }
-            }
-        };
-
-        {
-            let mut guard = output_buffer.lock().await;
-            collected.push_buffer(std::mem::take(&mut *guard));
-        }
-
-        let span = tracing::Span::current();
-        span.record(
-            "stop_reason",
-            match stop_reason {
-                StopReason::OutputClosed => "output_closed",
-                StopReason::Deadline => "deadline",
-                StopReason::PostExitDeadline => "post_exit_deadline",
-            },
-        );
-        span.record(
-            "exit_signaled",
-            exit_signal_received || cancellation_token.is_cancelled(),
-        );
-        span.record("output_closed", output_closed.load(Ordering::Acquire));
-        span.record("outcome", "completed");
-        collected
     }
 
     async fn finish_output_collection_after_exit(

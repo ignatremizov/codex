@@ -654,7 +654,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                                 .to_string(),
                         ));
                     }
-                    let mut process = self
+                    let process = self
                         .manager
                         .open_session_with_prepared_exec_env(
                             req.process_id,
@@ -664,6 +664,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                             /*network_policy_decider*/ None,
                             req.tty,
                             prepared.spawn_lifecycle,
+                            shell_snapshot,
                             req.turn_environment.environment.as_ref(),
                         )
                         .await
@@ -676,7 +677,6 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                             }
                             other => ToolError::Rejected(other.to_string()),
                         })?;
-                    process._shell_snapshot = shell_snapshot;
                     return Ok(UnifiedExecAttempt {
                         process,
                         metrics_sidecar,
@@ -704,7 +704,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
             error @ ToolError::Codex(_) => error,
         })?;
         let options = unified_exec_options(attempt.network_denial_cancellation_token.clone());
-        let mut process = self
+        let process = self
             .manager
             .open_session_with_exec_env(
                 req.process_id,
@@ -720,10 +720,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
                 windows_sandbox_proxy_settings_mode,
                 req.tty,
                 Box::new(NoopSpawnLifecycle),
+                shell_snapshot,
                 req.turn_environment.environment.as_ref(),
             )
             .await?;
-        process._shell_snapshot = shell_snapshot;
         Ok(UnifiedExecAttempt {
             process,
             metrics_sidecar,
