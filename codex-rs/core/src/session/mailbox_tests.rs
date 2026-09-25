@@ -77,6 +77,7 @@ async fn selected_mail_worker_survives_result_waiter_cancellation() -> anyhow::R
         .accept_mailbox_input(AcceptMailboxInputParams {
             receiver_thread_id: session.thread_id,
             submission_key: "cancelled-waiter".to_string(),
+            final_subscription: None,
             payload: MailboxPayload::User {
                 input: vec![UserInput::Text {
                     text: "durable selection".into(),

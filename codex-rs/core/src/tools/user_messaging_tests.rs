@@ -27,6 +27,7 @@ fn undelivered_or_unrelated_messages_have_no_evidence(name: &str, input: Value, 
             tool_input: input,
             tool_response: json!({}),
         }),
+        mailbox_operation: None,
     };
     assert_eq!(output.delivered_assistant_message(), None);
 }

@@ -70,6 +70,7 @@ impl ThreadStore for FixedClaimStore {
         fn resume_thread(params: codex_thread_store::ResumeThreadParams) -> ();
         fn reserve_thread_writers(thread_ids: Vec<ThreadId>) -> codex_thread_store::ThreadWriterReservation;
         fn append_items(params: codex_thread_store::AppendThreadItemsParams) -> ();
+        fn append_completion_items_and_flush(params: codex_thread_store::AppendThreadItemsParams) -> ();
         fn persist_thread(thread_id: ThreadId, context: codex_thread_store::PersistContext) -> ();
         fn flush_thread(thread_id: ThreadId) -> ();
         fn shutdown_thread(thread_id: ThreadId) -> ();

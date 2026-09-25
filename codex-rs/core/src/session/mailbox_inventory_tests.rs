@@ -44,6 +44,7 @@ impl ThreadStore for CancellationGateStore {
         fn resume_thread(params: ResumeThreadParams) -> ();
         fn reserve_thread_writers(thread_ids: Vec<ThreadId>) -> ThreadWriterReservation;
         fn append_items(params: AppendThreadItemsParams) -> ();
+        fn append_completion_items_and_flush(params: AppendThreadItemsParams) -> ();
         fn persist_thread(thread_id: ThreadId, context: PersistContext) -> ();
         fn flush_thread(thread_id: ThreadId) -> ();
         fn shutdown_thread(thread_id: ThreadId) -> ();

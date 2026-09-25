@@ -37,10 +37,7 @@ async fn direct_dispatch_carries_selection_without_consuming_and_nested_dispatch
         Some(ToolExposure::DirectModelOnly),
     );
     let direct = registry
-        .dispatch_any_with_terminal_outcome(
-            invocation.clone(),
-            /*terminal_outcome_reached*/ None,
-        )
+        .dispatch_any_with_state(invocation.clone(), /*call_state*/ None)
         .await?
         .into_direct_result();
     let operation = direct
@@ -66,7 +63,7 @@ async fn direct_dispatch_carries_selection_without_consuming_and_nested_dispatch
         serde_json::json!({"status": "delivery_requested", "from": "user"}),
     );
     let error = registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             ToolInvocation {
                 source: ToolCallSource::CodeMode {
                     cell_id: "cell".to_string(),
@@ -74,7 +71,7 @@ async fn direct_dispatch_carries_selection_without_consuming_and_nested_dispatch
                 },
                 ..invocation
             },
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await
         .err()
