@@ -3,8 +3,8 @@ use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
-use crate::agent::control::ResponseObserverKind;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
@@ -223,7 +223,6 @@ async fn handle_spawn_agent(
                 Some(spawn_source),
                 SpawnAgentOptions {
                     task: None,
-                    model_input_origin: None,
                     fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
@@ -234,7 +233,6 @@ async fn handle_spawn_agent(
                     multi_agent_v2_usage_hints,
                     cyber_access_program: turn.cyber_access_program,
                     response_observation: Default::default(),
-                    response_observer: ResponseObserverKind::Native,
                 },
             ),
     )

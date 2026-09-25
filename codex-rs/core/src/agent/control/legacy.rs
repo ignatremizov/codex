@@ -1,4 +1,5 @@
 use super::*;
+use crate::CodexThread;
 use codex_protocol::error::CodexErrorDetails;
 use codex_thread_store::PersistContext;
 

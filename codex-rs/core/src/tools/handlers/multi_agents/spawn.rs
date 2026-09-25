@@ -4,11 +4,11 @@ use crate::agent::child_config::SpawnConfigOrigin;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::AgentModelInputOrigin;
-use crate::agent::control::ResponseObserverKind;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
@@ -146,7 +146,6 @@ async fn handle_spawn_agent(
                     multi_agent_v2_usage_hints: None,
                     cyber_access_program: turn.cyber_access_program,
                     response_observation: args.w,
-                    response_observer: ResponseObserverKind::Native,
                 },
                 AgentModelInputOrigin {
                     sender: session.presentation_id(),
