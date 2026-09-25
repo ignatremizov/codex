@@ -1,6 +1,7 @@
 use codex_agent_graph_store::AgentAlias;
 use codex_agent_graph_store::AgentAliasState;
 use codex_agent_graph_store::AllocateAgentAliasRequest;
+use codex_protocol::SessionId;
 
 use super::*;
 

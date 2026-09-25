@@ -97,9 +97,8 @@ impl LiveThreadInitGuard {
         if let Some(acquiring) = self.acquiring.as_mut() {
             let result = acquiring.await;
             self.acquiring = None;
-            self.live_thread = Some(result.map_err(|error| {
+            self.live_thread = Some(result.inspect_err(|error| {
                 self.acquisition_error = Some(error.to_string());
-                error
             })?);
         }
         Ok(())

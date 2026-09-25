@@ -10,6 +10,7 @@ use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
 
+use crate::session::TurnInput;
 use crate::session::command_approval::CommandApprovalClaim;
 use crate::session::command_approval::QueuedSubmission;
 use crate::session::session::Session;
@@ -24,6 +25,7 @@ use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandPlacement;
 use crate::tasks::execute_user_shell_command;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
