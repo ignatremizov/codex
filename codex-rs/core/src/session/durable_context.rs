@@ -250,11 +250,10 @@ impl Session {
             };
             if !items.is_empty()
                 && let Some(live_thread) = live_thread
+                && let Err(error) = live_thread.append_items_and_flush_canonical(&items).await
             {
-                if let Err(error) = live_thread.append_items_and_flush_canonical(&items).await {
-                    let _ = sender.send(Err(outcome.fail(error)));
-                    return;
-                }
+                let _ = sender.send(Err(outcome.fail(error)));
+                return;
             }
             outcome.stage = "live installation";
             let result = {

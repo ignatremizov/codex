@@ -728,10 +728,11 @@ pub(crate) async fn record_pending_input(
                     turn_context.as_ref(),
                     model_info,
                     content.as_slice(),
-                    client_id,
-                    acceptance_order,
                     persist_context,
-                    PromptInputKind::User,
+                    PromptInputKind::User {
+                        client_id,
+                        acceptance_order,
+                    },
                     additional_context_messages(additional_contexts)
                         .into_iter()
                         .map(codex_history::ResponseItemEnvelope::new)
@@ -748,8 +749,6 @@ pub(crate) async fn record_pending_input(
                     turn_context.as_ref(),
                     model_info,
                     &content,
-                    /*client_id*/ None,
-                    /*acceptance_order*/ None,
                     persist_context,
                     PromptInputKind::Agent { presentation },
                     additional_context_messages(additional_contexts)

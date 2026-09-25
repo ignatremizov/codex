@@ -1092,6 +1092,7 @@ impl SessionIo {
     ///
     /// Once queued, dropping the waiter does not retract the call. If the
     /// session loop exits before replying, the caller gets `InternalAgentDied`.
+    #[cfg(test)]
     pub(crate) async fn submit_turn_input_with_admission(
         &self,
         session: &Session,
@@ -2588,19 +2589,6 @@ impl Session {
     pub(crate) async fn send_event_raw(&self, event: Event) {
         self.send_event_raw_with_persistence(event, /*persist*/ true)
             .await;
-    }
-
-    /// Delivers an event without creating a local rollout for a thread that has not materialized.
-    pub(crate) async fn send_event_raw_without_materializing_rollout(&self, event: Event) {
-        let persist = match self.current_rollout_path().await {
-            Ok(Some(path)) => codex_rollout::existing_rollout_path(&path).await.is_some(),
-            Ok(None) => true,
-            Err(err) => {
-                warn!("failed to check whether thread persistence is materialized: {err}");
-                true
-            }
-        };
-        self.send_event_raw_with_persistence(event, persist).await;
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {

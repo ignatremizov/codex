@@ -88,6 +88,10 @@ impl Session {
         })
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "accepted completion admission must cover mailbox enqueue before shutdown can drain; the guard is released before waking a turn"
+    )]
     pub(crate) async fn publish_close_response(
         self: &Arc<Self>,
         communication: InterAgentCommunication,

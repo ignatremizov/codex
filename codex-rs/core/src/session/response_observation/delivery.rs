@@ -31,9 +31,9 @@ impl Drop for DeliveryOutcome {
 enum Payload {
     Context {
         communication: InterAgentCommunication,
-        presentation: Option<CompletionPresentation>,
+        presentation: Option<Box<CompletionPresentation>>,
     },
-    Presentation(CompletionPresentation),
+    Presentation(Box<CompletionPresentation>),
     WaitCommentary {
         communication: InterAgentCommunication,
         turn_context: Arc<crate::session::turn_context::TurnContext>,
@@ -280,7 +280,7 @@ impl Session {
                     delivery.accepted,
                     Payload::Context {
                         communication,
-                        presentation: delivery.presentation,
+                        presentation: delivery.presentation.map(Box::new),
                     },
                 )
                 .await;
@@ -326,7 +326,7 @@ impl Session {
             Arc::new(accepted),
             Payload::Context {
                 communication,
-                presentation: Some(copy_presentation(presentation)),
+                presentation: Some(Box::new(copy_presentation(presentation))),
             },
         )
         .await
@@ -341,7 +341,7 @@ impl Session {
         self.persist_observation_payload(
             commit,
             Arc::new(accepted),
-            Payload::Presentation(copy_presentation(presentation)),
+            Payload::Presentation(Box::new(copy_presentation(presentation))),
         )
         .await
     }
@@ -396,9 +396,14 @@ impl Session {
                                 "observed response identity changed".to_string(),
                             ));
                         }
-                        (Some(response), presentation, communication.trigger_turn, None)
+                        (
+                            Some(response),
+                            presentation.map(|presentation| *presentation),
+                            communication.trigger_turn,
+                            None,
+                        )
                     }
-                    Payload::Presentation(presentation) => (None, Some(presentation), false, None),
+                    Payload::Presentation(presentation) => (None, Some(*presentation), false, None),
                     Payload::WaitCommentary { mut communication, turn_context } => {
                         communication.set_turn_id_if_missing(&turn_context.sub_id);
                         let response = communication.to_model_input_item();

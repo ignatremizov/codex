@@ -25,7 +25,7 @@ pub(super) enum ConversationBoundary {
     Existing,
     HistoryOnly,
     Prompt {
-        presentation: Option<codex_protocol::items::TurnItem>,
+        presentation: Option<Box<codex_protocol::items::TurnItem>>,
     },
 }
 
@@ -165,7 +165,9 @@ impl Session {
             None
         };
         let presentation = match boundary {
-            ConversationBoundary::Prompt { presentation } => presentation,
+            ConversationBoundary::Prompt { presentation } => {
+                presentation.map(|presentation| *presentation)
+            }
             ConversationBoundary::Existing | ConversationBoundary::HistoryOnly => None,
         };
         if let Some(item) = &presentation {

@@ -82,7 +82,10 @@ impl TurnInput {
 
 #[derive(Clone)]
 pub(crate) enum PromptInputKind {
-    User,
+    User {
+        client_id: Option<String>,
+        acceptance_order: Option<u64>,
+    },
     Agent {
         presentation: AgentInputPresentation,
     },

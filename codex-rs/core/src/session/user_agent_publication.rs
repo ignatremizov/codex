@@ -41,6 +41,10 @@ impl Drop for PublicationOutcome {
 
 impl Session {
     /// Persists source-side control audit without changing the source response lifecycle.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active-turn ownership must remain fixed from audit attribution through canonical publication and primary event enqueue"
+    )]
     pub(crate) async fn record_user_agent_control(
         self: &Arc<Self>,
         item: UserAgentControlItem,

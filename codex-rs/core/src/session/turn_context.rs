@@ -1054,6 +1054,7 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn new_turn_with_sub_id(
         &self,
         sub_id: String,
@@ -1075,6 +1076,7 @@ impl Session {
     /// `should_start` runs under the state lock against the current and validated
     /// proposed configurations. It must be fast and side-effect-free, and must not
     /// block, acquire other locks, or call back into `Session`.
+    #[cfg(test)]
     pub(super) async fn new_turn_with_sub_id_if(
         &self,
         sub_id: String,

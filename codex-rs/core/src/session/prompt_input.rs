@@ -26,8 +26,6 @@ impl Session {
         turn_context: &TurnContext,
         model_info: &ModelInfo,
         input: &[UserInput],
-        client_id: Option<String>,
-        acceptance_order: Option<u64>,
         persist_context: PersistContext,
         prompt_kind: PromptInputKind,
         additional_context: Vec<ResponseItemEnvelope>,
@@ -46,6 +44,12 @@ impl Session {
             // The marker permits disposable receiver projection, not canonical rewriting.
             crate::context::AttributedAgentMessage::mark_model_input(&mut response_item);
         }
+        let acceptance_order = match &prompt_kind {
+            PromptInputKind::User {
+                acceptance_order, ..
+            } => *acceptance_order,
+            PromptInputKind::Agent { .. } => None,
+        };
         let mut items = vec![ResponseItemEnvelope {
             item: response_item,
             metadata: acceptance_order.map(|order| CodexHarnessMetadata {
@@ -58,7 +62,7 @@ impl Session {
             .prepare_annotated_conversation_items_for_history(turn_context, model_info, items)
             .await;
         let turn_item = match prompt_kind {
-            PromptInputKind::User => {
+            PromptInputKind::User { client_id, .. } => {
                 let mut item = UserMessageItem::new(input);
                 apply_prepared_image_file_ids(&mut item, &prepared, &image_positions);
                 item.client_id = client_id;
@@ -97,7 +101,7 @@ impl Session {
             ConversationBoundary::Prompt {
                 presentation: turn_item.as_ref().filter(|item| {
                     matches!(item, TurnItem::AgentMessage(message) if message.attribution.is_some())
-                }).cloned(),
+                }).cloned().map(Box::new),
             },
         )
         .await?;

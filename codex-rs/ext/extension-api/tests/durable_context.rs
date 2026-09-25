@@ -105,7 +105,7 @@ fn inventory_restoration_rejects_wrong_role_provenance_shape_and_truncated_wrapp
     {
         *internal_chat_message_metadata_passthrough = None;
     }
-    let mut incomplete = canonical.clone();
+    let mut incomplete = canonical;
     if let ResponseItem::Message { content, .. } = &mut incomplete.item {
         let ContentItem::InputText { text } = &mut content[0] else {
             unreachable!();

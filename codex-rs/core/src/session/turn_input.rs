@@ -71,6 +71,14 @@ enum IdleContext {
     Mailbox(codex_thread_store::MailboxInventoryNotification),
 }
 
+/// Identity and eligibility of an idle start, separate from its admission lease.
+struct IdleStart {
+    submission_id: String,
+    kind: TurnStartKind,
+    expected_previous_turn_id: Option<String>,
+    context: IdleContext,
+}
+
 impl TurnStartKind {
     fn permits_mode(self, mode: ModeKind) -> bool {
         match self {
@@ -417,12 +425,14 @@ async fn start_if_idle(
     start_if_idle_with_lease(
         session,
         request,
-        submission_id,
-        kind,
-        expected_previous_turn_id,
+        IdleStart {
+            submission_id,
+            kind,
+            expected_previous_turn_id,
+            context: IdleContext::Ordinary,
+        },
         (),
         |_| {},
-        IdleContext::Ordinary,
     )
     .await
 }
@@ -449,12 +459,14 @@ impl Session {
         start_if_idle_with_lease(
             self,
             request,
-            self.next_internal_sub_id(),
-            kind,
-            /*expected_previous_turn_id*/ None,
+            IdleStart {
+                submission_id: self.next_internal_sub_id(),
+                kind,
+                expected_previous_turn_id: None,
+                context: IdleContext::Ordinary,
+            },
             lease,
             on_admitted,
-            IdleContext::Ordinary,
         )
         .await
     }
@@ -468,12 +480,14 @@ impl Session {
         let result = start_if_idle_with_lease(
             self,
             TurnInputRequest::user_input(Vec::new()),
-            notification.id.clone(),
-            TurnStartKind::Automatic,
-            /*expected_previous_turn_id*/ None,
+            IdleStart {
+                submission_id: notification.id.clone(),
+                kind: TurnStartKind::Automatic,
+                expected_previous_turn_id: None,
+                context: IdleContext::Mailbox(notification),
+            },
             lease,
             |_| {},
-            IdleContext::Mailbox(notification),
         )
         .await?;
         Ok(match result {
@@ -495,13 +509,16 @@ impl Session {
 async fn start_if_idle_with_lease(
     session: &Arc<Session>,
     request: TurnInputRequest,
-    submission_id: String,
-    kind: TurnStartKind,
-    expected_previous_turn_id: Option<String>,
+    start: IdleStart,
     lease: impl Send,
     on_admitted: impl FnOnce(&str) + Send,
-    idle_context: IdleContext,
 ) -> CodexResult<TurnInputSubmission> {
+    let IdleStart {
+        submission_id,
+        kind,
+        expected_previous_turn_id,
+        context: idle_context,
+    } = start;
     let TurnInputRequest {
         input,
         thread_settings,

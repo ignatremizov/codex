@@ -68,7 +68,7 @@ impl Session {
         let session = Arc::clone(self);
         let communication = communication.clone();
         let model_info = model_info.clone();
-        let result = tokio::spawn(async move {
+        tokio::spawn(async move {
             let mut receipt = CompletionConsumption {
                 session: Arc::clone(&session),
                 finished: false,
@@ -156,8 +156,7 @@ impl Session {
             self.quarantine_history(format!("completion consumption lost its receipt: {error}"));
             self.input_queue.completion_commit_changed.notify_waiters();
             CodexErr::Fatal(format!("completion consumption lost its receipt: {error}"))
-        })?;
-        result
+        })?
     }
 
     pub(super) async fn drain_completion_mailbox(self: &Arc<Self>) -> CodexResult<()> {
@@ -405,6 +404,7 @@ impl Session {
     }
 
     /// Wait ownership transfers only after canonical commit and primary event enqueue.
+    #[cfg(test)]
     pub(crate) async fn emit_turn_item_completed_with_primary_delivery(
         &self,
         turn: &TurnContext,
