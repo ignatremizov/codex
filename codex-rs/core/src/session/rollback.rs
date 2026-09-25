@@ -134,12 +134,16 @@ async fn apply(sess: &Arc<Session>, target: Target) -> CodexResult<ThreadRolledB
             "thread/rollback only supports Legacy history".to_string(),
         ));
     }
-    live.flush_canonical().await.map_err(|error| {
-        sess.quarantine_history(format!(
-            "rollback preflight history barrier failed: {error}"
-        ));
-        CodexErr::Fatal(error.to_string())
-    })?;
+    sess.services
+        .thread_store
+        .flush_thread(sess.thread_id())
+        .await
+        .map_err(|error| {
+            sess.quarantine_history(format!(
+                "rollback preflight history barrier failed: {error}"
+            ));
+            CodexErr::Fatal(error.to_string())
+        })?;
     let stored = live
         .load_history(/*include_archived*/ false)
         .await

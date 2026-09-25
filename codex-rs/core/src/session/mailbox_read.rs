@@ -58,7 +58,7 @@ impl Session {
                     if event.turn_id == turn_id && event.item.id() == call_id =>
                 {
                     if event.thread_id != self.thread_id
-                        || event.item != TurnItem::MailboxRead(read.clone())
+                        || !matches!(&event.item, TurnItem::MailboxRead(recorded) if recorded == &read)
                     {
                         return Err(ThreadStoreError::Conflict {
                             message: "conflicting mailbox read presentation".into(),
