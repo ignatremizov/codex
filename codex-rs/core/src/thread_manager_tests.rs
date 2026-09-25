@@ -340,7 +340,8 @@ async fn reserved_thread_id_is_used_without_changing_normal_id_generation() {
     let resume_error = manager
         .start_thread(resumed_options)
         .await
-        .expect_err("reject reserved ID for resume");
+        .err()
+        .expect("reject reserved ID for resume");
     let generated = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
@@ -975,14 +976,12 @@ async fn exact_thread_removal_preserves_a_replaced_manager_entry() {
     );
     let absent_cleanup_called = Arc::new(AtomicBool::new(false));
     let absent_cleanup_called_for_check = Arc::clone(&absent_cleanup_called);
-    assert!(
-        !manager
-            .state
-            .run_if_thread_absent(old.thread_id, move || {
-                absent_cleanup_called_for_check.store(true, Ordering::Release);
-            })
-            .await
-    );
+    manager
+        .state
+        .run_if_thread_absent(old.thread_id, move || {
+            absent_cleanup_called_for_check.store(true, Ordering::Release);
+        })
+        .await;
     assert!(!absent_cleanup_called.load(Ordering::Acquire));
     let current = manager
         .get_thread(old.thread_id)

@@ -34,6 +34,7 @@ async fn fixture() -> (
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
+        crate::thread_manager::passthrough_image_store(),
         store.clone(),
         /*agent_graph_store*/ None,
         "subtree-unload-test".to_string(),
