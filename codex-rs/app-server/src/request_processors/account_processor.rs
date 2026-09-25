@@ -10,7 +10,9 @@ use chrono::DateTime;
 use codex_app_server_protocol::DesktopOnboardingEntrypoint;
 use codex_app_server_protocol::GetAccountRateLimitsParams;
 use codex_login::LoginOnboardingEntrypoint;
-use codex_login::login_with_bedrock_access_keys;
+use codex_login::login_with_api_key_for_selection;
+use codex_login::login_with_bedrock_access_keys_for_selection;
+use codex_login::login_with_bedrock_api_key_for_selection;
 use codex_model_provider::is_supported_amazon_bedrock_region;
 
 mod bedrock_setup;

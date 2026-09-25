@@ -100,6 +100,7 @@ impl PidBackend {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn new(codex_bin: PathBuf, pid_file: PathBuf, remote_control_enabled: bool) -> Self {
         Self::new_with_launch(codex_bin, pid_file, remote_control_enabled, None)
     }
