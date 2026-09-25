@@ -8,7 +8,6 @@ use super::ThreadItem;
 
 const OPAQUE_MESSAGE: &str = "Input message encrypted";
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::AgentStatus;
 use serde::Deserialize;
 
 const MESSAGE_TYPE_PREFIX: &str = "Message Type: ";
@@ -78,12 +77,6 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
     })
 }
 
-#[derive(Deserialize)]
-struct SubAgentNotificationEnvelope {
-    agent_id: ThreadId,
-    status: AgentStatus,
-}
-
 pub(super) fn transcript_text(author: &str, recipient: &str, text: &str) -> String {
     if let Some(SubAgentCommentaryEnvelope {
         agent_id, message, ..
@@ -102,14 +95,6 @@ pub(super) fn transcript_text(author: &str, recipient: &str, text: &str) -> Stri
         }
         Some(_) | None => format!("Agent message from `{author}`:\n\n{text}"),
     }
-}
-
-pub(super) fn sub_agent_notification(text: &str) -> Option<(ThreadId, AgentStatus)> {
-    let body = text
-        .strip_prefix("<subagent_notification>\n")?
-        .strip_suffix("\n</subagent_notification>")?;
-    let notification = serde_json::from_str::<SubAgentNotificationEnvelope>(body).ok()?;
-    Some((notification.agent_id, notification.status))
 }
 
 /// Parses canonical V1 subagent commentary transcript text into agent identity and message.
