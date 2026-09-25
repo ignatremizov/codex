@@ -13,7 +13,7 @@ async fn explicit_observer_preserves_direction_and_issuer_audit() -> Result<()> 
             config.disable_feature(Feature::MultiAgentV2)
         };
         config.write(codex_home.path())?;
-        write_models_cache(codex_home.path())?;
+        write_models_cache(codex_home.path()).await?;
         let mut app = TestAppServer::builder()
             .with_codex_home(codex_home.path())
             .build_initialized()
