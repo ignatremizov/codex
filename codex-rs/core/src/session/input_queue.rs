@@ -1022,6 +1022,7 @@ mod tests {
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                 &turn_state,
                 vec![TurnInput::UserInput {
+                    acceptance_order: None,
                     content: vec![UserInput::Text {
                         text: "steer".to_string(),
                         text_elements: Vec::new(),
@@ -1325,12 +1326,12 @@ mod tests {
             input_queue.take_queued_items_for_next_turn().await,
             (
                 vec![TurnInput::ResponseItem(route.into())],
-                /*turn_trigger*/ None,
+                TurnStartOptions::default(),
             )
         );
         assert_eq!(
             input_queue.take_queued_items_for_next_turn().await,
-            (Vec::new(), /*turn_trigger*/ None)
+            (Vec::new(), TurnStartOptions::default())
         );
     }
 
