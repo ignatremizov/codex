@@ -72,8 +72,8 @@ async fn unbound_native_child_rejects_replacement_parent_control() {
         )
         .expect_err("foreign child control must not bind");
     assert_matches!(
-        error,
-        CodexErr::InvalidRequest(message)
+        error.details(),
+        CodexErrorDetails::InvalidRequest(message)
             if message == "completion child and parent must belong to the binding control"
     );
 
@@ -84,8 +84,8 @@ async fn unbound_native_child_rejects_replacement_parent_control() {
         .await
         .expect_err("replacement parent control must not adopt the native child");
     assert_matches!(
-        error,
-        CodexErr::InvalidRequest(message)
+        error.details(),
+        CodexErrorDetails::InvalidRequest(message)
             if message == "completion child and parent must belong to the binding control"
     );
     assert_eq!(
