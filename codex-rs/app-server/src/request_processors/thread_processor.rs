@@ -3037,6 +3037,7 @@ impl ThreadRequestProcessor {
             thread
                 .thread_source
                 .clone_from(&fallback_thread.thread_source);
+            thread
         } else {
             fallback_thread
         };
