@@ -1,4 +1,5 @@
 use super::AdditionalPermissionProfile;
+use super::AgentInputOutcome;
 use super::ExecPolicyAmendment;
 use super::McpToolCallError;
 use super::McpToolCallResult;
