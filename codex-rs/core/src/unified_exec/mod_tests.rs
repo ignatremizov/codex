@@ -995,7 +995,9 @@ async fn cancelling_blocked_stdin_write_releases_the_process_interaction_lock() 
             tty: true,
             environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
             permissions: TerminalPermissions::for_launch(
-                turn.environments.primary().expect("turn environment"),
+                turn.initial_environments
+                    .primary()
+                    .expect("turn environment"),
                 &turn,
                 TerminalSandboxSource::Native,
                 SandboxPermissions::UseDefault,
