@@ -67,6 +67,7 @@ async fn identity_reads_do_not_initialize_an_unowned_namespace() {
             .expect("display"),
         codex_protocol::protocol::CollabAgentRef {
             thread_id: root,
+            agent_ref: None,
             task_path: None,
             agent_nickname: None,
             agent_role: None,

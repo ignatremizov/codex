@@ -3,6 +3,7 @@ use crate::context::ContextualUserFragment;
 use codex_protocol::AgentPath;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -234,7 +235,9 @@ fn tagged_attributed_input_preserves_media_and_reprojects_from_canonical_identit
         content: vec![
             ContentItem::InputText { text: text.clone() },
             ContentItem::InputImage {
-                image_url: "data:image/png;base64,aW1hZ2U=".to_string(),
+                image: ImageReference::Inline {
+                    image_url: "data:image/png;base64,aW1hZ2U=".to_string(),
+                },
                 detail: None,
             },
             ContentItem::InputAudio {
@@ -337,7 +340,9 @@ fn marking_requires_existing_first_text_annotation_and_user_role() {
         (
             "user",
             vec![ContentItem::InputImage {
-                image_url: "image".to_string(),
+                image: ImageReference::Inline {
+                    image_url: "image".to_string(),
+                },
                 detail: None,
             }],
             Some(tagged),

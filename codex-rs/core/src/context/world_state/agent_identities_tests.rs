@@ -50,7 +50,8 @@ fn reconcile_keeps_one_current_mapping_and_preserves_other_content_and_annotatio
     let mut retained = ResponseItemEnvelope::new(ContextualUserFragment::into(current.clone()));
     retained.metadata = Some(codex_history::CodexHarnessMetadata {
         client_authored: false,
-        fallback_token_limit_override: Some(321),
+        history_truncation_token_limit: Some(321),
+        ..Default::default()
     });
     let mut items = vec![
         ResponseItemEnvelope::new(combined.clone()),
