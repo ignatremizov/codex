@@ -1262,9 +1262,14 @@ impl RolloutRecorder {
         self.wait_for_exit().await
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "serialized exit waiters must retain the shared join handle through cancellation"
+    )]
     async fn wait_for_exit(&self) -> std::io::Result<()> {
         // Keep the handle in shared ownership while awaiting it. Cancelling one waiter must
         // not let another observe an empty slot before the task releases its writer lease.
+        // The writer never acquires this mutex; it only serializes competing exit waiters.
         let mut handle = self.writer_task.handle.lock().await;
         if let Some(task) = handle.as_mut() {
             let result = task.await;
