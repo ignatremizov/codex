@@ -1,6 +1,7 @@
 use super::*;
 use crate::session::SessionIo;
 use crate::session::completed_session_loop_termination;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
 use pretty_assertions::assert_eq;
 use std::time::Duration as StdDuration;
@@ -27,7 +28,10 @@ fn try_enqueue_rejects_held_send_order_without_reserving() {
             submission("rollback", Op::ThreadRollback { num_turns: 1 }),
         )
         .expect_err("must reject without waiting for send order");
-    assert!(matches!(error, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
     assert!(admission.check_ready().is_ok());
     assert!(receiver.try_recv().is_err());
     drop(order);
@@ -60,7 +64,10 @@ fn try_enqueue_full_queue_releases_only_the_failed_reservation() {
             submission("rejected", Op::ThreadRollback { num_turns: 1 }),
         )
         .expect_err("must reject full queue");
-    assert!(matches!(error, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
     assert!(admission.check_ready().is_ok());
     assert_eq!(
         receiver
@@ -100,7 +107,10 @@ fn try_enqueue_closed_queue_releases_the_failed_reservation() {
             submission("rejected", Op::ThreadRollback { num_turns: 1 }),
         )
         .expect_err("closed queue cannot accept work");
-    assert!(matches!(error, CodexErr::InternalAgentDied));
+    assert!(matches!(
+        error.details(),
+        CodexErrorDetails::InternalAgentDied
+    ));
     assert!(admission.check_ready().is_ok());
 }
 
@@ -203,7 +213,7 @@ async fn submission_admission_rejects_work_queued_behind_rollback() {
         .await
         .expect_err("work behind a pending rollback should be rejected");
     assert!(
-        matches!(err, CodexErr::InvalidRequest(message) if message == "thread rollback is already in progress")
+        matches!(err.details(), CodexErrorDetails::InvalidRequest(message) if message == "thread rollback is already in progress")
     );
 
     let queued = rx_sub.recv().await.expect("rollback should be queued");

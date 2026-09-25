@@ -277,8 +277,8 @@ fn full_queue_drops_only_the_failed_approval_envelope() {
         )
         .expect_err("full queue should reject before acceptance");
     assert!(matches!(
-        error,
-        codex_protocol::error::CodexErr::InvalidRequest(_)
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
     ));
     assert!(pending.claim("retry").is_ok());
     assert_eq!(
@@ -315,8 +315,8 @@ fn closed_queue_drops_the_failed_approval_envelope() {
         )
         .expect_err("closed queue should reject before acceptance");
     assert!(matches!(
-        error,
-        codex_protocol::error::CodexErr::InternalAgentDied
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::InternalAgentDied
     ));
     assert!(pending.claim("retry").is_ok());
 }
