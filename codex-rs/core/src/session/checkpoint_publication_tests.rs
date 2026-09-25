@@ -1,6 +1,7 @@
 use super::*;
 use codex_extension_api::RestoredSkillsInventory;
 use codex_history::CodexHarnessMetadata;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn checkpoint_and_cold_reconstruction_preserve_full_mcp_union_and_latest_empty_catalog() {

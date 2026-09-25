@@ -3,6 +3,7 @@ use super::*;
 use codex_extension_api::PostCompactionContextContribution;
 use codex_extension_api::TurnInputContribution;
 use codex_utils_output_truncation::TruncationPolicy;
+use pretty_assertions::assert_eq;
 use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 
