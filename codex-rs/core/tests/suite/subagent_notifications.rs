@@ -63,7 +63,7 @@ use codex_protocol::protocol::sub_agent_completion_model_visibility_from_respons
 use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use codex_protocol::protocol::sub_agent_completion_transcript_parts;
 use codex_protocol::user_input::UserInput;
-use codex_rollout::rollout::rollout_without_exact_rollback_ranges;
+use codex_rollout::rollout_without_exact_rollback_ranges;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
 use codex_thread_store::LoadThreadHistoryParams;

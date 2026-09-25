@@ -1,11 +1,11 @@
 use super::super::build_legacy_api_turns_from_rollout_items;
-use codex_history::RolloutItem;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_rollout::RolloutItem;
 use pretty_assertions::assert_eq;
 
 #[test]

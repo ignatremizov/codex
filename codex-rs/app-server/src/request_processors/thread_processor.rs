@@ -23,12 +23,12 @@ use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
-use codex_history::rollout_without_exact_rollback_ranges;
 use codex_protocol::SanitizedGitUrl;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_rollout::rollout_without_exact_rollback_ranges;
 use codex_thread_store::PersistContext;
 use std::ops::ControlFlow;
 
