@@ -111,7 +111,7 @@ async fn proactive_refresh_failure_is_not_replaced_by_stale_credentials() {
     // endpoint/environment override or network request.
     let failure = RefreshTokenFailedError::new(
         RefreshTokenFailedReason::Other,
-        "synthetic permanent refresh failure".into(),
+        "synthetic permanent refresh failure",
     );
     session
         .inner
