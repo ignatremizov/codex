@@ -1,4 +1,5 @@
 use super::*;
+use crate::thread_manager::CapturedAgentOperation;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
@@ -102,9 +103,11 @@ async fn live_batch_reuses_admission_and_deduplicates_aliases(flags: Option<&str
         )
         .await;
         let inputs = manager
-            .captured_ops()
+            .captured_agent_operations()
             .into_iter()
-            .filter(|(id, op)| *id == receiver && matches!(op, Op::AgentInput { .. }))
+            .filter(|(id, op)| {
+                *id == receiver && matches!(op, CapturedAgentOperation::AgentInput { .. })
+            })
             .count();
         assert_eq!(inputs, 1);
         child.submit(Op::Shutdown {}).await.unwrap();
@@ -180,15 +183,16 @@ async fn closed_and_foreign_targets_do_not_prevent_later_descendant_admission() 
             .collect::<Vec<_>>(),
         vec![json!("error"), json!("error"), json!("submitted")],
     );
-    let ops = manager.captured_ops();
-    assert!(
-        !ops.iter().any(|(id, op)| *id == foreign.thread_id
-            && matches!(op, Op::Interrupt | Op::AgentInput { .. }))
-    );
+    let ops = manager.captured_agent_operations();
+    assert!(!ops.iter().any(|(id, op)| *id == foreign.thread_id
+        && matches!(
+            op,
+            CapturedAgentOperation::Interrupt | CapturedAgentOperation::AgentInput { .. }
+        )));
     assert_eq!(
         ops.iter()
             .filter_map(|(id, op)| (*id == live).then_some(op))
-            .filter(|op| matches!(op, Op::Interrupt))
+            .filter(|op| matches!(op, CapturedAgentOperation::Interrupt))
             .count(),
         1,
     );
