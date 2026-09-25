@@ -502,6 +502,8 @@ pub fn item_event_to_server_notification(
                 | TurnItem::Plan(_)
                 | TurnItem::Reasoning(_)
                 | TurnItem::DynamicToolCall(_)
+                | TurnItem::MailboxRead(_)
+                | TurnItem::UserAgentControl(_)
                 | TurnItem::SubAgentActivity(_)
                 | TurnItem::WebSearch(_)
                 | TurnItem::ImageView(_)

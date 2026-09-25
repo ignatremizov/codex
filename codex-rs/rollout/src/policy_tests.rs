@@ -53,7 +53,9 @@ fn user_shell_completion_is_persisted_in_every_history_mode() {
         thread_id: codex_protocol::ThreadId::new(),
         turn_id: "shell-turn".to_string(),
         item: TurnItem::CommandExecution(CommandExecutionItem {
+            model_context: None,
             id: "shell-turn".to_string(),
+            deadline_at_ms: None,
             plugin_id: None,
             script_path: None,
             process_id: Some("12345".to_string()),

@@ -2602,7 +2602,9 @@ mod tests {
         let shell_turn_id = "shell-turn";
         let cwd = test_path_buf("/tmp").abs();
         let started_item = CoreTurnItem::CommandExecution(CoreCommandExecutionItem {
+            model_context: None,
             id: shell_turn_id.to_string(),
+            deadline_at_ms: None,
             plugin_id: None,
             script_path: None,
             process_id: Some("12345".to_string()),

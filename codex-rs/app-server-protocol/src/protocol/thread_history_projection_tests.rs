@@ -380,7 +380,9 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
 #[test]
 fn projects_detached_user_shell_as_a_completed_standalone_turn() {
     let item = TurnItem::CommandExecution(CommandExecutionItem {
+        model_context: None,
         id: "shell-turn".to_string(),
+        deadline_at_ms: None,
         plugin_id: None,
         script_path: None,
         process_id: Some("12345".to_string()),
