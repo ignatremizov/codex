@@ -4300,7 +4300,7 @@ impl ThreadRequestProcessor {
                         ThreadShutdownResult::Complete => {
                             if self
                                 .thread_manager
-                                .remove_thread_if_current(&existing_thread)
+                                .remove_thread_if_matches(&existing_thread_id, &existing_thread)
                                 .await
                                 .is_some()
                             {

@@ -848,7 +848,6 @@ pub(crate) async fn apply_bespoke_event_handling(
             tokio::spawn(async move {
                 on_command_execution_request_approval_response(
                     event_turn_id,
-                    conversation_id,
                     approval_id,
                     call_id,
                     approval_deadline,
@@ -1971,7 +1970,6 @@ async fn on_file_change_request_approval_response(
 #[allow(clippy::too_many_arguments)]
 async fn on_command_execution_request_approval_response(
     event_turn_id: String,
-    conversation_id: ThreadId,
     approval_id: Option<String>,
     item_id: String,
     approval_deadline: Option<tokio::time::Instant>,
