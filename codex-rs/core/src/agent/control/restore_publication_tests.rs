@@ -2,6 +2,7 @@ use super::*;
 use crate::thread_manager::NewThread;
 use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::ThreadManager;
+use crate::thread_manager::ThreadSpawnResult;
 use codex_agent_graph_store::AgentGraphStore;
 use codex_agent_graph_store::AgentGraphStoreError;
 use codex_agent_graph_store::AgentGraphStoreFuture;
@@ -135,7 +136,7 @@ struct Fixture {
     manager: ThreadManager,
     owner: LocalAgentControl,
     parent: NewThread,
-    child: NewThread,
+    child: ThreadSpawnResult,
     graph: Arc<FaultGraph>,
 }
 
