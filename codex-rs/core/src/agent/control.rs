@@ -132,6 +132,10 @@ pub(crate) use presentation::TerminalPresentationDelivery;
 pub(crate) use presentation::WaitAgentPresentationCommit;
 mod delivery;
 mod directory;
+#[cfg(test)]
+pub(crate) use directory::AgentDirectoryEntry;
+#[cfg(test)]
+pub(crate) use directory::AgentDirectoryEntryStatus;
 pub(crate) use directory::AgentDirectoryPage;
 pub(crate) use directory::AgentDirectoryStatus;
 mod execution;

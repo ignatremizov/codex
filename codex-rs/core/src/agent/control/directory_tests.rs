@@ -34,10 +34,10 @@ async fn directory_child(
         .expect("spawn idle directory member");
     let thread = harness
         .manager
-        .get_thread(child.thread_id)
+        .get_thread(child.target_thread_id)
         .await
         .expect("published child runtime");
-    (child.thread_id, thread)
+    (child.target_thread_id, thread)
 }
 
 #[tokio::test]
@@ -455,6 +455,7 @@ async fn directory_does_not_treat_unpublished_runtime_as_loaded() {
     let state = control.upgrade().expect("live manager");
     let pending = state
         .spawn_new_thread_with_source(
+            crate::thread_manager::ThreadRegistration::Deferred,
             harness.config.clone(),
             control.clone(),
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -472,7 +473,6 @@ async fn directory_does_not_treat_unpublished_runtime_as_loaded() {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
-            ThreadRuntimePublication::Deferred,
         )
         .await
         .expect("unpublished runtime");
@@ -520,10 +520,6 @@ async fn directory_does_not_treat_unpublished_runtime_as_loaded() {
         vec![(pending.thread_id, AgentDirectoryEntryStatus::Unloaded)]
     );
     assert!(harness.manager.get_thread(pending.thread_id).await.is_err());
-    control
-        .discard_unpublished_agent_instance(&pending.thread, LiveAgentMetadataDisposition::Release)
-        .await
-        .expect("discard pending runtime");
     pending
         .thread
         .shutdown_and_wait()
