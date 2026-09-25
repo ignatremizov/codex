@@ -1,6 +1,7 @@
 //! Native completion routes cannot cross root-control generations before their first binding.
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn unbound_native_child_rejects_replacement_parent_control() {
