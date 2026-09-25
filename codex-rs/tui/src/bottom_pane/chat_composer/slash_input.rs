@@ -467,8 +467,10 @@ impl ChatComposer {
                             return (InputResult::ServiceTierCommand(command), true);
                         }
                         CommandItem::BackgroundTerminal(_) => {
+                            let first_line =
+                                self.draft.textarea.text().lines().next().unwrap_or("");
                             if let Some(completed_text) =
-                                selected_command_completion(&first_line, &sel)
+                                selected_command_completion(first_line, &sel)
                             {
                                 self.draft
                                     .textarea

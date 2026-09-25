@@ -7,8 +7,6 @@ use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
-use codex_app_server_protocol::ThreadRealtimeAudioChunk;
-use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ThreadShellCommandResponseHandling;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_app_server_protocol::UserInput;
@@ -222,22 +220,6 @@ impl AppCommand {
 
     pub(crate) fn terminate_background_terminal(process_id: i32) -> Self {
         Self::TerminateBackgroundTerminal { process_id }
-    }
-
-    pub(crate) fn realtime_conversation_start(
-        transport: Option<ThreadRealtimeStartTransport>,
-        voice: Option<Value>,
-    ) -> Self {
-        Self::RealtimeConversationStart { transport, voice }
-    }
-
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
-    pub(crate) fn realtime_conversation_audio(frame: ThreadRealtimeAudioChunk) -> Self {
-        Self::RealtimeConversationAudio(frame)
-    }
-
-    pub(crate) fn realtime_conversation_close() -> Self {
-        Self::RealtimeConversationClose
     }
 
     pub(crate) fn run_user_shell_command(
