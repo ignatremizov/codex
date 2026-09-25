@@ -19,6 +19,7 @@ use codex_protocol::protocol::sub_agent_completion_status_from_response_item_id;
 use super::ThreadBufferedEvent;
 use super::ThreadEventStore;
 use super::agent_preview::compact_agent_preview;
+use super::agent_preview::detailed_agent_preview;
 use crate::chatwidget::ChatWidget;
 use crate::multi_agents::SpawnRequestSummary;
 use crate::multi_agents::parse_thread_id;
