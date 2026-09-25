@@ -77,7 +77,7 @@ fn mailbox_original_input_and_prepared_model_envelope_survive_both_history_modes
                 turn_id: "check-mail-turn".to_string(),
                 item,
                 started_at_ms: None,
-                completed_at_ms: Some(1),
+                completed_at_ms: 1,
             })),
         ];
         for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
