@@ -182,6 +182,7 @@ use codex_protocol::protocol::RealtimeVoicesList;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::Submission;
+use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
@@ -3574,7 +3575,7 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
                     replacement_history_media_sanitized_prefix_len: Some(1),
                     replacement_history_media_repair: true,
                     ..
-                }) if raw_envelopes(history) == media_free_history
+                }) if history == &media_free_history
             )
         })
         .expect("persisted media-policy certification");
@@ -3652,7 +3653,7 @@ async fn media_free_certification_failure_preserves_resume_but_fences_new_writes
         let recovered = recovery_session
             .reconstruct_history_from_rollout(&recovery_turn_context, persisted.items.as_slice())
             .await;
-        assert_eq!(raw_envelopes(&recovered.history), media_free_history);
+        assert_eq!(recovered.history, media_free_history);
         assert!(matches!(
             recovered.repair,
             Some(rollout_reconstruction::RolloutReconstructionRepair {
@@ -5361,7 +5362,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
         .expect("thread should have rollout path")
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+pub(super) async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     let rollout_path = open_thread_persistence(session).await;
     session
         .ensure_rollout_materialized(PersistContext::Standard)
