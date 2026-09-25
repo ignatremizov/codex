@@ -221,7 +221,6 @@ impl LocalAgentControl {
         };
         if authority_revoked
             && let Err(error) = state
-                .thread_store()
                 .supersede_mailbox_final_subscriptions_for_threads(closed_thread_ids.clone())
                 .await
         {

@@ -158,7 +158,6 @@ impl LocalAgentControl {
             .persist_agent_closed_for_subtree(child_thread_id, &[child_thread_id])
             .await?
             && let Err(error) = manager
-                .thread_store()
                 .supersede_mailbox_final_subscriptions_for_threads(vec![child_thread_id])
                 .await
         {

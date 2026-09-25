@@ -124,7 +124,6 @@ impl LocalAgentControl {
                                 .map_err(|error| CodexErr::Fatal(error.to_string()))?;
                             if revoked
                                 && let Err(cleanup) = state
-                                    .thread_store()
                                     .supersede_mailbox_final_subscriptions_for_threads(vec![
                                         thread_id,
                                     ])

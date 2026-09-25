@@ -174,6 +174,9 @@ impl ThreadManager {
                             parent_thread_id: missing_edge.parent_thread_id,
                             child_thread_id: missing_edge.child_thread_id,
                             nickname: missing_edge.nickname,
+                            // This branch recovers an absent alias from topology alone.
+                            // Existing aliases (and their assignment labels) remain untouched.
+                            task_path: None,
                         })
                         .await
                         .map_err(|err| {

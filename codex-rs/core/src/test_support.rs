@@ -88,7 +88,7 @@ pub async fn subscribe_agent_status(
     thread_id: ThreadId,
 ) -> codex_protocol::error::Result<tokio::sync::watch::Receiver<AgentStatus>> {
     Ok(thread_manager
-        .get_thread_including_pending(thread_id)
+        .get_thread(thread_id)
         .await?
         .subscribe_status())
 }

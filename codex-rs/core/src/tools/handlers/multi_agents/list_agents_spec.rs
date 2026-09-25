@@ -93,7 +93,7 @@ pub(super) fn create_list_agents_tool() -> ToolSpec {
             },
             "required": ["agents", "next_cursor"],
             "additionalProperties": false
-        })),
+        }).into()),
     };
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: MULTI_AGENT_V1_NAMESPACE.to_string(),

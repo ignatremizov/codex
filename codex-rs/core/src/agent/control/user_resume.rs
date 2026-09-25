@@ -444,17 +444,29 @@ impl LocalAgentControl {
             .get_agent_metadata(parent_id)
             .and_then(|metadata| metadata.agent_path);
         let old_path = stored.source.get_agent_path();
+        let needs_v2_path = if parent_path.is_some() && old_path.is_none() {
+            let history = state
+                .load_agent_model_context(thread_id, stored.history_mode)
+                .await?
+                .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+            let history = InitialHistory::Resumed(ResumedHistory {
+                conversation_id: thread_id,
+                history: Arc::new(history),
+                rollout_path: stored.rollout_path.clone(),
+            });
+            history.get_multi_agent_version() == Some(MultiAgentVersion::V2)
+        } else {
+            false
+        };
         let agent_path = match (parent_path, old_path) {
             (Some(parent), Some(old)) => {
                 Some(parent.join(old.name()).map_err(CodexErr::InvalidRequest)?)
             }
-            (Some(parent), None) if stored.multi_agent_version == Some(MultiAgentVersion::V2) => {
-                Some(
-                    parent
-                        .join(&format!("agent-{thread_id}"))
-                        .map_err(CodexErr::InvalidRequest)?,
-                )
-            }
+            (Some(parent), None) if needs_v2_path => Some(
+                parent
+                    .join(&format!("agent-{thread_id}"))
+                    .map_err(CodexErr::InvalidRequest)?,
+            ),
             (_, path) => path,
         };
         let agent_role = stored.agent_role.or_else(|| fallback.get_agent_role());

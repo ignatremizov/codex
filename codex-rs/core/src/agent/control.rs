@@ -584,18 +584,26 @@ impl LocalAgentControl {
             let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
                 return String::new();
             };
-            return agents
-                .into_iter()
-                .map(|(thread_id, metadata)| {
-                    let reference = metadata
-                        .agent_path
-                        .as_ref()
-                        .map(|path| path.name().to_string())
-                        .unwrap_or_else(|| thread_id.to_string());
-                    format_subagent_context_line(&reference, metadata.agent_nickname.as_deref())
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let mut lines = Vec::with_capacity(agents.len());
+            for (thread_id, metadata) in agents {
+                let identity = match self
+                    .model_visible_agent_identity_for_version(multi_agent_version, thread_id)
+                    .await
+                {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        warn!(%thread_id, %error, "could not resolve subagent context identity");
+                        crate::context::AgentContextIdentity::Canonical {
+                            agent_id: thread_id,
+                        }
+                    }
+                };
+                lines.push(format_subagent_context_line(
+                    &identity,
+                    metadata.agent_nickname.as_deref(),
+                ));
+            }
+            return lines.join("\n");
         }
 
         let Some(parent_path) = self

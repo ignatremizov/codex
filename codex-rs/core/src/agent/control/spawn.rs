@@ -477,7 +477,7 @@ impl LocalAgentControl {
         {
             new_thread.thread.ensure_rollout_materialized().await;
             if let Err(error) = new_thread.thread.session.flush_rollout().await {
-                return Err(error);
+                return Err(error.into());
             }
         }
         let persisted = match self

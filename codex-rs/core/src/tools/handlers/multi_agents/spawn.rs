@@ -155,15 +155,34 @@ async fn handle_spawn_agent(
     )
     .await
     .map_err(collab_spawn_error);
-    let (new_thread_id, new_agent_metadata, status, new_agent_ref) = match &result {
+    let (new_thread_id, new_agent_metadata, status) = match &result {
         Ok(spawned_agent) => (
             Some(spawned_agent.thread_id),
             Some(spawned_agent.metadata.clone()),
             spawned_agent.status.clone(),
-            spawned_agent.agent_ref,
         ),
-        Err(_) => (None, None, AgentStatus::NotFound, None),
+        Err(_) => (None, None, AgentStatus::NotFound),
     };
+    let presentation = match new_thread_id {
+        Some(thread_id) => match session
+            .services
+            .agent_control
+            .get_agent_presentation_ref(thread_id)
+            .await
+        {
+            Ok(presentation) => Some(presentation),
+            Err(error) => {
+                // The child is already admitted; a display lookup must not invite a second spawn.
+                tracing::warn!(%thread_id, %error, "failed to read spawned agent display identity");
+                None
+            }
+        },
+        None => None,
+    };
+    let new_agent_ref = presentation
+        .as_ref()
+        .and_then(|agent| agent.agent_ref.clone());
+    let task_path = presentation.and_then(|agent| agent.task_path);
     let agent_snapshot = match new_thread_id {
         Some(thread_id) => {
             session
@@ -201,11 +220,8 @@ async fn handle_spawn_agent(
     let receiver_agents = new_thread_id
         .map(|thread_id| CollabAgentRef {
             thread_id,
-            agent_ref: new_agent_ref.map(|agent_ref| agent_ref.to_string()),
-            task_path: result
-                .as_ref()
-                .ok()
-                .and_then(|agent| agent.task_path.clone()),
+            agent_ref: new_agent_ref.clone(),
+            task_path: task_path.clone(),
             agent_nickname: new_agent_nickname,
             agent_role: new_agent_role,
         })
@@ -250,8 +266,8 @@ async fn handle_spawn_agent(
     Ok(SpawnAgentResult {
         agent_id: spawned_agent.thread_id.to_string(),
         nickname,
-        agent_ref: new_agent_ref.map(|agent_ref| agent_ref.to_string()),
-        task_path: spawned_agent.task_path,
+        agent_ref: new_agent_ref,
+        task_path,
     })
 }
 

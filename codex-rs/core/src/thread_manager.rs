@@ -1746,6 +1746,16 @@ impl ThreadManagerState {
             })
     }
 
+    /// Revoke durable mailbox subscriptions after the graph's ownership epoch changes.
+    pub(crate) async fn supersede_mailbox_final_subscriptions_for_threads(
+        &self,
+        thread_ids: Vec<ThreadId>,
+    ) -> Result<(), ThreadStoreError> {
+        self.thread_store
+            .supersede_mailbox_final_subscriptions_for_threads(thread_ids)
+            .await
+    }
+
     /// Send an operation to a thread by ID.
     pub(crate) async fn send_op(
         &self,

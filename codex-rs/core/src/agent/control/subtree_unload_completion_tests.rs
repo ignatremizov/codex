@@ -48,10 +48,7 @@ async fn subtree_unload_drains_v1_final_blocked_on_child_lifecycle_before_releas
         .expect("child identity");
     let expected_message =
         crate::session_prefix::format_subagent_notification_message(identity, &completed_status);
-    let store = control
-        .upgrade()
-        .expect("live thread manager")
-        .thread_store();
+    let store = Arc::clone(&parent.session.services.thread_store);
     parent.ensure_rollout_materialized().await;
     child.ensure_rollout_materialized().await;
     parent.flush_rollout().await.expect("materialize parent");
