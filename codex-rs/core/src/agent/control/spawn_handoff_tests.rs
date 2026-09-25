@@ -152,7 +152,6 @@ async fn sealed_child_prevents_recreating_its_absent_root_during_unload() {
                 agent_nickname: None,
                 agent_role: None,
             }),
-            ResponseObservationPolicy::default(),
         ),
     )
     .await
