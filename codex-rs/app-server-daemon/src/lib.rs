@@ -1269,6 +1269,12 @@ mod tests {
         let legacy = home.path().join("packages/standalone/current");
         std::fs::create_dir_all(&legacy).expect("legacy selection");
         let daemon = Daemon {
+            launch: DaemonLaunchOptions::new(
+                home.path().to_path_buf(),
+                codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .expect("launch options"),
             socket_path: home.path().join("server.sock"),
             pid_file: state.join(super::LEGACY_PID_FILE_NAME),
             update_pid_file: state.join(super::LEGACY_UPDATE_PID_FILE_NAME),
@@ -1302,6 +1308,12 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let state = temp.path().join("missing-home").join("daemon-state");
         let daemon = Daemon {
+            launch: DaemonLaunchOptions::new(
+                temp.path().join("missing-home"),
+                codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .expect("launch options"),
             socket_path: state.join("server.sock"),
             pid_file: state.join("server.pid"),
             update_pid_file: state.join("updater.pid"),
@@ -1309,6 +1321,7 @@ mod tests {
             settings_file: state.join("settings.json"),
             managed_codex_bin: state.join("missing-codex"),
         };
+        assert!(!daemon.launch.codex_home().exists());
         assert_eq!(
             daemon
                 .run(super::LifecycleCommand::Stop)
@@ -1327,6 +1340,12 @@ mod tests {
             .await
             .expect("private state directory");
         let daemon = Daemon {
+            launch: DaemonLaunchOptions::new(
+                home.path().to_path_buf(),
+                codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .expect("launch options"),
             socket_path: home.path().join("server.sock"),
             pid_file: state.join("server.pid"),
             update_pid_file: state.join("updater.pid"),
@@ -1381,6 +1400,12 @@ mod tests {
             .expect("current local build");
         let state = home.path().join("app-server-daemon");
         let daemon = Daemon {
+            launch: DaemonLaunchOptions::new(
+                home.path().to_path_buf(),
+                codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .expect("launch options"),
             socket_path: home
                 .path()
                 .join("app-server-control/app-server-control.sock"),

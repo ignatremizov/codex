@@ -301,6 +301,12 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     std::fs::write(state.join("app-server.stderr.log"), b"").unwrap();
     (
         Daemon {
+            launch: crate::DaemonLaunchOptions::new(
+                home.path().to_path_buf(),
+                codex_login::AuthFileSelection::Default,
+                codex_login::AuthCredentialsStoreMode::File,
+            )
+            .expect("launch options"),
             socket_path: home.path().join("app-server-control/server.sock"),
             pid_file: state.join("app-server.pid"),
             update_pid_file: state.join("app-server-updater.pid"),
