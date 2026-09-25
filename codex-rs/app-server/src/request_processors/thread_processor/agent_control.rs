@@ -1,6 +1,7 @@
 //! Typed user-authored agent lifecycle requests and source-side audit persistence.
 
 use super::*;
+use crate::request_processors::turn_processor::validate_user_input_image_urls;
 use codex_app_server_protocol::AgentForkMode;
 use codex_core::UserAgentSpawnOptions;
 use conversion::agent_control_error;
