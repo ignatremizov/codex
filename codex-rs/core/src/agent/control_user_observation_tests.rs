@@ -207,7 +207,13 @@ async fn closed_user_agent_transfer_changes_the_live_owner_without_rewriting_his
         .history
         .expect("history")
         .items;
-    assert_eq!(after.get(..before.len()), Some(before.as_slice()));
+    let retained = after
+        .get(..before.len())
+        .expect("all prior history items remain after transfer");
+    assert_eq!(
+        serde_json::to_value(retained).expect("serialize retained history"),
+        serde_json::to_value(&before).expect("serialize original history")
+    );
     assert!(
         old_root
             .session

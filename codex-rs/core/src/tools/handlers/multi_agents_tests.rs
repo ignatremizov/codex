@@ -4,9 +4,9 @@ use crate::ThreadManager;
 use crate::agent::child_config::apply_spawn_agent_service_tier;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::child_config::build_agent_spawn_config;
-use crate::agent::control::SpawnAgentOptions;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
+use crate::agent::types::SpawnAgentOptions;
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
@@ -200,7 +200,7 @@ async fn spawn_idle_v1_child(parent: &Arc<crate::CodexThread>, config: Config) -
         )
         .await
         .expect("idle V1 child should spawn")
-        .thread_id
+        .target_thread_id
 }
 
 async fn wait_for_agent_status(thread: &crate::CodexThread, expected: &AgentStatus) {
@@ -260,6 +260,7 @@ async fn subagent_notification_texts(session: &crate::session::session::Session)
                 })
             }
             ResponseItem::AdditionalTools { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
             | ResponseItem::Message { .. }
             | ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }

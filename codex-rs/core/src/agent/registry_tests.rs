@@ -453,13 +453,22 @@ fn register_root_thread_indexes_root_path() {
         Some(root_thread_id)
     );
     assert_eq!(
-        registry.agent_metadata_for_thread(root_thread_id),
-        Some(AgentMetadata {
-            agent_id: Some(root_thread_id),
-            agent_path: Some(AgentPath::root()),
-            agent_nickname: Some(MAIN_AGENT_NICKNAME.to_string()),
-            ..Default::default()
-        })
+        registry
+            .agent_metadata_for_thread(root_thread_id)
+            .map(|metadata| (
+                metadata.agent_id,
+                metadata.agent_path,
+                metadata.agent_nickname,
+                metadata.agent_role,
+                metadata.last_task_message,
+            )),
+        Some((
+            Some(root_thread_id),
+            Some(AgentPath::root()),
+            Some(MAIN_AGENT_NICKNAME.to_string()),
+            None,
+            None,
+        ))
     );
 
     let other_thread_id = ThreadId::new();
@@ -470,13 +479,22 @@ fn register_root_thread_indexes_root_path() {
         Some(root_thread_id)
     );
     assert_eq!(
-        registry.agent_metadata_for_thread(root_thread_id),
-        Some(AgentMetadata {
-            agent_id: Some(root_thread_id),
-            agent_path: Some(AgentPath::root()),
-            agent_nickname: Some(MAIN_AGENT_NICKNAME.to_string()),
-            ..Default::default()
-        })
+        registry
+            .agent_metadata_for_thread(root_thread_id)
+            .map(|metadata| (
+                metadata.agent_id,
+                metadata.agent_path,
+                metadata.agent_nickname,
+                metadata.agent_role,
+                metadata.last_task_message,
+            )),
+        Some((
+            Some(root_thread_id),
+            Some(AgentPath::root()),
+            Some(MAIN_AGENT_NICKNAME.to_string()),
+            None,
+            None,
+        ))
     );
     assert!(
         registry
