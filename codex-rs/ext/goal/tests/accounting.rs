@@ -10,7 +10,11 @@ use codex_extension_api::ToolName;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::MailboxReadItem;
+use codex_protocol::items::MailboxReadSelector;
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::UserAgentControlAction;
+use codex_protocol::items::UserAgentControlItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::TokenUsage;
 use codex_state::ThreadGoalStatus;
@@ -76,6 +80,8 @@ fn empty_continuations_require_three_turns_without_activity_or_goal_changes() {
         ("none", 3),
         ("user", 6),
         ("tool", 6),
+        ("mailbox", 6),
+        ("agent control", 6),
         ("goal", 5),
         ("reset", 6),
         ("missing final", 6),
@@ -102,6 +108,25 @@ fn empty_continuations_require_three_turns_without_activity_or_goal_changes() {
                     &id,
                     &ToolName::plain("shell"),
                     ToolCallOutcome::Completed { success: false },
+                );
+            }
+            if turn == 3 && interruption == "mailbox" {
+                state.record_item(
+                    &id,
+                    &TurnItem::MailboxRead(MailboxReadItem {
+                        id: "check-mail".to_string(),
+                        selector: MailboxReadSelector::All,
+                        consumed_count: 1,
+                        rejected_count: 0,
+                    }),
+                );
+            }
+            if turn == 3 && interruption == "agent control" {
+                state.record_item(
+                    &id,
+                    &TurnItem::UserAgentControl(UserAgentControlItem::succeeded(
+                        UserAgentControlAction::Prompt,
+                    )),
                 );
             }
             if turn == 3 && interruption == "reset" {

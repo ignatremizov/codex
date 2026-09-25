@@ -4,6 +4,7 @@ use crate::AgentAliasTransferRequest;
 use crate::DirectionalThreadSpawnEdgeStatus;
 use crate::SqliteConfig;
 use crate::migrations::STATE_MIGRATOR;
+use crate::runtime::test_support::unique_temp_dir;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use sqlx::migrate::Migrator;
@@ -11,9 +12,12 @@ use std::borrow::Cow;
 
 #[tokio::test]
 async fn restoration_close_requires_exact_captured_owner_and_parent_after_adoption() {
-    let home = tempfile::tempdir().unwrap();
+    let home = unique_temp_dir();
+    let _cleanup = scopeguard::guard(home.clone(), |home| {
+        let _ = std::fs::remove_dir_all(home);
+    });
     let runtime = StateRuntime::init(
-        SqliteConfig::new_for_testing(home.path().abs()),
+        SqliteConfig::new_for_testing(home.as_path().abs()),
         "test-provider".to_string(),
     )
     .await
@@ -110,8 +114,12 @@ async fn restoration_close_requires_exact_captured_owner_and_parent_after_adopti
 
 #[tokio::test]
 async fn epoch_migration_preserves_integrated_later_numbered_deletion_tombstones() {
-    let home = tempfile::tempdir().unwrap();
-    let config = SqliteConfig::new_for_testing(home.path().abs());
+    let home = unique_temp_dir();
+    let _cleanup = scopeguard::guard(home.clone(), |home| {
+        let _ = std::fs::remove_dir_all(home);
+    });
+    tokio::fs::create_dir_all(&home).await.unwrap();
+    let config = SqliteConfig::new_for_testing(home.as_path().abs());
     let old_migrator = Migrator {
         migrations: Cow::Owned(
             STATE_MIGRATOR
@@ -169,9 +177,12 @@ async fn epoch_migration_preserves_integrated_later_numbered_deletion_tombstones
 
 #[tokio::test]
 async fn exhausted_epoch_rolls_back_close_and_other_subtree_epoch_updates() {
-    let home = tempfile::tempdir().unwrap();
+    let home = unique_temp_dir();
+    let _cleanup = scopeguard::guard(home.clone(), |home| {
+        let _ = std::fs::remove_dir_all(home);
+    });
     let runtime = StateRuntime::init(
-        SqliteConfig::new_for_testing(home.path().abs()),
+        SqliteConfig::new_for_testing(home.as_path().abs()),
         "test-provider".to_string(),
     )
     .await
@@ -238,9 +249,12 @@ async fn exhausted_epoch_rolls_back_close_and_other_subtree_epoch_updates() {
 
 #[tokio::test]
 async fn fallback_missing_and_repeated_close_do_not_revoke_authority() {
-    let home = tempfile::tempdir().unwrap();
+    let home = unique_temp_dir();
+    let _cleanup = scopeguard::guard(home.clone(), |home| {
+        let _ = std::fs::remove_dir_all(home);
+    });
     let runtime = StateRuntime::init(
-        SqliteConfig::new_for_testing(home.path().abs()),
+        SqliteConfig::new_for_testing(home.as_path().abs()),
         "test-provider".to_string(),
     )
     .await
