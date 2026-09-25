@@ -371,6 +371,7 @@ async fn persisted_originator(thread: &CodexThread) -> String {
         .find_map(|item| match item {
             RolloutItem::SessionMeta(meta_line) => Some(meta_line.meta.originator.clone()),
             RolloutItem::ResponseItem(_)
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::EventMsg(_)
@@ -649,6 +650,7 @@ async fn on_event_preserves_error_from_task_complete() {
         started_at: None,
         last_agent_message: Some("partial".to_string()),
         error: Some(ErrorEvent {
+            misalignment: None,
             message: "boom".to_string(),
             codex_error_info: Some(CodexErrorInfo::BadRequest),
         }),
@@ -675,6 +677,7 @@ async fn on_event_updates_status_from_error() {
 #[tokio::test]
 async fn on_event_ignores_non_terminal_error() {
     let status = agent_status_from_event(&EventMsg::Error(ErrorEvent {
+        misalignment: None,
         message: "turn is not steerable".to_string(),
         codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
             turn_kind: codex_protocol::protocol::NonSteerableTurnKind::Review,
@@ -4584,6 +4587,7 @@ async fn multi_agent_v2_raw_error_watcher_queues_message_for_direct_parent() {
         .send_event_raw(Event {
             id: uuid::Uuid::now_v7().to_string(),
             msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: error.to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
             }),
@@ -4739,6 +4743,7 @@ async fn completion_watcher_starts_once_for_the_same_session() {
         .send_event_raw(Event {
             id: uuid::Uuid::now_v7().to_string(),
             msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "child failed".to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
             }),
@@ -4791,6 +4796,7 @@ async fn cancelled_wait_releases_v1_completion_to_background_watcher() {
         .send_event_raw(Event {
             id: uuid::Uuid::now_v7().to_string(),
             msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "child failed".to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
             }),
@@ -4836,6 +4842,7 @@ async fn completed_wait_suppresses_v1_background_watcher() {
         .send_event_raw(Event {
             id: uuid::Uuid::now_v7().to_string(),
             msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "child failed".to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
             }),
@@ -4883,6 +4890,7 @@ async fn late_wait_does_not_suppress_v1_background_watcher() {
         .send_event_raw(Event {
             id: uuid::Uuid::now_v7().to_string(),
             msg: EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: "child failed".to_string(),
                 codex_error_info: Some(CodexErrorInfo::BadRequest),
             }),
@@ -4897,6 +4905,7 @@ async fn late_wait_does_not_suppress_v1_background_watcher() {
                 started_at: None,
                 last_agent_message: Some("incorrect success".to_string()),
                 error: Some(ErrorEvent {
+                    misalignment: None,
                     message: "child failed".to_string(),
                     codex_error_info: Some(CodexErrorInfo::BadRequest),
                 }),
