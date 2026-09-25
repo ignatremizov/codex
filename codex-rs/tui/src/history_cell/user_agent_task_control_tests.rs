@@ -5,6 +5,7 @@ use codex_app_server_protocol::AgentTaskPathMapping;
 fn adoption_snapshot_shows_resolved_path_and_unlabeled_mapping() {
     let cell = new_user_agent_control(ThreadItem::UserAgentControl {
         id: "adoption".to_string(),
+        input_outcome: None,
         action: UserAgentControlAction::Resume,
         authored_selector: Some("id:imported".to_string()),
         target_thread_id: Some("imported".to_string()),

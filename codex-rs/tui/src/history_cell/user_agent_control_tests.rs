@@ -1,10 +1,10 @@
-use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::AgentInputOutcome;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserAgentForkMode;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 
 use super::*;
 
@@ -119,7 +119,7 @@ fn renders_successful_user_agent_prompt() {
         resumed_target: false,
         fork_mode: None,
         observe_commentary: Some(true),
-        final_response: Some(AgentFinalResponseHandling::Wake),
+        final_response: Some(AgentResponseFinalDelivery::Wake),
         target_messages: Some(true),
         queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
@@ -164,7 +164,7 @@ fn renders_legacy_child_to_main_prompt_without_claiming_admission() {
         resumed_target: false,
         fork_mode: None,
         observe_commentary: Some(false),
-        final_response: Some(AgentFinalResponseHandling::Presentation),
+        final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
         target_messages: Some(false),
         queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
@@ -209,7 +209,7 @@ fn renders_successful_prompt_with_post_admission_warning() {
         resumed_target: false,
         fork_mode: None,
         observe_commentary: Some(false),
-        final_response: Some(AgentFinalResponseHandling::Wake),
+        final_response: Some(AgentResponseFinalDelivery::Wake),
         target_messages: Some(false),
         queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
@@ -255,7 +255,7 @@ fn renders_successful_prompt_that_resumed_the_target() {
         resumed_target: true,
         fork_mode: None,
         observe_commentary: Some(false),
-        final_response: Some(AgentFinalResponseHandling::Presentation),
+        final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
         target_messages: Some(false),
         queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
@@ -299,7 +299,7 @@ fn renders_successful_queued_prompt_that_resumed_the_target() {
         resumed_target: true,
         fork_mode: None,
         observe_commentary: Some(false),
-        final_response: Some(AgentFinalResponseHandling::Presentation),
+        final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
         target_messages: Some(false),
         queue_input: Some(true),
         input_outcome: Some(AgentInputOutcome::Queued),
@@ -345,7 +345,7 @@ fn renders_successful_close_with_queued_response_replay() {
         resumed_target: false,
         fork_mode: None,
         observe_commentary: Some(false),
-        final_response: Some(AgentFinalResponseHandling::Passive),
+        final_response: Some(AgentResponseFinalDelivery::Passive),
         target_messages: Some(false),
         queue_input: Some(true),
         status: UserAgentControlStatus::Succeeded,
@@ -369,6 +369,7 @@ fn renders_user_reply_route_changes() {
     let render = |enabled| {
         let cell = new_user_agent_control(ThreadItem::UserAgentControl {
             id: format!("control-replies-{enabled}"),
+            input_outcome: None,
             action: UserAgentControlAction::ReplyRoute,
             authored_selector: Some("2".to_string()),
             target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
@@ -447,7 +448,7 @@ fn renders_failed_user_agent_spawn() {
         resumed_target: false,
         fork_mode: Some(UserAgentForkMode::LastNTurns { turns: 3 }),
         observe_commentary: Some(false),
-        final_response: Some(AgentFinalResponseHandling::Presentation),
+        final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
         target_messages: Some(false),
         queue_input: Some(false),
         status: UserAgentControlStatus::Failed,
@@ -493,7 +494,7 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
         resumed_target: false,
         fork_mode: None,
         observe_commentary: Some(false),
-        final_response: Some(AgentFinalResponseHandling::Presentation),
+        final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
         target_messages: Some(false),
         queue_input: Some(false),
         status: UserAgentControlStatus::Succeeded,
@@ -529,6 +530,7 @@ fn renders_explicit_adoption_and_preserves_owner_audit() {
 fn observation_control_item() -> ThreadItem {
     ThreadItem::UserAgentControl {
         id: "observe-main-from-peirce".to_string(),
+        input_outcome: None,
         action: UserAgentControlAction::Observe,
         authored_selector: Some("Main".to_string()),
         target_thread_id: Some("019ff050-d466-73b0-b133-72ecc7c67269".to_string()),
@@ -549,7 +551,7 @@ fn observation_control_item() -> ThreadItem {
         resumed_target: false,
         fork_mode: None,
         observe_commentary: None,
-        final_response: Some(AgentFinalResponseHandling::Passive),
+        final_response: Some(AgentResponseFinalDelivery::Passive),
         target_messages: None,
         queue_input: None,
         status: UserAgentControlStatus::Succeeded,

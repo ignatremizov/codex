@@ -12,6 +12,7 @@ use codex_app_server_protocol::AgentControlParams;
 use codex_app_server_protocol::AgentControlResponse;
 use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::AgentForkMode;
+use codex_app_server_protocol::AgentInputOutcome;
 use codex_app_server_protocol::AgentObservationBinding;
 use codex_app_server_protocol::AgentObservationMode;
 use codex_app_server_protocol::AgentResponseHandling;
@@ -31,6 +32,7 @@ use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource as ProtocolSessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -284,6 +286,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         prompt_audit,
         ThreadItem::UserAgentControl {
             id: prompt_audit_id,
+            input_outcome: Some(AgentInputOutcome::Admitted),
             task: None,
             task_path: None,
             task_path_mapping: Vec::new(),
@@ -304,7 +307,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             resumed_target: false,
             fork_mode: None,
             observe_commentary: Some(false),
-            final_response: Some(AgentFinalResponseHandling::Wake),
+            final_response: Some(AgentResponseFinalDelivery::Wake),
             target_messages: Some(false),
             queue_input: Some(false),
             status: UserAgentControlStatus::Succeeded,
@@ -359,6 +362,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         observe_audit,
         ThreadItem::UserAgentControl {
             id: observe_audit_id,
+            input_outcome: None,
             task: None,
             task_path: None,
             task_path_mapping: Vec::new(),
@@ -379,7 +383,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             resumed_target: false,
             fork_mode: None,
             observe_commentary: Some(false),
-            final_response: Some(AgentFinalResponseHandling::Presentation),
+            final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
             target_messages: None,
             queue_input: None,
             status: UserAgentControlStatus::Succeeded,
@@ -595,6 +599,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         rejected_audit,
         ThreadItem::UserAgentControl {
             id: rejected_audit_id,
+            input_outcome: None,
             task: None,
             task_path: None,
             task_path_mapping: Vec::new(),
@@ -615,7 +620,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
             resumed_target: false,
             fork_mode: None,
             observe_commentary: Some(false),
-            final_response: Some(AgentFinalResponseHandling::Passive),
+            final_response: Some(AgentResponseFinalDelivery::Passive),
             target_messages: Some(false),
             queue_input: Some(false),
             status: UserAgentControlStatus::Failed,

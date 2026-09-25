@@ -70,6 +70,7 @@ async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> List
         id: "turn-main".to_string(),
         items: vec![ThreadItem::UserAgentControl {
             id: "spawn-child".to_string(),
+            input_outcome: None,
             action: UserAgentControlAction::Spawn,
             authored_selector: Some("reviewer".to_string()),
             target_thread_id: Some(child_thread_id.to_string()),

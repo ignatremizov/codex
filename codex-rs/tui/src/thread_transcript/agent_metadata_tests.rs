@@ -11,6 +11,7 @@ fn lifecycle_mapping_preserves_agent_ref_and_authoritative_task_clear() {
     let target = codex_protocol::ThreadId::new();
     let item = ThreadItem::UserAgentControl {
         id: "resume-1".to_string(),
+        input_outcome: None,
         action: codex_app_server_protocol::UserAgentControlAction::Resume,
         authored_selector: None,
         target_thread_id: Some(target.to_string()),

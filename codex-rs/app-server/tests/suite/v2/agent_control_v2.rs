@@ -44,6 +44,7 @@ use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::WarningNotification;
 use codex_features::Feature;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::SubAgentSource;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::InMemoryThreadStoreFailure;
@@ -1089,7 +1090,7 @@ async fn user_control_reserved_prompt_consumes_v1_spawn_reservation() -> Result<
             target_thread_id: Some(ref audited_thread_id),
             prompt_preview: Some(ref prompt_preview),
             observe_commentary: Some(false),
-            final_response: Some(AgentFinalResponseHandling::Wake),
+            final_response: Some(AgentResponseFinalDelivery::Wake),
             target_messages: Some(false),
             queue_input: Some(false),
             status: UserAgentControlStatus::Succeeded,

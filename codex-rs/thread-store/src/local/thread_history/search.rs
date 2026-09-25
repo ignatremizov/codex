@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
@@ -9,6 +8,7 @@ use codex_app_server_protocol::UserAgentForkMode;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::attributed_agent_input_text;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use codex_protocol::protocol::strip_user_message_prefix;
 use futures::TryStreamExt;
 use pulldown_cmark::Event;
@@ -391,10 +391,10 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
                 }
             });
             let final_response = final_response.map(|final_response| match final_response {
-                AgentFinalResponseHandling::None => "ignore final response",
-                AgentFinalResponseHandling::Passive => "passive response",
-                AgentFinalResponseHandling::Wake => "wake on response",
-                AgentFinalResponseHandling::Presentation => "presentation only response",
+                AgentResponseFinalDelivery::None => "ignore final response",
+                AgentResponseFinalDelivery::Passive => "passive response",
+                AgentResponseFinalDelivery::Wake => "wake on response",
+                AgentResponseFinalDelivery::PresentationOnly => "presentation only response",
             });
             let reasoning_effort = reasoning_effort.as_ref().map(ToString::to_string);
             let text = [

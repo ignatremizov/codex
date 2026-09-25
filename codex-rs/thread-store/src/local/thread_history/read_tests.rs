@@ -870,6 +870,7 @@ async fn search_finds_user_agent_control_audit_terms() {
     .await;
     let item = codex_app_server_protocol::ThreadItem::UserAgentControl {
         id: "control-item".to_string(),
+        input_outcome: None,
         task: None,
         task_path: None,
         task_path_mapping: Vec::new(),
@@ -890,7 +891,7 @@ async fn search_finds_user_agent_control_audit_terms() {
         resumed_target: true,
         fork_mode: None,
         observe_commentary: Some(true),
-        final_response: Some(codex_app_server_protocol::AgentFinalResponseHandling::Wake),
+        final_response: Some(codex_protocol::protocol::AgentResponseFinalDelivery::Wake),
         target_messages: Some(true),
         queue_input: Some(true),
         status: codex_app_server_protocol::UserAgentControlStatus::Succeeded,

@@ -1,10 +1,10 @@
 //! Durable presentation for user-authored `/agent` control actions.
 
-use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserAgentForkMode;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 
@@ -122,7 +122,7 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
         title.push(" ".into());
         title.push(
             if observe_commentary == Some(true)
-                || matches!(final_response, Some(AgentFinalResponseHandling::Wake))
+                || matches!(final_response, Some(AgentResponseFinalDelivery::Wake))
                 || target_messages == Some(true)
                 || queue_input == Some(true)
             {
@@ -395,7 +395,7 @@ fn fork_mode_label(fork_mode: UserAgentForkMode) -> String {
 fn response_observation_label(
     action: UserAgentControlAction,
     observe_commentary: Option<bool>,
-    final_response: Option<AgentFinalResponseHandling>,
+    final_response: Option<AgentResponseFinalDelivery>,
     target_messages: Option<bool>,
     queue_input: Option<bool>,
 ) -> Option<String> {
@@ -404,10 +404,10 @@ fn response_observation_label(
         labels.push("commentary");
     }
     match final_response {
-        Some(AgentFinalResponseHandling::None) => labels.push("ignore final reply"),
-        Some(AgentFinalResponseHandling::Passive) => labels.push("passive"),
-        Some(AgentFinalResponseHandling::Wake) => labels.push("wake"),
-        Some(AgentFinalResponseHandling::Presentation) => labels.push("presentation"),
+        Some(AgentResponseFinalDelivery::None) => labels.push("ignore final reply"),
+        Some(AgentResponseFinalDelivery::Passive) => labels.push("passive"),
+        Some(AgentResponseFinalDelivery::Wake) => labels.push("wake"),
+        Some(AgentResponseFinalDelivery::PresentationOnly) => labels.push("presentation"),
         None => {}
     }
     if action == UserAgentControlAction::SubtreeMessaging {

@@ -6,7 +6,6 @@ use codex_app_server_protocol::AgentControlAction;
 use codex_app_server_protocol::AgentControlOutcome;
 use codex_app_server_protocol::AgentControlParams;
 use codex_app_server_protocol::AgentControlResponse;
-use codex_app_server_protocol::AgentFinalResponseHandling;
 use codex_app_server_protocol::AgentForkMode;
 use codex_app_server_protocol::AgentResponseHandling;
 use codex_app_server_protocol::ClientRequest;
@@ -17,6 +16,7 @@ use codex_app_server_protocol::UserAgentControlAction;
 use codex_app_server_protocol::UserAgentControlStatus;
 use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
+use codex_protocol::protocol::AgentResponseFinalDelivery;
 use core_test_support::responses;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
@@ -194,7 +194,7 @@ async fn user_control_interrupt_admits_structured_follow_up(multi_agent_v2: bool
             target_thread_id: Some(ref audited_target),
             prompt_preview: Some(ref prompt_preview),
             observe_commentary: Some(true),
-            final_response: Some(AgentFinalResponseHandling::Presentation),
+            final_response: Some(AgentResponseFinalDelivery::PresentationOnly),
             status: UserAgentControlStatus::Succeeded,
             ..
         } if selector == "2"
