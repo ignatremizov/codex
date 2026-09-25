@@ -531,6 +531,7 @@ impl ThreadHistoryBuilder {
                 .non_paginated_exec_history
                 .record_turn_context(context, self.current_rollout_index),
             RolloutItem::InterAgentCommunicationMetadata { .. }
+            | RolloutItem::AgentResponseObservation(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::WorldState(_)
             | RolloutItem::RealtimeItem(_)
@@ -874,6 +875,7 @@ impl ThreadHistoryBuilder {
             | codex_protocol::items::TurnItem::MailboxRead(_)
             | codex_protocol::items::TurnItem::CollabAgentToolCall(_)
             | codex_protocol::items::TurnItem::SubAgentActivity(_)
+            | codex_protocol::items::TurnItem::UserAgentControl(_)
             | codex_protocol::items::TurnItem::Extension(_)
             | codex_protocol::items::TurnItem::EnteredReviewMode(_)
             | codex_protocol::items::TurnItem::ExitedReviewMode(_) => true,
@@ -1209,6 +1211,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1231,6 +1235,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1260,6 +1266,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1295,6 +1303,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1339,6 +1349,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1361,6 +1373,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1392,6 +1406,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1414,6 +1430,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1448,6 +1466,8 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status,
+            observe_commentary: None,
+            wake_on_completion: None,
             target_messages: None,
             queue_input: None,
             input_batch: None,
@@ -1697,7 +1717,7 @@ impl ThreadHistoryBuilder {
         let removed_turn_ids = self.turns[first_removed..]
             .iter()
             .map(|turn| turn.id.clone())
-            .collect();
+            .collect::<Vec<_>>();
         let cutoff = exact_cutoff.unwrap_or_else(|| {
             self.turns
                 .get(first_removed)
@@ -1759,8 +1779,6 @@ impl ThreadHistoryBuilder {
     fn insert_completed_standalone_turn(&mut self, turn_id: &str) {
         let turn = self.new_turn(Some(turn_id.to_string()));
         self.record_changed_pending_turn(&turn);
-        self.turn_rollout_start_indices
-            .push(turn.rollout_start_index);
         self.turns.push(turn);
     }
 
@@ -2673,7 +2691,7 @@ mod tests {
             }
         );
         assert_eq!(
-            builder.current_turn_snapshot(),
+            builder.active_turn_snapshot(),
             Some(Turn {
                 id: active_turn_id.to_string(),
                 items: Vec::new(),
