@@ -414,7 +414,8 @@ impl ThreadRequestProcessor {
                     AgentControlOutcome::Resumed { .. }
                     | AgentControlOutcome::Closed { .. }
                     | AgentControlOutcome::Observed { .. }
-                    | AgentControlOutcome::ReplyRouteChanged { .. } => None,
+                    | AgentControlOutcome::ReplyRouteChanged { .. }
+                    | AgentControlOutcome::SubtreeMessagingChanged { .. } => None,
                 };
                 if matches!(
                     &outcome,
