@@ -39,6 +39,13 @@ pub(super) enum State {
 }
 
 impl SubmissionAdmission {
+    pub(crate) fn forwarding_to(target: Arc<super::SessionIo>) -> Self {
+        Self {
+            durable_shutdown_target: Some(target),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn check_ready(&self) -> CodexResult<()> {
         if self.is_sealed_for_unload() {
             return Err(CodexErr::InvalidRequest(

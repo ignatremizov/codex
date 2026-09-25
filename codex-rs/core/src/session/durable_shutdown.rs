@@ -218,13 +218,6 @@ impl SubmissionAdmission {
     pub(crate) fn is_sealed_for_unload(&self) -> bool {
         self.subtree_unload_pending.load(Ordering::Acquire)
     }
-
-    pub(crate) fn forwarding_to(target: Arc<SessionIo>) -> Self {
-        Self {
-            durable_shutdown_target: Some(target),
-            ..Self::default()
-        }
-    }
 }
 
 #[cfg(test)]

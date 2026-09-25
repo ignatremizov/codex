@@ -50,6 +50,10 @@ impl SessionStartup {
     }
 
     /// Managed lifetimes retain this owner and retry failures until writer release is proven.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "cleanup phases must serialize through their acknowledgements, and persistence must retain the acquisition/writer across failed or cancelled durable discard for retry"
+    )]
     pub(crate) async fn cleanup_durably(&self) -> CodexResult<()> {
         let mut phase = self.cleanup.lock().await;
         if matches!(*phase, CleanupPhase::Complete) {

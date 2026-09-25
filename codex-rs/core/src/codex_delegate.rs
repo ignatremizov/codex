@@ -171,6 +171,7 @@ pub(crate) async fn run_codex_thread_interactive(
 }
 
 /// Keeps delegate IO cancellation identical for standalone and manager-owned reviewers.
+#[cfg(test)]
 pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationToken) -> SessionIo {
     forward_session_io_with_shutdown(io, cancel_token, DelegateShutdown::BestEffort)
 }
