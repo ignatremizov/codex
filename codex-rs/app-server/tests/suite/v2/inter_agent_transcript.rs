@@ -116,7 +116,7 @@ async fn injected_agent_message_gets_a_stable_id_without_starting_model_work() -
     let server = responses::start_mock_server().await;
     let codex_home = TempDir::new()?;
     write_multi_agent_config(codex_home.path(), &server.uri(), "plaintext")?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build()
@@ -265,7 +265,7 @@ async fn resume_rebuilds_legacy_inter_agent_communication_variants() -> Result<(
     let server = responses::start_mock_server().await;
     let codex_home = TempDir::new()?;
     write_multi_agent_config(codex_home.path(), &server.uri(), "plaintext")?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let filename_timestamp = "2026-07-21T12-00-00";
     let thread_id = create_fake_rollout(
         codex_home.path(),
@@ -509,7 +509,7 @@ async fn run_inter_agent_input_case(
         &server.uri(),
         message_delivery.config_value(),
     )?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build()
