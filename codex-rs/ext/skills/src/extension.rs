@@ -251,7 +251,7 @@ where
                 .get::<SkillsSessionState>()
                 .and_then(|state| state.extension_metrics.clone());
             let (promoted, unresolved) = thread_state.resolve_promoted_skills(&catalog);
-            let mut context_catalog = catalog.clone();
+            let mut context_catalog = catalog;
             for entry in &mut context_catalog.entries {
                 if promoted.iter().any(|promoted| {
                     promoted.authority == entry.authority && promoted.id == entry.id
