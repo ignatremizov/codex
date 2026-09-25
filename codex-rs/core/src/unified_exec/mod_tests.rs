@@ -21,6 +21,10 @@ use codex_exec_server::ReadResponse;
 use codex_exec_server::StartedExecProcess;
 use codex_exec_server::WriteResponse;
 use codex_exec_server::WriteStatus;
+use codex_protocol::protocol::TerminalInteractionEvent;
+use codex_protocol::protocol::TerminalWaitCompletionReason;
+use codex_protocol::protocol::TerminalWaitEvent;
+use codex_protocol::protocol::TerminalWaitMode;
 use codex_sandboxing::SandboxType;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -847,6 +851,7 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
             .await
             .expect("poll lifecycle event should arrive")
         };
+        let polls_started = Instant::now();
         let poll_task = spawn_poll();
         let first_begin = next_interaction().await;
         assert!(process.interaction_lock().try_lock_owned().is_err());
@@ -891,16 +896,52 @@ async fn cancelled_stdin_poll_can_be_resumed_and_observe_process_exit() -> anyho
         }
         assert!(manager.process_store.lock().await.processes.is_empty());
         let clear = next_interaction().await;
-        let expected = codex_protocol::protocol::TerminalInteractionEvent {
+        let (
+            Some(TerminalWaitEvent::Started {
+                started_at_ms: first_started_at_ms,
+                ..
+            }),
+            Some(TerminalWaitEvent::Started {
+                started_at_ms: second_started_at_ms,
+                ..
+            }),
+            Some(TerminalWaitEvent::Finished { elapsed_ms, .. }),
+        ) = (&first_begin.wait, &second_begin.wait, &clear.wait)
+        else {
+            anyhow::bail!("expected two wait starts and one wait completion");
+        };
+        assert!(*first_started_at_ms > 0);
+        assert!(second_started_at_ms >= first_started_at_ms);
+        assert!(u128::from(*elapsed_ms) <= polls_started.elapsed().as_millis());
+        let expected = |wait| TerminalInteractionEvent {
             call_id: "call".to_string(),
             process_id: process_id.to_string(),
             stdin: String::new(),
             deadline_at_ms: None,
+            wait: Some(wait),
         };
-        assert_eq!(
-            [first_begin, second_begin, clear],
-            [expected.clone(), expected.clone(), expected]
-        );
+        let expected_events = [
+            expected(TerminalWaitEvent::Started {
+                interaction_id: "poll-call".to_string(),
+                started_at_ms: *first_started_at_ms,
+                mode: TerminalWaitMode::Timed,
+            }),
+            expected(TerminalWaitEvent::Started {
+                interaction_id: "poll-call".to_string(),
+                started_at_ms: *second_started_at_ms,
+                mode: TerminalWaitMode::Timed,
+            }),
+            expected(TerminalWaitEvent::Finished {
+                interaction_id: "poll-call".to_string(),
+                elapsed_ms: *elapsed_ms,
+                reason: if failure.is_some() {
+                    TerminalWaitCompletionReason::Failed
+                } else {
+                    TerminalWaitCompletionReason::Exited
+                },
+            }),
+        ];
+        assert_eq!([first_begin, second_begin, clear], expected_events);
         assert!(
             events.try_recv().is_err(),
             "only one ordinary-result clear is emitted"
