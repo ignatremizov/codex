@@ -830,7 +830,8 @@ impl InMemoryThreadStore {
                 | InMemoryThreadStoreFailure::ThreadRollbackFlush
                 | InMemoryThreadStoreFailure::ThreadRollbackVerificationRead
                 | InMemoryThreadStoreFailure::ThreadRollbackResponseRead
-                | InMemoryThreadStoreFailure::ThreadShutdown,
+                | InMemoryThreadStoreFailure::ThreadShutdown
+                | InMemoryThreadStoreFailure::ThreadDiscard,
             )
             | None => None,
         };
