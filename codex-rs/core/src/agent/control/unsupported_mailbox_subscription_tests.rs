@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn v1_child_spawn_succeeds_without_mailbox_subscription_lookup_support() {
