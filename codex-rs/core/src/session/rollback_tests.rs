@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 async fn assert_rollback_error(
     events: &async_channel::Receiver<Event>,
