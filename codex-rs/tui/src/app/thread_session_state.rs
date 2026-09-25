@@ -185,7 +185,7 @@ impl App {
         }
         // The server owns persisted metadata, including remote rollout paths. An unset
         // effort must not inherit the model settings of the currently displayed parent.
-        session.reasoning_effort = thread.reasoning_effort;
+        session.reasoning_effort = thread.reasoning_effort.clone();
         session.message_history = None;
         session
     }
