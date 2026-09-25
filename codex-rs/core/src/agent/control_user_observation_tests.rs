@@ -7,6 +7,7 @@ use crate::UserAgentObservationBinding;
 use crate::UserAgentObservationMode;
 use crate::UserAgentResponseHandling;
 use crate::UserAgentSpawnOptions;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn close_response_cannot_hold_a_receipt_inside_the_subtree_being_closed() {
