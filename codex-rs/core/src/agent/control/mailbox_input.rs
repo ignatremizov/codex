@@ -3,6 +3,7 @@
 use super::AgentControlInput;
 use super::AgentModelInputOrigin;
 use super::LocalAgentControl;
+#[cfg(test)]
 use super::SessionPresentationId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;

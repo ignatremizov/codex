@@ -1495,6 +1495,7 @@ async fn deleted_aliases_remain_reserved_without_authorizing_revival() {
             parent_thread_id: root,
             child_thread_id: child,
             nickname: Some("Reserved".to_string()),
+            task_path: None,
         })
         .await
         .unwrap();
@@ -1522,6 +1523,7 @@ async fn deleted_aliases_remain_reserved_without_authorizing_revival() {
             parent_thread_id: root,
             child_thread_id: child,
             nickname: child_alias.nickname.clone(),
+            task_path: None,
         })
         .await
         .expect_err("a tombstoned UUID must not reopen");
@@ -1537,6 +1539,7 @@ async fn deleted_aliases_remain_reserved_without_authorizing_revival() {
             new_parent_thread_id: destination,
             thread_id: child,
             nickname: child_alias.nickname,
+            task_path: None,
             authored_selector: child.to_string(),
         })
         .await
@@ -1547,6 +1550,7 @@ async fn deleted_aliases_remain_reserved_without_authorizing_revival() {
             parent_thread_id: root,
             child_thread_id: thread_id(/*suffix*/ 803),
             nickname: Some("Reserved".to_string()),
+            task_path: None,
         })
         .await
         .expect_err("deleted nicknames remain reserved");
@@ -1556,6 +1560,7 @@ async fn deleted_aliases_remain_reserved_without_authorizing_revival() {
             parent_thread_id: root,
             child_thread_id: thread_id(/*suffix*/ 804),
             nickname: Some("New".to_string()),
+            task_path: None,
         })
         .await
         .unwrap();
@@ -1584,6 +1589,7 @@ async fn deleted_aliases_remain_reserved_without_authorizing_revival() {
             parent_thread_id: root,
             child_thread_id: ThreadId::new(),
             nickname: None,
+            task_path: None,
         })
         .await
         .expect_err("a deleted root cannot become a new control namespace");
