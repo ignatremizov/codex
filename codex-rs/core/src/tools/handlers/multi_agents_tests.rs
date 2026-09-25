@@ -27,6 +27,7 @@ use crate::session::tests::update_turn_settings_for_test;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::session_prefix::format_subagent_notification_message;
+use crate::thread_manager::CapturedAgentOperation;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -3244,16 +3245,19 @@ async fn send_input_interrupts_before_prompt() {
         .await
         .expect("child thread should remain live");
 
-    let ops = manager.captured_ops();
-    let ops_for_agent: Vec<&Op> = ops
+    let ops = manager.captured_agent_operations();
+    let ops_for_agent: Vec<&CapturedAgentOperation> = ops
         .iter()
         .filter_map(|(id, op)| (*id == agent_id).then_some(op))
         .collect();
     assert_eq!(ops_for_agent.len(), 2);
-    assert!(matches!(ops_for_agent[0], Op::Interrupt));
+    assert!(matches!(
+        ops_for_agent[0],
+        CapturedAgentOperation::Interrupt
+    ));
     assert!(matches!(
         ops_for_agent[1],
-        Op::AgentInput {
+        CapturedAgentOperation::AgentInput {
             presentation: codex_protocol::protocol::AgentInputPresentation::AttributedInput {
                 attribution,
                 input,

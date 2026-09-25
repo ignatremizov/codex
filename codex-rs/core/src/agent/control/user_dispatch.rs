@@ -411,6 +411,16 @@ impl LocalAgentControl {
                 let _ = proceed.await;
             }
         }
+        #[cfg(test)]
+        if let codex_protocol::turn_input::TurnInput::AgentInput { presentation, .. } = &input.input
+        {
+            state.capture_agent_operation(
+                agent_id,
+                crate::thread_manager::CapturedAgentOperation::AgentInput {
+                    presentation: presentation.clone(),
+                },
+            );
+        }
         let admitted = match queue_metadata {
             Some(metadata) => {
                 thread

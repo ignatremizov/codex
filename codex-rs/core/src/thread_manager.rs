@@ -120,6 +120,12 @@ use tracing::warn;
 
 mod v2_spawn_resume;
 
+#[cfg(test)]
+#[path = "thread_manager/agent_operation_capture_tests.rs"]
+mod agent_operation_capture;
+#[cfg(test)]
+pub(crate) use agent_operation_capture::CapturedAgentOperation;
+
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 // Reject pathological selected cwd values at the environment-selection boundary.
 const MAX_TURN_ENVIRONMENT_CWD_BYTES: usize = 8 * 1024;
@@ -476,6 +482,8 @@ pub(crate) struct ThreadManagerState {
     agent_lifecycle_changed: Arc<Notify>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
+    #[cfg(test)]
+    agent_operations: std::sync::Mutex<Vec<(ThreadId, CapturedAgentOperation)>>,
 }
 
 pub fn build_models_manager(
@@ -652,6 +660,8 @@ impl ThreadManager {
                 agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
+                #[cfg(test)]
+                agent_operations: std::sync::Mutex::new(Vec::new()),
             }),
             _test_codex_home_guard: None,
         }
@@ -809,6 +819,8 @@ impl ThreadManager {
                 agent_lifecycle_changed: Arc::new(Notify::new()),
                 ops_log: should_use_test_thread_manager_behavior()
                     .then(|| Arc::new(std::sync::Mutex::new(Vec::new()))),
+                #[cfg(test)]
+                agent_operations: std::sync::Mutex::new(Vec::new()),
             }),
             _test_codex_home_guard: None,
         }
@@ -1765,6 +1777,10 @@ impl ThreadManagerState {
         root_turn_id: Option<String>,
     ) -> CodexResult<String> {
         let thread_id = thread.session.thread_id;
+        #[cfg(test)]
+        if matches!(&op, Op::Interrupt) {
+            self.capture_agent_operation(thread_id, CapturedAgentOperation::Interrupt);
+        }
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
             && let Some(captured_op) = capture_test_op(&op)
