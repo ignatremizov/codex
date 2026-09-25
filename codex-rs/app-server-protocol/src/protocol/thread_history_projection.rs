@@ -84,8 +84,9 @@ pub fn project_rollout_line(line: &RolloutLine) -> ThreadHistoryChangeSet {
                         && command.id == event.turn_id
             );
             let changed_turns = changed_turns
-                .then(|| ThreadHistoryTurnChange {
+                .then(|| ThreadHistoryTurnMetadata {
                     turn_id: event.turn_id.clone(),
+                    root_turn_id: None,
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,

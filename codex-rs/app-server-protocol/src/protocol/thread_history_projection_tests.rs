@@ -333,8 +333,9 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
             item.clone()
         )),
         ThreadHistoryChangeSet {
-            changed_turns: vec![ThreadHistoryTurnChange {
+            changed_turns: vec![ThreadHistoryTurnMetadata {
                 turn_id: "control-1".to_string(),
+                root_turn_id: None,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -403,8 +404,9 @@ fn projects_detached_user_shell_as_a_completed_standalone_turn() {
             item.clone()
         )),
         ThreadHistoryChangeSet {
-            changed_turns: vec![ThreadHistoryTurnChange {
+            changed_turns: vec![ThreadHistoryTurnMetadata {
                 turn_id: "shell-turn".to_string(),
+                root_turn_id: None,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,

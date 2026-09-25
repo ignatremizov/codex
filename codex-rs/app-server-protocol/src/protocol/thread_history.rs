@@ -2636,6 +2636,7 @@ mod tests {
         let mut builder = ThreadHistoryBuilder::new();
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: active_turn_id.to_string(),
+            root_turn_id: None,
             trace_id: None,
             started_at: Some(10),
             model_context_window: None,
@@ -2650,8 +2651,9 @@ mod tests {
                 started_at_ms: 100,
             })),
             ThreadHistoryChangeSet {
-                changed_turns: vec![ThreadHistoryTurnChange {
+                changed_turns: vec![ThreadHistoryTurnMetadata {
                     turn_id: shell_turn_id.to_string(),
+                    root_turn_id: None,
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
