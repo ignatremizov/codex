@@ -1,6 +1,7 @@
 //! Width-dependent collaboration previews retain their complete source for raw history and export.
 
 use super::*;
+use crate::history_cell::HistoryCell;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::LogicalLineSource;
 use crate::terminal_hyperlinks::annotate_web_urls_in_line;
