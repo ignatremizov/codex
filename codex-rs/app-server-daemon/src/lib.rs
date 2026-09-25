@@ -341,7 +341,7 @@ impl Daemon {
         let managed_codex_bin = managed_codex_bin(codex_home);
         // Old CLIs must not mistake a daemon-owned installation for their backend.
         let (pid_file, update_pid_file) =
-            if managed_codex_bin.starts_with(codex_home.as_path().join("packages/standalone")) {
+            if managed_codex_bin.starts_with(codex_home.join("packages/standalone")) {
                 (LEGACY_PID_FILE_NAME, LEGACY_UPDATE_PID_FILE_NAME)
             } else {
                 (DAEMON_PID_FILE_NAME, DAEMON_UPDATE_PID_FILE_NAME)

@@ -108,7 +108,7 @@ where
     send_message(
         websocket,
         &JSONRPCMessage::Request(JSONRPCRequest {
-            id: request_id,
+            id: request_id.clone(),
             method: "server/read".to_string(),
             params: Some(serde_json::json!({})),
             trace: None,
