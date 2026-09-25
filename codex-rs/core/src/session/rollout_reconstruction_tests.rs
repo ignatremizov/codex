@@ -1035,7 +1035,7 @@ async fn representation_repair_without_companion_records_preserves_existing_base
             ..Default::default()
         }),
         RolloutItem::WorldState(WorldStateItem::full(
-            world_state_snapshot.clone().into_value(),
+            serde_json::to_value(&world_state_snapshot).expect("serialize world state"),
         )),
         RolloutItem::TurnContext(reference_context.clone()),
         RolloutItem::Compacted(CompactedItem {
@@ -1081,7 +1081,7 @@ async fn representation_repair_applies_its_out_of_band_companion_records() {
             ..Default::default()
         }),
         RolloutItem::WorldState(WorldStateItem::full(
-            world_state_snapshot.clone().into_value(),
+            serde_json::to_value(&world_state_snapshot).expect("serialize world state"),
         )),
         RolloutItem::TurnContext(reference_context.clone()),
     ];
@@ -1525,14 +1525,14 @@ async fn reconstruction_preserves_checkpoint_before_partial_segment_rollback() {
     let mut rollout_items = completed_user_turn_rollout(
         surviving_context,
         vec![
-            RolloutItem::ResponseItem(surviving_user.clone().into()),
-            RolloutItem::ResponseItem(surviving_assistant.clone().into()),
+            RolloutItem::ResponseItem(surviving_user.clone()),
+            RolloutItem::ResponseItem(surviving_assistant.clone()),
             RolloutItem::Compacted(CompactedItem {
                 message: "checkpoint before steer".to_string(),
-                replacement_history: Some(annotated(vec![
+                replacement_history: Some(vec![
                     surviving_user.clone(),
                     surviving_assistant.clone(),
-                ])),
+                ]),
                 ..Default::default()
             }),
             RolloutItem::ResponseItem(user_message("rolled back steer").into()),
@@ -1553,7 +1553,7 @@ async fn reconstruction_preserves_checkpoint_before_partial_segment_rollback() {
 
     assert_eq!(
         reconstructed.history,
-        annotated(vec![surviving_user, surviving_assistant])
+        vec![surviving_user, surviving_assistant]
     );
     assert_eq!(reconstructed.compacted_prefix_len, Some(2));
 }

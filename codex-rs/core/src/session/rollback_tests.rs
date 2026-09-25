@@ -386,7 +386,9 @@ async fn thread_rollback_persists_required_repairs_around_the_rollback_marker() 
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputImage {
-            image_url: "data:image/png;base64,legacy".to_string(),
+            image: ImageReference::Inline {
+                image_url: "data:image/png;base64,legacy".to_string(),
+            },
             detail: None,
         }],
         phase: None,
