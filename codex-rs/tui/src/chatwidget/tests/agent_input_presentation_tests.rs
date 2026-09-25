@@ -39,6 +39,7 @@ async fn background_identity_headers_match_live_and_replayed_presentation() {
         let item = AppServerThreadItem::AgentMessage {
             id,
             text,
+            inter_agent_source: None,
             phase: Some(MessagePhase::Commentary),
             memory_citation: None,
             attribution: None,
@@ -90,6 +91,7 @@ async fn trusted_agent_input_uses_same_rich_cell_live_and_on_resume() {
     let item = AppServerThreadItem::AgentMessage {
         id: codex_protocol::protocol::new_attributed_agent_message_response_item_id().to_string(),
         text: String::new(),
+        inter_agent_source: None,
         attribution: Some(AgentInputAttribution {
             sender: AgentInputIdentity {
                 thread_id: ThreadId::new().to_string(),

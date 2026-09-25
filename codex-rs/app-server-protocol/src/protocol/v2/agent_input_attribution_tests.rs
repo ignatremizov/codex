@@ -98,6 +98,7 @@ fn rich_agent_input_retains_exact_identity_and_payload_through_history() {
     let expected = ThreadItem::AgentMessage {
         id: item.id.clone(),
         text: String::new(),
+        inter_agent_source: None,
         attribution: Some(attribution.clone().into()),
         input: Some(input.into_iter().map(UserInput::from).collect()),
         phase: Some(MessagePhase::Commentary),

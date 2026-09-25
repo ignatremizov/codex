@@ -8,6 +8,8 @@ fn communication(id: &str, author: &str, text: &str) -> AppServerThreadItem {
     AppServerThreadItem::AgentMessage {
         id: id.into(),
         text: text.into(),
+        attribution: None,
+        input: None,
         phase: Some(MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,

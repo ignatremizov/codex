@@ -1041,6 +1041,7 @@ async fn live_app_server_primary_events_use_main_agent_metadata() {
             item: AppServerThreadItem::AgentMessage {
                 id: format!("msg_a_{primary_thread_id}"),
                 text: format!("Agent message from `{primary_thread_id}`:\n\nAcknowledged."),
+                inter_agent_source: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 attribution: None,

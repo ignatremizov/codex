@@ -401,6 +401,7 @@ fn transcript_projection_keeps_human_authorship_and_complete_agent_payload() {
                 ThreadItem::AgentMessage {
                     id: "attributed".to_string(),
                     text: String::new(),
+                    inter_agent_source: None,
                     attribution: Some(attribution),
                     input: Some(vec![UserInput::Text {
                         text: payload.clone(),

@@ -84,6 +84,8 @@ fn agent_item(item_id: &str, text: &str, phase: Option<MessagePhase>) -> ThreadI
         inter_agent_source: None,
         id: item_id.to_string(),
         text: text.to_string(),
+        attribution: None,
+        input: None,
         phase,
         questions: None,
         memory_citation: None,

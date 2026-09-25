@@ -9,6 +9,7 @@ fn completed_message(turn_id: &str, item_id: &str) -> ItemCompletedNotification 
         item: AppServerThreadItem::AgentMessage {
             id: item_id.to_string(),
             text: "Received marker.".to_string(),
+            inter_agent_source: None,
             phase: Some(MessagePhase::FinalAnswer),
             memory_citation: None,
             attribution: None,

@@ -225,6 +225,8 @@ fn context_compaction_item_emits_context_compacted_event() {
                 id: "message-1".to_string(),
                 text: "final answer".to_string(),
                 inter_agent_source: None,
+                attribution: None,
+                input: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,

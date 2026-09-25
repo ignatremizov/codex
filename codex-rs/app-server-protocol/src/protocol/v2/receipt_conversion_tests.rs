@@ -25,6 +25,7 @@ fn expected_message(id: String, phase: Option<MessagePhase>) -> ThreadItem {
     ThreadItem::AgentMessage {
         id,
         text: "Main's answer.".to_string(),
+        inter_agent_source: None,
         attribution: None,
         input: None,
         phase,
@@ -134,6 +135,7 @@ fn mailbox_acceptance_conversion_preserves_only_trusted_typed_receipts() {
     let expected = ThreadItem::AgentMessage {
         id: id.clone(),
         text: String::new(),
+        inter_agent_source: None,
         attribution: Some(attribution.into()),
         input: Some(input.into_iter().map(UserInput::from).collect()),
         phase: Some(MessagePhase::Commentary),

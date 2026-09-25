@@ -194,6 +194,8 @@ async fn every_page_split_folds_reasoning_before_answer_and_completion_boundarie
                     inter_agent_source: None,
                     id: "answer".to_owned(),
                     text: text.to_owned(),
+                    attribution: None,
+                    input: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,

@@ -27,6 +27,7 @@ fn completed(app: &mut App, id: String, text: String, phase: MessagePhase) {
             item: ThreadItem::AgentMessage {
                 id,
                 text,
+                inter_agent_source: None,
                 phase: Some(phase),
                 attribution: None,
                 input: None,

@@ -6829,6 +6829,8 @@ async fn command_center_read_only_open_requests_and_failure_preservation() -> Re
                         turn_id: format!("saved-turn-{index}"),
                         item: TurnItem::AgentMessage(AgentMessageItem {
                             id: format!("saved-answer-{index}"),
+                            attribution: None,
+                            input: None,
                             content: vec![AgentMessageContent::Text {
                                 text: "Saved final answer".to_string(),
                             }],

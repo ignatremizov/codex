@@ -65,6 +65,7 @@ fn summary_separates_received_peer_input_from_own_response() {
             ThreadItem::AgentMessage {
                 id: received.to_string(),
                 text: format!("Agent message from `{sender}`:\n\nPlease use revision 2."),
+                inter_agent_source: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 attribution: None,
@@ -77,6 +78,7 @@ fn summary_separates_received_peer_input_from_own_response() {
                 text: format!(
                     "Agent message from `{sender}` to `{recipient}`:\n\nPeer-only update."
                 ),
+                inter_agent_source: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 attribution: None,
@@ -88,6 +90,7 @@ fn summary_separates_received_peer_input_from_own_response() {
                 id: receipt.id,
                 text: "Delivered output must not replace the response or received-input summary."
                     .to_string(),
+                inter_agent_source: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 attribution: None,

@@ -499,6 +499,8 @@ fn projects_inter_agent_response_items_into_paginated_history() {
                         author: "/root".to_string(),
                         recipient: "/root/worker".to_string(),
                     }),
+                    attribution: None,
+                    input: None,
                     phase: Some(MessagePhase::Commentary),
                     memory_citation: None,
                     delivery: None,

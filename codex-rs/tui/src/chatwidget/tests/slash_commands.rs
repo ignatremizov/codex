@@ -2490,6 +2490,8 @@ async fn slash_copy_picker_uses_completed_commentary_during_active_turn() {
                 inter_agent_source: None,
                 id: "active-commentary".to_string(),
                 text: commentary.to_string(),
+                attribution: None,
+                input: None,
                 phase: Some(MessagePhase::Commentary),
                 memory_citation: None,
                 delivery: None,

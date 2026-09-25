@@ -190,6 +190,8 @@ async fn delegated_answer_with_async_question_opens_the_editor_instead_of_speech
         inter_agent_source: None,
         id: "question-answer".into(),
         text: "Which option?".into(),
+        attribution: None,
+        input: None,
         phase: Some(MessagePhase::FinalAnswer),
         questions: Some(vec![AsyncUserInputQuestion {
             title: "Which option?".into(),

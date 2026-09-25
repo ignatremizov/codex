@@ -10,6 +10,7 @@ fn message(id: String, text: String, phase: MessagePhase) -> AppServerThreadItem
     AppServerThreadItem::AgentMessage {
         id,
         text,
+        inter_agent_source: None,
         phase: Some(phase),
         attribution: None,
         input: None,
@@ -541,6 +542,7 @@ async fn commentary_streaming_does_not_defer_async_notices() {
         AppServerThreadItem::AgentMessage {
             id: "commentary-item".to_string(),
             text: String::new(),
+            inter_agent_source: None,
             attribution: None,
             input: None,
             phase: Some(MessagePhase::Commentary),

@@ -324,13 +324,13 @@ impl ChatWidget {
             ThreadItem::AgentMessage {
                 id,
                 text,
+                inter_agent_source,
                 attribution,
                 input,
                 phase,
                 memory_citation,
                 delivery,
                 questions,
-                ..
             } => {
                 if let Some(attribution) = attribution {
                     let cell = history_cell::AgentInputHistoryCell::new(
@@ -340,7 +340,9 @@ impl ChatWidget {
                         self.thread_id,
                     )
                     .with_receipt_id(&id)
-                    .with_response_preview_lines(self.config.tui_agent_response_preview_lines);
+                    .with_response_preview_lines(
+                        self.local_settings.tui.agent_response_preview_lines,
+                    );
                     if from_replay {
                         self.on_collab_event(cell);
                     } else {
@@ -378,7 +380,9 @@ impl ChatWidget {
                 if self.complete_realtime_delegated_agent_item(
                     &turn_id,
                     &ThreadItem::AgentMessage {
-                        inter_agent_source: None,
+                        inter_agent_source,
+                        attribution: None,
+                        input: input.clone(),
                         id: id.clone(),
                         text: text.clone(),
                         phase: phase.clone(),
@@ -394,6 +398,13 @@ impl ChatWidget {
                     AgentMessageItem {
                         id,
                         content: vec![AgentMessageContent::Text { text }],
+                        attribution: None,
+                        input: input.map(|input| {
+                            input
+                                .into_iter()
+                                .map(codex_app_server_protocol::UserInput::into_core)
+                                .collect()
+                        }),
                         phase,
                         memory_citation: memory_citation.map(|citation| {
                             codex_protocol::memory_citation::MemoryCitation {

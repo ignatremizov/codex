@@ -283,6 +283,8 @@ async fn freeform_async_message_emits_an_item_without_ending_the_turn(
     .await;
     let expected = serde_json::to_value(TurnItem::AgentMessage(AgentMessageItem {
         id: CALL_ID.to_string(),
+        attribution: None,
+        input: None,
         content: vec![AgentMessageContent::Text {
             text: MESSAGE.to_string(),
         }],

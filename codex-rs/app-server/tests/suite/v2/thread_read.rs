@@ -1880,6 +1880,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
             ThreadItem::AgentMessage {
                 id: "agent-1".to_string(),
                 text: "first".to_string(),
+                inter_agent_source: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,
@@ -2069,6 +2070,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                 ThreadItem::AgentMessage {
                     id: "agent-1".to_string(),
                     text: "first".to_string(),
+                    inter_agent_source: None,
                     phase: None,
                     memory_citation: None,
                     delivery: None,

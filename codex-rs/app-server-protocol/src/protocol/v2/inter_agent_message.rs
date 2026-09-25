@@ -69,6 +69,8 @@ pub(crate) fn inter_agent_message_thread_item_with_id(
             author: author.clone(),
             recipient: recipient.clone(),
         }),
+        attribution: None,
+        input: None,
         phase: Some(codex_protocol::models::MessagePhase::Commentary),
         memory_citation: None,
         delivery: None,
@@ -84,9 +86,7 @@ struct SubAgentNotificationEnvelope {
 
 pub(super) fn transcript_text(author: &str, recipient: &str, text: &str) -> String {
     if let Some(SubAgentCommentaryEnvelope {
-        agent_path,
-        agent_id,
-        message,
+        agent_id, message, ..
     }) = sub_agent_commentary_envelope(text).filter(|envelope| envelope.agent_path == author)
     {
         return format!(

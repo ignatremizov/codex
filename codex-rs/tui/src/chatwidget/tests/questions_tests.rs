@@ -651,6 +651,8 @@ fn open_questions(chat: &mut ChatWidget, options: Option<Vec<String>>) {
     chat.on_agent_message_item_completed(
         AgentMessageItem {
             id: "review".into(),
+            attribution: None,
+            input: None,
             content: Vec::new(),
             phase: None,
             memory_citation: None,
@@ -786,6 +788,8 @@ async fn question_drafts_survive_navigation_and_snapshot_replay() {
         inter_agent_source: None,
         id: "buffered".into(),
         text: String::new(),
+        attribution: None,
+        input: None,
         phase: None,
         memory_citation: None,
         delivery: None,

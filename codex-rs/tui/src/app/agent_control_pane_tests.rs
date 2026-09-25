@@ -122,6 +122,7 @@ async fn adaptive_agent_layout_view(initial_selected_idx: Option<usize>) -> List
                 id: "assistant-child".to_string(),
                 text: "Found the boundary behavior and preserved the full response preview."
                     .to_string(),
+                inter_agent_source: None,
                 phase: Some(MessagePhase::FinalAnswer),
                 memory_citation: None,
                 attribution: None,
