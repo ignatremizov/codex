@@ -674,6 +674,7 @@ async fn reconstruction_repairs_only_the_compacted_base_and_marks_its_prefix() {
         })
     );
 
+    let turn_context = Arc::new(turn_context);
     let applied = session
         .apply_rollout_reconstruction(&turn_context, &rollout_items)
         .await

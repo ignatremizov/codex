@@ -5,7 +5,7 @@ use super::*;
 impl Session {
     pub(super) async fn apply_rollout_reconstruction(
         &self,
-        turn_context: &TurnContext,
+        turn_context: &Arc<TurnContext>,
         rollout_items: &[RolloutItem],
     ) -> CodexResult<rollout_reconstruction::AppliedRolloutReconstruction> {
         let reconstruction = self
@@ -122,7 +122,7 @@ impl Session {
 
     pub(super) async fn install_rollout_reconstruction(
         &self,
-        turn_context: &TurnContext,
+        turn_context: &Arc<TurnContext>,
         reconstruction: rollout_reconstruction::PreparedRolloutReconstruction,
         prefix: Vec<RolloutItem>,
     ) -> CodexResult<rollout_reconstruction::AppliedRolloutReconstruction> {
@@ -138,7 +138,7 @@ impl Session {
 
     pub(super) async fn install_rollout_reconstruction_with_permit(
         &self,
-        turn_context: &TurnContext,
+        turn_context: &Arc<TurnContext>,
         reconstruction: rollout_reconstruction::PreparedRolloutReconstruction,
         mut prefix: Vec<RolloutItem>,
         permit: tokio::sync::OwnedSemaphorePermit,
