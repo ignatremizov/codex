@@ -51,7 +51,8 @@ fn v1_result_schemas_preserve_projection_fields_in_code_mode() {
             panic!("expected namespace function");
         };
         let schema = tool.output_schema.as_ref().expect("output schema");
-        let rendered = render_json_schema_to_typescript(schema);
+        let schema = serde_json::to_value(schema).expect("serialize tool output schema");
+        let rendered = render_json_schema_to_typescript(&schema);
         for field in required_type_fields {
             assert!(rendered.contains(field), "{rendered} must expose {field}");
         }
@@ -299,7 +300,7 @@ fn spawn_agent_catalog_description_preserves_generated_context() {
     assert!(
         configured_tool
             .description
-            .contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE)
+            .contains(SPAWN_AGENT_MODEL_PRECEDENCE_GUIDANCE)
     );
     assert!(configured_tool.description.ends_with("Local usage hint."));
     assert!(
