@@ -333,6 +333,7 @@ async fn thread_read_reconstructs_legacy_exec_and_later_poll_without_loading_thr
             cwd: LegacyAppPathString::from_string("/tmp"),
             process_id: Some("42".to_string()),
             source: CommandExecutionSource::UnifiedExecStartup,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::Completed,
             command_actions: vec![CommandAction::Unknown {
                 command: "run".to_string()
