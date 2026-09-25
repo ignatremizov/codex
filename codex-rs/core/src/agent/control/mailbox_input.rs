@@ -1,6 +1,7 @@
 //! V1 mailbox acceptance, separate from target lifecycle and response observation.
 
 use super::AgentControlInput;
+use super::AgentModelInputOrigin;
 use super::LocalAgentControl;
 use super::SessionPresentationId;
 use codex_protocol::ThreadId;
@@ -150,6 +151,7 @@ impl LocalAgentControl {
     /// After persistence, a loaded receiver receives an activity hint for later inventory
     /// scheduling, not a payload-bearing turn or a delivery receipt. Retried invocations recover
     /// the original attribution even when aliases, runtime metadata, or send settings changed.
+    #[cfg(test)]
     pub(crate) async fn accept_mailbox_agent_input(
         &self,
         sender: SessionPresentationId,
@@ -160,8 +162,10 @@ impl LocalAgentControl {
         final_subscription: MailboxFinalSubscriptionRequest,
     ) -> CodexResult<StoredMailboxInput> {
         self.accept_mailbox_agent_input_with_batch(
-            sender,
-            sender_turn_id,
+            AgentModelInputOrigin {
+                sender,
+                sender_turn_id: sender_turn_id.to_owned(),
+            },
             call_id,
             receiver,
             input,
@@ -173,8 +177,7 @@ impl LocalAgentControl {
 
     pub(crate) async fn accept_mailbox_agent_input_with_batch(
         &self,
-        sender: SessionPresentationId,
-        sender_turn_id: &str,
+        origin: AgentModelInputOrigin,
         call_id: &str,
         receiver: ThreadId,
         input: Vec<UserInput>,
@@ -182,14 +185,12 @@ impl LocalAgentControl {
         batch_id: Option<&str>,
     ) -> CodexResult<StoredMailboxInput> {
         let control = self.clone();
-        let sender_turn_id = sender_turn_id.to_string();
         let call_id = call_id.to_string();
         let batch_id = batch_id.map(str::to_string);
         tokio::spawn(async move {
             control
                 .accept_mailbox_agent_input_owned(
-                    sender,
-                    &sender_turn_id,
+                    origin,
                     &call_id,
                     receiver,
                     input,
@@ -208,14 +209,18 @@ impl LocalAgentControl {
 
     async fn accept_mailbox_agent_input_owned(
         &self,
-        sender: SessionPresentationId,
-        sender_turn_id: &str,
+        origin: AgentModelInputOrigin,
         call_id: &str,
         receiver: ThreadId,
         input: Vec<UserInput>,
         final_subscription: MailboxFinalSubscriptionRequest,
         batch_id: Option<&str>,
     ) -> CodexResult<StoredMailboxInput> {
+        let AgentModelInputOrigin {
+            sender,
+            sender_turn_id,
+        } = origin;
+        let sender_turn_id = sender_turn_id.as_str();
         if sender.thread_id == receiver {
             return Err(CodexErr::InvalidRequest(
                 "an agent cannot send mailbox input to itself".to_string(),

@@ -226,6 +226,7 @@ impl LocalAgentControl {
     }
 
     /// Spawn an agent thread with some metadata.
+    #[cfg(test)]
     pub(crate) async fn spawn_agent_with_metadata(
         &self,
         config: Config,
@@ -550,14 +551,10 @@ impl LocalAgentControl {
             return Err(error);
         }
 
-        if let Err(error) = self
-            .restore_agent_send_settings(new_thread.thread.session.presentation_id())
-            .await
-        {
-            return Err(error);
-        }
+        self.restore_agent_send_settings(new_thread.thread.session.presentation_id())
+            .await?;
         if notification_source.is_some() {
-            if let Err(error) = state
+            state
                 .publish_restored_thread(&new_thread.thread, parent.as_ref(), || {
                     if !reservation.commit_if_absent(agent_metadata.clone()) {
                         return Err(CodexErr::InvalidRequest(
@@ -566,10 +563,7 @@ impl LocalAgentControl {
                     }
                     Ok(())
                 })
-                .await
-            {
-                return Err(error);
-            }
+                .await?;
         } else {
             reservation.commit(agent_metadata.clone());
         }

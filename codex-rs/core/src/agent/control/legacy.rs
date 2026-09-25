@@ -31,6 +31,7 @@ impl LocalAgentControl {
     }
 
     /// Retire an exact runtime while serializing against explicit restoration.
+    #[cfg(test)]
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let control = self.clone();
         tokio::spawn(async move {
@@ -91,6 +92,7 @@ impl LocalAgentControl {
 
     /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the
     /// agent and any live descendants reached from the in-memory tree.
+    #[cfg(test)]
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let control = self.clone();
         tokio::spawn(async move {
@@ -284,6 +286,7 @@ impl LocalAgentControl {
     }
 
     /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.
+    #[cfg(test)]
     pub(crate) async fn shutdown_agent_tree(&self, agent_id: ThreadId) -> CodexResult<String> {
         let descendant_ids = self.live_thread_spawn_descendants(agent_id).await?;
         let result = self.shutdown_live_agent(agent_id).await;

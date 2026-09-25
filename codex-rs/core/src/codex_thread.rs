@@ -1,6 +1,5 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
-use crate::context::ContextualUserFragment;
 use crate::context::GuardianReviewEvidence;
 use crate::elicitation::ElicitationRegistration;
 use crate::environment_selection::TurnEnvironmentState;
@@ -744,14 +743,6 @@ impl CodexThread {
     /// `thread/tokenUsage/updated` payload incomplete.
     pub async fn token_usage_info(&self) -> Option<TokenUsageInfo> {
         self.session.token_usage_info().await
-    }
-
-    /// Records a context fragment without creating a new user turn boundary.
-    pub(crate) async fn inject_fragment_without_turn(&self, fragment: impl ContextualUserFragment) {
-        let item = ContextualUserFragment::into(fragment);
-        self.session
-            .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
-            .await;
     }
 
     /// Record raw Responses API items without starting a new turn.

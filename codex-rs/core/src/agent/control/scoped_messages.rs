@@ -174,8 +174,7 @@ impl LocalAgentControl {
 
     pub(crate) async fn send_scoped_agent_input_observing_response(
         &self,
-        sender: SessionPresentationId,
-        sender_turn_id: &str,
+        origin: AgentModelInputOrigin,
         batch_id: Option<&str>,
         receiver_thread_id: ThreadId,
         input: Vec<UserInput>,
@@ -183,7 +182,10 @@ impl LocalAgentControl {
         response_observation: ResponseObservationPolicy,
     ) -> CodexResult<String> {
         let control = self.clone();
-        let sender_turn_id = sender_turn_id.to_string();
+        let AgentModelInputOrigin {
+            sender,
+            sender_turn_id,
+        } = origin;
         let batch_id = batch_id.map(str::to_string);
         tokio::spawn(async move {
             let state = control.upgrade()?;

@@ -241,8 +241,10 @@ async fn validated_scoped_steer_rejects_a_different_receiver_turn_at_submission(
     let sending = tokio::spawn(async move {
         sending_control
             .send_scoped_agent_input_observing_response(
-                source,
-                SENDER_TURN,
+                AgentModelInputOrigin {
+                    sender: source,
+                    sender_turn_id: SENDER_TURN.to_owned(),
+                },
                 /*batch_id*/ None,
                 target.thread_id,
                 text_input("must never be injected into T2"),
@@ -432,8 +434,10 @@ async fn immediate_scoped_admission_rechecks_permission_after_waits(
     let sending = tokio::spawn(async move {
         sending_control
             .send_scoped_agent_input_observing_response(
-                source,
-                &sender_turn_id,
+                AgentModelInputOrigin {
+                    sender: source,
+                    sender_turn_id,
+                },
                 /*batch_id*/ None,
                 target.thread_id,
                 text_input("must not pass revoked scoped admission"),

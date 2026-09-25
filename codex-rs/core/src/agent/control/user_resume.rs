@@ -57,6 +57,13 @@ pub(crate) struct AgentAdoptionResult {
     pub(crate) task_path_mapping: Vec<codex_agent_graph_store::AgentTaskPathMapping>,
 }
 
+/// The explicit ownership transfer and assignment requested by a resume caller.
+pub(crate) struct AgentAdoptionRequest {
+    pub(crate) previous_session_id: Option<SessionId>,
+    pub(crate) authored_selector: String,
+    pub(crate) task: Option<String>,
+}
+
 impl LocalAgentControl {
     /// Model-authored transfer retains the autonomous new-edge depth budget.
     pub(crate) async fn resume_agent_from_rollout_adopting(
@@ -65,10 +72,13 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         source: SessionSource,
         policy: ResponseObservationPolicy,
-        previous_session_id: Option<SessionId>,
-        authored_selector: String,
-        task: Option<String>,
+        adoption: AgentAdoptionRequest,
     ) -> CodexResult<AgentAdoptionResult> {
+        let AgentAdoptionRequest {
+            previous_session_id,
+            authored_selector,
+            task,
+        } = adoption;
         if thread_spawn_depth(&source).is_some_and(|depth| depth > config.agent_max_depth) {
             return Err(CodexErr::InvalidRequest(
                 "agent adoption exceeds the model delegation depth limit".into(),
@@ -148,10 +158,13 @@ impl LocalAgentControl {
         thread_id: ThreadId,
         observer_source: SessionSource,
         policy: ResponseObservationPolicy,
-        previous_session_id: Option<SessionId>,
-        authored_selector: String,
-        task: Option<String>,
+        adoption: AgentAdoptionRequest,
     ) -> CodexResult<UserResumeOutcome> {
+        let AgentAdoptionRequest {
+            previous_session_id,
+            authored_selector,
+            task,
+        } = adoption;
         if ThreadId::from_string(
             authored_selector
                 .strip_prefix("id:")

@@ -6,6 +6,7 @@ use super::send_input::SendInputResult;
 use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::control::AgentModelInputOrigin;
 use crate::agent::control::QueuedInputObservationParams;
 use crate::agent::control::ResponseObservationSubmission;
 use crate::session::session::Session;
@@ -125,8 +126,10 @@ pub(super) async fn admit_input(
             };
             control
                 .accept_mailbox_agent_input_with_batch(
-                    session.presentation_id(),
-                    &turn.sub_id,
+                    AgentModelInputOrigin {
+                        sender: session.presentation_id(),
+                        sender_turn_id: turn.sub_id.clone(),
+                    },
                     call_id,
                     receiver_id,
                     items,
@@ -186,8 +189,10 @@ pub(super) async fn admit_input(
         } else if response_observation.queue_input() {
             control
                 .queue_scoped_agent_input_observing_response(
-                    session.presentation_id(),
-                    &turn.sub_id,
+                    AgentModelInputOrigin {
+                        sender: session.presentation_id(),
+                        sender_turn_id: turn.sub_id.clone(),
+                    },
                     batch_id,
                     receiver_id,
                     items,
@@ -203,8 +208,10 @@ pub(super) async fn admit_input(
         } else {
             control
                 .send_scoped_agent_input_observing_response(
-                    session.presentation_id(),
-                    &turn.sub_id,
+                    AgentModelInputOrigin {
+                        sender: session.presentation_id(),
+                        sender_turn_id: turn.sub_id.clone(),
+                    },
                     batch_id,
                     receiver_id,
                     items,

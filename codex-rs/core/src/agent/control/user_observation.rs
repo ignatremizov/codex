@@ -70,21 +70,19 @@ impl LocalAgentControl {
                     .last_terminal
                     .as_ref()
                     .map(|(turn, _)| turn.as_str()),
-            ) {
-                if let Err(error) = control
-                    .publish_user_task_observation(
-                        &observer,
-                        child,
-                        turn_id,
-                        policy,
-                        task_preview,
-                        transaction,
-                    )
-                    .await
-                {
-                    control.abandon_response_observer(parent, child, &error.to_string());
-                    return Err(error);
-                }
+            ) && let Err(error) = control
+                .publish_user_task_observation(
+                    &observer,
+                    child,
+                    turn_id,
+                    policy,
+                    task_preview,
+                    transaction,
+                )
+                .await
+            {
+                control.abandon_response_observer(parent, child, &error.to_string());
+                return Err(error);
             }
             Ok(target.agent_status().await)
         })

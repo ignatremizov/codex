@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_resumable_v1_agent_target;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::control::AgentAdoptionRequest;
 use crate::agent::control::AgentResumeOwnership;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::response_observation::FinalResponseObservation;
@@ -401,9 +402,11 @@ async fn try_resume_closed_agent(
                         /*commentary*/ false,
                         FinalResponseObservation::None,
                     ),
-                    previous_session_id,
-                    authored_selector,
-                    task,
+                    AgentAdoptionRequest {
+                        previous_session_id,
+                        authored_selector,
+                        task,
+                    },
                 )
                 .await
                 .map(|outcome| {

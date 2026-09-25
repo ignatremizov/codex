@@ -144,8 +144,6 @@ struct PresentationState {
         (SessionPresentationId, SessionPresentationId),
         VecDeque<WatcherTerminalPresentation>,
     >,
-    response_observer_terminal_turns:
-        HashSet<(SessionPresentationId, SessionPresentationId, String)>,
     wait_commentary_turns: HashSet<(SessionPresentationId, SessionPresentationId, String)>,
 }
 
@@ -477,13 +475,9 @@ impl LocalAgentControl {
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let ids = state
+            state
                 .waits
-                .iter()
-                .filter_map(|(id, wait)| (wait.parent == parent).then_some(*id))
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|id| state.waits.remove(&id).map(|wait| (id, wait)))
+                .extract_if(|_, wait| wait.parent == parent)
                 .collect::<Vec<_>>()
         };
         for (id, wait) in waits {
@@ -627,6 +621,7 @@ impl WaitAgentPresentationGuard {
         self.freeze(|terminal| selected.contains(&terminal.context_id), &[])
     }
 
+    #[cfg(test)]
     pub(crate) fn freeze_for_children(
         self,
         children: impl IntoIterator<Item = ThreadId>,

@@ -19,6 +19,7 @@ use super::control_relationship_source;
 use crate::CodexThread;
 use crate::agent::AgentStatus;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::control::AgentAdoptionRequest;
 use crate::agent::control::AgentResumeOwnership;
 use crate::agent::control::ResumeUserInputAdmission;
 use crate::agent::response_observation::FinalResponseObservation;
@@ -202,9 +203,11 @@ impl CodexThread {
                         target_thread_id,
                         prepared.session_source,
                         response_observation,
-                        previous_session_id,
-                        target.to_string(),
-                        task,
+                        AgentAdoptionRequest {
+                            previous_session_id,
+                            authored_selector: target.to_string(),
+                            task,
+                        },
                     )
                     .await?
             }

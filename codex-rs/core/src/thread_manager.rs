@@ -1756,19 +1756,6 @@ impl ThreadManagerState {
             .await
     }
 
-    /// Send an operation to a thread by ID.
-    pub(crate) async fn send_op(
-        &self,
-        thread_id: ThreadId,
-        op: Op,
-        parent_turn_id: Option<String>,
-        root_turn_id: Option<String>,
-    ) -> CodexResult<String> {
-        let thread = self.get_thread(thread_id).await?;
-        self.send_op_to_thread(&thread, op, parent_turn_id, root_turn_id)
-            .await
-    }
-
     /// Submit to the captured runtime without resolving its identifier again.
     pub(crate) async fn send_op_to_thread(
         &self,
