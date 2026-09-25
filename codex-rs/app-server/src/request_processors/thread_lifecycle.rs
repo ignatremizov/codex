@@ -13,6 +13,7 @@ pub(super) struct ListenerTaskContext {
     pub(super) outgoing: Arc<OutgoingMessageSender>,
     pub(super) pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
     pub(super) thread_watch_manager: ThreadWatchManager,
+    pub(super) thread_list_state_permit: Arc<Semaphore>,
     pub(super) codex_home: PathBuf,
     pub(super) thread_unload_delay: Duration,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
@@ -280,6 +281,7 @@ pub(super) async fn ensure_listener_task_running(
         thread_state_manager,
         pending_thread_unloads,
         thread_watch_manager,
+        thread_list_state_permit,
         codex_home,
         turn_cost_worker,
         ..
