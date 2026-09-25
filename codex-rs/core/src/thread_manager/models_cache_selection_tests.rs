@@ -193,7 +193,8 @@ async fn profile_selection_preserves_provider_key_precedence_and_discovery_polic
         for enabled in [false, true] {
             let mut config = config_for_home(home.path(), &server).await;
             config.auth_file_selection = selection.clone();
-            config.model_provider.experimental_bearer_token = Some("provider-test-key".to_string());
+            config.model_provider.experimental_bearer_token =
+                Some("provider-test-key".to_string().into());
             config.model_provider.model_catalog_url =
                 Some(format!("{}/models", server.uri()).into());
             config

@@ -210,9 +210,15 @@ async fn auth_selection_survives_bootstrap_build_and_session_reload() -> std::io
     expected_auth.auth_file_selection = selection.clone();
     assert_eq!(config.auth_config(), expected_auth);
 
-    let rebuilt = config
-        .rebuild_preserving_session_layers(&default_config)
-        .await?;
+    let rebuilt = super::super::Config::rebuild_with_session_layers_and_auth_file_selection(
+        &config.config_layer_stack,
+        config.cwd.to_path_buf(),
+        &default_config.config_layer_stack,
+        config.codex_home.clone(),
+        /*default_zsh_path*/ None,
+        config.auth_file_selection.clone(),
+    )
+    .await?;
     assert_eq!(rebuilt.auth_config(), config.auth_config());
 
     let explicit_default = builder
