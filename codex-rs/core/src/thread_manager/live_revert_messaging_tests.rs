@@ -181,9 +181,16 @@ async fn live_revert_rebinds_send_policy_without_turn_scoped_wake_grants() {
             Some(TargetMessageRouteMode::Enabled),
         )
     );
-    assert!(!control.target_message_wake_is_current(current_root, sender, "old-sender-turn", wake));
+    assert!(!control.commit_target_message_wake(
+        current_root,
+        sender,
+        "old-sender-turn",
+        wake,
+        "replayed-wake-turn",
+    ));
     assert!(!control.target_message_binding_pending(current_root, sender));
-    assert!(!control.has_completion_watcher(current_root, sender));
+    assert!(!control.has_future_response_observation(current_root, sender));
+    assert!(!control.has_bound_final_response_wake(current_root));
     assert_eq!(
         control.target_message_route_mode(current_root, ended_presentation),
         None
