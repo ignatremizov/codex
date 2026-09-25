@@ -190,9 +190,13 @@ pub(super) async fn prepare(
                 CloudConfigBundleLoader::default(),
             )
             .await;
-            let source_bundle =
-                cloud_config_bundle_for_app_server_target(target, &bootstrap, &source.codex_home)
-                    .await?;
+            let source_bundle = cloud_config_bundle_for_app_server_target(
+                target,
+                &bootstrap,
+                &source.codex_home,
+                &source.auth_file_selection,
+            )
+            .await?;
             overrides.cwd = Some(cwd.into_path_buf());
             source = load_config_or_exit(
                 cli_overrides.clone(),
@@ -263,8 +267,13 @@ pub(super) async fn prepare(
         },
     )
     .await?;
-    let bundle =
-        cloud_config_bundle_for_app_server_target(target, &bootstrap, &source.codex_home).await?;
+    let bundle = cloud_config_bundle_for_app_server_target(
+        target,
+        &bootstrap,
+        &source.codex_home,
+        &source.auth_file_selection,
+    )
+    .await?;
     managed
         .check_source_policy(
             &cli_overrides,
