@@ -1,5 +1,6 @@
 use super::*;
 use codex_history::CodexHarnessMetadata;
+use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::protocol::AgentStatus;
 use pretty_assertions::assert_eq;
@@ -38,7 +39,10 @@ fn fork_does_not_inherit_persistent_route_guidance() {
 #[test]
 fn notification_filter_requires_runtime_annotation() {
     let notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/worker",
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: "/root/worker".try_into().expect("worker path"),
+        },
         AgentStatus::Completed(Some("finished".to_string())),
     ));
     let parent = ResponseItemEnvelope::new(notification);
@@ -81,7 +85,10 @@ fn notification_filter_requires_runtime_annotation() {
 #[test]
 fn notification_filter_preserves_other_fragments_and_annotations() {
     let notification = ContextualUserFragment::into(SubagentNotification::new(
-        "/root/worker",
+        crate::context::AgentContextIdentity::V2 {
+            agent_id: ThreadId::new(),
+            agent_path: "/root/worker".try_into().expect("worker path"),
+        },
         AgentStatus::Completed(Some("finished".to_string())),
     ));
     let mut envelope = ResponseItemEnvelope::new(notification);
