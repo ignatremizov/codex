@@ -255,7 +255,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     let AgentControlOutcome::Prompted {
         target_thread_id,
         submission_id,
-        queued,
+        input_outcome,
         post_admission_warning,
     } = response.outcome
     else {
@@ -263,7 +263,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     };
     assert_eq!(target_thread_id, child_thread_id);
     assert!(!submission_id.is_empty());
-    assert!(!queued);
+    assert_eq!(input_outcome, AgentInputOutcome::Admitted);
     assert_eq!(post_admission_warning, None);
     let prompt_audit = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
@@ -450,6 +450,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
         nickname,
         post_admission_warning,
         task_path,
+        input_outcome,
     } = spawned.outcome
     else {
         panic!("agent spawn should return spawned");
@@ -458,6 +459,7 @@ async fn agent_alias_list_projects_committed_v1_aliases_in_ref_order() -> Result
     assert_eq!(agent_ref.as_deref(), Some("3"));
     assert!(nickname.is_some());
     assert_eq!(task_path, None);
+    assert_eq!(input_outcome, Some(AgentInputOutcome::Admitted));
     assert_eq!(post_admission_warning, None);
     user_spawn_turn.single_request();
 
