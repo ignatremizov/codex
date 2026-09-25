@@ -296,7 +296,13 @@ async fn validated_scoped_steer_rejects_a_different_receiver_turn_at_submission(
     timeout(Duration::from_secs(10), t2_started.notified())
         .await
         .expect("T2 started");
-    assert!(receiver.session.get_pending_input().await.is_empty());
+    assert!(
+        !receiver
+            .session
+            .input_queue
+            .has_pending_input(&receiver.session.active_turn)
+            .await
+    );
     proceed_tx.send(()).expect("submit validated T1 steer");
     let error = timeout(Duration::from_secs(10), sending)
         .await
@@ -316,7 +322,11 @@ async fn validated_scoped_steer_rejects_a_different_receiver_turn_at_submission(
         Some(T2.to_string())
     );
     assert!(
-        receiver.session.get_pending_input().await.is_empty(),
+        !receiver
+            .session
+            .input_queue
+            .has_pending_input(&receiver.session.active_turn)
+            .await,
         "no input injected into T2"
     );
     sender.shutdown_and_wait().await.expect("shutdown sender");
