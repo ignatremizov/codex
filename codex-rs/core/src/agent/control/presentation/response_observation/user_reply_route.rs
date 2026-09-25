@@ -1,6 +1,7 @@
 //! Narrow, acknowledged updates to live reply permission, independent of accepted turn work.
 
 use super::*;
+use codex_protocol::error::Result as CodexResult;
 
 #[cfg(test)]
 #[path = "user_reply_route_tests.rs"]

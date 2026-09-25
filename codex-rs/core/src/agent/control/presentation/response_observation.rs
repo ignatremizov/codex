@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::response_observation::FinalResponseObservation;
 use crate::agent::response_observation::ResponseObservationPolicy;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::AgentResponseCommentaryAdmission;
 use codex_protocol::protocol::AgentResponseCommentaryDelivery;
 use codex_protocol::protocol::AgentResponseObservation;

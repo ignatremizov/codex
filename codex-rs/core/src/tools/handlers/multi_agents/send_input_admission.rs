@@ -5,6 +5,7 @@ use super::send_input::SendInputMode;
 use super::send_input::SendInputResult;
 use super::*;
 use crate::agent::agent_resolver::resolve_controlled_v1_agent_target;
+use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::control::QueuedInputObservationParams;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -52,8 +53,10 @@ pub(super) async fn prepare_receiver(
         && control.get_agent_metadata(receiver).is_some()
         && session.multi_agent_version() == Some(MultiAgentVersion::V2)
     {
+        let resume_config =
+            build_agent_resume_config(turn.as_ref()).map_err(FunctionCallError::RespondToModel)?;
         control
-            .ensure_v2_agent_loaded(build_agent_resume_config(turn.as_ref())?, receiver)
+            .ensure_v2_agent_loaded(resume_config, receiver)
             .await
             .map_err(|err| collab_agent_error(receiver, err))?;
     }
