@@ -53,6 +53,13 @@ pub(super) async fn handle_batch(
     }
     let observation = mode.response_observation();
     let mailbox = matches!(mode, SendInputMode::Mailbox(_));
+    let sender_thread_id = session
+        .services
+        .agent_control
+        .bound_session_id()
+        .map(ThreadId::from)
+        .filter(|root_id| *root_id != session.thread_id)
+        .map(|_| session.thread_id);
     let mut item = CollabAgentToolCallItem {
         id: call_id.clone(),
         tool: CollabAgentTool::SendInput,
@@ -64,6 +71,7 @@ pub(super) async fn handle_batch(
         mailbox_input: mailbox.then_some(true),
         input_batch: Some(CollabAgentInputBatch {
             flags: mode.normalized_flags(),
+            sender_thread_id,
             results: Vec::new(),
         }),
         deadline_at_ms: None,
@@ -125,6 +133,7 @@ pub(super) async fn handle_batch(
                 RecipientInput {
                     receiver: &prepared,
                     call_id: &call_id,
+                    batch_id: Some(&call_id),
                     items: items.clone(),
                     mode,
                 },
@@ -180,11 +189,21 @@ pub(super) async fn handle_batch(
     };
     item.input_batch = Some(CollabAgentInputBatch {
         flags: mode.normalized_flags(),
+        sender_thread_id,
         results,
     });
+    let root_presentation = item.clone();
     session
         .emit_turn_item_completed(&turn, TurnItem::CollabAgentToolCall(item))
         .await;
+    if let Err(error) = session
+        .services
+        .agent_control
+        .mirror_agent_input_batch(root_presentation)
+        .await
+    {
+        tracing::warn!(%error, "failed to present completed input batch to root");
+    }
     Ok(boxed_tool_output(output))
 }
 

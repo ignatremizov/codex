@@ -39,6 +39,7 @@ async fn direct_wait_selects_foreign_mail_without_observing_status_or_consuming_
                     sender: identity(sender),
                     recipient: identity(receiver),
                     sender_turn_id: "foreign-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: Default::default(),

@@ -55,6 +55,7 @@ fn attributed_input_keeps_original_input_separate_from_model_context() {
         sender,
         recipient,
         sender_turn_id: "source-turn".into(),
+        batch_id: None,
     });
     let input = AgentControlInput::AttributedAgentInput {
         content: vec![text("trusted envelope")],

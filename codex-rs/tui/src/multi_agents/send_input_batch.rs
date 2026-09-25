@@ -14,11 +14,9 @@ pub(super) fn history_cell(
 ) -> Option<CollabAgentHistoryCell> {
     let title = match status {
         CollabAgentToolCallStatus::InProgress => return None,
-        CollabAgentToolCallStatus::Completed => "Input batch completed",
-        CollabAgentToolCallStatus::Failed => "Input batch completed with errors",
-        CollabAgentToolCallStatus::Interrupted => {
-            "Input batch interrupted; some input may have been accepted"
-        }
+        CollabAgentToolCallStatus::Completed => "completed",
+        CollabAgentToolCallStatus::Failed => "completed with errors",
+        CollabAgentToolCallStatus::Interrupted => "interrupted; some input may have been accepted",
     };
     let mut rows = Vec::new();
     for result in &batch.results {
@@ -65,7 +63,18 @@ pub(super) fn history_cell(
     }
     let mut details = fixed_details(rows);
     details.extend(prompt_lines(prompt, preview_lines));
-    Some(collab_event(title_text(title), details))
+    let title = if let Some(sender) = batch.sender_thread_id {
+        let mut spans = vec!["Input batch from ".bold()];
+        spans.extend(agent_label_spans(agent_label(
+            sender,
+            &agent_metadata(sender),
+        )));
+        spans.push(format!(" {title}").bold());
+        title_spans_line(spans)
+    } else {
+        title_text(format!("Input batch {title}"))
+    };
+    Some(collab_event(title, details))
 }
 
 #[cfg(test)]

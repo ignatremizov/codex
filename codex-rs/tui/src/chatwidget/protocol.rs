@@ -697,6 +697,10 @@ impl ChatWidget {
                 },
                 deadline_at_ms,
                 &notification.turn_id,
+                replay_kind.map_or(
+                    ThreadItemRenderSource::Live,
+                    ThreadItemRenderSource::ReplayedNotification,
+                ),
             ),
             item @ ThreadItem::UserAgentControl { .. } => {
                 self.remember_user_agent_control_metadata(&item);

@@ -17,6 +17,7 @@ fn batch_status_preview_does_not_claim_live_delivery() {
         mailbox_input: Some(true),
         input_batch: Some(codex_protocol::CollabAgentInputBatch {
             flags: "z".into(),
+            sender_thread_id: None,
             results: vec![codex_protocol::CollabAgentInputResult {
                 target: "43".into(),
                 receiver_thread_id: None,

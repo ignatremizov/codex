@@ -7,6 +7,7 @@ fn batch_mailbox_rows_distinguish_acceptance_errors_and_show_message_once() {
     let receiver = ThreadId::new();
     let batch = CollabAgentInputBatch {
         flags: "zf".into(),
+        sender_thread_id: None,
         results: vec![
             CollabAgentInputResult {
                 target: "43".into(),
@@ -63,6 +64,7 @@ fn batch_mailbox_rows_distinguish_acceptance_errors_and_show_message_once() {
 fn live_batch_rows_have_independent_admission_labels_and_shared_flags() {
     let batch = CollabAgentInputBatch {
         flags: "cmq".into(),
+        sender_thread_id: None,
         results: vec![
             CollabAgentInputResult {
                 target: "43".into(),
@@ -112,6 +114,7 @@ fn live_batch_rows_have_independent_admission_labels_and_shared_flags() {
 fn one_receiver_array_keeps_batch_presentation_at_narrow_width() {
     let batch = CollabAgentInputBatch {
         flags: "z".into(),
+        sender_thread_id: None,
         results: vec![CollabAgentInputResult {
             target: "43".into(),
             receiver_thread_id: None,

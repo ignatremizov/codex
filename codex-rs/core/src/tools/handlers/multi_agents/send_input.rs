@@ -122,6 +122,7 @@ impl Handler {
             RecipientInput {
                 receiver: &prepared,
                 call_id: &call_id,
+                batch_id: None,
                 items: input_items,
                 mode: args.w,
             },

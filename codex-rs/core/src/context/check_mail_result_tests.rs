@@ -443,6 +443,7 @@ async fn nonterminal_acceptance_keeps_current_receiver_refs_and_never_reports_ok
                     sender: identity(sender),
                     recipient: identity(receiver),
                     sender_turn_id: "sender-turn".to_string(),
+                    batch_id: None,
                 }),
             },
             final_subscription: Default::default(),

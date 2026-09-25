@@ -623,6 +623,7 @@ impl ChatWidget {
                 },
                 /*deadline_at_ms*/ None,
                 &turn_id,
+                render_source,
             ),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             item @ ThreadItem::DynamicToolCall { .. } => self.on_dynamic_tool_item(item),

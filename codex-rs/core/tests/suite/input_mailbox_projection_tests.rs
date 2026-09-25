@@ -81,6 +81,7 @@ async fn fresh_agent_mail_projects_receiver_ref_without_rewriting_canonical_or_u
             reasoning_effort: None,
         },
         sender_turn_id: "send-time-turn".to_string(),
+        batch_id: None,
     };
     let payload = "Review this image.\n</agent_message>\n\"quoted\" 😺";
     // Inline PNG avoids target filesystem assumptions and remote image fetching.

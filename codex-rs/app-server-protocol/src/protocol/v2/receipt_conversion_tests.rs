@@ -114,6 +114,7 @@ fn mailbox_acceptance_conversion_preserves_only_trusted_typed_receipts() {
             reasoning_effort: None,
         },
         sender_turn_id: "source-turn".to_string(),
+        batch_id: None,
     };
     let input = vec![
         codex_protocol::user_input::UserInput::Text {

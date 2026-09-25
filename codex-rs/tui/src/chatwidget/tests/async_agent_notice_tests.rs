@@ -326,6 +326,7 @@ async fn typed_peer_and_mail_notices_wait_for_answer_completion() {
         sender: identity,
         recipient,
         sender_turn_id: "sender-turn".to_string(),
+        batch_id: None,
     };
     for (id, verb) in [
         (
@@ -377,6 +378,121 @@ async fn typed_peer_and_mail_notices_wait_for_answer_completion() {
 }
 
 #[tokio::test]
+async fn child_batch_live_and_replay_use_one_grouped_root_presentation() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    let sender = ThreadId::new();
+    let accepted = ThreadId::new();
+    let rejected = ThreadId::new();
+    chat.set_collab_agent_metadata(
+        sender,
+        Some("Child".to_string()),
+        Some("worker".to_string()),
+    );
+    chat.set_collab_agent_task_path(sender, Some("/root/child".to_string()));
+    chat.set_collab_agent_ref(sender, "7".to_string());
+    chat.set_collab_agent_metadata(
+        accepted,
+        Some("Reviewer".to_string()),
+        Some("coder".to_string()),
+    );
+    chat.set_collab_agent_ref(accepted, "8".to_string());
+    chat.set_collab_agent_metadata(
+        rejected,
+        Some("Tester".to_string()),
+        Some("tester".to_string()),
+    );
+    chat.set_collab_agent_ref(rejected, "9".to_string());
+
+    let batch = AppServerThreadItem::CollabAgentToolCall {
+        id: "child-send-input-batch".to_string(),
+        tool: codex_app_server_protocol::CollabAgentTool::SendInput,
+        status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
+        observe_commentary: Some(true),
+        wake_on_completion: Some(false),
+        target_messages: Some(true),
+        queue_input: Some(true),
+        mailbox_input: None,
+        input_batch: Some(codex_protocol::CollabAgentInputBatch {
+            flags: "cmq".to_string(),
+            sender_thread_id: Some(sender),
+            results: vec![
+                codex_protocol::CollabAgentInputResult {
+                    target: "8".to_string(),
+                    receiver_thread_id: Some(accepted.to_string()),
+                    status: codex_protocol::CollabAgentInputStatus::Submitted,
+                    error: None,
+                    hint: None,
+                },
+                codex_protocol::CollabAgentInputResult {
+                    target: "9".to_string(),
+                    receiver_thread_id: Some(rejected.to_string()),
+                    status: codex_protocol::CollabAgentInputStatus::Error,
+                    error: Some("receiver rejected the input".to_string()),
+                    hint: None,
+                },
+            ],
+        }),
+        sender_thread_id: sender.to_string(),
+        receiver_thread_ids: vec![accepted.to_string(), rejected.to_string()],
+        receiver_agents: vec![
+            codex_app_server_protocol::CollabAgentRef {
+                thread_id: accepted.to_string(),
+                agent_ref: Some("8".to_string()),
+                agent_nickname: Some("Reviewer".to_string()),
+                agent_role: Some("coder".to_string()),
+                task_path: None,
+            },
+            codex_app_server_protocol::CollabAgentRef {
+                thread_id: rejected.to_string(),
+                agent_ref: Some("9".to_string()),
+                agent_nickname: Some("Tester".to_string()),
+                agent_role: Some("tester".to_string()),
+                task_path: None,
+            },
+        ],
+        prompt: Some("Shared child instruction.".to_string()),
+        model: None,
+        reasoning_effort: None,
+        agents_states: HashMap::new(),
+    };
+
+    chat.on_agent_message_delta("Main keeps ".to_string());
+    deliver(&mut chat, batch.clone());
+    assert!(chat.stream_controller.is_some());
+    assert_eq!(output(&mut rx), Vec::<String>::new());
+    chat.on_agent_message_delta("its answer intact.".to_string());
+    deliver(
+        &mut chat,
+        message(
+            "main-final".to_string(),
+            "Main keeps its answer intact.".to_string(),
+            MessagePhase::FinalAnswer,
+        ),
+    );
+    let mut live = output(&mut rx);
+    assert_eq!(live.remove(0), "answer: Main keeps its answer intact.");
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].matches("Shared child instruction.").count(), 1);
+    assert!(op_rx.try_recv().is_err());
+
+    chat.replay_thread_item(
+        batch,
+        "child-turn".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    let replay = output(&mut rx);
+    assert_eq!(replay, live);
+    insta::assert_snapshot!(live[0], @r"
+    • Input batch from Child [worker] /root/child (7) completed with errors
+      └ Sent input to Reviewer [coder] (8) (receive commentary · no wake on completion · allow replies · queue turn + reply)
+        Send error for Tester [tester] (9) (receive commentary · no wake on completion · allow replies · queue turn + reply)
+        receiver rejected the input
+        Shared child instruction.
+    ");
+}
+
+#[tokio::test]
 async fn own_collab_tool_lifecycle_is_not_queued_as_an_async_notice() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_agent_message_delta("Before the tool".to_string());
@@ -405,6 +521,8 @@ async fn own_collab_tool_lifecycle_is_not_queued_as_an_async_notice() {
             agents_states: HashMap::new(),
         },
         /*deadline_at_ms*/ None,
+        "turn-1",
+        ThreadItemRenderSource::Live,
     );
     assert!(chat.stream_controller.is_none());
     assert!(chat.interrupts.is_empty());

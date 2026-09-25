@@ -49,6 +49,7 @@ fn array_send_outcomes_survive_transport_and_history_without_changing_old_items(
     let mut call = send_item();
     call.input_batch = Some(codex_protocol::CollabAgentInputBatch {
         flags: "zf".into(),
+        sender_thread_id: None,
         results: vec![
             codex_protocol::CollabAgentInputResult {
                 target: "43".into(),

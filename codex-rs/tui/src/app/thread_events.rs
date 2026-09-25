@@ -1163,6 +1163,7 @@ mod tests {
             sender: identity,
             recipient: recipient_identity,
             sender_turn_id: "mail-source".to_string(),
+            batch_id: None,
         });
         acceptance.input = Some(vec![codex_protocol::user_input::UserInput::Text {
             text: "Accepted, not consumed".to_string(),

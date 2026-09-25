@@ -2,6 +2,8 @@
 
 use super::*;
 use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::protocol::SubAgentCompletionModelVisibility;
 use codex_protocol::protocol::agent_delivery_receipt_item;
 use codex_protocol::protocol::attributed_agent_message_transcript_parts;
@@ -101,6 +103,12 @@ impl LocalAgentControl {
             if attribution.recipient.thread_id != recipient {
                 return Ok(());
             }
+            // Array-target sends are represented once by their sender's live batch lifecycle.
+            // Their recipient-owned records retain this correlation for replay and mailbox
+            // recovery, but must not create one root row per recipient.
+            if attribution.batch_id.is_some() {
+                return Ok(());
+            }
             (attribution.sender.thread_id, None)
         } else {
             let [AgentMessageContent::Text { text }] = item.content.as_slice() else {
@@ -152,6 +160,64 @@ impl LocalAgentControl {
                     thread_id: root.session.thread_id(),
                     turn_id,
                     item: TurnItem::AgentMessage(audit),
+                    started_at_ms: Some(completed_at_ms),
+                    completed_at_ms,
+                }),
+            })
+            .await;
+        drop(active_turn);
+        Ok(())
+    }
+
+    /// Mirror one completed array-target lifecycle to the root as a live-only presentation.
+    ///
+    /// The sender's canonical lifecycle remains the only durable source. Recipient input records
+    /// retain their individual trusted attribution and outcomes; this copy only lets the root
+    /// render the existing consolidated batch cell without persisting or delivering another
+    /// input.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "live batch audit placement must be atomic with root turn transitions"
+    )]
+    pub(crate) async fn mirror_agent_input_batch(
+        &self,
+        mut item: CollabAgentToolCallItem,
+    ) -> CodexResult<()> {
+        if item.tool != CollabAgentTool::SendInput || item.input_batch.is_none() {
+            return Ok(());
+        }
+        let Some(root_id) = self.bound_session_id().map(ThreadId::from) else {
+            return Ok(());
+        };
+        if item.sender_thread_id == root_id {
+            return Ok(());
+        }
+        let state = self.upgrade()?;
+        let root = state.get_thread(root_id).await?;
+        if !Arc::ptr_eq(
+            &root.session.services.agent_control.wait_agent_presentations,
+            &self.wait_agent_presentations,
+        ) {
+            return Ok(());
+        }
+        // Tool-call IDs are scoped to the sender's history. The root copy needs a distinct
+        // identity even when another child or the root used the same model-authored call ID.
+        item.id = format!("agent-input-batch/{}/{}", item.sender_thread_id, item.id);
+        let active_turn = root.session.active_turn.lock().await;
+        let turn_id = active_turn
+            .as_ref()
+            .and_then(|turn| turn.task.as_ref())
+            .map(|task| task.turn_context.sub_id.clone())
+            .or_else(|| root.session.active_agent_response_turn_id())
+            .unwrap_or_else(|| item.id.clone());
+        let completed_at_ms = crate::turn_timing::now_unix_timestamp_ms();
+        root.session
+            .deliver_agent_audit_event(Event {
+                id: item.id.clone(),
+                msg: EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: root_id,
+                    turn_id,
+                    item: TurnItem::CollabAgentToolCall(item),
                     started_at_ms: Some(completed_at_ms),
                     completed_at_ms,
                 }),

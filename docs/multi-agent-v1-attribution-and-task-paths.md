@@ -92,6 +92,14 @@ The example is illustrative, not permission to concatenate arbitrary text into d
 
 Core supplies trusted sender/recipient identity; names embedded in payload text do not establish attribution. Preserve the payload completely.
 
+Array-target `send_input` admissions also retain the sender's shared tool-call ID as an optional
+typed batch correlation. Main receives one live-only consolidated batch presentation with the
+individual recipient outcomes and handling policy; it does not receive one duplicated full payload
+per recipient. Singleton sends and older records have no batch correlation and retain their
+existing presentation. The consolidated Main copy is not persisted or added to model context;
+the sender's canonical lifecycle and each recipient's durable attributed input remain authoritative
+for replay.
+
 Human `/agent <target> <prompt>` input remains an ordinary `UserMessage` in the target thread, with the same user styling and input semantics as typing directly in that thread. Do not wrap it in `<agent_message>` or attribute it to the agent whose TUI the user happened to use. Preserve that distinction in model context, transcript rendering, persisted rollout history, and resumed/reconstructed history. User-authored spawn and queued prompts follow the same authorship rule; queueing changes admission timing, not authorship. Keep the issuing thread's user-control audit presentation separate from the target's user message.
 
 Text-oriented consumers must retain this distinction too. Thread search indexes received agent-input payloads even when they are not the turn's final message. `codex exec --json` emits received input as `agent_input` with `sender_thread_id`, `recipient_thread_id`, and `text`, distinct from the executing agent's `agent_message`; receiving input must not replace the final response or `--output-last-message` contents. Text exports render media as attachment markers while the canonical typed history retains the attachments.

@@ -25,6 +25,7 @@ fn attribution() -> AgentInputAttribution {
             reasoning_effort: None,
         },
         sender_turn_id: "sender-turn".to_string(),
+        batch_id: None,
     }
 }
 

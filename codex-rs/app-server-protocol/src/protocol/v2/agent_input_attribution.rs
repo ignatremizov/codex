@@ -27,6 +27,9 @@ pub struct AgentInputAttribution {
     pub sender: AgentInputIdentity,
     pub recipient: AgentInputIdentity,
     pub sender_turn_id: String,
+    /// Shared sender tool-call identity for an array-target `send_input` batch.
+    #[serde(default)]
+    pub batch_id: Option<String>,
 }
 
 /// Committed adoption label mapping. Thread identity remains unchanged.
@@ -59,6 +62,7 @@ impl From<codex_protocol::AgentInputAttribution> for AgentInputAttribution {
             sender: value.sender.into(),
             recipient: value.recipient.into(),
             sender_turn_id: value.sender_turn_id,
+            batch_id: value.batch_id,
         }
     }
 }

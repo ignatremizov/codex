@@ -11,6 +11,9 @@ use ts_rs::TS;
 pub struct CollabAgentInputBatch {
     /// Shared, normalized handling flags. Empty means default passive handling.
     pub flags: String,
+    /// Sender identity for a child-originated live/replayed batch presentation.
+    #[serde(default)]
+    pub sender_thread_id: Option<crate::ThreadId>,
     /// Empty while the batch is in progress; populated only on normal completion.
     pub results: Vec<CollabAgentInputResult>,
 }

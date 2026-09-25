@@ -159,9 +159,32 @@ impl LocalAgentControl {
         input: Vec<UserInput>,
         final_subscription: MailboxFinalSubscriptionRequest,
     ) -> CodexResult<StoredMailboxInput> {
+        self.accept_mailbox_agent_input_with_batch(
+            sender,
+            sender_turn_id,
+            call_id,
+            receiver,
+            input,
+            final_subscription,
+            /*batch_id*/ None,
+        )
+        .await
+    }
+
+    pub(crate) async fn accept_mailbox_agent_input_with_batch(
+        &self,
+        sender: SessionPresentationId,
+        sender_turn_id: &str,
+        call_id: &str,
+        receiver: ThreadId,
+        input: Vec<UserInput>,
+        final_subscription: MailboxFinalSubscriptionRequest,
+        batch_id: Option<&str>,
+    ) -> CodexResult<StoredMailboxInput> {
         let control = self.clone();
         let sender_turn_id = sender_turn_id.to_string();
         let call_id = call_id.to_string();
+        let batch_id = batch_id.map(str::to_string);
         tokio::spawn(async move {
             control
                 .accept_mailbox_agent_input_owned(
@@ -171,6 +194,7 @@ impl LocalAgentControl {
                     receiver,
                     input,
                     final_subscription,
+                    batch_id.as_deref(),
                 )
                 .await
         })
@@ -190,6 +214,7 @@ impl LocalAgentControl {
         receiver: ThreadId,
         input: Vec<UserInput>,
         final_subscription: MailboxFinalSubscriptionRequest,
+        batch_id: Option<&str>,
     ) -> CodexResult<StoredMailboxInput> {
         if sender.thread_id == receiver {
             return Err(CodexErr::InvalidRequest(
@@ -276,6 +301,7 @@ impl LocalAgentControl {
                             && attribution.sender.thread_id == sender.thread_id
                             && attribution.recipient.thread_id == receiver
                             && attribution.sender_turn_id == sender_turn_id
+                            && attribution.batch_id.as_deref() == batch_id
                 );
             if !matches {
                 return Err(CodexErr::InvalidRequest(
@@ -349,7 +375,7 @@ impl LocalAgentControl {
             presentation,
             ..
         } = self
-            .attribute_model_input(sender, receiver, sender_turn_id, input)
+            .attribute_model_input(sender, receiver, sender_turn_id, batch_id, input)
             .await?
         else {
             return Err(CodexErr::Fatal(

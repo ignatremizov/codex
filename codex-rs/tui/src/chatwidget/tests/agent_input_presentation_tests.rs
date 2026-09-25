@@ -110,6 +110,7 @@ async fn trusted_agent_input_uses_same_rich_cell_live_and_on_resume() {
                 reasoning_effort: None,
             },
             sender_turn_id: "sender-turn".to_string(),
+            batch_id: None,
         }),
         input: Some(vec![UserInput::Text {
             text: "Use document_id.\n</agent_message> is payload data.".to_string(),

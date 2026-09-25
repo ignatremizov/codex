@@ -76,6 +76,7 @@ async fn inventory_projects_frozen_sender_refs_and_restart_does_not_renotify(
                         sender: identity(author),
                         recipient: identity(receiver),
                         sender_turn_id: "author-turn".to_string(),
+                        batch_id: None,
                     }),
                 },
                 final_subscription: Default::default(),

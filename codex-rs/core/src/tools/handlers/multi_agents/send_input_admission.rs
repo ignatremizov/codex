@@ -87,6 +87,7 @@ pub(super) async fn prepare_receiver(
 pub(super) struct RecipientInput<'a> {
     pub(super) receiver: &'a PreparedReceiver,
     pub(super) call_id: &'a str,
+    pub(super) batch_id: Option<&'a str>,
     pub(super) items: Vec<UserInput>,
     pub(super) mode: SendInputMode,
 }
@@ -99,6 +100,7 @@ pub(super) async fn admit_input(
     let RecipientInput {
         receiver,
         call_id,
+        batch_id,
         items,
         mode,
     } = input;
@@ -118,13 +120,14 @@ pub(super) async fn admit_input(
                 WakeEventMailboxSubscription::Wake => MailboxFinalSubscriptionRequest::Wake,
             };
             control
-                .accept_mailbox_agent_input(
+                .accept_mailbox_agent_input_with_batch(
                     session.presentation_id(),
                     &turn.sub_id,
                     call_id,
                     receiver_id,
                     items,
                     subscription,
+                    batch_id,
                 )
                 .await
                 .map(|accepted| SendInputResult {
@@ -134,7 +137,13 @@ pub(super) async fn admit_input(
                 })
         } else if receiver.sends_to_descendant {
             let input = control
-                .attribute_model_input(session.presentation_id(), receiver_id, &turn.sub_id, items)
+                .attribute_model_input(
+                    session.presentation_id(),
+                    receiver_id,
+                    &turn.sub_id,
+                    batch_id,
+                    items,
+                )
                 .await?;
             if response_observation.queue_input() {
                 control
@@ -174,6 +183,7 @@ pub(super) async fn admit_input(
                 .queue_scoped_agent_input_observing_response(
                     session.presentation_id(),
                     &turn.sub_id,
+                    batch_id,
                     receiver_id,
                     items,
                     start_options,
@@ -190,6 +200,7 @@ pub(super) async fn admit_input(
                 .send_scoped_agent_input_observing_response(
                     session.presentation_id(),
                     &turn.sub_id,
+                    batch_id,
                     receiver_id,
                     items,
                     start_options,

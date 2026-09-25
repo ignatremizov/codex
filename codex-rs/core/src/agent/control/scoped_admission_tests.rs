@@ -243,6 +243,7 @@ async fn validated_scoped_steer_rejects_a_different_receiver_turn_at_submission(
             .send_scoped_agent_input_observing_response(
                 source,
                 SENDER_TURN,
+                /*batch_id*/ None,
                 target.thread_id,
                 text_input("must never be injected into T2"),
                 TurnStartOptions::default(),
@@ -433,6 +434,7 @@ async fn immediate_scoped_admission_rechecks_permission_after_waits(
             .send_scoped_agent_input_observing_response(
                 source,
                 &sender_turn_id,
+                /*batch_id*/ None,
                 target.thread_id,
                 text_input("must not pass revoked scoped admission"),
                 TurnStartOptions::default(),
