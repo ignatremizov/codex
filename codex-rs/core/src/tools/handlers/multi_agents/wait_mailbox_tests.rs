@@ -210,10 +210,10 @@ async fn ready_terminal_subscription_wins_over_selected_mail() -> anyhow::Result
     attach_in_memory_thread_store(&mut session).await;
     let session = Arc::new(session);
     let (sender, _) = make_session_and_context().await;
-    let (_, subscription) = sender.subscribe_terminal_status();
+    let (_, subscription) = sender.subscribe_terminal_status_events();
     accept_agent_mail(&session, sender.thread_id).await?;
     sender.prepare_for_thread_removal();
-    let (expected_terminal, _) = sender.subscribe_terminal_status();
+    let (expected_terminal, _) = sender.subscribe_terminal_status_events();
     let selection = MailboxSelection::Senders(vec![MailboxSender::Agent(sender.thread_id)]);
     let (statuses, reason) = wait_for_outcome(
         &session,
