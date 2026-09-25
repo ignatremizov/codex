@@ -68,7 +68,9 @@ fn rich_agent_input_retains_exact_identity_and_payload_through_history() {
             text_elements: Vec::new(),
         },
         CoreUserInput::Image {
-            image_url: "data:image/png;base64,original-image".into(),
+            image: codex_protocol::models::ImageReference::Inline {
+                image_url: "data:image/png;base64,original-image".into(),
+            },
             detail: None,
         },
         CoreUserInput::Audio {

@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::ImageReference;
 use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use ratatui::style::Modifier;
@@ -180,7 +181,9 @@ fn mailbox_acceptance_labels_mail_without_claiming_consumption() {
                 text_elements: Vec::new(),
             },
             UserInput::Image {
-                url: "data:image/png;base64,original-bytes".to_string(),
+                image: ImageReference::Inline {
+                    url: "data:image/png;base64,original-bytes".to_string(),
+                },
                 detail: None,
             },
         ],
@@ -344,7 +347,9 @@ fn inline_media_uses_attachment_markers_in_agent_transcripts() {
         attribution(),
         vec![
             UserInput::Image {
-                url: "data:image/png;base64,aW1hZ2U=".to_string(),
+                image: ImageReference::Inline {
+                    url: "data:image/png;base64,aW1hZ2U=".to_string(),
+                },
                 detail: None,
             },
             UserInput::Audio {

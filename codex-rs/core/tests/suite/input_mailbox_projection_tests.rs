@@ -7,6 +7,7 @@ use codex_core::UserAgentSpawnOptions;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::MessagePhase;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
@@ -91,7 +92,9 @@ async fn fresh_agent_mail_projects_receiver_ref_without_rewriting_canonical_or_u
             text_elements: Vec::new(),
         },
         UserInput::Image {
-            image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==".to_string(),
+            image: ImageReference::Inline {
+                image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==".to_string(),
+            },
             detail: None,
         },
     ];

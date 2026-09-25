@@ -2,6 +2,7 @@ use super::*;
 use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
 use crate::history_cell::HistoryCell;
 use crate::test_support::test_path_buf;
+use codex_app_server_protocol::ImageReference;
 use codex_protocol::user_input::ByteRange;
 use pretty_assertions::assert_eq;
 
@@ -122,7 +123,9 @@ async fn mailbox_failure_preserves_new_draft_and_attachment_only_mail_is_not_a_t
     assert_eq!(
         submission.input,
         vec![UserInput::Image {
-            url: "data:image/png;base64,cGlj".into(),
+            image: ImageReference::Inline {
+                url: "data:image/png;base64,cGlj".into(),
+            },
             detail: None
         }]
     );

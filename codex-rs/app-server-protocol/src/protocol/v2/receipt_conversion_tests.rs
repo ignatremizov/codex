@@ -123,7 +123,9 @@ fn mailbox_acceptance_conversion_preserves_only_trusted_typed_receipts() {
             text_elements: Vec::new(),
         },
         codex_protocol::user_input::UserInput::Image {
-            image_url: "data:image/png;base64,original-bytes".to_string(),
+            image: codex_protocol::models::ImageReference::Inline {
+                image_url: "data:image/png;base64,original-bytes".to_string(),
+            },
             detail: None,
         },
     ];

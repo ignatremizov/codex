@@ -6,6 +6,7 @@ use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ImageReference;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadArchiveParams;
@@ -70,7 +71,9 @@ async fn first_mailbox_input_preserves_typed_user_authorship_without_payload_tur
             )],
         }),
         UserInput::Image {
-            url: "data:image/png;base64,mailbox-original-image".to_string(),
+            image: ImageReference::Inline {
+                url: "data:image/png;base64,mailbox-original-image".to_string(),
+            },
             detail: None,
         },
         UserInput::Mention {

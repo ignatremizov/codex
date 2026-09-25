@@ -346,7 +346,7 @@ fn projects_user_agent_control_as_a_completed_standalone_turn() {
             }],
             changed_items: vec![ThreadHistoryItemChange {
                 turn_id: "control-1".to_string(),
-                item: ThreadItem::from(item),
+                item: ThreadItem::from(item.clone()),
                 started_at_ms: Some(100),
                 completed_at_ms: Some(123),
             }],

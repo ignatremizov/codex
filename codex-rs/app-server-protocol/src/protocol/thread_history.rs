@@ -2977,6 +2977,7 @@ mod tests {
                 source: ExecCommandSource::Agent,
                 user_shell_response_handling: None,
                 interaction_input: None,
+                deadline_at_ms: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,

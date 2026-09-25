@@ -13,7 +13,6 @@ use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
-use codex_rollout::RolloutItem;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 

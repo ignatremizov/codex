@@ -14,6 +14,7 @@ use codex_core::UserAgentSpawnOptions;
 use codex_features::Feature;
 use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::ImageReference;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -142,7 +143,9 @@ async fn mailbox_accepts_original_typed_input_without_receiver_work(
             )],
         },
         UserInput::Image {
-            image_url: "data:image/png;base64,original-mailbox-bytes".to_string(),
+            image: ImageReference::Inline {
+                image_url: "data:image/png;base64,original-mailbox-bytes".to_string(),
+            },
             detail: None,
         },
         UserInput::Mention {
@@ -739,7 +742,9 @@ async fn mailbox_retry_reuses_accepted_attribution_after_unload_and_revocation()
             text_elements: Vec::new(),
         },
         UserInput::Image {
-            image_url: "data:image/png;base64,original-mailbox-bytes".to_string(),
+            image: ImageReference::Inline {
+                image_url: "data:image/png;base64,original-mailbox-bytes".to_string(),
+            },
             detail: None,
         },
     ];

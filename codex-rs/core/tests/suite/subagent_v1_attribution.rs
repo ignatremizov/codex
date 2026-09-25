@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol::models::ImageReference;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
 
@@ -159,7 +160,9 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
             text_elements: Vec::new(),
         },
         UserInput::Image {
-            image_url: ATTRIBUTION_IMAGE.to_string(),
+            image: ImageReference::Inline {
+                image_url: ATTRIBUTION_IMAGE.to_string(),
+            },
             detail: None,
         },
     ];

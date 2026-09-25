@@ -1,6 +1,7 @@
 use super::*;
 use crate::ServerNotification;
 use codex_protocol::ResponseItemId;
+use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use codex_protocol::config_types::MultiAgentMode;
@@ -186,7 +187,9 @@ fn user_authored_agent_marker_remains_a_user_message() {
                 text_elements: Vec::new(),
             },
             CoreUserInput::Image {
-                image_url: "data:image/png;base64,AA==".to_string(),
+                image: CoreImageReference::Inline {
+                    image_url: "data:image/png;base64,AA==".to_string(),
+                },
                 detail: None,
             },
         ],
@@ -203,7 +206,9 @@ fn user_authored_agent_marker_remains_a_user_message() {
                     text_elements: Vec::new(),
                 },
                 UserInput::Image {
-                    url: "data:image/png;base64,AA==".to_string(),
+                    image: ImageReference::Inline {
+                        url: "data:image/png;base64,AA==".to_string(),
+                    },
                     detail: None,
                 },
             ],

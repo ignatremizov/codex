@@ -111,6 +111,7 @@ fn terminal_poll_begin_and_clear_keep_original_exec_identity_and_nullable_wire_f
                 process_id: "1000".to_string(),
                 stdin: String::new(),
                 deadline_at_ms,
+                wait: None,
             }),
             "thread-1",
             "turn-2",
