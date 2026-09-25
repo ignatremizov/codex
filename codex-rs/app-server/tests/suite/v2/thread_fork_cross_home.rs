@@ -134,8 +134,9 @@ async fn thread_fork_copies_cross_home_paginated_lineage_by_path() -> Result<()>
     append_rollout_item_to_path(
         child_path.as_path(),
         &RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 0,
+            materialized_turns: None,
             rollback_start_index: Some(4),
-            ..Default::default()
         })),
     )
     .await?;
