@@ -178,6 +178,7 @@ async fn receipt_publishes_once_and_cannot_complete_a_same_id_replacement() -> R
             cwd: item.cwd,
             process_id: None,
             source: CommandExecutionSource::Agent,
+            user_shell_response_handling: None,
             status: CommandExecutionStatus::Declined,
             command_actions: item.command_actions,
             aggregated_output: None,
