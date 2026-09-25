@@ -99,7 +99,7 @@ pub(crate) async fn from_rollout_path(
         source_rollout_path: Some(path),
         thread_id,
         cwd: Some(metadata.meta.cwd),
-        history_mode: Some(metadata.meta.history_mode),
+        history_mode: Some(metadata.meta.history_mode.into()),
     }))
 }
 
