@@ -115,8 +115,9 @@ async fn complete_lineage_applies_exact_rollbacks_within_each_segment() {
         rollout_line(
             /*ordinal*/ 4,
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 0,
+                materialized_turns: None,
                 rollback_start_index: Some(1),
-                ..Default::default()
             })),
         ),
         rollout_line(/*ordinal*/ 5, surviving_child.clone()),
@@ -184,8 +185,9 @@ async fn copied_lineage_uses_canonical_ghost_cleanup_before_rollback_coordinates
         rollout_line(
             /*ordinal*/ 4,
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 0,
+                materialized_turns: None,
                 rollback_start_index: Some(2),
-                ..Default::default()
             })),
         ),
     ];
@@ -246,8 +248,9 @@ async fn flattening_never_manufactures_completion_metadata_adjacency() {
         rollout_line(
             /*ordinal*/ 9,
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 0,
+                materialized_turns: None,
                 rollback_start_index: Some(6),
-                ..Default::default()
             })),
         ),
         rollout_line(/*ordinal*/ 10, after_rollback.clone()),

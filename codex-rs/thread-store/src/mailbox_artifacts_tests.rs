@@ -78,7 +78,7 @@ fn delivery() -> (MailboxClaim, MailboxDeliveryEvidence, Vec<RolloutItem>) {
                 content: input,
             }),
             started_at_ms: None,
-            completed_at_ms: Some(1),
+            completed_at_ms: 1,
         })),
     ];
     (claim, evidence, history)
@@ -267,7 +267,7 @@ fn recovery_accepts_identical_retries_but_rejects_conflicting_artifacts() {
                 content.clear();
             }
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => {
-                event.completed_at_ms = Some(2);
+                event.completed_at_ms = 2;
             }
             _ => panic!("expected artifact"),
         }

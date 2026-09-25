@@ -24,6 +24,7 @@ async fn live_thread(store: Arc<dyn ThreadStore>, cwd: &Path) -> LiveThread {
             parent_thread_id: None,
             source: SessionSource::Exec,
             thread_source: None,
+            runtime_workspace_roots: None,
             originator: "shutdown-test".to_string(),
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
@@ -160,14 +161,14 @@ async fn init_guard_discard_durably_retains_handle_after_failure() {
 #[tokio::test]
 async fn init_guard_discard_durably_retains_acquisition_failure() {
     let mut guard = LiveThreadInitGuard::default();
-    guard
+    let result = guard
         .acquire(async {
             Err(ThreadStoreError::Internal {
                 message: "acquisition failed".to_string(),
             })
         })
-        .await
-        .expect_err("acquisition failure must be observable");
+        .await;
+    assert!(result.is_err(), "acquisition failure must be observable");
 
     guard
         .discard_durably()

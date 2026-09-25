@@ -258,6 +258,8 @@ fn user_agent_task_context_survives_rollback_of_surrounding_turn() {
             message_wake_turn_id: None,
             baseline_final_delivery: AgentResponseFinalDelivery::Passive,
             final_delivery: AgentResponseFinalDelivery::Wake,
+            mailbox_final_subscription_message_id: None,
+            mailbox_final_subscription_suppressed_message_id: None,
             final_delivery_response_item_id: None,
             committed_delivery_response_item_ids: Vec::new(),
         },

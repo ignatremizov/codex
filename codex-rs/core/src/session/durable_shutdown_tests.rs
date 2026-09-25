@@ -166,6 +166,7 @@ async fn durable_shutdown_failure_retains_retry_ownership() {
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
+            runtime_workspace_roots: None,
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,

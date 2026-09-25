@@ -587,7 +587,7 @@ async fn reconciliation_requires_durable_context_and_typed_agent_presentation() 
                             sub_agent_completion: None,
                         }),
                         started_at_ms: None,
-                        completed_at_ms: Some(1),
+                        completed_at_ms: 1,
                     })),
                     RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                         num_turns: 1,

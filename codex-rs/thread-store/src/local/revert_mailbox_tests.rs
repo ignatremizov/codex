@@ -194,7 +194,7 @@ async fn revert_reconciles_only_proven_delivery_and_preserves_ambiguous_recovery
                 client_id: Some("client".to_string()),
             }),
             started_at_ms: None,
-            completed_at_ms: Some(1),
+            completed_at_ms: 1,
         };
         match delivery {
             Delivery::WrongPayload => {

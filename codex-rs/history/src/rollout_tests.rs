@@ -469,6 +469,8 @@ fn exact_rollback_rejects_untrusted_observation_links() {
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: Some(response_item_id.clone()),
         committed_delivery_response_item_ids: vec![response_item_id.clone()],
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     });
     let agent_response = RolloutItem::ResponseItem(
         ResponseItem::AgentMessage {
@@ -533,6 +535,8 @@ fn exact_rollback_preserves_trusted_user_agent_task_context() {
         final_delivery: AgentResponseFinalDelivery::Wake,
         final_delivery_response_item_id: None,
         committed_delivery_response_item_ids: Vec::new(),
+        mailbox_final_subscription_message_id: None,
+        mailbox_final_subscription_suppressed_message_id: None,
     });
     let metadata = RolloutItem::InterAgentCommunicationMetadata {
         trigger_turn: false,

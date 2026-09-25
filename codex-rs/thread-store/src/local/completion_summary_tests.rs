@@ -6,6 +6,7 @@ use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::sub_agent_completion_item;
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn cold_summary_keeps_completion_only_and_owned_orphan_wait_rows() {
