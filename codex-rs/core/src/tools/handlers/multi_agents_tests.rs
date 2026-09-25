@@ -4468,14 +4468,26 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 
 #[tokio::test]
 async fn multi_agent_v2_cancelled_wait_releases_terminal_presentation() {
-    let (session, mut turn, events) = make_session_and_context_with_rx().await;
-    let turn_mut = Arc::get_mut(&mut turn).expect("single turn context ref");
-    let mut config = (*turn_mut.config).clone();
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
     config
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    set_turn_config(turn_mut, config);
+    let manager = thread_manager();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start live wait parent");
+    let session = Arc::clone(&parent.thread.session);
+    let turn = session.new_default_turn().await;
+    let child =
+        crate::agent::control::SessionPresentationId::new(ThreadId::new(), uuid::Uuid::now_v7());
+    let _registration = session
+        .services
+        .agent_control
+        .register_completion_watcher_with_parent(child, &parent.thread, "/root/worker")
+        .expect("register exact live parent");
     let wait_task = tokio::spawn({
         let session = Arc::clone(&session);
         let turn = Arc::clone(&turn);
@@ -4492,7 +4504,7 @@ async fn multi_agent_v2_cancelled_wait_releases_terminal_presentation() {
     });
     timeout(Duration::from_secs(1), async {
         loop {
-            let event = events.recv().await.expect("wait start event");
+            let event = parent.thread.next_event().await.expect("wait start event");
             if matches!(
                 event.msg,
                 EventMsg::ItemStarted(ref event)
@@ -4513,10 +4525,7 @@ async fn multi_agent_v2_cancelled_wait_releases_terminal_presentation() {
         .agent_control
         .record_agent_terminal_presentation(
             session.presentation_id(),
-            crate::agent::control::SessionPresentationId::new(
-                ThreadId::new(),
-                uuid::Uuid::now_v7(),
-            ),
+            child,
             "child-turn",
             AgentStatus::Completed(Some("done".to_string())),
             crate::agent::control::TerminalPresentationDelivery::Direct,
@@ -4540,18 +4549,37 @@ async fn multi_agent_v2_cancelled_wait_releases_terminal_presentation() {
     };
     assert!(wait_error.is_cancelled());
     assert!(!presentation.wait_owns_presentation().await);
+    drop(presentation.take_accepted_completion_delivery());
+    parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown wait parent");
 }
 
 #[tokio::test]
 async fn multi_agent_v2_wait_commits_when_completed_item_is_delivered() {
-    let (session, mut turn, events) = make_session_and_context_with_rx().await;
-    let turn_mut = Arc::get_mut(&mut turn).expect("single turn context ref");
-    let mut config = (*turn_mut.config).clone();
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
     config
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    set_turn_config(turn_mut, config);
+    let manager = thread_manager();
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start live wait parent");
+    let session = Arc::clone(&parent.thread.session);
+    let turn = session.new_default_turn().await;
+    let child_thread_id = ThreadId::new();
+    let child =
+        crate::agent::control::SessionPresentationId::new(child_thread_id, uuid::Uuid::now_v7());
+    let _registration = session
+        .services
+        .agent_control
+        .register_completion_watcher_with_parent(child, &parent.thread, "/root/worker")
+        .expect("register exact live parent");
     let wait_task = tokio::spawn({
         let session = Arc::clone(&session);
         let turn = Arc::clone(&turn);
@@ -4568,7 +4596,7 @@ async fn multi_agent_v2_wait_commits_when_completed_item_is_delivered() {
     });
     timeout(Duration::from_secs(1), async {
         loop {
-            let event = events.recv().await.expect("wait start event");
+            let event = parent.thread.next_event().await.expect("wait start event");
             if matches!(
                 event.msg,
                 EventMsg::ItemStarted(ref event)
@@ -4584,26 +4612,18 @@ async fn multi_agent_v2_wait_commits_when_completed_item_is_delivered() {
     })
     .await
     .expect("wait handler should register and emit its start item");
-    let child_thread_id = ThreadId::new();
     let presentation = session
         .services
         .agent_control
         .record_agent_terminal_presentation(
             session.presentation_id(),
-            crate::agent::control::SessionPresentationId::new(
-                child_thread_id,
-                uuid::Uuid::now_v7(),
-            ),
+            child,
             "child-turn",
             AgentStatus::Completed(Some("done".to_string())),
             crate::agent::control::TerminalPresentationDelivery::Direct,
             || {},
         )
         .expect("direct terminal presentation");
-    session
-        .services
-        .agent_control
-        .authorize_pending_completion_context(session.presentation_id(), &presentation);
     let mut communication = InterAgentCommunication::new(
         AgentPath::try_from("/root/worker").expect("agent path"),
         AgentPath::root(),
@@ -4619,7 +4639,11 @@ async fn multi_agent_v2_wait_commits_when_completed_item_is_delivered() {
 
     timeout(Duration::from_secs(1), async {
         loop {
-            let event = events.recv().await.expect("wait completion event");
+            let event = parent
+                .thread
+                .next_event()
+                .await
+                .expect("wait completion event");
             if matches!(
                 event.msg,
                 EventMsg::ItemCompleted(ref event)
@@ -4642,6 +4666,12 @@ async fn multi_agent_v2_wait_commits_when_completed_item_is_delivered() {
         .await
         .expect("wait task should join")
         .expect("wait handler should succeed");
+    drop(presentation.take_accepted_completion_delivery());
+    parent
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shutdown wait parent");
 }
 
 #[tokio::test]
