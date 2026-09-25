@@ -92,6 +92,7 @@ fn spawned_identity_survives_live_wire_and_replay() {
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
             agent_queue: None,
+            root_turn_id: None,
         })),
         RolloutItem::EventMsg(completed),
     ];

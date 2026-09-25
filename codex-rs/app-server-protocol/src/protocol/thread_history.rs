@@ -2544,6 +2544,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -2767,6 +2768,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -2842,6 +2844,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -2939,6 +2942,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                 call_id: "exec-1".to_string(),
@@ -3063,6 +3067,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::ItemStarted(ItemStartedEvent {
                 thread_id,
@@ -3167,6 +3172,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3581,6 +3587,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3649,6 +3656,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3791,6 +3799,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
                 turn_id: String::new(),
@@ -3874,6 +3883,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -3959,6 +3969,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4059,6 +4070,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4158,6 +4170,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4266,6 +4279,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Find related incident discussions".into(),
@@ -4287,6 +4301,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 message: "Explain retry logic while that runs".into(),
@@ -4327,6 +4342,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4352,6 +4368,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4438,6 +4455,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4463,6 +4481,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4543,6 +4562,7 @@ mod tests {
             started_at: Some(100),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::UserMessage(UserMessageEvent {
             message: "first".into(),
@@ -4612,6 +4632,7 @@ mod tests {
             started_at: Some(100),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::UserMessage(UserMessageEvent {
             message: "hello".into(),
@@ -4660,6 +4681,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4729,6 +4751,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4798,6 +4821,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4823,6 +4847,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4880,6 +4905,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4896,6 +4922,7 @@ mod tests {
                 started_at: Some(30),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -4984,6 +5011,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5009,6 +5037,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5056,6 +5085,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::Compacted(CompactedItem {
                 message: String::new(),
@@ -5109,6 +5139,7 @@ mod tests {
                 trace_id: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: Some("Compact summary".into()),
@@ -5403,6 +5434,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5466,6 +5498,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5526,6 +5559,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
             EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5597,6 +5631,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -5705,6 +5740,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }));
             let mut expected_active = builder.active_turn_snapshot().expect("active turn");
             builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -5778,6 +5814,7 @@ mod tests {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
             thread_id: ThreadId::new(),
@@ -5807,6 +5844,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -5857,6 +5895,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::ResponseItem(
                 codex_protocol::models::ResponseItem::Message {
@@ -6018,6 +6057,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             }),
         ));
         assert_eq!(
@@ -6136,6 +6176,7 @@ mod tests {
                 started_at: Some(10),
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
@@ -6177,6 +6218,7 @@ mod tests {
                 started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
+                agent_queue: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
                 client_id: None,
@@ -6221,6 +6263,7 @@ mod tests {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
             thread_id,
@@ -6299,6 +6342,7 @@ mod tests {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         let item = ContextCompactionItem {
             id: "compact-1".to_string(),
@@ -6346,6 +6390,7 @@ mod tests {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }));
         let item = ContextCompactionItem {
             id: "compact-1".to_string(),

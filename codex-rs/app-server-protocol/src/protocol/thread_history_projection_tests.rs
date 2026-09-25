@@ -73,6 +73,7 @@ fn projects_turn_lifecycle_without_prior_builder_state() {
             started_at: Some(10),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         },
     )));
     let completed = project(RolloutItem::EventMsg(EventMsg::TurnComplete(
@@ -271,6 +272,7 @@ fn peer_message_audit_replays_without_completing_active_root_turn() {
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
                 agent_queue: None,
+                root_turn_id: None,
             }));
             builder.handle_rollout_item(&event);
             let active = builder

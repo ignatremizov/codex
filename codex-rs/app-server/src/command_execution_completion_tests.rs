@@ -46,6 +46,7 @@ fn start_turn(state: &mut ThreadState, turn_id: &str) {
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
+            agent_queue: None,
         }),
     );
 }

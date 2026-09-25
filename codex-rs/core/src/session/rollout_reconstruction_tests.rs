@@ -810,6 +810,7 @@ async fn reconstruction_restores_surviving_checkpoint_paths_after_compaction_rol
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
                 agent_queue: None,
+                root_turn_id: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -883,6 +884,7 @@ async fn reconstruction_replays_full_history_when_only_checkpoint_is_rolled_back
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
                 agent_queue: None,
+                root_turn_id: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
@@ -976,6 +978,7 @@ async fn reconstruction_does_not_roll_back_an_out_of_band_representation_repair(
                 model_context_window: Some(128_000),
                 collaboration_mode_kind: ModeKind::Default,
                 agent_queue: None,
+                root_turn_id: None,
             },
         )),
         RolloutItem::EventMsg(EventMsg::UserMessage(
