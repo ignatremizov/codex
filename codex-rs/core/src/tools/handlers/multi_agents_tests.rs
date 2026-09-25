@@ -2913,7 +2913,7 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
             .expect("approval policy should be set");
         set_turn_config(turn, config);
         let TurnEnvironmentState::Ready(environment) = turn
-            .environments
+            .initial_environments
             .environments
             .first_mut()
             .expect("parent environment should exist")
