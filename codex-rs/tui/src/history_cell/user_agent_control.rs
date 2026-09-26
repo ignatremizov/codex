@@ -7,6 +7,7 @@ use codex_app_server_protocol::UserAgentForkMode;
 use codex_protocol::protocol::AgentResponseFinalDelivery;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
+use ratatui::text::Span;
 
 use super::HistoryCell;
 use super::plain_lines;
