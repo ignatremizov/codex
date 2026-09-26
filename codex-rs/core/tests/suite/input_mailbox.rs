@@ -204,6 +204,7 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
         let mut context = ResponseItem::from(ResponseInputItem::from_user_input(
             input.clone(),
             LocalImagePreparation::Defer,
+            &mut Default::default(),
         ));
         context.set_id(Some(id.clone()));
         context.set_turn_id_if_missing(&turn_id);
@@ -349,7 +350,6 @@ async fn direct_check_mail_recovers_fixed_user_batch_without_consuming_other_mai
         })
         .collect::<Vec<_>>();
     let canonical_outputs = history
-        .items
         .iter()
         .filter_map(|item| {
             let RolloutItem::ResponseItem(envelope) = item else {
