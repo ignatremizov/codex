@@ -152,7 +152,7 @@ fn zero_limit_preserves_bounded_storage_omissions() {
     assert!(output.retained_lines() < output.total_lines());
     let retained = output
         .transcript_lines()
-        .map(|line| line.into_owned())
+        .map(std::borrow::Cow::into_owned)
         .collect::<Vec<_>>();
     for limit in [0, 1, 2, 30, 50] {
         let preview = output_preview(
