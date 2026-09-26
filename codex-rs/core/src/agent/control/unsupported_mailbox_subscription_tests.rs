@@ -11,7 +11,7 @@ async fn v1_child_spawn_succeeds_without_mailbox_subscription_lookup_support() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*state_db*/ None,
     );
-    let harness = AgentControlHarness {
+    let mut harness = AgentControlHarness {
         _home: home,
         config,
         state_db: None,
@@ -19,6 +19,7 @@ async fn v1_child_spawn_succeeds_without_mailbox_subscription_lookup_support() {
         manager,
     };
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    harness.control = parent_thread.session.services.agent_control.clone();
 
     let child_thread_id = harness
         .spawn_anonymous_child(parent_thread_id, SpawnAgentOptions::default())
