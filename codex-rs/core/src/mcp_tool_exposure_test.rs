@@ -47,7 +47,7 @@ async fn direct_only_namespace_does_not_override_explicit_invocation_policy() {
         /*connector_name*/ None,
     );
     let name = tool.canonical_tool_name().to_string();
-    let tools = HashMap::from([(name.clone(), tool.clone())]);
+    let tools = HashMap::from([(name, tool)]);
     for search_enabled in [false, true] {
         for implicit in [false, true] {
             let servers = HashMap::from([(

@@ -215,7 +215,7 @@ async fn gated_session(
         release: AsyncMutex::new(Some(gate)),
         appends: AtomicUsize::new(0),
         gate_polls: AtomicUsize::new(0),
-        writer: AsyncMutex::new(()),
+        writer: Semaphore::new(/*permits*/ 1),
     });
     let config = session.get_config().await;
     session.services.live_thread = Some(

@@ -40,6 +40,7 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -67,7 +68,8 @@ struct GatedAppendStore {
     release: AsyncMutex<Option<oneshot::Receiver<()>>>,
     appends: AtomicUsize,
     gate_polls: AtomicUsize,
-    writer: AsyncMutex<()>,
+    // One admitted asynchronous writer; there is no guarded data to borrow.
+    writer: Semaphore,
 }
 
 struct PendingTask {
@@ -157,11 +159,15 @@ impl ThreadStore for GatedAppendStore {
 
     fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
-            if matches!(
+            let release = if matches!(
                 self.phase,
                 AppendGate::BeforeFlush | AppendGate::FlushFailure
-            ) && let Some(mut release) = self.release.lock().await.take()
-            {
+            ) {
+                self.release.lock().await.take()
+            } else {
+                None
+            };
+            if let Some(mut release) = release {
                 std::future::poll_fn(|context| {
                     self.gate_polls.fetch_add(1, Ordering::SeqCst);
                     Pin::new(&mut release).poll(context)
@@ -180,7 +186,7 @@ impl ThreadStore for GatedAppendStore {
 
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
-            let _writer = self.writer.lock().await;
+            let _writer = self.writer.acquire().await.expect("test writer stays open");
             if !params.items.iter().any(|item| {
                 matches!(item,
                 RolloutItem::ResponseItem(item)
@@ -250,7 +256,7 @@ async fn cancellation_resumes_the_same_append_before_or_after_store_commit() {
             release: AsyncMutex::new(Some(gate)),
             appends: AtomicUsize::new(0),
             gate_polls: AtomicUsize::new(0),
-            writer: AsyncMutex::new(()),
+            writer: Semaphore::new(/*permits*/ 1),
         });
         let thread_store: Arc<dyn ThreadStore> = store.clone();
         let config = session.get_config().await;

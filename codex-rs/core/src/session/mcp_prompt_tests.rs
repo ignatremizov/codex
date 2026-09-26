@@ -10,6 +10,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
+use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -267,17 +268,17 @@ async fn cancellation_while_recording_keeps_first_turn_activation_for_retry() {
     let session = Arc::new(session);
     let step = StepContext::for_test(Arc::new(turn));
     session.activate_mcp_server("unavailable".to_string()).await;
-    let history_lock = session.state.lock().await;
-    let mut recording = Box::pin(session.record_queued_mcp_use(&step));
-    // Poll to the blocked history lock; this is a deterministic cancellation
-    // boundary, not a delay that assumes the task has begun running.
-    assert!(futures::poll!(recording.as_mut()).is_pending());
-    drop(recording);
+    {
+        let _history_lock = session.state.lock().await;
+        let mut recording = Box::pin(session.record_queued_mcp_use(&step));
+        // Poll synchronously to the blocked history lock, then cancel the
+        // recording before releasing it. The lock never crosses a suspension.
+        assert!(recording.as_mut().now_or_never().is_none());
+    }
     assert_eq!(
         *session.mcp_prompt.first_turn_servers.lock().await,
         vec!["unavailable"]
     );
-    drop(history_lock);
     session.record_queued_mcp_use(&step).await;
     assert!(
         session
