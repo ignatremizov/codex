@@ -116,6 +116,19 @@ fn is_zstd_encoding(value: &str) -> bool {
         .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
 }
 
+/// Decodes a captured HTTP body for fallible request matchers, including compressed requests.
+pub fn request_body_bytes(request: &wiremock::Request) -> Option<Vec<u8>> {
+    let content_encoding = request
+        .headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok());
+    if content_encoding.is_some_and(is_zstd_encoding) {
+        zstd::stream::decode_all(std::io::Cursor::new(&request.body)).ok()
+    } else {
+        Some(request.body.clone())
+    }
+}
+
 fn decode_body_bytes(body: &[u8], content_encoding: Option<&str>) -> Vec<u8> {
     if content_encoding.is_some_and(is_zstd_encoding) {
         zstd::stream::decode_all(std::io::Cursor::new(body))

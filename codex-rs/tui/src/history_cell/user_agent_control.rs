@@ -143,9 +143,11 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
         || input_outcome == Some(codex_app_server_protocol::AgentInputOutcome::Unknown)
     {
         details.push(
-            "Outcome unknown: reload and reconcile before retry."
-                .yellow()
-                .into(),
+            Span::styled(
+                "Outcome unknown: reload and reconcile before retry.",
+                crate::style::status_style(crate::style::StatusTone::Attention),
+            )
+            .into(),
         );
     }
     if let Some(error) = error

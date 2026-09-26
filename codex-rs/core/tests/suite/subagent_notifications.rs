@@ -84,6 +84,7 @@ use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_once_match_with_delay;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::namespace_child_tool;
+use core_test_support::responses::request_body_bytes;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
@@ -126,8 +127,6 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use super::direct_tool_metadata::tool_call_metadata;
-use wiremock::Respond;
-use wiremock::ResponseTemplate;
 
 #[path = "subagent_reply_route_tests.rs"]
 mod reply_route_tests;
@@ -654,16 +653,10 @@ async fn assert_observation_failure_requires_reload(
     .context("observation failure did not quarantine canonical history")?;
     let error = test
         .codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "quarantined history must reject new input".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "quarantined history must reject new input".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await
         .expect_err("ambiguous observation publication must quarantine submission admission");
     assert_eq!(
@@ -789,16 +782,10 @@ async fn resume_in_memory_thread_from_store(
 
 async fn submit_turn_on_thread(codex: &codex_core::CodexThread, prompt: &str) -> Result<()> {
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: prompt.to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: prompt.to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let turn_id = wait_for_event_match(codex, |event| match event {
         EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
@@ -1843,7 +1830,7 @@ async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
     let child_thread_id = ThreadId::from_string(&wait_for_spawned_thread_id(&initial).await?)?;
     let child_thread = initial.thread_manager.get_thread(child_thread_id).await?;
     let _ = wait_for_requests(&child_request).await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
     initial
         .codex
         .submit(Op::ThreadRollback { num_turns: 1 })
@@ -1852,7 +1839,7 @@ async fn v2_completion_waits_for_pending_rollback_and_survives_cold_resume(
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("child done".to_string()))
     );
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
 
     let completion = wait_for_completion_after_rollback(&initial.codex).await;
     assert_eq!(
@@ -2266,23 +2253,24 @@ async fn v1_subagent_notification_survives_an_active_parent_turn_abort() -> Resu
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
                 text: TURN_1_PROMPT.to_string(),
                 text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(test.default_environment_selections(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
-                model: Some(test.session_configured.model.clone()),
-                ..Default::default()
-            },
-        })
+            }])
+            .with_thread_settings(
+                codex_protocol::protocol::ThreadSettingsOverrides {
+                    environments: Some(
+                        test.default_environment_selections(test.config.cwd.clone()),
+                    ),
+                    approval_policy: Some(AskForApproval::Never),
+                    sandbox_policy: Some(sandbox_policy),
+                    permission_profile,
+                    model: Some(test.session_configured.model.clone()),
+                    ..Default::default()
+                },
+            ),
+        )
         .await?;
     let _ = wait_for_requests(&blocked_parent).await?;
     let _ = wait_for_requests(&child_request).await?;
@@ -2556,7 +2544,7 @@ async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Resul
         .thread_manager
         .get_thread(ThreadId::from_string(&spawned_id)?)
         .await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
     let completion_barriers_before = store.calls().await.append_completion_items_and_flush;
     store
         .fail_next_operation(InMemoryThreadStoreFailure::ThreadRollbackFlush)
@@ -2573,7 +2561,7 @@ async fn v1_watcher_releases_completion_when_rollback_requires_reload() -> Resul
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("child done".to_string()))
     );
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
 
     wait_for_event_match(&initial.codex, |event| match event {
         EventMsg::Error(error)
@@ -2788,7 +2776,7 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
         .thread_manager
         .get_thread(ThreadId::from_string(&spawned_id)?)
         .await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
 
     initial
         .codex
@@ -2801,7 +2789,7 @@ async fn v1_completion_waits_for_pending_rollback_and_survives_cold_resume(
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("child done".to_string()))
     );
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
 
     let completion = wait_for_completion_after_rollback(&initial.codex).await;
     assert_eq!(
@@ -3600,16 +3588,10 @@ async fn interrupted_wait_preserves_full_history_spawn_final_wake(
         .await;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "wait before interrupting forked child".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "wait before interrupting forked child".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     wait_for_event_match(&test.codex, |event| {
         matches!(
@@ -4524,7 +4506,7 @@ async fn send_input_x_presents_the_target_turn_without_injecting_it(
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let (test, spawned_id, initial_child_request) = setup_turn_one_with_custom_spawned_child(
+    let (test, spawned_id, _initial_child_request) = setup_turn_one_with_custom_spawned_child(
         &server,
         json!({
             "message": CHILD_PROMPT,
@@ -7211,6 +7193,7 @@ async fn send_input_final_observation_wakes_an_idle_parent(
             RolloutItem::SessionMeta(_)
             | RolloutItem::ResponseItem(_)
             | RolloutItem::Compacted(_)
+            | RolloutItem::RetainedContext(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::AgentResponseObservation(_)
@@ -7940,7 +7923,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
     let child_thread = initial.thread_manager.get_thread(spawned_id).await?;
     let _ = wait_for_requests(&initial_parent_followup).await?;
     let _ = wait_for_terminal_status(initial.codex.as_ref()).await?;
-    let durable_context_permit = initial.codex.acquire_durable_context_permit().await?;
+    let history_publication_barrier = initial.codex.acquire_history_publication_barrier().await?;
     assert_eq!(
         wait_for_terminal_status(child_thread.as_ref()).await?,
         AgentStatus::Completed(Some("durable child final".to_string()))
@@ -7972,7 +7955,7 @@ async fn cold_resume_requires_explicit_agent_reconfiguration(
         .thread_manager
         .remove_thread(&parent_thread_id)
         .await;
-    drop(durable_context_permit);
+    drop(history_publication_barrier);
 
     let automatic_delivery = mount_sse_once_match(
         &server,
@@ -8120,10 +8103,8 @@ async fn fork_requires_explicit_agent_reconfiguration(
         .thread_manager
         .fork_thread(
             codex_core::ForkSnapshot::Interrupted,
-            initial.config.clone(),
+            StartThreadOptions::new(initial.config.clone()),
             rollout_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await?;
     assert_ne!(forked.thread_id, source_parent_id);
@@ -10558,16 +10539,10 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         .await?;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: TURN_1_PROMPT.to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: TURN_1_PROMPT.to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let expected_child_agent_messages = vec![json!({
         "type": "agent_message",
@@ -11272,16 +11247,10 @@ async fn active_multi_agent_v2_wait_suppresses_background_completion_item(
     test.submit_turn(TURN_1_PROMPT).await?;
     let _ = wait_for_requests(&child_request).await?;
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: TURN_2_NO_WAIT_PROMPT.to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: TURN_2_NO_WAIT_PROMPT.to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let mut turn_id = None;
     let mut wait_started = false;
