@@ -574,6 +574,28 @@ fn observation_audit_snapshot_shows_target_to_resolved_observer() {
 }
 
 #[test]
+fn unknown_observation_snapshot_preserves_direction_and_reconciliation_warning() {
+    let mut item = observation_control_item();
+    let ThreadItem::UserAgentControl { status, .. } = &mut item else {
+        panic!("expected observation fixture");
+    };
+    *status = UserAgentControlStatus::Unknown;
+    let cell = new_user_agent_control(item)
+        .expect("unknown observation cell")
+        .with_direction_recipient_label(|_| Some("Peirce".to_string()));
+    let rendered = cell
+        .display_lines(/*width*/ 160)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(rendered, @r"
+    • User observation change outcome unknown: Main (passive) → Peirce
+      └ Outcome unknown: reload and reconcile before retry.
+    ");
+}
+
+#[test]
 fn failed_observer_resolution_snapshot_retains_authored_direction() {
     let mut item = observation_control_item();
     if let ThreadItem::UserAgentControl {

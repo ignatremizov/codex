@@ -216,6 +216,9 @@ pub(crate) fn new_user_agent_control(item: ThreadItem) -> Option<UserAgentContro
             match status {
                 UserAgentControlStatus::Succeeded => "User changed observation:".bold(),
                 UserAgentControlStatus::Failed => "User observation change failed:".bold(),
+                UserAgentControlStatus::Unknown => {
+                    "User observation change outcome unknown:".bold()
+                }
             }
         } else if target_messages == Some(true) {
             "User enabled messages:".bold()
