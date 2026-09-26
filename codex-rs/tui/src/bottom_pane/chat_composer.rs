@@ -9717,6 +9717,9 @@ mod tests {
                 }
                 None => panic!("no selected command for '/mo'"),
                 Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
+                Some(CommandItem::BackgroundTerminal(terminal)) => {
+                    panic!("unexpected background terminal {terminal:?}")
+                }
             },
             _ => panic!("slash popup not active after typing '/mo'"),
         }
@@ -9844,6 +9847,9 @@ mod tests {
                 }
                 None => panic!("no selected command for '/res'"),
                 Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
+                Some(CommandItem::BackgroundTerminal(terminal)) => {
+                    panic!("unexpected background terminal {terminal:?}")
+                }
             },
             _ => panic!("slash popup not active after typing '/res'"),
         }

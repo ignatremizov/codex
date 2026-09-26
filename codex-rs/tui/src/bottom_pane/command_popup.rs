@@ -741,6 +741,7 @@ mod tests {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
                 CommandItem::Mcp(command) => command.text(),
+                CommandItem::BackgroundTerminal(terminal) => terminal.process_id,
             })
             .collect();
 
