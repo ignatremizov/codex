@@ -360,6 +360,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
             std::process::exit(1);
         }
     };
+    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let user_config_path = config_profile_v2
         .as_ref()
         .map(|profile_v2| resolve_profile_v2_config_path(&codex_home, profile_v2));
@@ -390,12 +391,20 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         )
         .await;
         let gate_cloud_config = cloud_config_bundle_loader_for_storage(
-            bootstrap_auth_config(&codex_home, &gate_bootstrap)?,
+            bootstrap_auth_config_for_selection(
+                &codex_home,
+                &gate_bootstrap,
+                &auth_file_selection,
+            )?,
             /*enable_codex_api_key_env*/ false,
         )
         .await?;
         let gate_config = ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
+                ..Default::default()
+            })
             .cli_overrides(cli_kv_overrides.clone())
             .loader_overrides(LoaderOverrides {
                 ignore_project_config: true,
@@ -428,6 +437,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         }
         let source_config = ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
+                ..Default::default()
+            })
             .cli_overrides(cli_kv_overrides.clone())
             .loader_overrides(LoaderOverrides {
                 ignore_project_config: true,
@@ -483,7 +496,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     )
     .await;
     let bootstrap_config_toml = &bootstrap_config.config_toml;
-    let auth_file_selection = codex_login::AuthFileSelection::from_env(&codex_home)?;
     let bootstrap_auth_config =
         bootstrap_auth_config_for_selection(&codex_home, &bootstrap_config, &auth_file_selection)?;
     // API keys cannot fetch workspace-managed configuration. Preserve the
@@ -498,6 +510,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         // Destination auth can fetch source policy that the host bootstrap could not.
         let source_config = ConfigBuilder::default()
             .codex_home(codex_home.to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                auth_file_selection: Some(auth_file_selection.clone()),
+                ..Default::default()
+            })
             .cli_overrides(cli_kv_overrides.clone())
             .loader_overrides(LoaderOverrides {
                 ignore_project_config: true,
