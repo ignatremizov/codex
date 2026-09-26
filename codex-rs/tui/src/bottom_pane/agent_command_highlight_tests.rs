@@ -43,6 +43,7 @@ fn models() -> Vec<ModelPreset> {
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
+        available_access_programs: None,
         is_default: true,
         upgrade: None,
         show_in_picker: true,
