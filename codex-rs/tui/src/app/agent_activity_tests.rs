@@ -66,6 +66,9 @@ async fn live_status_notifications_update_idle_footer_and_switches_rescope_it() 
         child,
         ServerNotification::ThreadStarted(codex_app_server_protocol::ThreadStartedNotification {
             thread: codex_app_server_protocol::Thread {
+                environments: None,
+                daybreak_enabled: None,
+                originator: None,
                 id: child.to_string(),
                 extra: None,
                 session_id: root.to_string(),
