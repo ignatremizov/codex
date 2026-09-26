@@ -1,4 +1,5 @@
 use super::*;
+use crate::history_cell::HistoryCell;
 use pretty_assertions::assert_eq;
 
 #[test]

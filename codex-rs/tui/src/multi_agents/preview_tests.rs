@@ -3,6 +3,7 @@ use super::tests::cell_to_text;
 use super::tests::line_to_text;
 use super::tests::metadata_for;
 use super::*;
+use crate::history_cell::HistoryCell;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;

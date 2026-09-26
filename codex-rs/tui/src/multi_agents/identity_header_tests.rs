@@ -1,6 +1,5 @@
 use super::*;
 use pretty_assertions::assert_eq;
-use ratatui::style::Stylize as _;
 
 #[test]
 fn optional_metadata_preserves_order_without_empty_delimiters() {
