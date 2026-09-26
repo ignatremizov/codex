@@ -175,7 +175,7 @@ fn current_reconciliation_never_broadens_history_catch_up() {
             },
             None,
             terminal.clone(),
-            status.clone(),
+            status,
         ),
         (
             ResponseObserverStart::CurrentOrNext {

@@ -330,7 +330,7 @@ fn commentary_boundary_delivers_once_and_retains_committed_evidence() {
         parent,
         child,
         turn_id: "turn".to_owned(),
-        response_item_id: delivery.response_item_id.clone(),
+        response_item_id: delivery.response_item_id,
         kind: ResponseObservationDeliveryKind::Commentary,
         mailbox_final_subscription_message_id: None,
         model_visibility: codex_protocol::protocol::SubAgentCompletionModelVisibility::Visible,
