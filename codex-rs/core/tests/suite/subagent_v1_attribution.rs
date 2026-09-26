@@ -357,7 +357,6 @@ async fn model_dispatch_has_compact_attribution_without_granting_replies(
     );
     let stored_envelopes = history
         .iter()
-        .iter()
         .filter_map(|item| {
             let RolloutItem::ResponseItem(envelope) = item else {
                 return None;

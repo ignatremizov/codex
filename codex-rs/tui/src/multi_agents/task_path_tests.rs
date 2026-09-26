@@ -15,9 +15,8 @@ fn lifecycle_labels_include_authoritative_task_path() {
         }),
     };
     let label = agent_label(thread_id, &metadata);
-    let plain = agent_label_plain(label);
     let styled = agent_label_line(label);
-    assert_eq!(plain, styled.to_string());
+    let plain = styled.to_string();
     insta::assert_snapshot!(plain, @"Darwin [worker] /root/mailbox-test (5) (gpt-5 high)");
     let title = title_with_agent("Spawned", label, /*spawn_request*/ None).to_string();
     insta::assert_snapshot!(title, @"• Spawned Darwin [worker] /root/mailbox-test (5) (gpt-5 high)");
@@ -42,7 +41,6 @@ fn blank_task_path_does_not_add_a_suffix() {
         ..Default::default()
     };
     let label = agent_label(ThreadId::new(), &metadata);
-    assert_eq!(agent_label_plain(label), "Darwin");
     assert_eq!(agent_label_line(label).to_string(), "Darwin");
 }
 

@@ -736,10 +736,6 @@ fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
     agent_label_spans(agent).into()
 }
 
-fn agent_label_plain(agent: AgentLabel<'_>) -> String {
-    agent_label_line(agent).to_string()
-}
-
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let fallback = agent
         .thread_id
