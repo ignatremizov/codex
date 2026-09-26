@@ -163,7 +163,7 @@ async fn local_shell_command_preserves_unanswered_questions() {
     assert_eq!(question_count(&chat), 2);
     assert_matches!(
         op_rx.try_recv(),
-        Ok(Op::RunUserShellCommand { command }) if command == "echo hi"
+        Ok(Op::RunUserShellCommand { command, response_handling }) if command == "echo hi" && response_handling == Default::default()
     );
 }
 
