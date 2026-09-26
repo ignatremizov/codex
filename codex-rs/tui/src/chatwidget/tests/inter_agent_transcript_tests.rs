@@ -77,13 +77,14 @@ async fn live_app_server_inter_agent_message_renders_in_transcript() {
             "Agent message from `/root`:\n\nInspect the repository.",
         ),
     );
-    let cells = drain_insert_history(&mut rx);
+    let cells = drain_insert_history_cells(&mut rx);
     assert_eq!(cells.len(), 1);
     assert_eq!(
         cells[0].transcript_navigation_kind(),
         Some(crate::history_cell::TranscriptNavigationKind::Commentary)
     );
-    let rendered = lines_to_single_string(&cells[0]).replace("  \n", "\n");
+    let rendered =
+        lines_to_single_string(&cells[0].display_lines(/*width*/ 80)).replace("  \n", "\n");
     insta::assert_snapshot!(
         "live_app_server_inter_agent_message_renders_in_transcript",
         rendered

@@ -299,7 +299,7 @@ async fn replay_and_projection_preserve_agent_message_phase() {
         "turn-1".to_string(),
         ReplayKind::ResumeInitialMessages,
     );
-    let replayed = drain_insert_history(&mut rx);
+    let replayed = drain_insert_history_cells(&mut rx);
     assert_eq!(replayed.len(), 1);
     assert_eq!(
         replayed[0].transcript_navigation_kind(),
@@ -394,15 +394,12 @@ async fn replayed_delegated_tool_output_is_attributed_without_seeding_composer_h
         "replayed_delegated_tool_output",
         lines_to_single_string(&cells[0])
     );
-    let known_collab_agent_metadata =
-        crate::thread_transcript::collab_agent_metadata_from_items([&item]);
-    let projected = crate::thread_transcript::thread_items_to_transcript_cells_with_metadata(
+    let projected = crate::thread_transcript::thread_items_to_transcript_cells(
         /*thread_id*/ None,
         &chat.config.cwd,
         [item],
         crate::thread_transcript::RawReasoningVisibility::Hidden,
         /*config*/ None,
-        &known_collab_agent_metadata,
     );
     assert_eq!(
         projected

@@ -1,14 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
-fn future_deadline_at_ms(offset_ms: u128) -> i64 {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_millis();
-    i64::try_from(now_ms + offset_ms).expect("deadline should fit in i64")
-}
-
 #[tokio::test]
 async fn external_writer_snapshot_freezes_active_command_and_mcp_rows() {
     let mut rendered = Vec::new();

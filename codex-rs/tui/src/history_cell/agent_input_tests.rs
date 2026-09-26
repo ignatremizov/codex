@@ -385,43 +385,48 @@ fn transcript_projection_keeps_human_authorship_and_complete_agent_payload() {
         .map(|index| format!("Complete payload line {index}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let cells = crate::thread_transcript::thread_items_with_sources_to_transcript_cells(
+    let sourced_items = [
+        (
+            Some("human-turn".to_string()),
+            ThreadItem::UserMessage {
+                id: "human".to_string(),
+                client_id: None,
+                content: vec![UserInput::Text {
+                    text: "<agent_message>human text, not attribution</agent_message>".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            },
+        ),
+        (
+            Some("agent-turn".to_string()),
+            ThreadItem::AgentMessage {
+                id: "attributed".to_string(),
+                text: String::new(),
+                inter_agent_source: None,
+                attribution: Some(attribution),
+                input: Some(vec![UserInput::Text {
+                    text: payload.clone(),
+                    text_elements: Vec::new(),
+                }]),
+                phase: Some(codex_protocol::models::MessagePhase::Commentary),
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+        ),
+    ];
+    let cells = crate::thread_transcript::thread_items_to_transcript_cells(
         Some(recipient),
         &test_path_buf("/workspace").abs(),
-        [
-            (
-                Some("human-turn".to_string()),
-                ThreadItem::UserMessage {
-                    id: "human".to_string(),
-                    client_id: None,
-                    content: vec![UserInput::Text {
-                        text: "<agent_message>human text, not attribution</agent_message>"
-                            .to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                },
-            ),
-            (
-                Some("agent-turn".to_string()),
-                ThreadItem::AgentMessage {
-                    id: "attributed".to_string(),
-                    text: String::new(),
-                    inter_agent_source: None,
-                    attribution: Some(attribution),
-                    input: Some(vec![UserInput::Text {
-                        text: payload.clone(),
-                        text_elements: Vec::new(),
-                    }]),
-                    phase: Some(codex_protocol::models::MessagePhase::Commentary),
-                    memory_citation: None,
-                    delivery: None,
-                    questions: None,
-                },
-            ),
-        ],
+        sourced_items.iter().map(|(_, item)| item.clone()),
         crate::thread_transcript::RawReasoningVisibility::Hidden,
         /*config*/ None,
-        &Default::default(),
+    );
+    crate::thread_transcript::attach_projected_user_identities(
+        &cells,
+        sourced_items
+            .iter()
+            .map(|(turn, item)| (turn.as_deref(), item)),
     );
     assert_eq!(cells.len(), 2);
     assert!(

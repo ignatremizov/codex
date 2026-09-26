@@ -432,19 +432,29 @@ pub(super) fn drain_insert_history_transcript_normalized(
     })
 }
 
+/// Retains cell identity and navigation semantics for assertions before rendering.
+pub(super) fn drain_insert_history_cells(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> Vec<Box<dyn HistoryCell>> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .collect()
+}
+
 pub(super) fn drain_insert_history_with(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     render: impl Fn(&dyn HistoryCell) -> Vec<ratatui::text::Line<'static>>,
 ) -> Vec<Vec<ratatui::text::Line<'static>>> {
     let mut out = Vec::new();
-    while let Ok(ev) = rx.try_recv() {
-        if let AppEvent::InsertHistoryCell(cell) = ev {
-            let mut lines = render(cell.as_ref());
-            if !cell.is_stream_continuation() && !out.is_empty() && !lines.is_empty() {
-                lines.insert(0, "".into());
-            }
-            out.push(lines)
+    for cell in drain_insert_history_cells(rx) {
+        let mut lines = render(cell.as_ref());
+        if !cell.is_stream_continuation() && !out.is_empty() && !lines.is_empty() {
+            lines.insert(0, "".into());
         }
+        out.push(lines);
     }
     out
 }
@@ -479,7 +489,15 @@ pub(super) fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUs
     }
 }
 
-fn thread_id(chat: &ChatWidget) -> String {
+pub(super) fn future_deadline_at_ms(offset_ms: u128) -> i64 {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after Unix epoch")
+        .as_millis();
+    i64::try_from(now_ms + offset_ms).expect("deadline should fit in i64")
+}
+
+pub(super) fn thread_id(chat: &ChatWidget) -> String {
     chat.thread_id.map(|id| id.to_string()).unwrap_or_default()
 }
 
