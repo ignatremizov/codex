@@ -207,6 +207,8 @@ jobs:
         id: regenerate_snapshots
         env:
           CARGO_PROFILE_CI_TEST_DEBUG: "0"
+          # Retain mismatches for review without accepting them or hiding test failures.
+          INSTA_UPDATE: "new"
           NEXTEST_FILTER: ${{ inputs.nextest_filter }}
           NEXTEST_PACKAGES: ${{ inputs.nextest_packages }}
           REGENERATE_TUI_SNAPSHOTS: ${{ inputs.regenerate_tui_snapshots }}
@@ -301,6 +303,16 @@ jobs:
           name: tui-snapshots-${{ github.run_id }}
           path: codex-rs/tui/**/*.snap
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload nextest JUnit report
+        if: always() && steps.regenerate_snapshots.outcome != 'skipped'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: nextest-junit-manual-verify-${{ github.run_id }}
+          # nextest's default store is workspace-relative, not CARGO_TARGET_DIR-relative.
+          path: codex-rs/target/nextest/default/junit.xml
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload pending snapshots
@@ -628,6 +640,8 @@ jobs:
       - name: Run nextest shard
         id: test
         env:
+          # CI's default `auto` mode otherwise suppresses .snap.new files entirely.
+          INSTA_UPDATE: "new"
           NEXTEST_FILTER: ${{ inputs.nextest_filter }}
           NEXTEST_STATUS_LEVEL: leak
         shell: bash
@@ -656,7 +670,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: nextest-junit-manual-verify-${{ github.run_id }}-shard-${{ matrix.shard }}
-          path: ${{ env.CARGO_TARGET_DIR }}/nextest/default/junit.xml
+          path: codex-rs/target/nextest/default/junit.xml
           if-no-files-found: warn
           retention-days: 14
 
