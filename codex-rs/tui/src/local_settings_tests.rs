@@ -96,11 +96,13 @@ async fn dictation_preference_changes_only_on_local_reload() -> anyhow::Result<(
         .await?;
     config
         .features
-        .enable(codex_features::Feature::VoiceTranscription);
+        .enable(codex_features::Feature::VoiceTranscription)
+        .expect("test config should allow feature update");
     let local = LocalSettings::from(&config);
     config
         .features
-        .disable(codex_features::Feature::VoiceTranscription);
+        .disable(codex_features::Feature::VoiceTranscription)
+        .expect("test config should allow feature update");
     assert_eq!(
         (
             crate::dictation::keymap_features(&local).voice_transcription_enabled,

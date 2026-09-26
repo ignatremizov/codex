@@ -100,8 +100,10 @@ fn preserves_long_unicode_and_empty_results_exactly() {
 
 #[test]
 fn rejects_results_after_maximum_sequence_is_consumed() {
-    let mut transcript = OrderedTranscript::default();
-    transcript.next_sequence = u64::MAX;
+    let mut transcript = OrderedTranscript {
+        next_sequence: u64::MAX,
+        ..Default::default()
+    };
     assert_eq!(
         transcript.resolve(u64::MAX, Ok("last".into())),
         vec![ResolvedChunk {
