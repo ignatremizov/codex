@@ -3,7 +3,7 @@ use codex_app_server_protocol::ItemCompletedNotification;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SubAgentCompletionModelVisibility;
-use codex_protocol::protocol::sub_agent_completion_transcript_with_visibility;
+use codex_protocol::protocol::sub_agent_completion_item_with_visibility;
 use pretty_assertions::assert_eq;
 
 fn delta(app: &mut App, id: &str, text: &str) {
@@ -18,26 +18,30 @@ fn delta(app: &mut App, id: &str, text: &str) {
     );
 }
 
-fn completed(app: &mut App, id: String, text: String, phase: MessagePhase) {
+fn completed(app: &mut App, item: ThreadItem) {
     app.chat_widget.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
-            item: ThreadItem::AgentMessage {
-                id,
-                text,
-                inter_agent_source: None,
-                phase: Some(phase),
-                attribution: None,
-                input: None,
-                memory_citation: None,
-                delivery: None,
-                questions: None,
-            },
+            item,
         }),
         /*replay_kind*/ None,
     );
+}
+
+fn authored_answer(id: &str, text: &str) -> ThreadItem {
+    ThreadItem::AgentMessage {
+        id: id.to_string(),
+        text: text.to_string(),
+        inter_agent_source: None,
+        phase: Some(MessagePhase::FinalAnswer),
+        attribution: None,
+        input: None,
+        memory_citation: None,
+        delivery: None,
+        questions: None,
+    }
 }
 
 // Dispatch every event, including provisional stream cells, through the real App path.
@@ -84,7 +88,7 @@ async fn committed_stream_cells_consolidate_once_before_async_notice() -> Result
         .iter()
         .map(rendered_line_text)
         .collect::<Vec<_>>();
-    let (notice_id, notice_text) = sub_agent_completion_transcript_with_visibility(
+    let notice = sub_agent_completion_item_with_visibility(
         "/root/reviewer",
         &AgentStatus::Completed(Some("Finished review.".to_string())),
         SubAgentCompletionModelVisibility::NotVisible,
@@ -92,9 +96,7 @@ async fn committed_stream_cells_consolidate_once_before_async_notice() -> Result
     .expect("completion notice");
     completed(
         &mut app,
-        notice_id.to_string(),
-        notice_text,
-        MessagePhase::Commentary,
+        ThreadItem::from(codex_protocol::items::TurnItem::AgentMessage(notice)),
     );
     assert_eq!(
         dispatch(&mut app, &mut tui, &mut app_server, &mut events).await?,
@@ -113,12 +115,7 @@ async fn committed_stream_cells_consolidate_once_before_async_notice() -> Result
     for _ in 0..8 {
         app.chat_widget.on_commit_tick();
     }
-    completed(
-        &mut app,
-        "first-answer".to_string(),
-        answer.to_string(),
-        MessagePhase::FinalAnswer,
-    );
+    completed(&mut app, authored_answer("first-answer", answer));
     assert_eq!(
         dispatch(&mut app, &mut tui, &mut app_server, &mut events).await?,
         1
@@ -155,12 +152,7 @@ async fn committed_stream_cells_consolidate_once_before_async_notice() -> Result
     for _ in 0..8 {
         app.chat_widget.on_commit_tick();
     }
-    completed(
-        &mut app,
-        "second-answer".to_string(),
-        answer.to_string(),
-        MessagePhase::FinalAnswer,
-    );
+    completed(&mut app, authored_answer("second-answer", answer));
     assert_eq!(
         dispatch(&mut app, &mut tui, &mut app_server, &mut events).await?,
         1

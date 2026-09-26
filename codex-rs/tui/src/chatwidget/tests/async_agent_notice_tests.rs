@@ -3,7 +3,7 @@ use codex_app_server_protocol::MailboxReadItem;
 use codex_app_server_protocol::MailboxReadSelector;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SubAgentCompletionModelVisibility;
-use codex_protocol::protocol::sub_agent_completion_transcript_with_visibility;
+use codex_protocol::protocol::sub_agent_completion_item_with_visibility;
 use pretty_assertions::assert_eq;
 
 fn message(id: String, text: String, phase: MessagePhase) -> AppServerThreadItem {
@@ -21,13 +21,13 @@ fn message(id: String, text: String, phase: MessagePhase) -> AppServerThreadItem
 }
 
 fn completion(visibility: SubAgentCompletionModelVisibility) -> AppServerThreadItem {
-    let (id, text) = sub_agent_completion_transcript_with_visibility(
+    let item = sub_agent_completion_item_with_visibility(
         "/root/reviewer",
         &AgentStatus::Completed(Some("Finished review.".to_string())),
         visibility,
     )
     .expect("completion");
-    message(id.to_string(), text, MessagePhase::Commentary)
+    AppServerThreadItem::from(codex_protocol::items::TurnItem::AgentMessage(item))
 }
 
 fn deliver(chat: &mut ChatWidget, item: AppServerThreadItem) {
