@@ -267,7 +267,13 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
                 .note_turn_finished(&TurnStatus::Completed, before_disconnect);
         }
         app.schedule_recap_check(id, Instant::now());
-        assert!(app.recap.scheduled_check.is_some());
+        assert_eq!(
+            crate::app::recap::test_support::pending_work(&app.recap),
+            crate::app::recap::test_support::PendingRecapWork {
+                scheduled_check: true,
+                in_flight_request: false,
+            },
+        );
         app.pending_managed_worktree_creation = true;
         app.agents_overview
             .view_state

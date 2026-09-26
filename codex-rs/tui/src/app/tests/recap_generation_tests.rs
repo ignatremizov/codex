@@ -377,7 +377,13 @@ async fn auto_recap_opt_out_blocks_requests_and_cleans_up_pending_start() -> Res
 
     app.local_settings.tui.auto_recap = true;
     app.request_recap(&app_server, thread_id, RecapTrigger::Automatic);
-    assert!(app.recap.in_flight_request.is_some());
+    assert_eq!(
+        crate::app::recap::test_support::pending_work(&app.recap),
+        crate::app::recap::test_support::PendingRecapWork {
+            scheduled_check: false,
+            in_flight_request: true,
+        },
+    );
     let started_event = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), app_event_rx.recv())
         .await?
         .expect("recap start event");
