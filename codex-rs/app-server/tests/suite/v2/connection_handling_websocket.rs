@@ -1138,8 +1138,11 @@ async fn read_injection_response_and_items(
             }
             _ => {}
         }
-        if response.is_some() && !started.is_empty() && !completed.is_empty() {
-            return Ok((response.expect("response was checked"), started, completed));
+        if !started.is_empty()
+            && !completed.is_empty()
+            && let Some(response) = response.take()
+        {
+            return Ok((response, started, completed));
         }
     }
 }
