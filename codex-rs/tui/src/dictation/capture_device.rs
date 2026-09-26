@@ -5,6 +5,7 @@ use super::Block;
 use super::Control;
 use super::enqueue;
 use cpal::FromSample;
+use cpal::Sample;
 use cpal::SizedSample;
 use cpal::traits::DeviceTrait;
 use std::sync::Arc;
