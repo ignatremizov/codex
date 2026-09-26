@@ -1133,7 +1133,7 @@ impl PickerState {
         };
         self.overlay = Some(Overlay::new_inspection_transcript(
             cells.clone(),
-            self.pager_keymap.clone(),
+            self.keymap.pager.clone(),
         ));
         self.pending_transcript_open = None;
         self.transcript_loading_frame_shown = false;
