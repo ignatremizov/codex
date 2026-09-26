@@ -998,11 +998,6 @@ impl ChatComposer {
         self.sync_popups();
     }
 
-    pub(crate) fn set_mcp_server_names(&mut self, names: Vec<String>) {
-        self.mcp_server_names = names;
-        self.sync_popups();
-    }
-
     pub fn set_goal_command_enabled(&mut self, enabled: bool) {
         self.goal_command_enabled = enabled;
     }
