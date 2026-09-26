@@ -46,11 +46,9 @@ use crate::WaitForEnvironmentToolConfig;
 use crate::config::CurrentTimeReminderConfig;
 use crate::config::MultiAgentMessageDelivery;
 use crate::environment_selection::TurnEnvironmentState;
-use crate::mcp_tool_exposure::McpToolExposure;
 use crate::responses_metadata::TurnToolFunctionInfo;
 use crate::responses_metadata::TurnToolNamespacesInfo;
 use crate::responses_metadata::TurnToolSource;
-use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::mcp_config_for_test;
@@ -606,29 +604,6 @@ async fn allowed_tools_filter_sources_before_code_mode_and_discovery() {
             }
         }
     }
-}
-
-fn build_internal_guardian_tool_router(
-    session: &Session,
-    step_context: &StepContext,
-) -> ToolRouter {
-    let mcp_tool_exposure = McpToolExposure {
-        direct_tools: Default::default(),
-        deferred_tools: None,
-        allow_direct_fallback: false,
-    };
-    super::build_tool_router(
-        session,
-        step_context.turn.as_ref(),
-        &step_context.settings.model_info,
-        &step_context.environments,
-        &step_context.mcp,
-        &mcp_tool_exposure,
-        /*apps_enabled*/ false,
-        &step_context.turn.extension_data,
-        /*tool_suggest_candidates*/ None,
-    )
-    .expect("build internal Guardian tool router")
 }
 
 #[tokio::test]

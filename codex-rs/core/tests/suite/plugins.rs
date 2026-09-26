@@ -983,16 +983,12 @@ async fn capability_sections_render_in_developer_message_in_order() -> Result<()
     let codex = Arc::clone(&test_codex.codex);
 
     codex
-        .submit(Op::UserInput {
-            items: vec![codex_protocol::user_input::UserInput::Text {
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            codex_protocol::user_input::UserInput::Text {
                 text: "hello".into(),
                 text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+            },
+        ]))
         .await?;
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
