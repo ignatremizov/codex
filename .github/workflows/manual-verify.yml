@@ -163,6 +163,12 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
           echo "SCCACHE_DIR=$HOME/.cache/sccache" >> "$GITHUB_ENV"
 
+      - name: Install uv for generated Python SDK artifacts
+        if: inputs.regenerate_app_server_schema
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.3"
+
       - name: Regenerate app-server schema fixtures
         id: regenerate_app_server_schema
         if: inputs.regenerate_app_server_schema
