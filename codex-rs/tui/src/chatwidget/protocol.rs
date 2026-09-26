@@ -25,9 +25,9 @@ impl ChatWidget {
         if let ServerNotification::ContextCompactionStatus(status) = &notification
             && (replay_kind.is_some()
                 || status.message.trim().is_empty()
-                || !self
+                || self
                     .thread_id()
-                    .is_some_and(|id| id.to_string() == status.thread_id)
+                    .is_none_or(|id| id.to_string() != status.thread_id)
                 || !self.status_state.compaction.as_ref().is_some_and(|active| {
                     active.id == status.item_id && active.turn_id == status.turn_id
                 }))
