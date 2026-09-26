@@ -2,6 +2,7 @@ use super::*;
 use crate::diff_render::DiffLineType;
 use crate::diff_render::DiffRenderStyleContext;
 use crate::diff_render::render_wrapped_diff_line;
+use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -34,7 +35,7 @@ fn custom_colors_quantize_and_ansi16_omits_all_content_fills() {
         diff_del_bg: Some("#870000".to_string()),
         ..Tui::default()
     });
-    assert_eq!(
+    assert_matches!(
         resolve_for(
             DiffTheme::Dark,
             DiffColorLevel::Ansi256,
@@ -73,7 +74,7 @@ fn custom_colors_quantize_and_ansi16_omits_all_content_fills() {
 #[test]
 fn automatic_modes_preserve_explicit_terminal_default_scope() {
     for mode in [DiffBackgroundMode::Auto, DiffBackgroundMode::Theme] {
-        assert_eq!(
+        assert_matches!(
             resolve_for(
                 DiffTheme::Dark,
                 DiffColorLevel::TrueColor,
