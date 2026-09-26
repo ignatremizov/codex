@@ -1508,7 +1508,7 @@ async fn cli_main(
                         let auth_file_selection =
                             codex_login::AuthFileSelection::from_env(&codex_home)?;
                         let config = ConfigBuilder::default()
-                            .codex_home(codex_home)
+                            .codex_home(codex_home.to_path_buf())
                             .auth_file_selection(auth_file_selection)
                             .cli_overrides(cli_overrides)
                             .build()
