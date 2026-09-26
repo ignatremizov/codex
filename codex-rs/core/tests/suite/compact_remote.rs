@@ -1,9 +1,11 @@
 //! Exercises streamed remote compaction, including the retained checkpoint and continuing history.
 
+use super::compact::allow_echo_commands;
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
+use codex_core::X_CODEX_ROUTING_HINT_HEADER;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::InitialHistory;
@@ -14,9 +16,13 @@ use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
+use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageReference;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelServiceTier;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -25,8 +31,11 @@ use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_rollout::RolloutRecorder;
+use core_test_support::context_snapshot;
+use core_test_support::context_snapshot::ContextSnapshotOptions;
 use core_test_support::responses;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
@@ -35,6 +44,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex as base_test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_event_with_timeout;
@@ -629,6 +639,17 @@ async fn amazon_bedrock_automatic_compaction_uses_v2_responses_endpoint() -> Res
     Ok(())
 }
 
+// A successful v2 compact stream contains exactly one compaction item and completion.
+fn streamed_compaction_fixture(response_id: &str, summary: &str) -> String {
+    sse(vec![
+        json!({
+            "type": "response.output_item.done",
+            "item": { "type": "compaction", "encrypted_content": summary },
+        }),
+        responses::ev_completed(response_id),
+    ])
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -650,22 +671,12 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
                 responses::ev_assistant_message("m1", "FIRST_REMOTE_REPLY"),
                 responses::ev_completed("resp-1"),
             ]),
+            streamed_compaction_fixture("resp-compact", "ENCRYPTED_COMPACTION_SUMMARY"),
             responses::sse(vec![
                 responses::ev_assistant_message("m2", "AFTER_COMPACT_REPLY"),
                 responses::ev_completed("resp-2"),
             ]),
         ],
-    )
-    .await;
-
-    let compacted_history = vec![ResponseItem::Compaction {
-        id: None,
-        encrypted_content: "ENCRYPTED_COMPACTION_SUMMARY".to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    }];
-    let compact_mock = responses::mount_compact_json_once(
-        harness.server(),
-        serde_json::json!({ "output": compacted_history.clone() }),
     )
     .await;
 
@@ -688,8 +699,14 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         .await?;
     wait_for_turn_complete(&codex).await;
 
-    let compact_request = compact_mock.single_request();
-    assert_eq!(compact_request.path(), "/v1/responses/compact");
+    let response_requests = responses_mock.requests();
+    assert_eq!(response_requests.len(), 3);
+    let compact_request = &response_requests[1];
+    assert_eq!(compact_request.path(), "/v1/responses");
+    assert_eq!(
+        compact_request.inputs_of_type("compaction_trigger").len(),
+        1
+    );
     assert_eq!(
         compact_request.header("chatgpt-account-id").as_deref(),
         Some("account_id")
@@ -738,7 +755,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         json!({
             "trigger": "manual",
             "reason": "user_requested",
-            "implementation": "responses_compact",
+            "implementation": "responses_compaction_v2",
             "phase": "standalone_turn",
             "strategy": "memento",
         })
@@ -748,7 +765,6 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         compact_body.get("model").and_then(|v| v.as_str()),
         Some(harness.test().session_configured.model.as_str())
     );
-    let response_requests = responses_mock.requests();
     let first_response_request = response_requests.first().expect("initial request missing");
     let first_response_metadata: Value = serde_json::from_str(
         &first_response_request
@@ -794,7 +810,6 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         "expected compact request to include assistant history"
     );
 
-    let response_requests = responses_mock.requests();
     let follow_up_request = response_requests.last().expect("follow-up request missing");
     let follow_up_metadata: Value = serde_json::from_str(
         &follow_up_request
@@ -841,18 +856,21 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         "expected follow-up request to drop pre-compaction assistant messages"
     );
     assert!(
-        !follow_up_body.contains("hello remote compact"),
-        "expected follow-up request to drop compacted-away user turns when remote output omits them"
+        follow_up_body.contains("hello remote compact"),
+        "v2 compaction must retain real user input while replacing assistant/tool history"
     );
 
     insta::assert_snapshot!(
         "remote_manual_compact_with_history_shapes",
-        format_labeled_requests_snapshot(
-            "Remote manual /compact where remote compact output is compaction-only: follow-up layout uses the returned compaction item plus new user message.",
+        context_snapshot::format_labeled_requests_snapshot(
+            "Streamed manual /compact retains user history, installs one compaction checkpoint, and starts a fresh context window for the follow-up.",
             &[
-                ("Remote Compaction Request", &compact_request),
+                ("Remote Compaction Request", compact_request),
                 ("Remote Post-Compaction History Layout", follow_up_request),
-            ]
+            ],
+            &ContextSnapshotOptions::default()
+                .rewrite_known_segments()
+                .strip_response_item_ids(),
         )
     );
 
@@ -863,39 +881,19 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
 async fn remote_compact_uses_agent_identity_assertion() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let harness = TestCodexHarness::with_builder(
-        test_codex().with_auth(CodexAuth::AgentIdentity(
-            AgentIdentityAuth::from_record(
-                AgentIdentityAuthRecord {
-                    agent_runtime_id: "agent-runtime-compact".to_string(),
-                    agent_private_key: TEST_AGENT_IDENTITY_PRIVATE_KEY.to_string(),
-                    account_id: "account-compact".to_string(),
-                    chatgpt_user_id: "user-compact".to_string(),
-                    email: Some("agent@example.com".to_string()),
-                    plan_type: AccountPlanType::Plus,
-                    chatgpt_account_is_fedramp: false,
-                    task_id: Some("task-compact".to_string()),
-                },
-                "https://auth.openai.com/api/accounts",
-                &codex_login::test_support::transport_default_auth_route_config(),
-            )
-            .await?,
-        )),
-    )
-    .await?;
+    let auth_manager = codex_login::test_support::auth_manager_with_agent_identity().await?;
+    let auth = auth_manager.auth().await.context("test agent identity")?;
+    let harness = TestCodexHarness::with_builder(test_codex().with_auth(auth)).await?;
     let codex = harness.test().codex.clone();
-
-    let _responses_mock = responses::mount_sse_once(
+    let responses_mock = responses::mount_sse_sequence(
         harness.server(),
-        responses::sse(vec![
-            responses::ev_assistant_message("m1", "REMOTE_REPLY"),
-            responses::ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-    let compact_mock = responses::mount_compact_json_once(
-        harness.server(),
-        serde_json::json!({ "output": compacted_summary_only_output("COMPACTED") }),
+        vec![
+            sse(vec![
+                responses::ev_assistant_message("m1", "REMOTE_REPLY"),
+                responses::ev_completed("resp-1"),
+            ]),
+            streamed_compaction_fixture("resp-compact", "COMPACTED"),
+        ],
     )
     .await;
 
@@ -910,8 +908,14 @@ async fn remote_compact_uses_agent_identity_assertion() -> Result<()> {
     codex.submit(Op::Compact).await?;
     wait_for_turn_complete(&codex).await;
 
-    let compact_request = compact_mock.single_request();
-    assert_eq!(compact_request.path(), "/v1/responses/compact");
+    let response_requests = responses_mock.requests();
+    assert_eq!(response_requests.len(), 2);
+    let compact_request = &response_requests[1];
+    assert_eq!(compact_request.path(), "/v1/responses");
+    assert_eq!(
+        compact_request.inputs_of_type("compaction_trigger").len(),
+        1
+    );
     assert!(
         compact_request
             .header("authorization")
@@ -920,7 +924,7 @@ async fn remote_compact_uses_agent_identity_assertion() -> Result<()> {
     );
     assert_eq!(
         compact_request.header("chatgpt-account-id").as_deref(),
-        Some("account-compact")
+        Some("test-account-id")
     );
     let compact_body = compact_request.body_json();
     let model = compact_body["model"]
@@ -944,6 +948,13 @@ async fn assert_remote_manual_compact_request_parity(
     let uses_codex_backend = auth.uses_codex_backend();
     let mut builder = test_codex()
         .with_auth(auth)
+        .with_model_info_override("gpt-5.5", |model| {
+            model.service_tiers = vec![ModelServiceTier {
+                id: "priority".to_string(),
+                name: "Fast".to_string(),
+                description: "Priority processing.".to_string(),
+            }];
+        })
         .with_pre_build_hook(allow_echo_commands);
     if let Some(service_tier) = configured_service_tier {
         builder = builder.with_config(move |config| {
@@ -1000,20 +1011,27 @@ async fn assert_remote_manual_compact_request_parity(
                 responses::ev_assistant_message("turn-five-assistant", "TURN_FIVE_ASSISTANT"),
                 responses::ev_completed("turn-five-response"),
             ]),
+            streamed_compaction_fixture("response-compact", "REMOTE_CACHE_TIER_SUMMARY"),
         ],
     )
     .await;
-    let compact_mock = responses::mount_compact_user_history_with_summary_once(
-        harness.server(),
-        "REMOTE_CACHE_TIER_SUMMARY",
-    )
-    .await;
-
+    let (sandbox_policy, permission_profile) = turn_permission_fields(
+        PermissionProfile::Disabled,
+        harness.test().config.cwd.as_path(),
+    );
     codex
-        .start_or_steer_turn(unrestricted_user_turn(vec![UserInput::Text {
-            text: "TURN_ONE_USER".to_string(),
-            text_elements: Vec::new(),
-        }]))
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "TURN_ONE_USER".to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
         .await?;
     wait_for_turn_complete(&codex).await;
 
@@ -1067,19 +1085,23 @@ async fn assert_remote_manual_compact_request_parity(
     let response_requests = responses_mock.requests();
     assert_eq!(
         response_requests.len(),
-        7,
-        "expected five turns with one unsupported tool continuation and one shell command continuation"
+        8,
+        "expected seven normal requests across five turns and one streamed compaction request"
+    );
+    let normal_request = &response_requests[6];
+    let compact_request = &response_requests[7];
+    assert_eq!(compact_request.path(), "/v1/responses");
+    assert_eq!(
+        response_requests
+            .iter()
+            .filter(|request| !request.inputs_of_type("compaction_trigger").is_empty())
+            .count(),
+        1,
     );
     assert_eq!(
-        compact_mock.requests().len(),
-        1,
-        "expected exactly one remote compact request"
+        compact_request.inputs_of_type("compaction_trigger").len(),
+        1
     );
-    let normal_request = response_requests
-        .last()
-        .cloned()
-        .expect("last turn request missing");
-    let compact_request = compact_mock.single_request();
     let normal_body = normal_request.body_json();
     let compact_body = compact_request.body_json();
     let expected_routing_hint = |body: &Value| {
@@ -1102,58 +1124,36 @@ async fn assert_remote_manual_compact_request_parity(
         expected_routing_hint(&compact_body)
     );
 
-    let mut expected_compact_body_without_input = normal_body.clone();
-    let expected_compact_object = expected_compact_body_without_input
-        .as_object_mut()
-        .expect("responses request body should be an object");
-    for field in [
-        "input",
-        "client_metadata",
-        "include",
-        "store",
-        "stream",
-        "tool_choice",
-    ] {
-        expected_compact_object.remove(field);
+    // Both calls now use the same Responses transport. Only input and turn-scoped
+    // metadata differ: stream/store/include/tool_choice must remain in parity too.
+    let mut expected_shared_body = normal_body.clone();
+    let mut compact_shared_body = compact_body.clone();
+    for body in [&mut expected_shared_body, &mut compact_shared_body] {
+        let object = body.as_object_mut().context("Responses request object")?;
+        object.remove("input");
+        object.remove("client_metadata");
     }
-    if expected_service_tier.is_none() {
-        expected_compact_object.remove("service_tier");
-    }
-    let mut compact_body_without_input = compact_body.clone();
-    compact_body_without_input
-        .as_object_mut()
-        .expect("compact request body should be an object")
-        .remove("input");
-    let canonical_compact_body_without_input = canonical_json(&compact_body_without_input);
-    let canonical_expected_compact_body_without_input =
-        canonical_json(&expected_compact_body_without_input);
-
+    assert_eq!(compact_shared_body, expected_shared_body);
+    assert!(compact_body["prompt_cache_key"].is_string());
     assert_eq!(
-        json!({
-            "compact_body_without_input": canonical_compact_body_without_input,
-            "expected_compact_body_without_input": canonical_expected_compact_body_without_input,
-            "prompt_cache_key_matches_responses": compact_body["prompt_cache_key"] == normal_body["prompt_cache_key"],
-            "prompt_cache_key_present": compact_body["prompt_cache_key"].is_string(),
-            "service_tier": compact_body.get("service_tier").and_then(Value::as_str),
-        }),
-        json!({
-            "compact_body_without_input": canonical_expected_compact_body_without_input,
-            "expected_compact_body_without_input": canonical_expected_compact_body_without_input,
-            "prompt_cache_key_matches_responses": true,
-            "prompt_cache_key_present": true,
-            "service_tier": expected_service_tier,
-        }),
-        "compact requests should carry the same shared request fields as /responses"
+        compact_body["prompt_cache_key"],
+        normal_body["prompt_cache_key"]
     );
+    assert_eq!(
+        compact_body.get("service_tier").and_then(Value::as_str),
+        expected_service_tier
+    );
+    assert_eq!(compact_body["stream"], json!(true));
+    assert_eq!(compact_body["store"], json!(false));
 
     insta::assert_snapshot!(
         snapshot_name,
         context_snapshot::format_request_body_diff_snapshot(
             scenario,
             "Last Normal /responses Request",
-            &normal_request,
-            "Remote /responses/compact Request",
-            &compact_request,
+            normal_request,
+            "Streamed Compaction /responses Request",
+            compact_request,
             &ContextSnapshotOptions::default().strip_response_item_ids(),
         )
     );
@@ -1162,16 +1162,15 @@ async fn assert_remote_manual_compact_request_parity(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_manual_compact_api_auth_omits_service_tier_and_reuses_prompt_cache_key()
--> Result<()> {
+async fn remote_manual_compact_api_auth_reuses_service_tier_and_prompt_cache_key() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     assert_remote_manual_compact_request_parity(
         CodexAuth::from_api_key("dummy"),
         Some(ServiceTier::Fast),
-        /*expected_service_tier*/ None,
+        Some("priority"),
         "remote_manual_compact_api_auth_prompt_cache_key_request_diff",
-        "After five varied API-key-auth turns, remote manual compaction omits service_tier, reuses prompt_cache_key, and still omits responses-only fields.",
+        "After five varied API-key-auth turns, streamed manual compaction reuses service_tier, prompt_cache_key, and the shared Responses request fields.",
     )
     .await?;
 
@@ -1188,7 +1187,7 @@ async fn remote_manual_compact_chatgpt_auth_reuses_service_tier_and_prompt_cache
         Some(ServiceTier::Fast),
         Some("priority"),
         "remote_manual_compact_chatgpt_auth_service_tier_prompt_cache_key_request_diff",
-        "After five varied ChatGPT-auth turns, remote manual compaction reuses service_tier and prompt_cache_key while omitting responses-only fields.",
+        "After five varied ChatGPT-auth turns, streamed manual compaction reuses service_tier, prompt_cache_key, and the shared Responses request fields.",
     )
     .await?;
 

@@ -350,18 +350,6 @@ fn developer_message(text: String) -> ResponseItem {
     }
 }
 
-fn assistant_message(text: &str) -> ResponseItem {
-    ResponseItem::Message {
-        id: None,
-        role: "assistant".to_string(),
-        content: vec![ContentItem::OutputText {
-            text: text.to_string(),
-        }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: None,
-    }
-}
-
 fn persistent_agent_reply_route(agent_id: ThreadId, nickname: &str) -> ResponseItem {
     ContextualUserFragment::into(AgentReplyRoute::until_disabled(AgentContextIdentity::V1 {
         agent_id,
