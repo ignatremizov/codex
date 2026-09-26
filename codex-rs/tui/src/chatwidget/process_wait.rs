@@ -64,7 +64,6 @@ impl ChatWidget {
         let Some(wait) = wait else {
             return;
         };
-        self.transcript.needs_final_message_separator = true;
         let cell = history_cell::new_unified_exec_interaction(wait.command_display, String::new());
         self.on_async_agent_notice(cell);
         self.restore_reasoning_status_header();

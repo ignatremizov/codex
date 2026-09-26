@@ -91,7 +91,6 @@ impl ChatWidget {
         } else {
             self.on_async_agent_notice(cell);
         }
-        self.transcript.had_work_activity = true;
         self.request_redraw();
     }
 
@@ -123,6 +122,5 @@ impl ChatWidget {
         } else {
             self.add_to_history(cell);
         }
-        self.transcript.had_work_activity = true;
     }
 }

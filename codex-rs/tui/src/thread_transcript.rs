@@ -454,7 +454,7 @@ fn item_to_cells(
                 cells.push(Arc::new(command.into_cell(output_preview_line_limits)));
             }
         }
-        ThreadItem::MailboxRead(_) | ThreadItem::Sleep(_) => return None,
+        ThreadItem::MailboxRead(_) | ThreadItem::Sleep(_) => {}
         other => cells.extend(other_items::cells(
             other,
             cwd,
