@@ -146,6 +146,7 @@ fn turn_started_emits_turn_started_event() {
     let collected =
         processor.collect_thread_events(ServerNotification::TurnStarted(TurnStartedNotification {
             thread_id: "thread-1".to_string(),
+            agent_queue: None,
             turn: Turn {
                 id: "turn-1".to_string(),
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
