@@ -1,6 +1,8 @@
 use super::*;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::BaseInstructionsProvenance;
+use pretty_assertions::assert_eq;
+use test_case::test_case;
 
 #[path = "subagent_role_instruction_failure_tests.rs"]
 mod failure_tests;
