@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use super::super::RemoteAppServerClient;
 use super::super::RemoteClientCommand;
+use super::super::RemoteServerMetadata;
 use crate::RequestResult;
 
 fn client(home: &str, response: RequestResult) -> RemoteAppServerClient {
@@ -28,8 +29,10 @@ fn client(home: &str, response: RequestResult) -> RemoteAppServerClient {
         command_tx,
         event_rx,
         pending_events: VecDeque::new(),
-        server_version: None,
-        codex_home: Some(home.to_string()),
+        metadata: RemoteServerMetadata {
+            codex_home: Some(home.to_string()),
+            ..Default::default()
+        },
         auth_profile: None,
         worker_handle,
     }
