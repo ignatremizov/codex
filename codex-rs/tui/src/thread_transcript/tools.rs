@@ -158,6 +158,7 @@ impl CommandHistory {
             exit_code,
             duration_ms,
             user_shell_response_handling,
+            ..
         } = item
         else {
             return None;

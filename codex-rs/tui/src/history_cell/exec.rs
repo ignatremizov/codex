@@ -179,12 +179,11 @@ impl UnifiedExecProcessesCell {
             return out;
         }
         for process in self.processes.iter().take(/*n*/ 16) {
-            let command = process
+            let mut command: Vec<HyperlinkLine> = process
                 .command_display
                 .lines()
                 .map(|line| Line::from(line.to_owned().fg(accent_color())).into())
                 .collect::<Vec<_>>();
-            let mut command = command;
             if let Some(response_handling) = process.user_shell_response_handling
                 && let Some(first) = command.first_mut()
             {
@@ -221,7 +220,7 @@ impl UnifiedExecProcessesCell {
                 "    ↳ ".dim(),
                 "      ".into(),
             ));
-            out.push(vec!["    id ".dim(), process.process_id.clone().green()].into());
+            out.push(Line::from(vec!["    id ".dim(), process.process_id.clone().green()]).into());
         }
         let remaining = self.processes.len().saturating_sub(/*rhs*/ 16);
         if remaining > 0 {
