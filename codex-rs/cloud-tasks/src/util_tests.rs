@@ -1,4 +1,5 @@
 use super::*;
+use codex_core::config::Config;
 use codex_core::config::LoaderOverrides;
 use codex_login::CodexAuth;
 use http::header::AUTHORIZATION;
@@ -64,10 +65,16 @@ async fn config_reload_preserves_injected_auth_file_selection() {
         .build()
         .await
         .expect("test config should load");
-    let reloaded = config
-        .rebuild_preserving_session_layers(&config)
-        .await
-        .expect("test config should reload");
+    let reloaded = Config::rebuild_with_session_layers_and_auth_file_selection(
+        &config.config_layer_stack,
+        config.cwd.to_path_buf(),
+        &config.config_layer_stack,
+        config.codex_home.clone(),
+        /*default_zsh_path*/ None,
+        config.auth_file_selection.clone(),
+    )
+    .await
+    .expect("test config should reload");
 
     assert_eq!(reloaded.auth_file_selection, selection);
 }

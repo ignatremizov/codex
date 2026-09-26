@@ -4798,7 +4798,8 @@ mod tests {
         assert!(!app_server.analytics_default_enabled);
         assert!(!app_server.remote_control);
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::Stdio
         );
     }
@@ -5176,7 +5177,8 @@ mod tests {
             ["codex", "app-server", "--listen", "ws://127.0.0.1:4500"].as_ref(),
         );
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::WebSocket {
                 bind_address: "127.0.0.1:4500".parse().expect("valid socket address"),
             }
@@ -5188,7 +5190,8 @@ mod tests {
         let app_server =
             app_server_from_args(["codex", "app-server", "--listen", "stdio://"].as_ref());
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::Stdio
         );
     }
@@ -5217,7 +5220,8 @@ mod tests {
         let app_server =
             app_server_from_args(["codex", "app-server", "--listen", "unix://"].as_ref());
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::UnixSocket {
                 socket_path: default_app_server_socket_path()
             }
@@ -5230,7 +5234,8 @@ mod tests {
             ["codex", "app-server", "--listen", "unix:///tmp/codex.sock"].as_ref(),
         );
         assert_eq!(
-            app_server.listen,
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
             codex_app_server::AppServerTransport::UnixSocket {
                 socket_path: AbsolutePathBuf::from_absolute_path("/tmp/codex.sock")
                     .expect("absolute path should parse")
@@ -5241,7 +5246,11 @@ mod tests {
     #[test]
     fn app_server_listen_off_parses() {
         let app_server = app_server_from_args(["codex", "app-server", "--listen", "off"].as_ref());
-        assert_eq!(app_server.listen, codex_app_server::AppServerTransport::Off);
+        assert_eq!(
+            codex_app_server::AppServerTransport::from_listen_url(&app_server.listen)
+                .expect("validated listen URL should resolve"),
+            codex_app_server::AppServerTransport::Off
+        );
     }
 
     #[test]
