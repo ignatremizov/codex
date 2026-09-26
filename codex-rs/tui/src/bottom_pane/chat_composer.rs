@@ -40,6 +40,7 @@
 //! server or `verbose` submits the completed command through normal validation.
 //!
 //! All completion suggestions render above the composer and preserve its footer.
+//! Agent-target and response-mode suggestions share that layout and suppress the empty-state animation.
 //! Owned transcript frames overlay suggestions with blank rows above and below, without reserving
 //! layout space. Those rows show scroll arrows when suggestions extend beyond the visible menu.
 //! Warning and transcript views hide suggestions without losing the draft, query, or selection.
@@ -4757,10 +4758,12 @@ impl ChatComposer {
                     .active
                     .required_height(composer_rect.width, /*footer_total_height*/ 0)
                     .min(composer_rect.y.saturating_sub(buf.area.y));
-                // Command and unified mention menus can render in a single row.
+                // Command, agent-target, and unified mention menus can render in a single row.
                 let height = if matches!(
                     self.popups.active,
-                    ActivePopup::Command(_) | ActivePopup::MentionV2(_)
+                    ActivePopup::Command(_)
+                        | ActivePopup::AgentTarget(_)
+                        | ActivePopup::MentionV2(_)
                 ) || height > 2
                 {
                     height
@@ -4779,6 +4782,7 @@ impl ChatComposer {
             // Overlay rows must erase both glyphs and styles from the transcript underneath.
             ratatui::widgets::Clear.render(popup_rect, buf);
             match &self.popups.active {
+                ActivePopup::AgentTarget(popup) => popup.render_ref(popup_rect, buf),
                 ActivePopup::Command(popup) => popup.render_ref(popup_rect, buf),
                 ActivePopup::MentionV2(popup) => popup.render_ref(popup_rect, buf),
                 ActivePopup::File(popup) => popup.render_ref(popup_rect, buf),

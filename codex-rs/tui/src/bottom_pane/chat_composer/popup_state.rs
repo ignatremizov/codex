@@ -125,6 +125,9 @@ impl ActivePopup {
     pub(super) fn required_height(&self, width: u16, footer_total_height: u16) -> u16 {
         match self {
             Self::None => footer_total_height,
+            Self::AgentTarget(popup) => {
+                popup.calculate_required_height(width) + footer_total_height
+            }
             Self::Command(popup) => popup.calculate_required_height(width) + footer_total_height,
             Self::File(popup) => popup.calculate_required_height() + footer_total_height,
             Self::Skill(popup) => popup.calculate_required_height(width) + footer_total_height,

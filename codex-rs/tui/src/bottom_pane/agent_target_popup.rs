@@ -196,6 +196,7 @@ impl AgentTargetPopup {
                 GenericDisplayRow {
                     name: target.selector,
                     name_style: Default::default(),
+                    selection_style: Some(super::picker_style::selection_style()),
                     name_prefix_spans: Vec::new(),
                     match_indices,
                     display_shortcut: None,

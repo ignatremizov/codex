@@ -299,6 +299,7 @@ impl SlashCommand {
             | SlashCommand::Goal
             | SlashCommand::Voice
             | SlashCommand::Mail
+            | SlashCommand::Agent
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins

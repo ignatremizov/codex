@@ -321,6 +321,14 @@ fn empty_agent_target_opens_active_target_popup() {
         panic!("expected agent target popup");
     };
 
+    let width = 80;
+    let footer_height = 2;
+    assert!(composer.empty_state_composer().is_none());
+    assert_eq!(
+        composer.popups.active.required_height(width, footer_height),
+        popup.calculate_required_height(width) + footer_height,
+    );
+
     assert_eq!(
         popup.selected_target(),
         Some(AgentPromptTarget {
@@ -332,6 +340,45 @@ fn empty_agent_target_opens_active_target_popup() {
             label: "Robie [explorer]".to_string(),
         })
     );
+}
+
+#[test]
+fn single_agent_target_renders_above_the_composer_in_overlay_mode() {
+    let composer = composer_with_targets("/agent rev", "/agent rev".len());
+    let ActivePopup::AgentTarget(popup) = &composer.popups.active else {
+        panic!("expected agent target popup");
+    };
+    let width = 80;
+    assert_eq!(popup.calculate_required_height(width), 1);
+    let options = composer.resolve_render_options(ComposerRenderOptions {
+        command_popup_placement: CommandPopupPlacement::Overlay,
+        ..Default::default()
+    });
+    let mut buffer = Buffer::empty(Rect::new(
+        /*x*/ 0, /*y*/ 0, width, /*height*/ 12,
+    ));
+    let height = composer
+        .desired_height_with_options(width, options)
+        .min(buffer.area.height);
+    let area = Rect::new(/*x*/ 0, buffer.area.height - height, width, height);
+    composer.render_with_options(area, &mut buffer, /*mask_char*/ None, options);
+    let menu = buffer
+        .content
+        .chunks(usize::from(width))
+        .take(usize::from(area.y))
+        .map(|row| {
+            row.iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        menu.contains("reviewer"),
+        "agent target must remain visible: {menu}"
+    );
+    assert!(menu.contains("New reviewer agent"));
+    assert_eq!(composer.draft.textarea.text(), "/agent rev");
 }
 
 #[test]
