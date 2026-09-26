@@ -368,15 +368,15 @@ async fn exit_interrupts_before_requesting_shutdown() -> Result<()> {
         ),
         /*replay_kind*/ None,
     );
-    let started_turn = app_server
-        .turn_start_with_thread_defaults(
-            thread_id,
-            vec![AppServerUserInput::Text {
-                text: "keep this turn active until exit".to_string(),
-                text_elements: Vec::new(),
-            }],
-        )
-        .await?;
+    let started_turn = super::session_lifecycle_requests::turn_start_with_thread_defaults(
+        &mut app_server,
+        thread_id,
+        vec![AppServerUserInput::Text {
+            text: "keep this turn active until exit".to_string(),
+            text_elements: Vec::new(),
+        }],
+    )
+    .await?;
     let turn_id = started_turn.turn.id;
     app.thread_event_channels.insert(
         thread_id,
