@@ -3,6 +3,7 @@ use codex_agent_graph_store::AgentGraphStoreFuture;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
+use futures::FutureExt;
 use pretty_assertions::assert_eq;
 
 struct EmptyAgentGraphStore;
@@ -324,7 +325,6 @@ async fn deferred_publication_preserves_absence_on_metadata_failure_then_commits
 async fn deferred_publication_rechecks_parent_after_waiting_for_manager_write_lock() {
     let (_home, manager, parent, child) = deferred_publication_fixture().await;
     let committed = std::sync::atomic::AtomicBool::new(false);
-    let mut threads = manager.state.threads.write().await;
     let publication =
         manager
             .state
@@ -333,10 +333,12 @@ async fn deferred_publication_rechecks_parent_after_waiting_for_manager_write_lo
                 Ok(())
             });
     tokio::pin!(publication);
-    assert!(futures::poll!(&mut publication).is_pending());
-    // Simulate removal immediately before the queued publication acquires the map lock.
-    threads.remove(&parent.thread_id);
-    drop(threads);
+    {
+        let mut threads = manager.state.threads.write().await;
+        assert!(publication.as_mut().now_or_never().is_none());
+        // Simulate removal immediately before the queued publication acquires the map lock.
+        threads.remove(&parent.thread_id);
+    }
     assert!(publication.await.is_err());
     assert!(!committed.load(Ordering::Acquire));
     assert!(manager.get_thread(child.thread_id).await.is_err());

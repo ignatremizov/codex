@@ -261,8 +261,7 @@ async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged
         .owner
         .ensure_v2_agent_loaded(fixture.config.clone(), fixture.child.thread_id)
         .await
-        .err()
-        .expect("lazy restoration fenced");
+        .expect_err("lazy restoration fenced");
     let explicit_error = fixture
         .owner
         .resume_agent_from_rollout(
@@ -271,8 +270,7 @@ async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged
             fixture.child.thread.session_source.clone(),
         )
         .await
-        .err()
-        .expect("explicit restoration fenced");
+        .expect_err("explicit restoration fenced");
     for error in [lazy_error, explicit_error] {
         assert!(
             matches!(error.details(), CodexErrorDetails::InvalidRequest(message)
@@ -283,8 +281,7 @@ async fn failed_edge_rollback_fences_lazy_and_explicit_resume_until_acknowledged
         .owner
         .close_agent(fixture.child.thread_id)
         .await
-        .err()
-        .expect("failed close keeps fence");
+        .expect_err("failed close keeps fence");
     assert!(close_error.to_string().contains("injected close failure"));
     assert_eq!(fixture.graph.revocations.load(Ordering::Acquire), 0);
     assert!(state.agent_lifecycle_generation_is_current(fixture.child.thread_id, generation));
