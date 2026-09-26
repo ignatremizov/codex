@@ -93,10 +93,6 @@ impl TranscriptOverlay {
         self.scope == TranscriptOverlayScope::ActiveThread
     }
 
-    pub(crate) fn allows_backtrack(&self) -> bool {
-        self.tracks_active_thread()
-    }
-
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
         let browsing = self.browsing_footer.is_some()
@@ -535,7 +531,7 @@ impl TranscriptOverlay {
                 .keymap
                 .close
                 .first()
-                .map(|key| key.display_label())
+                .map(crate::key_hint::KeyBinding::display_label)
                 .unwrap_or_default(),
         ) {
             Paragraph::new(footer.text).render(second, buf);

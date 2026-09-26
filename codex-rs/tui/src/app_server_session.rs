@@ -931,6 +931,7 @@ impl AppServerSession {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn fork_thread_with_permission_mode(
         &mut self,
         local_settings: &LocalSettings,

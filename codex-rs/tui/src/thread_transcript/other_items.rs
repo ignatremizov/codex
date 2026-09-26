@@ -55,7 +55,7 @@ pub(super) fn cells(
                             file_update_changes_to_display(changes),
                             cwd.as_path(),
                         )
-                        .with_activity_id(id.clone()),
+                        .with_activity_id(id),
                     ));
                 }
                 cells.push(Arc::new(history_cell::new_info_event(

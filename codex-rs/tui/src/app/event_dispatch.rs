@@ -858,12 +858,14 @@ impl App {
             } => {
                 self.handle_consolidate_agent_message(
                     tui,
-                    source,
-                    cwd,
-                    inline_visualization_context,
-                    phase,
-                    scrollback_reflow,
-                    deferred_history_cell,
+                    super::agent_message_consolidation::AgentMessageConsolidation {
+                        source,
+                        cwd,
+                        inline_visualization_context,
+                        phase,
+                        scrollback_reflow,
+                        deferred_history_cell,
+                    },
                 )?;
                 self.chat_widget.note_stream_consolidation_completed();
                 self.insert_pending_usage_output_after_stream_shutdown(tui);

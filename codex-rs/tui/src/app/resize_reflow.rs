@@ -111,21 +111,6 @@ impl App {
         display
     }
 
-    pub(super) fn insert_history_cell_lines(
-        &mut self,
-        tui: &mut tui::Tui,
-        cell: &dyn HistoryCell,
-        width: u16,
-    ) {
-        if tui.is_owned_screen() {
-            tui.frame_requester().schedule_frame();
-            return;
-        }
-        let display =
-            cell.display_hyperlink_lines_for_mode(width, self.chat_widget.history_render_mode());
-        self.insert_prepared_history_cell_lines(tui, cell, display);
-    }
-
     pub(super) fn insert_prepared_history_cell_lines(
         &mut self,
         tui: &mut tui::Tui,

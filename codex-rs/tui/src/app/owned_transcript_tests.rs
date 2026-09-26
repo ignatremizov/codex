@@ -107,11 +107,14 @@ async fn list_spacing_completion_preserves_the_scrolled_reader() -> Result<()> {
     assert!(buffer_text(&before).contains("- c"));
     app.handle_consolidate_agent_message(
         &mut tui,
-        "- First item wraps onto a second row\n- b\n- c".into(),
-        app.config.cwd.to_path_buf(),
-        /*inline_visualization_context*/ None,
-        ConsolidationScrollbackReflow::Required,
-        /*deferred_history_cell*/ None,
+        super::agent_message_consolidation::AgentMessageConsolidation {
+            source: "- First item wraps onto a second row\n- b\n- c".into(),
+            cwd: app.config.cwd.to_path_buf(),
+            inline_visualization_context: None,
+            phase: None,
+            scrollback_reflow: ConsolidationScrollbackReflow::Required,
+            deferred_history_cell: None,
+        },
     )?;
     let mut after = Buffer::empty(area);
     app.transcript_view

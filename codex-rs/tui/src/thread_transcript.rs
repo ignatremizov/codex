@@ -72,6 +72,18 @@ pub(crate) enum RawReasoningVisibility {
     Visible,
 }
 
+/// Captured view settings shared by grouped and standalone item projection.
+#[derive(Clone)]
+struct ItemProjectionContext<'a> {
+    cwd: &'a AbsolutePathBuf,
+    raw_reasoning_visibility: RawReasoningVisibility,
+    inline_visualization_context: Option<InlineVisualizationContext>,
+    show_compact_summary: bool,
+    output_preview_line_limits: OutputPreviewLineLimits,
+    agent_preview_line_limits: AgentPreviewLineLimits,
+    metadata: &'a HashMap<ThreadId, AgentMetadata>,
+}
+
 pub(crate) async fn load_session_transcript(
     app_server: &mut AppServerSession,
     thread_id: ThreadId,
@@ -180,22 +192,22 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
         thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
     });
     let show_compact_summary = config.is_none_or(|config| config.show_compact_summary);
+    let projection = ItemProjectionContext {
+        cwd,
+        raw_reasoning_visibility,
+        inline_visualization_context,
+        show_compact_summary,
+        output_preview_line_limits,
+        agent_preview_line_limits,
+        metadata: &metadata,
+    };
     let mut cells: TranscriptCells = Vec::new();
     let mut pending = None;
     for item in items {
         if matches!(item, ThreadItem::Reasoning { .. })
             && let Some(group) = &mut pending
         {
-            for cell in item_to_cells(
-                item,
-                cwd,
-                raw_reasoning_visibility,
-                inline_visualization_context.clone(),
-                show_compact_summary,
-                output_preview_line_limits,
-                agent_preview_line_limits,
-                &metadata,
-            ) {
+            for cell in item_to_cells(item, projection.clone()) {
                 match group {
                     PendingActivity::Computer(group) => group.group.push_detail(cell),
                     PendingActivity::Exploration(group) => group.group.push_detail(cell),
@@ -261,16 +273,7 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
                 ));
             }
             item => {
-                let projected = item_to_cells(
-                    item,
-                    cwd,
-                    raw_reasoning_visibility,
-                    inline_visualization_context.clone(),
-                    show_compact_summary,
-                    output_preview_line_limits,
-                    agent_preview_line_limits,
-                    &metadata,
-                );
+                let projected = item_to_cells(item, projection.clone());
                 if !projected.is_empty() {
                     PendingActivity::flush(&mut pending, &mut cells);
                     cells.extend(projected);
@@ -284,16 +287,16 @@ pub(crate) fn thread_items_to_transcript_cells_with_preview_line_limits(
 }
 
 /// Project one item without changing the active widget or its turn lifecycle.
-fn item_to_cells(
-    item: ThreadItem,
-    cwd: &AbsolutePathBuf,
-    raw_reasoning_visibility: RawReasoningVisibility,
-    inline_visualization_context: Option<InlineVisualizationContext>,
-    show_compact_summary: bool,
-    output_preview_line_limits: OutputPreviewLineLimits,
-    agent_preview_line_limits: AgentPreviewLineLimits,
-    metadata: &HashMap<ThreadId, AgentMetadata>,
-) -> TranscriptCells {
+fn item_to_cells(item: ThreadItem, context: ItemProjectionContext<'_>) -> TranscriptCells {
+    let ItemProjectionContext {
+        cwd,
+        raw_reasoning_visibility,
+        inline_visualization_context,
+        show_compact_summary,
+        output_preview_line_limits,
+        agent_preview_line_limits,
+        metadata,
+    } = context;
     let mut cells: TranscriptCells = Vec::new();
     match item {
         ThreadItem::UserMessage {
@@ -460,7 +463,7 @@ fn item_to_cells(
             cwd,
             show_compact_summary,
             agent_preview_line_limits,
-            &metadata,
+            metadata,
         )),
     }
     cells

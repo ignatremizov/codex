@@ -69,7 +69,7 @@ impl TranscriptView {
                 .disclosure
                 .keymap
                 .primary_hint(crate::keymap::KeymapContext::Pager, "close_transcript")
-                .map(|key| key.display_label())
+                .map(crate::key_hint::ShortcutHint::display_label)
                 .unwrap_or_default();
             return self.review_footer(width, &close);
         }

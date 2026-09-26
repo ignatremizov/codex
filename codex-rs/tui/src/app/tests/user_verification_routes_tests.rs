@@ -273,17 +273,21 @@ async fn inactive_thread_user_verification_preserves_foreground_stream() -> Resu
                 source,
                 cwd,
                 inline_visualization_context,
+                phase,
                 scrollback_reflow,
                 deferred_history_cell,
             } => {
                 completed_messages.push(source.clone());
                 app.handle_consolidate_agent_message(
                     &mut tui,
-                    source,
-                    cwd,
-                    inline_visualization_context,
-                    scrollback_reflow,
-                    deferred_history_cell,
+                    crate::app::agent_message_consolidation::AgentMessageConsolidation {
+                        source,
+                        cwd,
+                        inline_visualization_context,
+                        phase,
+                        scrollback_reflow,
+                        deferred_history_cell,
+                    },
                 )?;
                 app.chat_widget.note_stream_consolidation_completed();
             }
