@@ -165,24 +165,21 @@ async fn review_keys_belong_to_open_browser_and_do_not_override_search_or_draft(
         &mut tui,
         &mut server,
         &TuiEvent::Key(KeyCode::Char('v').into()),
-    )
-    .await?;
+    )?;
     assert_eq!(app.transcript_view.review_mode(), Some(ReviewMode::Review));
     paint(&mut app, /*owned*/ true);
     app.handle_owned_transcript_event(
         &mut tui,
         &mut server,
         &TuiEvent::Key(KeyCode::Char('v').into()),
-    )
-    .await?;
+    )?;
     assert_eq!(app.transcript_view.review_mode(), Some(ReviewMode::Full));
     app.transcript_view.begin_search();
     app.handle_owned_transcript_event(
         &mut tui,
         &mut server,
         &TuiEvent::Key(KeyCode::Char('v').into()),
-    )
-    .await?;
+    )?;
     assert_eq!(app.transcript_view.review_mode(), Some(ReviewMode::Full));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "draft");
     app.transcript_view.cancel_search();

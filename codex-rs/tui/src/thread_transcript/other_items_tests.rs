@@ -84,6 +84,7 @@ fn cold_compaction_decode_error_is_visible_with_content_hidden() {
             &cwd,
             show_compact_summary,
             AgentPreviewLineLimits::default(),
+            /*agent_metadata*/ &Default::default(),
         );
         assert_eq!(projected.len(), 1);
         rendered.push(
@@ -161,6 +162,7 @@ fn completed_patch_restores_rich_diff_and_styles() {
         &cwd,
         /*show_compact_summary*/ true,
         AgentPreviewLineLimits::default(),
+        /*agent_metadata*/ &Default::default(),
     );
 
     assert_eq!(actual.len(), 1);
@@ -193,6 +195,7 @@ fn unfinished_and_rejected_patches_keep_their_outcome() {
             &cwd,
             /*show_compact_summary*/ true,
             AgentPreviewLineLimits::default(),
+            /*agent_metadata*/ &Default::default(),
         )
     })
     .flat_map(|cell| cell.display_lines(/*width*/ 80))
@@ -221,6 +224,7 @@ fn empty_in_progress_patch_keeps_status_without_phantom_target() {
         &cwd,
         /*show_compact_summary*/ true,
         AgentPreviewLineLimits::default(),
+        /*agent_metadata*/ &Default::default(),
     );
 
     assert_eq!(cells.len(), 1);
@@ -295,6 +299,7 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
                 &cwd,
                 /*show_compact_summary*/ true,
                 AgentPreviewLineLimits::default(),
+                /*agent_metadata*/ &Default::default(),
             )
         })
         .flat_map(|cell| cell.display_lines(/*width*/ 80))
