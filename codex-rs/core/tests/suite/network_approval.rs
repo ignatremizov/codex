@@ -1965,7 +1965,7 @@ async fn thread_turnover_closes_managed_proxy_tunnels() -> Result<()> {
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_test(&server, ManagedNetworkEnvironment::Local).await?;
     let mut config = test.config.clone();
     let mut network = NetworkProxyConfig {
         enabled: true,
@@ -3404,6 +3404,23 @@ async fn expect_network_approval_for_turn(
     expected_environment_id: &str,
     expected_turn_id: &str,
 ) -> Result<ExecApprovalRequestEvent> {
+    expect_network_approval_target_for_turn(
+        test,
+        expected_environment_id,
+        NETWORK_TEST_TARGET,
+        NetworkApprovalProtocol::Http,
+        expected_turn_id,
+    )
+    .await
+}
+
+async fn expect_network_approval_target_for_turn(
+    test: &TestCodex,
+    expected_environment_id: &str,
+    expected_target: &str,
+    expected_protocol: NetworkApprovalProtocol,
+    expected_turn_id: &str,
+) -> Result<ExecApprovalRequestEvent> {
     let event = wait_for_event_with_timeout(
         &test.codex,
         |event| match event {
@@ -3419,8 +3436,8 @@ async fn expect_network_approval_for_turn(
             assert_network_approval_target(
                 &approval,
                 expected_environment_id,
-                NETWORK_TEST_TARGET,
-                NetworkApprovalProtocol::Http,
+                expected_target,
+                expected_protocol,
             );
             Ok(approval)
         }
