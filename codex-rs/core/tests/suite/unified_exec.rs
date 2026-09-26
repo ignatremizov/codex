@@ -1981,6 +1981,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let end_event = &end_events[0];
     assert_eq!(end_event.call_id, open_call_id);
+    assert_eq!(request_log.requests().len(), 4);
 
     Ok(())
 }

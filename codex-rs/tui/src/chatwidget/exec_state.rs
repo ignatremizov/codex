@@ -23,7 +23,6 @@ pub(super) struct UnifiedExecProcessSummary {
 
 pub(super) struct CompletedUnifiedExecProcess {
     pub(super) key: String,
-    pub(super) call_id: String,
     pub(super) command_display: String,
 }
 

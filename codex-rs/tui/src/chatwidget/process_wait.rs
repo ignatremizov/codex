@@ -129,8 +129,8 @@ impl ChatWidget {
                 /*details_max_lines*/ 1,
             );
             let countdown_owner = StatusCountdownOwner::UnifiedExec {
-                turn_id: turn_id.clone(),
-                item_id: item_id.clone(),
+                turn_id,
+                item_id,
                 process_id: process_id.clone(),
             };
             if let Some(deadline_at_ms) = deadline_at_ms {

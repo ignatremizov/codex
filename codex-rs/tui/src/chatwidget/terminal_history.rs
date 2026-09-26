@@ -21,7 +21,6 @@ impl ChatWidget {
         self.completed_unified_exec_processes
             .push_back(CompletedUnifiedExecProcess {
                 key: process.key,
-                call_id: process.call_id,
                 command_display: process.command_display,
             });
         while self.completed_unified_exec_processes.len() > MAX_COMPLETED_TERMINALS {
