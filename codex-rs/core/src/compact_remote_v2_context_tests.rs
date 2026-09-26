@@ -4,6 +4,7 @@ use super::*;
 use crate::compact::SUMMARY_PREFIX;
 use crate::session::PreviousTurnSettings;
 use crate::session::tests::make_session_and_context;
+use codex_context_fragments::ContextualUserFragment;
 use pretty_assertions::assert_eq;
 
 fn user_message(text: &str) -> ResponseItem {

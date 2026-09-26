@@ -745,6 +745,7 @@ mod tests {
     use super::*;
     use crate::context::CompactedImageOmission;
     use crate::context::sanitize_compacted_media_prefix;
+    use codex_context_fragments::ContextualUserFragment;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ContentItemKind;
     use codex_protocol::models::FunctionCallOutputContentItem;

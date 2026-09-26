@@ -1035,7 +1035,7 @@ async fn representation_repair_without_companion_records_preserves_existing_base
             ..Default::default()
         }),
         RolloutItem::WorldState(WorldStateItem::full(
-            serde_json::to_value(&world_state_snapshot).expect("serialize world state"),
+            world_state_snapshot.clone().into_object(),
         )),
         RolloutItem::TurnContext(reference_context.clone()),
         RolloutItem::Compacted(CompactedItem {
@@ -1081,7 +1081,7 @@ async fn representation_repair_applies_its_out_of_band_companion_records() {
             ..Default::default()
         }),
         RolloutItem::WorldState(WorldStateItem::full(
-            serde_json::to_value(&world_state_snapshot).expect("serialize world state"),
+            world_state_snapshot.clone().into_object(),
         )),
         RolloutItem::TurnContext(reference_context.clone()),
     ];
