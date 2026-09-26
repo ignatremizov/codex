@@ -456,6 +456,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
             }],
             phase: Some(MessagePhase::FinalAnswer),
             memory_citation: None,
+            sub_agent_completion: None,
             delivery: Some(AgentMessageDelivery::Async),
             questions: Some(questions),
         })?

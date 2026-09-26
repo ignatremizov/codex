@@ -103,7 +103,8 @@ async fn recorded_questions_share_queued_input_order_across_resume() {
             history: Arc::new(saved),
             rollout_path: None,
         }))
-        .await;
+        .await
+        .expect("restore saved question and input ordering");
     let history = session.clone_history().await;
     assert_eq!(
         history
