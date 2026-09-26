@@ -381,7 +381,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
 
 #[tokio::test]
 async fn thread_rollback_persists_required_repairs_around_the_rollback_marker() {
-    let (session, turn_context, rollout_path, events) = persisted_legacy_session().await;
+    let (session, _turn_context, rollout_path, events) = persisted_legacy_session().await;
     let legacy_image = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
