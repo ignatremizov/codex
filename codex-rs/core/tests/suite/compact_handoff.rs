@@ -295,7 +295,14 @@ async fn remote_checkpoint_and_retained_inventory_are_independent_of_decoder(
         .iter()
         .map(|envelope| serde_json::to_value(&envelope.item))
         .collect::<serde_json::Result<Vec<_>>>()?;
-    assert!(!serde_json::to_string(&checkpoint_items)?.contains("DECODED_PRESENTATION"));
+    // Inspect the supported persisted representation, including harness metadata,
+    // independently of the response-only items sent to the decoder.
+    let checkpoint_records = checkpoint
+        .iter()
+        .cloned()
+        .map(RolloutItem::ResponseItem)
+        .collect::<Vec<_>>();
+    assert!(!serde_json::to_string(&checkpoint_records)?.contains("DECODED_PRESENTATION"));
     for decoder in &requests[2..2 + decoder_count] {
         let input = decoder.input();
         assert_eq!(input.len(), checkpoint.len() + 1);
