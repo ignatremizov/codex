@@ -82,7 +82,7 @@ async fn inactive_approval_preserves_expired_local_receipt() -> Result<()> {
     let mut view = crate::bottom_pane::ApprovalOverlay::new(
         approval,
         AppEventSender::new(tx),
-        app.config.features.clone(),
+        app.config.features.get().clone(),
         keymap.approval,
         keymap.list,
     );

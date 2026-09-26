@@ -553,6 +553,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::time::Instant;
 
     #[test]
     fn resolves_exec_approval_through_app_server_request_id() {
