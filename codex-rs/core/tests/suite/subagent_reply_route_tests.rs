@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use test_case::test_case;
 
 #[test_case(ThreadHistoryMode::Legacy; "non_paginated")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
@@ -20,7 +21,11 @@ async fn disabling_reply_permission_preserves_an_accepted_user_queue(
     )
     .await?;
     test.codex
-        .set_agent_reply_route(&child, UserAgentReplyRouteMode::Enabled)
+        .set_agent_reply_route(
+            &child,
+            /*recipient*/ None,
+            UserAgentReplyRouteMode::Enabled,
+        )
         .await?;
     let policy = UserAgentResponseHandling::from_parts(
         /*commentary*/ true,
@@ -77,7 +82,11 @@ async fn disabling_reply_permission_preserves_an_accepted_user_queue(
     assert_eq!(before.len(), 1);
     assert_eq!(before[0].response_handling, policy);
     test.codex
-        .set_agent_reply_route(&child, UserAgentReplyRouteMode::Disabled)
+        .set_agent_reply_route(
+            &child,
+            /*recipient*/ None,
+            UserAgentReplyRouteMode::Disabled,
+        )
         .await?;
     let after = test.codex.list_user_agent_queued_turns();
     assert_eq!(after, before);
@@ -96,10 +105,15 @@ async fn disabling_reply_permission_preserves_an_accepted_user_queue(
     let _ = wait_for_terminal_status(child_thread.as_ref()).await?;
     assert_eq!(
         test.codex
-            .set_agent_reply_route(&child, UserAgentReplyRouteMode::Disabled)
+            .set_agent_reply_route(
+                &child,
+                /*recipient*/ None,
+                UserAgentReplyRouteMode::Disabled
+            )
             .await?,
         (
             ThreadId::from_string(&child)?,
+            test.session_configured.thread_id,
             Some(UserAgentReplyRouteMode::Disabled)
         ),
     );
