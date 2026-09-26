@@ -1,6 +1,7 @@
 //! Exercise Legacy edits through the same public RPC transport as prompt forks.
 
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn legacy_rejection_and_ambiguous_outcomes_preserve_draft_without_retry() -> Result<()> {

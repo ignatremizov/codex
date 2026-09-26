@@ -42,7 +42,7 @@ async fn direct_rollout_lookup_uses_source_metadata() {
         (
             thread_id,
             Some(cwd),
-            Some(codex_protocol::protocol::ThreadHistoryMode::Legacy),
+            Some(codex_app_server_protocol::ThreadHistoryMode::Legacy),
             Some(path.clone()),
             Some(path.clone()),
         )
@@ -87,7 +87,7 @@ async fn source_home_lookup_finds_active_and_archived_rollouts() {
     assert_eq!(archived_target.thread_id, archived_id);
     assert_eq!(
         archived_target.history_mode,
-        Some(codex_protocol::protocol::ThreadHistoryMode::Paginated)
+        Some(codex_app_server_protocol::ThreadHistoryMode::Paginated)
     );
 }
 

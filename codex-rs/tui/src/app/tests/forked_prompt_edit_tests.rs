@@ -5,6 +5,7 @@ use crate::app_backtrack::truncate_before_prompt;
 use crate::app_backtrack::user_positions_iter;
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserMessageIdentity;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn editable_projection_deduplicates_identity_not_text_across_headers() {

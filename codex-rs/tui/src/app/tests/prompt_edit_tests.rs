@@ -103,7 +103,8 @@ async fn prompt_source(
         "unused",
         Some(&app.config.model_provider_id),
         /*git_info*/ None,
-    )?;
+    )
+    .map_err(color_eyre::eyre::Report::msg)?;
     let path = app_test_support::rollout_path(app.config.codex_home.as_path(), timestamp, &id);
     let contents = std::fs::read_to_string(&path)?;
     let meta = contents.lines().next().expect("rollout metadata");
