@@ -41,6 +41,7 @@ async fn owned_viewport_uses_local_tool_and_user_shell_preview_limits() -> Resul
                 cwd: LegacyAppPathString::from_string("/workspace"),
                 process_id: None,
                 source,
+                user_shell_response_handling: None,
                 status: CommandExecutionStatus::Completed,
                 command_actions: Vec::new(),
                 aggregated_output: Some(

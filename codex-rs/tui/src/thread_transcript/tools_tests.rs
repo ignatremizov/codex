@@ -24,6 +24,7 @@ fn command_item(status: CommandExecutionStatus) -> ThreadItem {
         cwd: LegacyAppPathString::from_string("/tmp/project"),
         process_id: None,
         source: CommandExecutionSource::Agent,
+        user_shell_response_handling: None,
         status,
         command_actions: vec![CommandAction::Unknown {
             command: "cargo check".to_string(),
