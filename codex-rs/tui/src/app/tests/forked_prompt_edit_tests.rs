@@ -111,7 +111,10 @@ async fn inherited_fork_prompts_use_the_current_mutation_and_keep_the_latest_hea
             ))
             .await?;
             drain_fork_attachment(&mut app, &mut tui, &mut server, &mut events).await?;
-            app.config.features.disable(Feature::ForkPromptEdits);
+            app.config
+                .features
+                .disable(Feature::ForkPromptEdits)
+                .expect("test config should allow feature update");
             let fork_id = app.chat_widget.thread_id().expect("full-history fork");
             assert_ne!(fork_id, source_id);
             let before = server.thread_read(fork_id, /*include_turns*/ true).await?;
