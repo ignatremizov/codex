@@ -13,6 +13,7 @@ use codex_thread_store::AcceptMailboxInputParams;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LiveThread;
+use codex_thread_store::MailboxFinalSubscriptionRequest;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use pretty_assertions::assert_eq;
@@ -77,7 +78,7 @@ async fn selected_mail_worker_survives_result_waiter_cancellation() -> anyhow::R
         .accept_mailbox_input(AcceptMailboxInputParams {
             receiver_thread_id: session.thread_id,
             submission_key: "cancelled-waiter".to_string(),
-            final_subscription: None,
+            final_subscription: MailboxFinalSubscriptionRequest::None,
             payload: MailboxPayload::User {
                 input: vec![UserInput::Text {
                     text: "durable selection".into(),
