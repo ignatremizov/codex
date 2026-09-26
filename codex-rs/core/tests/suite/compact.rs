@@ -1276,11 +1276,17 @@ async fn manual_compact_emits_context_compaction_items(disable_remote: bool) {
             config.model_provider = model_provider;
             if disable_remote {
                 config.model_provider.name = "OpenAI".to_string();
-                config.features.disable(Feature::RemoteCompaction).unwrap();
+                config
+                    .features
+                    .disable(Feature::RemoteCompaction)
+                    .expect("test config should allow local compaction");
             }
             set_test_compact_prompt(config);
         });
-    let test = builder.build_with_auto_env(&server).await.unwrap();
+    let test = builder
+        .build_with_auto_env(&server)
+        .await
+        .expect("build manual compaction fixture");
     let codex = test.codex;
 
     codex
@@ -1289,10 +1295,13 @@ async fn manual_compact_emits_context_compaction_items(disable_remote: bool) {
             text_elements: Vec::new(),
         }]))
         .await
-        .unwrap();
+        .expect("submit turn before manual compaction");
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
-    codex.submit(Op::Compact).await.unwrap();
+    codex
+        .submit(Op::Compact)
+        .await
+        .expect("submit manual compaction");
 
     let mut started_item = None;
     let mut completed_item = None;
@@ -1301,7 +1310,10 @@ async fn manual_compact_emits_context_compaction_items(disable_remote: bool) {
 
     while !saw_turn_complete || started_item.is_none() || completed_item.is_none() || !legacy_event
     {
-        let event = codex.next_event().await.unwrap();
+        let event = codex
+            .next_event()
+            .await
+            .expect("read compaction lifecycle event");
         match event.msg {
             EventMsg::ItemStarted(ItemStartedEvent {
                 item: TurnItem::ContextCompaction(item),
@@ -1344,13 +1356,17 @@ async fn manual_compact_emits_context_compaction_items(disable_remote: bool) {
         &requests[1].body_json().to_string(),
         SUMMARIZATION_PROMPT
     ));
-    codex.flush_rollout().await.unwrap();
-    let rollout = fs::read_to_string(codex.rollout_path().expect("rollout path")).unwrap();
+    codex
+        .flush_rollout()
+        .await
+        .expect("flush compacted rollout");
+    let rollout = fs::read_to_string(codex.rollout_path().expect("rollout path"))
+        .expect("read compacted rollout");
     let checkpoint = rollout
         .lines()
         .map(codex_rollout::parse_rollout_line)
         .collect::<serde_json::Result<Vec<_>>>()
-        .unwrap()
+        .expect("parse compacted rollout")
         .into_iter()
         .find_map(|line| match line.item {
             RolloutItem::Compacted(item) => Some(item),
@@ -1360,7 +1376,7 @@ async fn manual_compact_emits_context_compaction_items(disable_remote: bool) {
     assert_eq!(checkpoint.message, message);
     assert_eq!(checkpoint.compaction_response_id.as_deref(), Some("r2"));
     assert!(rollout.lines().any(|line| {
-        matches!(codex_rollout::parse_rollout_line(line).unwrap().item,
+        matches!(codex_rollout::parse_rollout_line(line).expect("parse persisted compaction event").item,
             RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
                 item: TurnItem::ContextCompaction(item), ..
             })) if item.summary == completed_item.summary && item.message == completed_item.message)
@@ -1402,7 +1418,10 @@ async fn local_compaction_output_limit_does_not_install_failed_summary(
     let test = test_codex()
         .with_config(move |config| {
             config.model_provider = provider;
-            config.features.disable(Feature::RemoteCompaction).unwrap();
+            config
+                .features
+                .disable(Feature::RemoteCompaction)
+                .expect("test config should allow local compaction");
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(90_000);
             config.model_post_turn_compact_threshold_percent = if post_turn { 50 } else { 0 };
@@ -2260,12 +2279,18 @@ async fn auto_compact_emits_context_compaction_items(disable_remote: bool) {
         config.model_provider = model_provider;
         if disable_remote {
             config.model_provider.name = "OpenAI".to_string();
-            config.features.disable(Feature::RemoteCompaction).unwrap();
+            config
+                .features
+                .disable(Feature::RemoteCompaction)
+                .expect("test config should allow local compaction");
         }
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let test = builder.build_with_auto_env(&server).await.unwrap();
+    let test = builder
+        .build_with_auto_env(&server)
+        .await
+        .expect("build automatic compaction fixture");
     let codex = test.codex;
 
     let mut started_item = None;
@@ -2279,10 +2304,13 @@ async fn auto_compact_emits_context_compaction_items(disable_remote: bool) {
                 text_elements: Vec::new(),
             }]))
             .await
-            .unwrap();
+            .expect("submit turn around automatic compaction");
 
         loop {
-            let event = codex.next_event().await.unwrap();
+            let event = codex
+                .next_event()
+                .await
+                .expect("read automatic compaction lifecycle event");
             match event.msg {
                 EventMsg::ItemStarted(ItemStartedEvent {
                     item: TurnItem::ContextCompaction(item),
