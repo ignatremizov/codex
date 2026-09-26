@@ -1,4 +1,3 @@
-use pretty_assertions::assert_eq;
 use ratatui::style::Stylize as _;
 
 use super::super::ThreadEventChannel;

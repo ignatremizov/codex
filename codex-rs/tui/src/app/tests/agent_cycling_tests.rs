@@ -40,6 +40,7 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
         .map_err(color_eyre::eyre::Report::msg)?;
     server
         .resume_thread(
+            &app.local_settings,
             app.config.clone(),
             root,
             crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
@@ -85,6 +86,7 @@ async fn shortcut_skips_closed_and_stale_unavailable_then_attaches_unviewed_idle
     // Load it on the server without installing its attachment in this App.
     server
         .resume_thread(
+            &app.local_settings,
             app.config.clone(),
             idle,
             crate::app_server_session::ResumeModelSettings::PreserveExistingThread,

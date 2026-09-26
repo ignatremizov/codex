@@ -2758,6 +2758,9 @@ async fn picker_refresh_hydrates_root_and_keeps_transferred_aliases_inspectable(
         request_id,
         Ok(crate::app_event::AgentPickerRefresh {
             threads: vec![Thread {
+                environments: None,
+                daybreak_enabled: None,
+                originator: None,
                 id: root.to_string(),
                 extra: None,
                 session_id: root.to_string(),
@@ -5007,7 +5010,6 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
     app.enqueue_thread_notification(
         thread_id,
         ServerNotification::ItemStarted(ItemStartedNotification {
-            deadline_at_ms: None,
             thread_id: thread_id.to_string(),
             turn_id: "turn-active-approval".to_string(),
             started_at_ms: 0,
@@ -7437,6 +7439,7 @@ async fn snapshot_thread_switch_discards_queued_previous_history() -> Result<()>
             )],
             events: Vec::new(),
             active_reasoning_item: None,
+            active_turn_timing: None,
             input_state: None,
         },
         /*resume_restored_queue*/ false,

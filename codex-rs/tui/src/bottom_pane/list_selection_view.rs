@@ -2518,14 +2518,14 @@ mod tests {
                 items: (1..=6)
                     .map(|idx| SelectionItem {
                         name: format!("Agent {idx}"),
-                        description: Some(format!("Agent {idx} details")),
+                        description: Some(format!(
+                            "Agent {idx} details extend across two wrapped lines"
+                        )),
                         ..Default::default()
                     })
                     .collect(),
                 list_height: SelectionListHeight::FillAvailable,
-                description_layout: SelectionDescriptionLayout::StackBelowWhenNarrow {
-                    min_description_width: u16::MAX,
-                },
+                row_display: SelectionRowDisplay::Wrapped,
                 ..Default::default()
             },
             AppEventSender::new(tx_raw),
@@ -2705,9 +2705,13 @@ mod tests {
             SelectionViewParams {
                 items: vec![SelectionItem {
                     name: "Agent".to_string(),
-                    secondary_action: Some(Box::new(|tx: &_| {
-                        tx.send(AppEvent::OpenApprovalsPopup);
-                    })),
+                    secondary_action: Some(SelectionSecondaryAction {
+                        key: crate::key_hint::plain(KeyCode::Tab),
+                        action: Box::new(|tx: &AppEventSender| {
+                            tx.send(AppEvent::OpenApprovalsPopup);
+                        }),
+                        footer_hint: "Tab for secondary".into(),
+                    }),
                     global_shortcut_action: Some(Box::new(|tx: &_| {
                         tx.send(AppEvent::OpenAgentPicker);
                     })),

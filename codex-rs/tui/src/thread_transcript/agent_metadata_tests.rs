@@ -79,6 +79,7 @@ fn late_agent_metadata_updates_labels_without_losing_preview_or_raw_source() {
         AgentMetadata {
             agent_nickname: Some("Robie".into()),
             agent_role: Some("explorer".into()),
+            ..Default::default()
         },
     )]);
     refresh_collab_agent_labels(&mut cells, &metadata);
