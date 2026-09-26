@@ -54,7 +54,7 @@ pub(super) fn set(tui: &Tui) {
         let lock = SETTINGS.get_or_init(|| RwLock::new(DiffBackgroundSettings::default()));
         let mut settings = lock
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let changed = *settings != parsed;
         *settings = parsed;
         if changed {
@@ -70,7 +70,7 @@ fn current() -> DiffBackgroundSettings {
     SETTINGS
         .get_or_init(|| RwLock::new(DiffBackgroundSettings::default()))
         .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
