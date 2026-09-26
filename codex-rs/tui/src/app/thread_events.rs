@@ -102,31 +102,15 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Request(_)
             | ThreadBufferedEvent::Mcp(_)
             | ThreadBufferedEvent::FeedbackSubmission(_) => true,
-            // Peer-message mirrors and delivery receipts have no root rollout record to reload.
-            // Keep the live copy through an in-process refresh, like other transient events.
-            ThreadBufferedEvent::Notification(notification)
-                if matches!(notification.as_ref(), ServerNotification::ItemCompleted(event)
-                    if matches!(&event.item, ThreadItem::AgentMessage {
-                        id, text, attribution, input, phase: Some(codex_protocol::models::MessagePhase::Commentary), ..
-                    } if codex_protocol::protocol::agent_delivery_receipt_from_response_item_id(id).is_some()
-                        || (codex_protocol::is_mailbox_acceptance_receipt_id(id)
-                        && input.is_some()
-                        && attribution.as_ref().is_some_and(|attribution| {
-                            attribution.recipient.thread_id != event.thread_id
-                        }))
-                        || (codex_protocol::protocol::is_attributed_agent_message_response_item_id(id)
-                        && (attribution.as_ref().is_some_and(|attribution| {
-                            attribution.recipient.thread_id != event.thread_id
-                        }) || codex_protocol::protocol::agent_message_audit_transcript_parts(text).is_some())))) =>
-            {
-                true
+            ThreadBufferedEvent::Notification(notification) => {
+                replay_filter::mirrored_completion_item_id(notification).is_some()
+                    || matches!(
+                        notification.as_ref(),
+                        ServerNotification::HookStarted(_)
+                            | ServerNotification::HookCompleted(_)
+                            | ServerNotification::McpServerStatusUpdated(_)
+                    )
             }
-            ThreadBufferedEvent::Notification(notification) => matches!(
-                notification.as_ref(),
-                ServerNotification::HookStarted(_)
-                    | ServerNotification::HookCompleted(_)
-                    | ServerNotification::McpServerStatusUpdated(_)
-            ),
             ThreadBufferedEvent::HistoryEntryResponse(_) => false,
         }
     }
@@ -424,18 +408,13 @@ impl ThreadEventStore {
             let buffered_mirror_ids = snapshot
                 .events
                 .iter()
-                .filter(|event| Self::event_survives_session_refresh(event))
                 .filter_map(|event| match event {
                     ThreadBufferedEvent::Notification(notification) => {
-                        if let ServerNotification::ItemCompleted(event) = notification.as_ref() {
-                            Some(event.item.id())
-                        } else {
-                            None
-                        }
+                        replay_filter::mirrored_completion_item_id(notification)
                     }
                     ThreadBufferedEvent::Request(_)
                     | ThreadBufferedEvent::HistoryEntryResponse(_)
-                    | ThreadBufferedEvent::McpInventoryResult(_)
+                    | ThreadBufferedEvent::Mcp(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => None,
                 })
                 .collect::<HashSet<_>>();
@@ -1202,6 +1181,69 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(actual).expect("serialize receipt"),
                 serde_json::to_value(notification).expect("serialize expected receipt")
+            );
+        }
+    }
+
+    #[test]
+    fn hydrated_question_message_retains_live_state_without_mutating_snapshot_input() {
+        let thread_id = ThreadId::new();
+        let item = ThreadItem::AgentMessage {
+            id: "question-message".to_string(),
+            text: "Select the environment before continuing.".to_string(),
+            phase: Some(codex_protocol::models::MessagePhase::Commentary),
+            inter_agent_source: None,
+            memory_citation: None,
+            attribution: None,
+            input: None,
+            delivery: None,
+            questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
+                title: "Which environment?".to_string(),
+                options: None,
+            }]),
+        };
+        let mut expected = ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: "turn-questions".to_string(),
+                item: item.clone(),
+                completed_at_ms: 0,
+            },
+        );
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification_ref(&expected);
+        store.set_turns(vec![test_turn(
+            "turn-questions",
+            TurnStatus::Completed,
+            vec![item],
+        )]);
+
+        for rebased in [false, true] {
+            if rebased {
+                store.rebase_buffer_after_session_refresh();
+                let ServerNotification::ItemCompleted(completion) = &mut expected else {
+                    panic!("expected completion fixture");
+                };
+                let ThreadItem::AgentMessage { text, .. } = &mut completion.item else {
+                    panic!("expected agent message fixture");
+                };
+                text.clear();
+            }
+            let snapshot = store.snapshot();
+            let [ThreadBufferedEvent::Notification(actual)] = snapshot.events.as_slice() else {
+                panic!("hydration must retain live question state");
+            };
+            assert_eq!(
+                serde_json::to_value(actual).expect("serialize live questions"),
+                serde_json::to_value(&expected).expect("serialize expected question state"),
+            );
+            let buffered_events = store.buffer.iter().collect::<Vec<_>>();
+            let [ThreadBufferedEvent::Notification(buffered)] = buffered_events.as_slice() else {
+                panic!("snapshot must preserve buffered questions");
+            };
+            assert_eq!(
+                serde_json::to_value(buffered).expect("serialize buffered questions"),
+                serde_json::to_value(&expected).expect("serialize expected buffer"),
             );
         }
     }
