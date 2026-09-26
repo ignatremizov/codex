@@ -157,6 +157,7 @@ pub(crate) async fn probe_daemon_socket(socket_path: AbsolutePathBuf) -> Option<
         Ok(Ok(stream)) => {
             #[cfg(windows)]
             stream.ensure_non_elevated_peer().ok()?;
+            drop(stream);
             Some(socket_path)
         }
         Ok(Err(_)) | Err(_) => None,
