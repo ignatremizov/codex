@@ -228,11 +228,6 @@ async fn guardians_retain_evidence_after_compaction_and_resume(
                                 responses::ev_assistant_message("review", r#"{"outcome":"allow"}"#),
                                 responses::ev_completed("review"),
                             ]
-                        } else if request["client_metadata"]["x-openai-subagent"] == "compact" {
-                            vec![
-                                responses::ev_assistant_message("decoded-summary", SUMMARY),
-                                responses::ev_completed("decoded-summary"),
-                            ]
                         } else {
                             let mut requests = parent_requests.lock().expect("request log lock");
                             let step = requests.len();
