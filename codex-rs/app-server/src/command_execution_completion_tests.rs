@@ -465,10 +465,11 @@ async fn unobserved_or_closed_output_retires_only_the_owned_receipt() -> Result<
         let (fixture, receiver) = Fixture::new(connections).await?;
         drop(receiver);
         fixture.complete(Some(fixture.receipt.clone())).await;
-        let state = fixture.state.lock().await;
-        assert!(state.turn_summary.command_execution_receipts.is_empty());
-        assert!(state.turn_summary.command_execution_started.is_empty());
-        drop(state);
+        {
+            let state = fixture.state.lock().await;
+            assert!(state.turn_summary.command_execution_receipts.is_empty());
+            assert!(state.turn_summary.command_execution_started.is_empty());
+        }
         fixture.conversation.shutdown_and_wait().await?;
     }
     Ok(())
