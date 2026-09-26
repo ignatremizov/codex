@@ -354,15 +354,6 @@ impl CommandItem {
             Self::BackgroundTerminal(terminal) => terminal.process_id.as_str().into(),
         }
     }
-
-    fn description(&self) -> &str {
-        match self {
-            Self::Builtin(command) => command.description(),
-            Self::ServiceTier(command) => &command.description,
-            Self::Mcp(completion) => completion.description(),
-            Self::BackgroundTerminal(terminal) => &terminal.command_display,
-        }
-    }
 }
 
 impl WidgetRef for CommandPopup {

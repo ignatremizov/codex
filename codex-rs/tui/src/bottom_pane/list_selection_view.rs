@@ -623,16 +623,6 @@ impl ListSelectionView {
             .map(|tab| tab.id.as_str())
     }
 
-    fn visible_rows(&self, len: usize) -> usize {
-        let rendered = self.rendered_item_count.get();
-        let limit = if rendered > 0 {
-            self.max_visible_rows.min(rendered)
-        } else {
-            self.max_visible_rows
-        };
-        limit.min(len.max(/*other*/ 1))
-    }
-
     fn max_visible_rows(&self, len: usize) -> usize {
         let limit = match self.list_height {
             SelectionListHeight::Capped => MAX_POPUP_ROWS,
