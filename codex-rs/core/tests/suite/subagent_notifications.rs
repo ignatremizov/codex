@@ -198,16 +198,6 @@ fn body_contains(req: &wiremock::Request, text: &str) -> bool {
         .is_some_and(|body| body.contains(text))
 }
 
-fn request_agent_name_is(req: &wiremock::Request, expected_agent_name: &str) -> bool {
-    let Ok(body) = req.body_json::<Value>() else {
-        return false;
-    };
-    body.pointer("/client_metadata/x-codex-turn-metadata")
-        .and_then(Value::as_str)
-        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .is_some_and(|metadata| metadata["agent_name"] == expected_agent_name)
-}
-
 fn ev_commentary_message(id: &str, text: &str) -> Value {
     let mut event = ev_assistant_message(id, text);
     event["item"]["phase"] = json!("commentary");
