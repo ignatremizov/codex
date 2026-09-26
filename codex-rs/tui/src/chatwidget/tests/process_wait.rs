@@ -537,7 +537,7 @@ fn track_process(chat: &mut ChatWidget, call_id: &str, process_id: &str, command
         call_id: call_id.to_string(),
         command_display: command_display.to_string(),
         user_shell_response_handling: None,
-        recent_chunks: Vec::new(),
+        recent_chunks: Default::default(),
     });
     chat.sync_unified_exec_footer();
 }

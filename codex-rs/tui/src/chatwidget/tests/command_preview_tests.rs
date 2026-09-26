@@ -5,7 +5,12 @@ use pretty_assertions::assert_eq;
 async fn ps_retention_is_independent_of_local_display_limit_and_chunk_boundaries() {
     let (mut chat, mut events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.local_settings.tui.command_output_preview_lines = 1;
-    chat.track_unified_exec_process_begin("call", Some("process"), "printf output");
+    chat.track_unified_exec_process_begin(
+        "call",
+        Some("process"),
+        "printf output",
+        /*user_shell_response_handling*/ None,
+    );
     for chunk in ["first", " line\r", "\nsecond\n", "third\nfourth\nfifth\n"] {
         chat.track_unified_exec_output_chunk("call", chunk.as_bytes());
     }
@@ -91,7 +96,12 @@ async fn ps_retention_is_independent_of_local_display_limit_and_chunk_boundaries
 async fn ps_zero_limit_remains_bounded_and_exposes_storage_omissions() {
     let (mut chat, mut events, _operations) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.local_settings.tui.command_output_preview_lines = 0;
-    chat.track_unified_exec_process_begin("call", Some("process"), "printf output");
+    chat.track_unified_exec_process_begin(
+        "call",
+        Some("process"),
+        "printf output",
+        /*user_shell_response_handling*/ None,
+    );
     for n in 0..100_000 {
         chat.track_unified_exec_output_chunk("call", format!("output line {n}\n").as_bytes());
     }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::exec_cell::OutputPreviewLineLimits;
+use crate::history_cell::HistoryCell;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
 use crate::thread_transcript::RawReasoningVisibility;

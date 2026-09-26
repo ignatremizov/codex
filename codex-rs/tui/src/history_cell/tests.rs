@@ -952,7 +952,7 @@ fn ps_output_multiline_snapshot() {
                 final_delivery: ThreadShellCommandFinalDelivery::Passive,
                 queue_command: false,
             }),
-            recent_chunks: Vec::new(),
+            recent_chunks: Default::default(),
         },
     ]);
     let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");

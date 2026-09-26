@@ -681,8 +681,9 @@ mod tests {
 
     #[test]
     fn user_shell_output_is_limited_by_screen_lines() {
+        // A final short token makes tail retention observable after wrapping/truncation.
         let long_url_like = format!(
-            "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/{}",
+            "https://example.test/api/v1/projects/alpha-team/releases/2026-02-17/builds/1234567890/{} omega",
             "very-long-segment-".repeat(120),
         );
         let aggregated_output = format!("{long_url_like}\n{long_url_like}\n");
@@ -780,8 +781,8 @@ mod tests {
             "expected narrow truncated output to show an omission marker, got {normalized}"
         );
         assert!(
-            rendered_text.contains("omega"),
-            "expected tail of retained output line to remain visible, got:\n{rendered_text}"
+            normalized.contains("omega"),
+            "expected tail of retained output line to remain visible, got:\n{normalized}"
         );
     }
 
@@ -1050,7 +1051,7 @@ mod tests {
             )
             .command_display_lines(/*width*/ 80)
             .into_iter()
-            .map(|line| render_line_text(&line))
+            .map(|line| render_line_text(&line.line))
         })
         .join("\n");
 

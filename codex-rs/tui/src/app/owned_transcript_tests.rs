@@ -1163,11 +1163,14 @@ async fn find_refreshes_live_details_before_searching_the_first_query() -> Resul
     crate::chatwidget::tests::helpers::set_active_cell(
         &mut app.chat_widget,
         Box::new(crate::exec_cell::new_active_exec_command(
-            "live".into(),
-            vec!["printf visible\nprintf needle".into()],
-            Vec::new(),
-            codex_app_server_protocol::CommandExecutionSource::Agent,
-            /*interaction_input*/ None,
+            crate::exec_cell::ActiveExecCall {
+                call_id: "live".into(),
+                command: vec!["printf visible\nprintf needle".into()],
+                parsed: Vec::new(),
+                source: codex_app_server_protocol::CommandExecutionSource::Agent,
+                user_shell_response_handling: None,
+                interaction_input: None,
+            },
             /*animations_enabled*/ false,
         )),
     );
