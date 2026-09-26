@@ -501,8 +501,10 @@ mod tests {
             Default::default(),
         );
         w.update_header("Waiting".to_string());
-        let mut timer = StatusTimer::default();
-        timer.countdown_deadline = Some(Instant::now() + Duration::from_secs(60));
+        let mut timer = StatusTimer {
+            countdown_deadline: Some(Instant::now() + Duration::from_secs(60)),
+            ..Default::default()
+        };
         timer.pause_at(timer.last_resume_at);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
