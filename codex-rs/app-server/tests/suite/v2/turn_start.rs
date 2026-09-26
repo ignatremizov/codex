@@ -3075,7 +3075,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().to_path_buf();
     let bearer_token = "example_bearer_token_1234567890";
-    let first_shell_command = vec![
+    let first_shell_command = [
         "python3".to_string(),
         "-c".to_string(),
         "import sys, time; time.sleep(0.5); print(sys.argv[1].endswith('7890'))".to_string(),
@@ -3327,7 +3327,7 @@ async fn run_turn_start_exec_approval_rejection_v2(
     let tmp = TempDir::new()?;
     let codex_home = tmp.path().to_path_buf();
     let bearer_token = "example_bearer_token_1234567890";
-    let shell_command = vec![
+    let shell_command = [
         "python3".to_string(),
         "-c".to_string(),
         "print(42)".to_string(),
