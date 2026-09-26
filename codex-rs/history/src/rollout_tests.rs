@@ -564,11 +564,11 @@ fn exact_rollback_preserves_trusted_user_agent_task_context() {
 fn exact_rollback_preserves_persistent_agent_reply_route() {
     let route = persistent_agent_reply_route();
     let items = vec![
-        turn_started("turn-1"),
+        started("turn-1"),
         message("rolled back prompt"),
         route.clone(),
-        turn_complete("turn-1"),
-        exact_rollback(0),
+        completed("turn-1"),
+        marker(/*start*/ 0),
     ];
 
     assert_eq!(
@@ -598,21 +598,21 @@ fn route_classification_does_not_pin_client_authored_or_mixed_user_input() {
             text: "ordinary user prompt".into(),
         });
     }
-    let mut marker = route;
+    let mut unmarked = route;
     if let ResponseItem::Message {
         internal_chat_message_metadata_passthrough,
         ..
-    } = &mut marker.item
+    } = &mut unmarked.item
     {
         *internal_chat_message_metadata_passthrough = None;
     }
-    for envelope in [quoted, mixed, marker] {
+    for envelope in [quoted, mixed, unmarked] {
         assert_eq!(crate::persistent_agent_reply_route_source(&envelope), None);
         let items = vec![
-            turn_started("turn-1"),
+            started("turn-1"),
             RolloutItem::ResponseItem(envelope),
-            turn_complete("turn-1"),
-            exact_rollback(0),
+            completed("turn-1"),
+            marker(/*start*/ 0),
         ];
         assert_eq!(exact_rollback_removed_items(&items), vec![true; 4]);
     }
