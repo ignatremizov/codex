@@ -51,7 +51,7 @@ fn v1_result_schemas_preserve_projection_fields_in_code_mode() {
             panic!("expected namespace function");
         };
         let schema = tool.output_schema.as_ref().expect("output schema");
-        let schema = serde_json::to_value(schema).expect("serialize tool output schema");
+        let schema = schema.to_value();
         let rendered = render_json_schema_to_typescript(&schema);
         for field in required_type_fields {
             assert!(rendered.contains(field), "{rendered} must expose {field}");
