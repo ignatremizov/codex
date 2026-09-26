@@ -221,15 +221,25 @@ mod tests {
     }
 
     #[test]
-    fn codex_home_uses_path_styling_or_plain_dim_style() {
+    fn codex_home_uses_path_styling_or_secondary_style() {
         for (use_theme_colors, expected) in [
-            (true, Line::from("codex-office".green())),
-            (false, Line::from("codex-office".dim())),
+            (
+                true,
+                Line::from(Span::styled(
+                    "codex-office",
+                    Style::default().fg(Color::Green),
+                )),
+            ),
+            (
+                false,
+                Line::from(Span::styled("codex-office", secondary_text_style())),
+            ),
         ] {
             assert_eq!(
                 status_line_from_segments_with_resolver(
                     [(StatusLineItem::CodexHome, "codex-office".to_string())],
                     use_theme_colors,
+                    /*thread_id*/ None,
                     |_| None,
                 ),
                 Some(expected),
