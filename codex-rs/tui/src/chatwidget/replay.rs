@@ -91,19 +91,10 @@ impl ChatWidget {
         true
     }
 
-    /// Flush prior activity before live or replayed assistant text.
+    /// Flush prior activity before assistant text; turn completion owns its trailing label.
     pub(super) fn prepare_assistant_message(&mut self) {
         self.flush_unified_exec_wait_streak();
         self.flush_active_cell();
-        if self.transcript.needs_final_message_separator && self.transcript.had_work_activity {
-            let timing = self.turn_lifecycle.elapsed_seconds(Instant::now());
-            self.add_to_history(history_cell::FinalMessageSeparator::new(
-                timing, /*runtime_metrics*/ None,
-            ));
-            self.transcript.needs_final_message_separator = false;
-        } else if self.transcript.needs_final_message_separator {
-            self.transcript.needs_final_message_separator = false;
-        }
     }
 
     /// Replay a subset of initial events into the UI to seed the transcript when
