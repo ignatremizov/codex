@@ -162,7 +162,7 @@ async fn thread_rollback_rejects_an_active_turn() -> Result<()> {
     ]])
     .await;
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    MockResponsesConfig::new(server.uri()).write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
