@@ -1,4 +1,6 @@
 use super::*;
+use codex_app_server_protocol::Turn;
+use codex_app_server_protocol::TurnCompletedNotification;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;
