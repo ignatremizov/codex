@@ -868,9 +868,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
                 ("Remote Compaction Request", compact_request),
                 ("Remote Post-Compaction History Layout", follow_up_request),
             ],
-            &ContextSnapshotOptions::default()
-                .rewrite_known_segments()
-                .strip_response_item_ids(),
+            &ContextSnapshotOptions::default().rewrite_known_segments(),
         )
     );
 
@@ -1148,13 +1146,13 @@ async fn assert_remote_manual_compact_request_parity(
 
     insta::assert_snapshot!(
         snapshot_name,
-        context_snapshot::format_request_body_diff_snapshot(
+        context_snapshot::format_labeled_requests_snapshot(
             scenario,
-            "Last Normal /responses Request",
-            normal_request,
-            "Streamed Compaction /responses Request",
-            compact_request,
-            &ContextSnapshotOptions::default().strip_response_item_ids(),
+            &[
+                ("Last Normal /responses Request", normal_request),
+                ("Streamed Compaction /responses Request", compact_request),
+            ],
+            &ContextSnapshotOptions::default().include_request_settings(),
         )
     );
 

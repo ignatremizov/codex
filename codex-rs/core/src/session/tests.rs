@@ -3543,7 +3543,7 @@ async fn resume_persists_media_policy_certification_for_a_media_free_legacy_chec
     ))];
     let rollout_items = vec![RolloutItem::Compacted(CompactedItem {
         message: "media-free legacy checkpoint".to_string(),
-        replacement_history: Some(media_free_history.iter().cloned().map(Into::into).collect()),
+        replacement_history: Some(media_free_history.clone()),
         window_number: Some(1),
         ..Default::default()
     })];
@@ -3605,7 +3605,7 @@ async fn media_free_certification_failure_preserves_resume_but_fences_new_writes
         ))];
         let source_history = Arc::new(vec![RolloutItem::Compacted(CompactedItem {
             message: "media-free legacy checkpoint".to_string(),
-            replacement_history: Some(media_free_history.iter().cloned().map(Into::into).collect()),
+            replacement_history: Some(media_free_history.clone()),
             window_number: Some(1),
             ..Default::default()
         })]);
