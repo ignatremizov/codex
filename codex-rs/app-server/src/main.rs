@@ -10,6 +10,7 @@ use codex_app_server::run_main_with_transport_options;
 use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_config::LoaderOverrides;
+use codex_core::config::find_codex_home;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_cli::CliConfigOverrides;
 use std::path::PathBuf;
@@ -101,7 +102,7 @@ fn main() -> anyhow::Result<()> {
         };
         let use_auth_profile_socket = listen == "unix://";
         let transport = AppServerTransport::from_listen_url(&listen)?;
-        let codex_home = codex_utils_home_dir::find_codex_home()?;
+        let codex_home = find_codex_home()?;
         let auth_file_selection = codex_login::AuthFileSelection::from_env(codex_home.as_path())?;
         let auth = auth.try_into_settings()?;
         let mut runtime_options = AppServerRuntimeOptions {
