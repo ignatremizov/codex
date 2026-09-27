@@ -1876,7 +1876,7 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
 
     handle.finish_rate_limit_refresh(
         &[RateLimitSnapshotDisplay {
-            limit_name: "spark".to_string(),
+            limit_name: "extra".to_string(),
             normal_model_slug: None,
             captured_at: now,
             primary: Some(RateLimitWindowDisplay {
@@ -1900,7 +1900,7 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
     let after = buffer_to_text(&buffer, area.width);
 
     assert!(
-        after.contains("spark limit"),
+        after.contains("extra limit"),
         "status output was clipped: {after:?}"
     );
     assert!(

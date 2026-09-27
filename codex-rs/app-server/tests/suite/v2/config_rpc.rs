@@ -2447,7 +2447,7 @@ async fn config_batch_write_rejects_legacy_profile_tables() -> Result<()> {
         &tmp_dir,
         r#"
 [profiles."team.prod"]
-model = "gpt-5.3-spark"
+model = "configured-model"
 "#,
     )?;
 
@@ -2497,7 +2497,7 @@ model = "gpt-5.3-spark"
         toml::from_str(&std::fs::read_to_string(codex_home.join("config.toml"))?)?;
     assert_eq!(
         config["profiles"]["team.prod"]["model"].as_str(),
-        Some("gpt-5.3-spark")
+        Some("configured-model")
     );
     assert_eq!(config.get("items"), None);
 
