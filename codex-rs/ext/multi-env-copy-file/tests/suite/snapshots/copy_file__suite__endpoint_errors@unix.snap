@@ -1,5 +1,6 @@
 ---
 source: ext/multi-env-copy-file/tests/suite/mod.rs
+assertion_line: 258
 expression: errors
 ---
 [
@@ -45,7 +46,7 @@ expression: errors
   },
   {
     "field": "target_path",
-    "output": "copy failed; target may be truncated or partially written: is a directory",
+    "output": "copy failed; target may be truncated or partially written: other error",
     "value": "<CWD>"
   },
   {

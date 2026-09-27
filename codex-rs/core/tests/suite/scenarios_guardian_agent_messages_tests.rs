@@ -1,6 +1,9 @@
 //! Guardian retains native encrypted messages and historical calls across incremental reviews.
 
+use codex_core::StartIfIdleSubmission;
+use codex_core::TurnInputRequest;
 use codex_core::config::Constrained;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -8,8 +11,9 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::turn_input::TurnInput;
+use core_test_support::ThreadIdle;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
 use core_test_support::hooks::trust_discovered_hooks;
@@ -19,6 +23,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::Arc;
 use test_case::test_case;
 
 #[cfg_attr(not(target_os = "windows"), test_case(None; "agent_reply"))]
@@ -103,8 +108,11 @@ async fn encrypted_parent_reply_survives_incremental_guardian_reviews(
         ]),
     ]);
     let mock = responses::mount_sse_sequence(&server, stream).await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
     let test = test_codex()
         .with_model("gpt-5.5")
+        .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
             super::configure_scenario_catalog(config);
             for feature in [
@@ -165,6 +173,9 @@ async fn encrypted_parent_reply_survives_incremental_guardian_reviews(
     } else {
         test.submit_text_turn(prompt).await?;
     }
+    // TurnComplete precedes active-turn cleanup. The encrypted reply requires a
+    // new idle turn, not a rejected admission followed by a wait for no event.
+    ThreadIdle::wait(&test.codex).await;
     let communication = InterAgentCommunication::new_encrypted(
         AgentPath::root(),
         AgentPath::root().join("worker").expect("worker path"),
@@ -173,17 +184,19 @@ async fn encrypted_parent_reply_survives_incremental_guardian_reviews(
         /*trigger_turn*/ true,
     );
     let expected = serde_json::to_value(communication.to_model_input_item())?;
-    // TurnComplete can arrive before the previous turn finishes teardown. Queue
-    // the reply through the same mailbox path used by real agent messages.
-    test.codex
-        .submit(Op::InterAgentCommunication {
+    let submission = test
+        .codex
+        .start_turn_if_idle(TurnInputRequest::new(TurnInput::InterAgentCommunication(
             communication,
-            start_options: Default::default(),
-        })
+        )))
         .await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
+    let StartIfIdleSubmission::Started { turn_id, .. } = submission else {
+        anyhow::bail!("encrypted parent reply must start a new turn: {submission:?}");
+    };
+    wait_for_event(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(completed) if completed.turn_id == turn_id),
+    )
     .await;
     let requests = mock.requests();
     assert_eq!(requests.len(), 6 + usize::from(historical_call.is_some()));

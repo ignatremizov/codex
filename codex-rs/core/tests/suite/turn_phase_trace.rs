@@ -6,12 +6,14 @@ use codex_core::StartIfIdleSubmission;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::TurnInputSubmission;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
+use core_test_support::ThreadIdle;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -28,6 +30,7 @@ use opentelemetry_sdk::trace::InMemorySpanExporter;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::trace::SpanData;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
 use std::time::Duration;
 use test_case::test_case;
 use tokio::process::Command;
@@ -125,7 +128,10 @@ async fn steer_joins_existing_turn_without_extending_sampling(
         ]),
     )
     .await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
     let mut test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
             config
                 .features
@@ -234,6 +240,7 @@ async fn steer_joins_existing_turn_without_extending_sampling(
             .await;
             let closed_at = std::time::Instant::now();
             interrupted_capture = Some((closed_at, observe_timing(timing_start, closed_at)));
+            ThreadIdle::wait(&test.codex).await;
             let reply = mount_sse_once(
                 &server,
                 sse(vec![
@@ -258,10 +265,19 @@ async fn steer_joins_existing_turn_without_extending_sampling(
                     turn_id: call.turn_id.clone()
                 }
             );
+            // The interrupted run may still have a completion buffered for this same ID.
             wait_for_event(&test.codex, |event| {
-                matches!(event, EventMsg::TurnComplete(_))
+                matches!(event, EventMsg::TurnStarted(started) if started.turn_id == call.turn_id)
             })
             .await;
+            let completed = wait_for_event(&test.codex, |event| {
+                matches!(event, EventMsg::TurnComplete(completed) if completed.turn_id == call.turn_id)
+            })
+            .await;
+            let EventMsg::TurnComplete(completed) = completed else {
+                unreachable!();
+            };
+            assert_eq!(completed.error, None);
             reply.single_request();
             drop(recovery);
             let recovery = wait_for_span(&exported, |span| span.name == "recovery_request").await?;

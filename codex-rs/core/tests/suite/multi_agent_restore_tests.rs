@@ -12,7 +12,6 @@ use anyhow::Result;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -100,6 +99,13 @@ impl ThreadStore for GatedChildMetadataStore {
         params: ResumeThreadParams,
     ) -> ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>> {
         Box::pin(async move {
+            if !self.colliding_children.contains(&params.thread_id)
+                && params.thread_id != self.failed_child
+            {
+                // The root reopens from an explicitly selected rollout path. Child
+                // restoration must carry the revision from its ID-based preload.
+                return self.inner.resume_thread(params).await;
+            }
             assert!(
                 params.history_revision.is_some(),
                 "core must forward the revision"

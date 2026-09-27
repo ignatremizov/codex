@@ -260,6 +260,20 @@ async fn daybreak_command_persists_and_confirms_each_selection() -> Result<()> {
     Ok(())
 }
 
+// A peer can close before a read or an unsolicited notification finishes. Both paths must
+// reach embedded-server cleanup. Request/response writes deliberately remain strict.
+fn recording_peer_io<T>(
+    result: std::result::Result<T, WebSocketError>,
+) -> std::result::Result<Option<T>, WebSocketError> {
+    match result {
+        Err(error) if is_recording_client_disconnect(&error) => Ok(None),
+        result => result.map(Some),
+    }
+}
+
+#[path = "recording_peer_tests.rs"]
+mod recording_peer_tests;
+
 async fn complete_managed_worktree_creation(
     app: &mut App,
     tui: &mut crate::tui::Tui,
@@ -521,21 +535,19 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                     if let codex_app_server_client::InProcessServerEvent::ServerNotification(notification) = event
                         && matches!(*notification, ServerNotification::ThreadSettingsUpdated(_))
                     {
-                        let result = websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await;
-                        if result.as_ref().is_err_and(is_recording_client_disconnect) {
+                        let sent = websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await;
+                        if recording_peer_io(sent)?.is_none() {
                             break;
                         }
-                        result?;
                     }
                     continue;
                 }
             };
             let Some(frame) = frame else { break };
-            // The client can close with requests or notifications pending during shutdown.
-            if frame.as_ref().is_err_and(is_recording_client_disconnect) {
+            let Some(frame) = recording_peer_io(frame)? else {
                 break;
-            }
-            let Message::Text(text) = frame? else {
+            };
+            let Message::Text(text) = frame else {
                 continue;
             };
             let message = serde_json::from_str::<JSONRPCMessage>(&text)?;
