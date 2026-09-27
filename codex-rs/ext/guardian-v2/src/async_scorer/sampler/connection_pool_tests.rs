@@ -251,38 +251,28 @@ async fn stalled_http_headers_exhaust_the_sampling_retry_budget() -> Result<()> 
     config.provider = create_model_provider(provider, config.provider.auth_manager());
     let sampler = LunaSampler::new(config);
 
-    tokio::time::pause();
-    let sample = tokio::time::timeout(
+    // Wiremock serves HTTP on its own runtime. Use real time on both sides so
+    // paused-clock auto-advance cannot expire transport timers ahead of socket I/O.
+    let result = tokio::time::timeout(
         Duration::from_secs(10),
         sampler.sample(sample_request("stalled-headers")),
+    )
+    .await?;
+    // ResponsesClient now bounds header startup too. Either its stream error or
+    // the pool's equal-duration outer timeout may win; both exhaust the same budget.
+    assert!(
+        matches!(
+            &result,
+            Err(LunaSamplerError::Api(ApiError::Transport(
+                TransportError::Timeout
+            )))
+        ) || matches!(
+            &result,
+            Err(LunaSamplerError::Api(ApiError::Stream(message)))
+                if message == "idle timeout waiting for HTTP response stream to start"
+        ),
+        "unexpected sampling result: {result:?}",
     );
-    tokio::pin!(sample);
-    let deadline = std::time::Instant::now() + Duration::from_secs(/*secs*/ 30);
-    for expected_requests in 1..=3 {
-        // Keep the paused runtime runnable until the server records this attempt.
-        // Otherwise auto-advance can exhaust a retry before its request arrives.
-        while mock.requests().len() < expected_requests {
-            anyhow::ensure!(
-                std::time::Instant::now() < deadline,
-                "server did not receive request {expected_requests}"
-            );
-            tokio::select! {
-                result = &mut sample => {
-                    anyhow::bail!("sampling finished before request {expected_requests}: {result:?}");
-                }
-                () = tokio::task::yield_now() => {}
-            }
-        }
-        tokio::time::advance(Duration::from_millis(/*millis*/ 1_001)).await;
-    }
-    let result = sample.await?;
-    tokio::time::resume();
-    assert!(matches!(
-        result,
-        Err(LunaSamplerError::Api(ApiError::Transport(
-            TransportError::Timeout
-        )))
-    ));
     assert_eq!(mock.requests().len(), 3);
     assert_eq!(
         sampler.connections.classifications.available_permits(),

@@ -1880,8 +1880,13 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
     );
     app.chat_widget
         .apply_external_edit("queued follow-up".to_string());
+    // Tab queues locally; Enter would submit a steer owned by Core after interruption.
     app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        app.chat_widget.queued_user_message_texts(),
+        vec!["queued follow-up".to_string()]
+    );
     let input_state = app
         .chat_widget
         .capture_thread_input_state()

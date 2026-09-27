@@ -314,14 +314,9 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             ReconnectPresentation::Overview,
         )
         .await?;
-        app.finish_reconnect(
-            &mut tui,
-            &mut session,
-            &mut events,
-            connected,
-            CODEX_CLI_VERSION,
-        )
-        .await?;
+        // Keep the mismatch footer stable when the workspace release version changes.
+        app.finish_reconnect(&mut tui, &mut session, &mut events, connected, "0.0.0")
+            .await?;
         if interrupted_setup {
             assert!(app.windows_sandbox.pending_setup.is_none());
             assert!(app.windows_sandbox.setup_started_at.is_none());

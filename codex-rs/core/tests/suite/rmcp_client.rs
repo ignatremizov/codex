@@ -4026,7 +4026,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     // Phase 4: configure Codex with the OAuth-backed Streamable HTTP MCP
     // server and build the fixture in the active local or remote-aware mode.
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_home(temp_home.clone())
         .with_config(move |config| {
             config

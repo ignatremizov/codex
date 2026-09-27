@@ -503,7 +503,10 @@ impl PtyCodex {
                 return Ok(());
             }
             if let Some(status) = self.child.try_wait()? {
-                bail!("Codex exited while waiting for {text:?} ({status})");
+                bail!(
+                    "Codex exited while waiting for {text:?} ({status}); screen:\n{}",
+                    self.screen_contents()
+                );
             }
         }
         bail!("missing {text:?}; screen:\n{}", self.screen_contents())

@@ -92,7 +92,12 @@ fn process_label(pid: &str) -> String {
     format!("rmcp-test-process-{pid}")
 }
 
-fn assert_definition(response: &ResponseMock, namespace_description: &str, tool_description: &str) {
+fn assert_definition(
+    stage: &str,
+    response: &ResponseMock,
+    namespace_description: &str,
+    tool_description: &str,
+) {
     let body = response.single_request().body_json();
     let namespace = body
         .get("tools")
@@ -105,13 +110,15 @@ fn assert_definition(response: &ResponseMock, namespace_description: &str, tool_
         .expect("request should contain the MCP namespace");
     assert_eq!(
         namespace.get("description").and_then(Value::as_str),
-        Some(namespace_description)
+        Some(namespace_description),
+        "{stage}: namespace must describe the expected catalog"
     );
     assert_eq!(
         responses::namespace_child_tool(&body, NAMESPACE, "echo")
             .and_then(|tool| tool.get("description"))
             .and_then(Value::as_str),
-        Some(tool_description)
+        Some(tool_description),
+        "{stage}: echo must describe the expected catalog"
     );
 }
 
@@ -166,7 +173,7 @@ async fn mcp_calls_stay_bound_to_each_thread() -> anyhow::Result<()> {
     let first_server = make_server("first-runtime")?;
     let second_server = make_server("second-runtime")?;
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
             config
@@ -463,7 +470,7 @@ async fn cached_http_mcp_starts_lazily_for_subagents(
         AppsTestServer::mount_with_startup_control(&responses_server).await?;
     let server_url = format!("{}/api/codex/ps/mcp", http_server.chatgpt_base_url);
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
             config
@@ -597,7 +604,7 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
     let command = remote_aware_stdio_server_bin()?;
     let environment_id = remote_aware_environment_id();
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             config.update_plan_enabled = true;
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
@@ -614,6 +621,7 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
                 serde_json::from_value(json!({
                     "command": command,
                     "environment_id": environment_id,
+                    "cwd": config.cwd,
                     "env": {
                         "MCP_TEST_APP_ONLY_CWD_MARKER_FILE": app_only_cwd_marker_file,
                         "MCP_TEST_INITIALIZE_BARRIER_FILE": barrier_file,
@@ -651,7 +659,44 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
         .codex
         .start_or_steer_turn(user_turn("use the echo tool"))
         .await?;
-    let first_pid = wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await?;
+    let first_pid = match wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await {
+        Ok(pid) => pid,
+        Err(error) => {
+            // Keep the eager-start deadline unchanged, but expose startup failures
+            // instead of hiding them behind a missing PID-file timeout.
+            let mut startup_events = Vec::new();
+            let _ = tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
+                for _ in 0..64 {
+                    let Ok(event) = fixture.codex.next_event().await else {
+                        break;
+                    };
+                    let complete = matches!(
+                        &event.msg,
+                        EventMsg::McpStartupComplete(_) | EventMsg::TurnComplete(_)
+                    );
+                    if matches!(
+                        &event.msg,
+                        EventMsg::McpStartupUpdate(_)
+                            | EventMsg::McpStartupComplete(_)
+                            | EventMsg::Error(_)
+                    ) {
+                        startup_events.push(event.msg);
+                    }
+                    if complete {
+                        break;
+                    }
+                }
+            })
+            .await;
+            let pid_read = fs
+                .read_file_text(&pid_file, Default::default(), /*sandbox*/ None)
+                .await;
+            return Err(error.context(format!(
+                "initial root should start the uncached MCP server; \
+                     PID read: {pid_read:?}; startup events: {startup_events:?}"
+            )));
+        }
+    };
     fs.write_file(
         &barrier_file,
         b"ready".to_vec(),
@@ -665,6 +710,7 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
     .await;
     let first_process = process_label(&first_pid);
     assert_definition(
+        "cold root",
         &cold_response,
         &format!("Use the tools from {first_process}."),
         &format!("Echo from {first_process}."),
@@ -677,7 +723,9 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
         .thread_manager
         .start_thread(StartThreadOptions::new(fixture.config.clone()))
         .await?;
-    let eager_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&first_pid)).await?;
+    let eager_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&first_pid))
+        .await
+        .context("new root should eagerly start the cached MCP server")?;
     wait_for_mcp_server(&eager_thread, SERVER_NAME).await?;
     eager_thread.shutdown_and_wait().await?;
     let cached_process = process_label(&eager_pid);
@@ -758,8 +806,12 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
         !reported_ready_before_startup,
         "a dormant MCP server must not be reported as ready"
     );
-    for response in [&unused_response, &unused_done_response] {
+    for (stage, response) in [
+        ("dormant child initial request", &unused_response),
+        ("dormant child continuation", &unused_done_response),
+    ] {
         assert_definition(
+            stage,
             response,
             &format!("Use the tools from {cached_process}."),
             &format!("Echo from {cached_process}."),
@@ -873,11 +925,14 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
     .await
     .context("cached MCP definitions should reach inference before initialization")?;
     assert_definition(
+        "child before deferred startup",
         &cached_response,
         &format!("Use the tools from {cached_process}."),
         &format!("Echo from {cached_process}."),
     );
-    let second_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&eager_pid)).await?;
+    let second_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&eager_pid))
+        .await
+        .context("subagent tool invocation should start its dormant MCP server")?;
     let second_process = process_label(&second_pid);
     tokio::time::timeout(Duration::from_secs(2), unrelated_finished_rx)
         .await
@@ -899,15 +954,15 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
         "starting the cached server must invalidate the dormant binding"
     );
     assert_definition(
+        "child after deferred startup",
         &cached_done_response,
         &format!("Use the tools from {second_process}."),
         &format!("Echo from {second_process}."),
     );
-    let output_item = cached_done_response
+    let output = cached_done_response
         .single_request()
-        .function_call_output(app_only_call_id);
-    let output = output_item["output"][1]["text"]
-        .as_str()
+        .function_call_output_content_and_success(app_only_call_id)
+        .and_then(|(content, _)| content)
         .expect("app-only tool error should be returned to the model");
     assert!(
         output.contains(&expected_error),
@@ -949,7 +1004,9 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
             ..StartThreadOptions::new(filtered_config)
         })
         .await?;
-    let filtered_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&second_pid)).await?;
+    let filtered_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&second_pid))
+        .await
+        .context("changed tool filter should start an uncached MCP server")?;
     wait_for_mcp_server(&filtered_thread, SERVER_NAME).await?;
     filtered_thread.shutdown_and_wait().await?;
     fs.remove(
@@ -991,7 +1048,9 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
     interrupted_thread
         .start_or_steer_turn(user_turn("Start the cached MCP tool."))
         .await?;
-    let interrupted_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&filtered_pid)).await?;
+    let interrupted_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&filtered_pid))
+        .await
+        .context("interruption fixture should start its dormant MCP server")?;
     wait_for_event(&interrupted_thread, |event| {
         matches!(
             event,
