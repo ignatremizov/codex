@@ -35,6 +35,16 @@ async fn root_metadata_symlinks_cannot_reopen_approved_denials() {
     fs::write(private.join("sibling"), "sibling").unwrap();
     codex_utils_cargo_bin::copy_executable(&codex_linux_sandbox_exe(), &work.join("sandbox"))
         .unwrap();
+    // The synthetic root is writable by its namespace owner, so PATH installations
+    // cannot establish pre-sandbox trust there. Supply the package's bundled helper.
+    let bundled_bwrap = if option_env!("BAZEL_PACKAGE").is_some() {
+        codex_utils_cargo_bin::cargo_bin("bwrap").expect("bundled bubblewrap binary")
+    } else {
+        bwrap.clone()
+    };
+    fs::create_dir(work.join("codex-resources")).unwrap();
+    codex_utils_cargo_bin::copy_executable(&bundled_bwrap, &work.join("codex-resources/bwrap"))
+        .unwrap();
 
     let path_entry = |path: &str, access| {
         FileSystemSandboxEntry::new(

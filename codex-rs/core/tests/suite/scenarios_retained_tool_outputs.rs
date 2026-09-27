@@ -36,7 +36,7 @@ async fn retained_tool_output_survives_compaction_and_resume() -> Result<()> {
                 .find(|model| model.slug == "gpt-6-astra")
                 .unwrap()
                 .truncation_policy = codex_protocol::openai_models::TruncationPolicyConfig::tokens(
-                /*limit*/ 100_000,
+                /*limit*/ 300_000,
             );
         };
         let test = test_codex()
@@ -45,7 +45,7 @@ async fn retained_tool_output_survives_compaction_and_resume() -> Result<()> {
             .with_config(configure)
             .build_with_auto_env(&server)
             .await?;
-        let details = "Investigate the failing tests carefully. ".repeat(7_000);
+        let details = "Investigate the failing tests carefully. ".repeat(20_000);
         let latest_instruction = "Report your findings without changing files.";
         for (name, output) in [
             (
@@ -146,7 +146,7 @@ async fn retained_tool_output_survives_compaction_and_resume() -> Result<()> {
             },
             context_snapshot::format_request_history_snapshot(
                 if enabled {
-                    "Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged."
+                    "Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 128K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged."
                 } else {
                     "With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume."
                 },
