@@ -473,10 +473,20 @@ async fn start_listener(
         drop(pending);
         // A cold V2 resume can install the child's listener before its creation callback runs.
         if created || is_v2_child {
-            listener_task_context
-                .thread_watch_manager
-                .upsert_thread(&conversation_id.to_string())
-                .await;
+            if created && config_snapshot.parent_thread_id.is_none() {
+                // Root creation RPCs introduce the thread with their response and
+                // ThreadStarted notification. This concurrent observer must not
+                // announce an initial Idle status before that boundary.
+                listener_task_context
+                    .thread_watch_manager
+                    .upsert_thread_silently(&conversation_id.to_string())
+                    .await;
+            } else {
+                listener_task_context
+                    .thread_watch_manager
+                    .upsert_thread(&conversation_id.to_string())
+                    .await;
+            }
         }
         let thread_status_rx = listener_task_context
             .thread_watch_manager
