@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_model_instructions.rs
+assertion_line: 92
 expression: "context_snapshot::format_request_history_snapshot(\"Default, Work, Chat, unsupported, and repeated Work threads use their own catalog instructions and tools. Unsupported callers preserve the default request; repeated Work reuses its catalog.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Default, Work, Chat, unsupported, and repeated Work threads use their own catalog instructions and tools. Unsupported callers preserve the default request; repeated Work reuses its catalog.
@@ -14,12 +15,14 @@ Settings:
   store: false
   stream: true
   tool_choice: "auto"
-  tools (6; hash=d558f97965d6db2b):
-    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
-    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
+  tools (7; hash=52b5893409b93076):
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=841a4b17cc4e6a88
+    - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=47f6053a3c9aecc5
+    - function/update_plan: Updates the task plan. Provide an optional explanation and a list of plan items, each with a step...; args=[explanation, plan]; hash=cbba5ed302a9c0eb
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[path]; hash=1908de9c0be7118a
-    - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=6ac4ec60e68e50c0
+    - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=a6f95d2950756b89
+      - function/check_mail
       - function/close_agent
       - function/resume_agent
       - function/send_input
@@ -39,8 +42,8 @@ Settings:
 ## Window 2 (after request 1: input diverged at item 00)
 Settings: relative to window 1
   prompt_cache_key: "<PROMPT_CACHE_KEY 2>"
-  tools (7; hash=7cc079a7a7aa5604):
-    + custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
+  tools (8; hash=627dc64f2c8dc1b5):
+    + custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
 -- request 2 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
@@ -54,7 +57,7 @@ Settings: relative to window 1
 ## Window 3 (after request 2: input diverged at item 00)
 Settings: relative to window 2
   prompt_cache_key: "<PROMPT_CACHE_KEY 3>"
-  tools (6; hash=d558f97965d6db2b):
+  tools (7; hash=52b5893409b93076):
     - removed custom/apply_patch
 -- request 3 (turn) --
 00:message/developer:
@@ -82,8 +85,8 @@ Settings: relative to window 3
 ## Window 5 (after request 4: input diverged at item 00)
 Settings: relative to window 4
   prompt_cache_key: "<PROMPT_CACHE_KEY 5>"
-  tools (7; hash=7cc079a7a7aa5604):
-    + custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
+  tools (8; hash=627dc64f2c8dc1b5):
+    + custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
 -- request 5 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

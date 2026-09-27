@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 5700
 expression: "frames.join(\"\\n\\n\")"
 ---
 100 columns, hidden
@@ -19,7 +20,7 @@ parent-29
 
 › parent draft
 
-  GPT-6.1-Sol default · Main [default]
+  gpt-6.1-sol default · Main [default]
   New activity · esc latest
 
 100 columns, reopened
@@ -39,8 +40,8 @@ parent-29                                                      │
                                                                │
 › parent draft-                                                │
                                                                │› child draft!
-  GPT-6.1-Sol default                                          │
-                                                               │  GPT-6.1-Sol default · Agent
+  gpt-6.1-sol default                                          │
+                                                               │  gpt-6.1-sol default · Agent
 
 99 columns, reopened
  Side chat×                                                                                     +
@@ -59,5 +60,5 @@ child-29
 
 › child draft!
 
-  GPT-6.1-Sol default · Agent
+  gpt-6.1-sol default · Agent
   Side from main thread · ⌃/ to switch · ⌃c to close

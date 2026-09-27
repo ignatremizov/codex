@@ -49,7 +49,7 @@ after:
   Agents.md:     <none>
 
   Token usage:   0 total  (0 input + 0 output)
-  spark limit:
+  extra limit:
   5h limit:      [███████████░░░░░░░░░] 55% left (resets soon)
   Weekly limit:  [██████████████░░░░░░] 70% left (resets later)
 

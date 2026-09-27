@@ -1,11 +1,11 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
+assertion_line: 5431
 expression: terminal.backend()
 ---
 "› /diff  show git diff (including untracked files)                                                  "
 "                                                                                                    "
 "› /dide tail                                                                                        "
-"                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "

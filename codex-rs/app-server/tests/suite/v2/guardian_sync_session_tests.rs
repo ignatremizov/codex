@@ -267,17 +267,20 @@ async fn managed_reviewer_refreshes_global_instructions_before_reuse() -> Result
         }
         // Private reviewer events arrive on the parent's subscription with the
         // reviewer's identity and the metadata that its next request replays.
-        let (recorded, item) = loop {
-            let recorded: RawResponseItemCompletedNotification =
-                app.read_notification("rawResponseItem/completed").await?;
-            let item = serde_json::to_value(&recorded.item)?;
-            if recorded.thread_id != parent.id
-                && item["role"] == "assistant"
-                && item["content"][0]["text"] == ALLOW
-            {
-                break (recorded, item);
+        let (recorded, item) = timeout(TIMEOUT, async {
+            loop {
+                let recorded: RawResponseItemCompletedNotification =
+                    app.read_notification("rawResponseItem/completed").await?;
+                let item = serde_json::to_value(&recorded.item)?;
+                if recorded.thread_id != parent.id
+                    && item["role"] == "assistant"
+                    && item["content"][0]["text"] == ALLOW
+                {
+                    break Ok::<_, anyhow::Error>((recorded, item));
+                }
             }
-        };
+        })
+        .await??;
         assert_eq!(
             json!([recorded.thread_id, recorded.turn_id]),
             json!([turn_metadata["thread_id"], turn_metadata["turn_id"]]),

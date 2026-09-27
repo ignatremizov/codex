@@ -179,6 +179,13 @@ async fn cloud_enter_recovers_drafts_from_server_receipts() -> Result<()> {
                 turn_completed_notification(id, "actual", TurnStatus::Interrupted),
                 /*replay_kind*/ None,
             );
+            assert_eq!(app.chat_widget.composer_text_with_pending(), "");
+            assert_eq!(
+                app.chat_widget
+                    .capture_thread_input_state()
+                    .map(|state| state.pending_steers.len()),
+                Some(1)
+            );
         }
         let history = std::iter::from_fn(|| events.try_recv().ok())
             .filter_map(|event| match event {
@@ -546,17 +553,22 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
         }
     }
 
-    assert_eq!(app.chat_widget.queued_user_message_texts(), ["same text"]);
-    assert!(
-        app.chat_widget
-            .capture_thread_input_state()
-            .is_some_and(|input| input.has_unconfirmed_messages())
-    );
+    assert!(app.chat_widget.queued_user_message_texts().is_empty());
+    let pending_ids = |app: &mut App| {
+        app.chat_widget.capture_thread_input_state().map(|state| {
+            state
+                .pending_steers
+                .into_iter()
+                .map(|steer| steer.client_id)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(pending_ids(&mut app), Some(vec![unmatched_id.clone()]));
     app.chat_widget.handle_server_notification(
         completed(original, turn_id, user_item(unmatched_id)),
         /*replay_kind*/ None,
     );
-    assert!(app.chat_widget.queued_user_message_texts().is_empty());
+    assert!(pending_ids(&mut app).is_none_or(|ids| ids.is_empty()));
     insta::assert_snapshot!(rendered_responses(&app), @"• Canonical response");
 
     for notification in [
@@ -1067,6 +1079,20 @@ async fn daybreak_command_persists_and_confirms_each_selection() -> Result<()> {
     Ok(())
 }
 
+// A peer can close before a read or an unsolicited notification finishes. Both paths must
+// reach embedded-server cleanup. Request/response writes deliberately remain strict.
+fn recording_peer_io<T>(
+    result: std::result::Result<T, WebSocketError>,
+) -> std::result::Result<Option<T>, WebSocketError> {
+    match result {
+        Err(error) if is_recording_client_disconnect(&error) => Ok(None),
+        result => result.map(Some),
+    }
+}
+
+#[path = "recording_peer_tests.rs"]
+mod recording_peer_tests;
+
 async fn complete_managed_worktree_creation(
     app: &mut App,
     tui: &mut crate::tui::Tui,
@@ -1381,21 +1407,19 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                     if let codex_app_server_client::InProcessServerEvent::ServerNotification(notification) = event
                         && matches!(*notification, ServerNotification::ThreadSettingsUpdated(_))
                     {
-                        let result = websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await;
-                        if result.as_ref().is_err_and(is_recording_client_disconnect) {
+                        let sent = websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await;
+                        if recording_peer_io(sent)?.is_none() {
                             break;
                         }
-                        result?;
                     }
                     continue;
                 }
             };
             let Some(frame) = frame else { break };
-            // The client can close with requests or notifications pending during shutdown.
-            if frame.as_ref().is_err_and(is_recording_client_disconnect) {
+            let Some(frame) = recording_peer_io(frame)? else {
                 break;
-            }
-            let Message::Text(text) = frame? else {
+            };
+            let Message::Text(text) = frame else {
                 continue;
             };
             let message = serde_json::from_str::<JSONRPCMessage>(&text)?;

@@ -41,7 +41,7 @@ async fn heartbeat_keeps_user_restriction_after_status_questions(
                 SPAWN_CALL_ID,
                 "collaboration",
                 "spawn_agent",
-                &json!({"task_name": "worker", "message": INITIAL_TASK, "fork_turns": "none"})
+                &json!({"task_name": "worker", "message": INITIAL_TASK, "task_message": INITIAL_TASK, "fork_turns": "none"})
                     .to_string(),
             ),
             ev_completed("spawn-worker"),

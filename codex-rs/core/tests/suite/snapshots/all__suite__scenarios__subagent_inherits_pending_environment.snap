@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 2050
 expression: snapshot
 ---
 Scenario: A parent spawns a child before the selected environment is configured. The child sees it starting, waits, and receives the ready result after an ordinary parent turn-settings update.
@@ -46,10 +47,18 @@ Scenario: A parent spawns a child before the selected environment is configured.
 05:message/user:
     Delegate waiting for the shared workspace, and report what the worker finds.
 -- request 2 (request; parent waits for the worker) --
-06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_name":"worker"}
+06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_message":"Wait for...red workspace to become ready.","task_name":"worker"} [hash=05d6e7bfa83c59ed]
 07:function_call_output:{"task_name":"/root/worker"}
+08:message/user:
+    <environment_context>
+      <current_date><CURRENT_DATE></current_date>
+      <timezone><HOST_TIMEZONE></timezone>
+      <subagents>
+        <agent name="/root/worker" />
+      </subagents>
+    </environment_context>
 
-## Window 2 (after request 2: input diverged at item 02, settings changed (tools))
+## Window 2 (after request 2: input diverged at item 02)
 -- request 3 (request; child sees the inherited starting environment) --
 00:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
@@ -101,7 +110,7 @@ Scenario: A parent spawns a child before the selected environment is configured.
       <filesystem><workspace_roots><root><CWD></root></workspace_roots><permission_profile type="managed"><f...ntry></file_system></permission_profile></filesystem> [hash=e8c1de60307d0a3d]
     </environment_context>
 
-## Window 3 (after request 4: input diverged at item 02, settings changed (tools))
+## Window 3 (after request 4: input diverged at item 02)
 -- request 5 (request; parent receives the child result) --
 00:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
@@ -142,12 +151,20 @@ Scenario: A parent spawns a child before the selected environment is configured.
     </environment_context>
 05:message/user:
     Delegate waiting for the shared workspace, and report what the worker finds.
-06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_name":"worker"}
+06:function_call/collaboration.spawn_agent:{"fork_turns":"none","message":"Wait for the shared workspace to become ready.","task_message":"Wait for...red workspace to become ready.","task_name":"worker"} [hash=05d6e7bfa83c59ed]
 07:function_call_output:{"task_name":"/root/worker"}
-08:function_call/collaboration.wait_agent:{"timeout_ms":10000}
-09:function_call_output:{"message":"Wait completed.","timed_out":false}
-10:agent_message
-11:message/user:
+08:message/user:
+    <environment_context>
+      <current_date><CURRENT_DATE></current_date>
+      <timezone><HOST_TIMEZONE></timezone>
+      <subagents>
+        <agent name="/root/worker" />
+      </subagents>
+    </environment_context>
+09:function_call/collaboration.wait_agent:{"timeout_ms":10000}
+10:function_call_output:{"message":"Wait completed.","timed_out":false}
+11:agent_message
+12:message/user:
     <environment_context>
       <cwd><CWD></cwd>
       <shell><HOST_SHELL></shell>

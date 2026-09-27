@@ -331,6 +331,11 @@ async fn granular_dangerous_command_approval_preserves_permissions(
                     request_permissions: true,
                     mcp_elicitations: true,
                 }));
+            // Bind symbolic workspace grants to this fixture's executor directory.
+            config.workspace_roots = vec![config.cwd.clone()];
+            config
+                .permissions
+                .set_workspace_roots(config.workspace_roots.clone());
             config
                 .permissions
                 .set_permission_profile(permission_profile)

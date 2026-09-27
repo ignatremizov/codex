@@ -365,24 +365,34 @@ async fn steered_input_checkpoint_controls_next_request(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn steer_during_final_flush_reaches_the_model_before_turn_completion() -> anyhow::Result<()> {
-    let server = responses::start_mock_server().await;
-    let responses = responses::mount_sse_sequence(
-        &server,
-        [
-            ("first", "original answer"),
-            ("second", "answer to the steer"),
-        ]
-        .into_iter()
-        .map(|(id, answer)| {
-            responses::sse(vec![
-                responses::ev_response_created(id),
-                responses::ev_assistant_message(id, answer),
-                responses::ev_completed(id),
-            ])
-        })
-        .collect(),
-    )
-    .await;
+    let (complete_first, first_completion) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(Vec::new()).await;
+    let mut first = server
+        .mount_response(
+            |request| request.body_contains_text("first prompt"),
+            vec![StreamingSseChunk {
+                gate: Some(first_completion),
+                body: responses::sse(vec![
+                    responses::ev_response_created("first"),
+                    responses::ev_assistant_message("first", "original answer"),
+                    responses::ev_completed("first"),
+                ]),
+            }],
+        )
+        .await;
+    let mut second = server
+        .mount_response(
+            |request| request.body_contains_text("late steer"),
+            vec![StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![
+                    responses::ev_response_created("second"),
+                    responses::ev_assistant_message("second", "answer to the steer"),
+                    responses::ev_completed("second"),
+                ]),
+            }],
+        )
+        .await;
     let (checkpoints, _checkpoint_requests) = mpsc::unbounded_channel();
     let store = Arc::new(GatedCheckpointStore {
         inner: InMemoryThreadStore::default(),
@@ -396,7 +406,7 @@ async fn steer_during_final_flush_reaches_the_model_before_turn_completion() -> 
     let test = test_codex()
         .with_thread_store(store.clone())
         .with_history_mode(ThreadHistoryMode::Legacy)
-        .build_with_auto_env(&server)
+        .build_with_streaming_server_auto_env(&server)
         .await?;
     let user_message = |text: &str, client_id| {
         TurnInputRequest::new(TurnInput::UserInput {
@@ -408,7 +418,6 @@ async fn steer_during_final_flush_reaches_the_model_before_turn_completion() -> 
         })
     };
     let flush = Arc::new(Barrier::new(/*n*/ 2));
-    *store.next_flush.lock().await = Some(flush.clone());
     let TurnInputSubmission::Started {
         turn_id,
         root_turn_id,
@@ -420,9 +429,13 @@ async fn steer_during_final_flush_reaches_the_model_before_turn_completion() -> 
         panic!("expected a new turn");
     };
 
-    // The regular task returned its first answer and is flushing before it completes the turn.
+    // Admission can flush before sampling starts. Arm the barrier once the
+    // first request is in progress and release its final response.
+    timeout(Duration::from_secs(10), first.wait_for_request()).await?;
+    *store.next_flush.lock().await = Some(Arc::clone(&flush));
+    complete_first.send(()).expect("release first response");
     timeout(Duration::from_secs(10), flush.wait()).await?;
-    assert_eq!(responses.requests().len(), 1);
+    assert_eq!(server.requests().await.len(), 1);
     let steer = timeout(
         Duration::from_secs(10),
         test.codex
@@ -461,16 +474,18 @@ async fn steer_during_final_flush_reaches_the_model_before_turn_completion() -> 
     );
     assert_eq!(starts, 1);
     assert_eq!(client_ids, [Some("steer-id".to_string())]);
-    let requests = responses.requests();
-    assert_eq!(requests.len(), 2);
+    let request = timeout(Duration::from_secs(10), second.wait_for_request()).await?;
+    assert_eq!(server.requests().await.len(), 2);
     assert_eq!(
-        requests[1]
+        request
             .message_input_texts("user")
             .iter()
             .filter(|text| *text == "late steer")
             .count(),
         1
     );
+    test.codex.shutdown_and_wait().await?;
+    server.shutdown().await;
     Ok(())
 }
 

@@ -55,7 +55,9 @@ impl ThreadLifecycleContributor<Config> for PauseShutdown {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// One worker makes scheduler handoff at the synchronous settings gate necessary:
+// queued-mail admission must progress without waiting for that gate to time out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()> {
     const QUEUED_TASK: &str = "handle this accepted task after dispatch resumes";
     let server = start_mock_server().await;
@@ -116,6 +118,9 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         .await?;
     let mut created = test.thread_manager.subscribe_thread_created();
     test.submit_turn(FIRST_PROMPT).await?;
+    eprintln!(
+        "queued-eviction: initial spawn returned; waiting for parent idle and child publication"
+    );
     ThreadIdle::wait(&test.codex).await;
     let first_id = created.recv().await?;
     let first = test.thread_manager.get_thread(first_id).await?;
@@ -123,6 +128,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
     ThreadIdle::wait(&first).await;
 
     // Reuse the settings fixture to pause the submission loop without starting a turn.
+    eprintln!("queued-eviction: first child is idle; pausing settings commit");
     first
         .submit(Op::ThreadSettings {
             thread_settings: ThreadSettingsOverrides {
@@ -133,6 +139,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         })
         .await?;
     timeout(Duration::from_secs(10), entered_rx).await??;
+    eprintln!("queued-eviction: settings commit paused; submitting queued mail");
     test.submit_turn("queue a followup").await?;
     ThreadIdle::wait(&test.codex).await;
     assert_eq!(
@@ -140,6 +147,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         Some(String::new()),
     );
     assert_eq!(queued_message_count(), 0);
+    eprintln!("queued-eviction: mail accepted; checking residency prevents eviction");
 
     // The sender has finished, but accepted mail still owns its place in the queue.
     timeout(
@@ -156,6 +164,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
     assert!(test.thread_manager.get_thread(first_id).await.is_ok());
 
     release_tx.send(())?;
+    eprintln!("queued-eviction: settings released; waiting for queued mail completion");
     wait_for_event(&first, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     ThreadIdle::wait(&first).await;
     assert_eq!(queued_message_count(), 1);
@@ -186,6 +195,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         }]))
         .await?;
     timeout(Duration::from_secs(10), gate.entered.notified()).await?;
+    eprintln!("queued-eviction: shutdown entered; cancelling its caller");
     test.codex.submit(Op::Interrupt).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnAborted(_))
@@ -211,6 +221,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         "mail must not be accepted by the closing runtime after its eviction caller is cancelled",
     );
     gate.release.notify_one();
+    eprintln!("queued-eviction: shutdown released; waiting for late mail rejection");
     timeout(Duration::from_secs(10), send).await??;
     assert_eq!(
         delivery.function_call_output_text("late-mail"),
@@ -229,6 +240,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
     .await;
     mount_completed_worker(&server, SECOND_TASK, "replacement-call").await;
     test.submit_turn("retry replacement").await?;
+    eprintln!("queued-eviction: replacement spawn returned; awaiting its completion");
     let replacement = test
         .thread_manager
         .get_thread(created.recv().await?)

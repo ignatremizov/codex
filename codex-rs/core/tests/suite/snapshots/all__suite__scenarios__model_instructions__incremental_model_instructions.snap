@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_model_instructions.rs
+assertion_line: 211
 expression: "context_snapshot::format_request_history_snapshot(\"A same-model catalog refresh appends replacement instructions once without changing tools or the prefix. Compaction starts a new window with the latest base.\",\n&mock.requests(),\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: A same-model catalog refresh appends replacement instructions once without changing tools or the prefix. Compaction starts a new window with the latest base.
@@ -15,13 +16,15 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=946019c94afdd69a):
-        - namespace/functions; hash=ce01915b77cef9ee
+00:additional_tools/developer (2; hash=0927dc5f09ed862d):
+        - namespace/functions; hash=c24edee5832395d6
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=d492855cc7064c73
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=bc633dd531d9fcda
+          - function/check_mail
           - function/close_agent
           - function/resume_agent
           - function/send_input
@@ -62,13 +65,15 @@ Settings:
 ## Window 2 (after request 4: input diverged at item 01)
 Settings: same as window 1
 -- request 5 (turn) --
-00:additional_tools/developer (2; hash=946019c94afdd69a):
-        - namespace/functions; hash=ce01915b77cef9ee
+00:additional_tools/developer (2; hash=0927dc5f09ed862d):
+        - namespace/functions; hash=c24edee5832395d6
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=d492855cc7064c73
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=bc633dd531d9fcda
+          - function/check_mail
           - function/close_agent
           - function/resume_agent
           - function/send_input

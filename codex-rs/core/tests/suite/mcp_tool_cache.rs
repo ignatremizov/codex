@@ -21,6 +21,7 @@ use codex_extension_api::McpServerContributor;
 use codex_features::Feature;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_protocol::mcp::McpServerConnectionStatus;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -73,7 +74,12 @@ fn process_label(pid: &str) -> String {
     format!("rmcp-test-process-{pid}")
 }
 
-fn assert_definition(response: &ResponseMock, namespace_description: &str, tool_description: &str) {
+fn assert_definition(
+    stage: &str,
+    response: &ResponseMock,
+    namespace_description: &str,
+    tool_description: &str,
+) {
     let body = response.single_request().body_json();
     let namespace = body
         .get("tools")
@@ -86,13 +92,15 @@ fn assert_definition(response: &ResponseMock, namespace_description: &str, tool_
         .expect("request should contain the MCP namespace");
     assert_eq!(
         namespace.get("description").and_then(Value::as_str),
-        Some(namespace_description)
+        Some(namespace_description),
+        "{stage}: namespace must describe the expected catalog"
     );
     assert_eq!(
         responses::namespace_child_tool(&body, NAMESPACE, "echo")
             .and_then(|tool| tool.get("description"))
             .and_then(Value::as_str),
-        Some(tool_description)
+        Some(tool_description),
+        "{stage}: echo must describe the expected catalog"
     );
 }
 
@@ -147,7 +155,7 @@ async fn mcp_calls_stay_bound_to_each_thread() -> anyhow::Result<()> {
     let first_server = make_server("first-runtime")?;
     let second_server = make_server("second-runtime")?;
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
             config
@@ -490,7 +498,7 @@ async fn cached_http_mcp_starts_lazily_for_subagents(
         AppsTestServer::mount_with_startup_control(&responses_server).await?;
     let server_url = format!("{}/api/codex/ps/mcp", http_server.chatgpt_base_url);
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
             config
@@ -611,7 +619,7 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     let command = remote_aware_stdio_server_bin()?;
     let environment_id = remote_aware_environment_id();
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             super::scenarios::configure_scenario_catalog(config);
             config.update_plan_enabled = true;
@@ -629,6 +637,7 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
                 serde_json::from_value(json!({
                     "command": command,
                     "environment_id": environment_id,
+                    "cwd": config.cwd,
                     "env": {
                         "MCP_TEST_APP_ONLY_CWD_MARKER_FILE": app_only_cwd_marker_file,
                         "MCP_TEST_INITIALIZE_BARRIER_FILE": barrier_file,
@@ -666,7 +675,44 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
         .codex
         .start_or_steer_turn(user_turn("use the echo tool"))
         .await?;
-    let first_pid = wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await?;
+    let first_pid = match wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await {
+        Ok(pid) => pid,
+        Err(error) => {
+            // Keep the eager-start deadline unchanged, but expose startup failures
+            // instead of hiding them behind a missing PID-file timeout.
+            let mut startup_events = Vec::new();
+            let _ = tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
+                for _ in 0..64 {
+                    let Ok(event) = fixture.codex.next_event().await else {
+                        break;
+                    };
+                    let complete = matches!(
+                        &event.msg,
+                        EventMsg::McpStartupComplete(_) | EventMsg::TurnComplete(_)
+                    );
+                    if matches!(
+                        &event.msg,
+                        EventMsg::McpStartupUpdate(_)
+                            | EventMsg::McpStartupComplete(_)
+                            | EventMsg::Error(_)
+                    ) {
+                        startup_events.push(event.msg);
+                    }
+                    if complete {
+                        break;
+                    }
+                }
+            })
+            .await;
+            let pid_read = fs
+                .read_file_text(&pid_file, Default::default(), /*sandbox*/ None)
+                .await;
+            return Err(error.context(format!(
+                "initial root should start the uncached MCP server; \
+                     PID read: {pid_read:?}; startup events: {startup_events:?}"
+            )));
+        }
+    };
     fs.write_file(
         &barrier_file,
         b"ready".to_vec(),
@@ -680,6 +726,7 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     .await;
     let first_process = process_label(&first_pid);
     assert_definition(
+        "cold root",
         &cold_response,
         &format!("Use the tools from {first_process}."),
         &format!("Echo from {first_process}."),
@@ -711,7 +758,9 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
         .thread_manager
         .start_thread(StartThreadOptions::new(required_config))
         .await?;
-    let required_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&control_pid)).await?;
+    let required_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&control_pid))
+        .await
+        .context("required root should eagerly start the cached MCP server")?;
     wait_for_mcp_server(&required_thread, SERVER_NAME).await?;
     required_thread.shutdown_and_wait().await?;
     let cached_process = process_label(&required_pid);
@@ -782,6 +831,17 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
         !reported_ready_before_startup,
         "a dormant MCP server must not be reported as ready"
     );
+    for (stage, response) in [
+        ("dormant chat initial request", &unused_response),
+        ("dormant chat continuation", &unused_done_response),
+    ] {
+        assert_definition(
+            stage,
+            response,
+            &format!("Use the tools from {cached_process}."),
+            &format!("Echo from {cached_process}."),
+        );
+    }
     let (mcp_config, _) = second_thread.current_mcp_config_and_runtime_context().await;
     assert_eq!(
         second_thread
@@ -888,11 +948,14 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     .await
     .context("cached MCP definitions should reach inference before initialization")?;
     assert_definition(
+        "child before deferred startup",
         &cached_response,
         &format!("Use the tools from {cached_process}."),
         &format!("Echo from {cached_process}."),
     );
-    let second_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&required_pid)).await?;
+    let second_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&required_pid))
+        .await
+        .context("first tool invocation should start the dormant MCP server")?;
     let second_process = process_label(&second_pid);
     tokio::time::timeout(Duration::from_secs(2), unrelated_finished_rx)
         .await
@@ -909,10 +972,49 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     .await?;
     assert_eq!(cached_turn.await??, second_process);
     assert_definition(
+        "child after deferred startup",
         &cached_done_response,
         &format!("Use the tools from {second_process}."),
         &format!("Echo from {second_process}."),
     );
+    let output: FunctionCallOutputBody = serde_json::from_value(
+        cached_done_response
+            .single_request()
+            .function_call_output("cached-app-only-call")["output"]
+            .clone(),
+    )?;
+    let output = output
+        .to_text()
+        .expect("the current-catalog rejection should reach the model");
+    // Frozen declarations do not retain call authority after live startup changes
+    // a tool to app-only. Call preparation rechecks the current catalog.
+    let expected_error = format!("MCP tool `{SERVER_NAME}/cwd` is not available to the model");
+    assert_eq!(
+        output.split_once("\nOutput:\n").map(|(_, body)| body),
+        Some(expected_error.as_str()),
+        "the previously advertised tool must be rejected by current model visibility: {output}"
+    );
+    let output: FunctionCallOutputBody = serde_json::from_value(
+        cached_done_response
+            .single_request()
+            .function_call_output("cached-call")["output"]
+            .clone(),
+    )?;
+    let output = output
+        .to_text()
+        .expect("successful tool output should be returned to the model");
+    assert!(
+        output.contains(&second_process),
+        "model-visible tool output should come from the live server: {output}"
+    );
+    assert_eq!(
+        cached_done_response
+            .single_request()
+            .function_call_output_text("cached-unrelated-plan")
+            .as_deref(),
+        Some("Plan updated")
+    );
+
     second_thread.shutdown_and_wait().await?;
     let mut filtered_config = fixture.config.clone();
     let mut filtered_servers = filtered_config.mcp_servers.get().clone();
@@ -1012,7 +1114,9 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     interrupted_thread
         .start_or_steer_turn(user_turn("Start the cached MCP tool."))
         .await?;
-    let interrupted_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&filtered_pid)).await?;
+    let interrupted_pid = wait_for_new_pid(fs.as_ref(), &pid_file, Some(&filtered_pid))
+        .await
+        .context("interruption fixture should start its dormant MCP server")?;
     wait_for_event(&interrupted_thread, |event| {
         matches!(
             event,
@@ -1077,9 +1181,14 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    let retry_output = retry_done
-        .single_request()
-        .function_call_output_text("retried-startup-call")
+    let retry_output: FunctionCallOutputBody = serde_json::from_value(
+        retry_done
+            .single_request()
+            .function_call_output("retried-startup-call")["output"]
+            .clone(),
+    )?;
+    let retry_output = retry_output
+        .to_text()
         .expect("the retried MCP tool call should return its output");
     assert!(
         retry_output.contains(&process_label(&interrupted_pid)),
@@ -1210,6 +1319,7 @@ async fn cached_stdio_negotiates_sharing_on_first_use() -> anyhow::Result<()> {
     );
     let legacy = &processes[0];
     assert_definition(
+        "legacy registration after refresh",
         &response,
         &format!("Use the tools from {legacy}."),
         &format!("Echo from {legacy}."),

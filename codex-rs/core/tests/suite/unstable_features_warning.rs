@@ -56,7 +56,7 @@ async fn emits_warning_when_unstable_features_enabled_via_config() {
         .await
         .expect("spawn conversation");
 
-    let warning = wait_for_event(&conversation, |ev| matches!(ev, EventMsg::Warning(_))).await;
+    let warning = wait_for_event(&conversation, is_unstable_features_warning).await;
     let EventMsg::Warning(WarningEvent { message }) = warning else {
         panic!("expected warning event");
     };
@@ -108,8 +108,16 @@ async fn suppresses_warning_when_configured() {
 
     let warning = timeout(
         Duration::from_millis(150),
-        wait_for_event(&conversation, |ev| matches!(ev, EventMsg::Warning(_))),
+        wait_for_event(&conversation, is_unstable_features_warning),
     )
     .await;
     assert!(warning.is_err());
+}
+
+fn is_unstable_features_warning(event: &EventMsg) -> bool {
+    matches!(
+        event,
+        EventMsg::Warning(WarningEvent { message })
+            if message.starts_with("Under-development features enabled:")
+    )
 }

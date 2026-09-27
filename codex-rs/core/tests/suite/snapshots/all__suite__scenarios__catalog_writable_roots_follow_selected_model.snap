@@ -19,9 +19,11 @@ Settings:
         - namespace/functions; hash=ce01915b77cef9ee
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=061f68c9a0138458
+          - function/check_mail
           - function/close_agent
           - function/resume_agent
           - function/send_input
@@ -56,9 +58,11 @@ Settings: relative to window 1
         - namespace/functions; hash=ce01915b77cef9ee
           - function/exec_command
           - function/write_stdin
+          - function/update_plan
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=061f68c9a0138458
+          - function/check_mail
           - function/close_agent
           - function/resume_agent
           - function/send_input

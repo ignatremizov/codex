@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_partial_answers.rs
+assertion_line: 334
 expression: "context_snapshot::format_request_history_snapshot(\"A forked worker receives both stable answer fragments, with their phases preserved and parent commentary filtered out.\",\n&child_requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: A forked worker receives both stable answer fragments, with their phases preserved and parent commentary filtered out.
@@ -29,15 +30,15 @@ Scenario: A forked worker receives both stable answer fragments, with their phas
     Child agents can also spawn their own sub-agents.
 
     When you provide a response in the final channel, that content is immediately delivered back to your parent agent.
-    <OMITTED 15 LINES; ~225 TOKENS; hash=fa366829bdb214be>
-    - All agents use the same current working directory.
-    - As a result, edits made by one agent are immediately visible to all other agents.
+    <OMITTED 17 LINES; ~259 TOKENS; hash=ff3a6a7e6a576cba>
 
     When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.
 
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 
-    Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
+    Use no inherited context by default. Omitted `fork_turns` uses the configured default `none`. Request pa... message and user configuration allows history forks. [hash=301d2b31796a1a20]
+
+    Model and reasoning-effort overrides are independent of history inheritance. Only set overrides when exp...able `AGENTS.md` instructions, or skill instructions. [hash=2eb4e3f142150f91]
 08:message/developer:
     <MULTI_AGENT_MODE>
 09:agent_message
