@@ -3,10 +3,16 @@
 use super::*;
 use codex_guardian_context::ContextPresentation;
 use codex_guardian_context::ContextProfile;
+use codex_guardian_context::NodeReplContext;
+use codex_guardian_context::NodeReplResponse;
+use codex_guardian_context::NodeReplReviewEvidenceMode;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PlannedActionKind;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::user_input::UserInput;
+use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
 fn required_context(text: String) -> ComposedContext {
@@ -140,4 +146,93 @@ async fn finalization_overflow_marks_the_reviewer_exhausted() {
             .get::<super::super::request_budget::ExhaustedReviewBudget>()
             .is_some()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn image_selection_uses_post_compaction_history_without_replaying_text() {
+    const IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let (session, mut turn) = crate::session::tests::make_session_and_context().await;
+    Arc::make_mut(&mut turn.config)
+        .features
+        .disable(Feature::UnifiedImageBudget)
+        .unwrap();
+    let model = Arc::make_mut(&mut Arc::make_mut(&mut turn.initial_settings).model_info);
+    model.used_fallback_model_metadata = false;
+    model.context_window = Some(100_000);
+    model.max_context_window = Some(100_000);
+    model.input_modalities = vec![InputModality::Text, InputModality::Image];
+    let session = Arc::new(session);
+    let step = StepContext::for_test(Arc::new(turn));
+    let screenshot = UserInput::Image {
+        image: ImageReference::Inline {
+            image_url: IMAGE.to_owned(),
+        },
+        detail: Some(ImageDetail::High),
+    };
+    let screenshots = [screenshot.clone()];
+    let evidence = NodeReplContext {
+        responses: vec![NodeReplResponse {
+            sequence: 7,
+            provenance: "tool=node_repl.js cell=1 call=screenshot",
+            items: &screenshots,
+        }],
+        omitted_responses: 0,
+        mode: NodeReplReviewEvidenceMode::Multimodal,
+    };
+    let context = super::super::prompt::collect_guardian_context(
+        &Vec::<ResponseItem>::new(),
+        super::super::GUARDIAN_MAX_TOOL_ENTRY_TOKENS,
+        &[],
+        &[],
+        /*planned_action*/ None,
+        /*permissions*/ None,
+        Some(&evidence),
+    )
+    .unwrap();
+    let transcript = ContextProfile::synchronous()
+        .render_transcript(context.transcript_entries(), /*entry_number_offset*/ 0);
+    let context = context
+        .compose(
+            ContextPresentation::SyncFull {
+                session_id: "test-parent",
+            },
+            transcript,
+        )
+        .unwrap();
+    let admitted_text = UserInput::Text {
+        text: "already-admitted REPL text".to_owned(),
+        text_elements: Vec::new(),
+    };
+    for history_contains_image in [true, false] {
+        session
+            .services
+            .thread_extension_data
+            .insert(PendingReviewContext(context.clone()));
+        let mut retained = vec![admitted_text.clone()];
+        if history_contains_image {
+            retained.push(screenshot.clone());
+        }
+        session
+            .replace_history(
+                vec![session.response_item_from_user_input(retained)],
+                /*reference_context_item*/ None,
+            )
+            .await;
+        let mut input = vec![TurnInput::UserInput {
+            acceptance_order: None,
+            content: context.clone().into_user_inputs().unwrap(),
+            client_id: None,
+        }];
+        finalize(&session, &step, &mut input, HistoryTruncation::Preserve)
+            .await
+            .unwrap();
+
+        let mut expected = context.clone();
+        expected.retain_images(|_, _| !history_contains_image);
+        let TurnInput::UserInput { content, .. } = &input[0] else {
+            panic!("expected finalized review input");
+        };
+        assert_eq!(*content, expected.into_user_inputs().unwrap());
+        assert!(!content.contains(&admitted_text));
+    }
 }

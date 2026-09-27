@@ -6213,6 +6213,7 @@ await tools.exec_command({ cmd: "true", sandbox_permissions: "require_escalated"
 #[test_case("cua_repl", true, true, false, Some("unbounded"); "cua_text_fallback_without_context_bound")]
 #[test_case("cua_repl", true, true, false, Some("small"); "cua_text_fallback_with_insufficient_context")]
 #[test_case("cua_repl", true, true, false, Some("large_prompt"); "cua_images_resume_after_prompt_pressure")]
+#[test_case("cua_repl", true, true, false, Some("compaction"); "cua_reviewer_compaction_preserves_evidence")]
 async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
     repl_server: &'static str,
     enhanced_transcripts: bool,
