@@ -97,14 +97,18 @@ async fn unavailable_board_calls_return_model_errors(
     let server = responses::start_mock_server().await;
     let mock = responses::mount_sse_sequence(
         &server,
-        vec![
-            tool(
-                "missing-board",
-                "post",
-                json!({"new_channel_name":"design", "text":"A decision."}),
-            ),
-            done(),
-        ],
+        if multi_agent_v2 {
+            Vec::new()
+        } else {
+            vec![
+                tool(
+                    "missing-board",
+                    "post",
+                    json!({"new_channel_name":"design", "text":"A decision."}),
+                ),
+                done(),
+            ]
+        },
     )
     .await;
     let test = test_codex()

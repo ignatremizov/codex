@@ -6310,17 +6310,24 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
         .record_user_goal_update(crate::context::UserGoalUpdate::Clear)
         .await
         .expect("record concurrent clear");
-    let accepted_goal = session
+    let mut accepted_goal = session
         .clone_history()
         .await
         .annotated_items()
         .last()
         .cloned()
         .expect("accepted goal");
+    let mcp_attribution = session
+        .services
+        .executed_tool_calls
+        .mcp_attribution_snapshot();
     let (window_number, window_ids) = session.advance_auto_compact_window().await;
     session
         .replace_compacted_history(
-            vec![ResponseItemEnvelope::new(user_message("compacted context"))],
+            vec![ResponseItemEnvelope {
+                item: user_message("compacted context"),
+                metadata: Some(Default::default()),
+            }],
             turn_context_baseline.clone(),
             world_state.render_full().0,
             CompactedHistoryMetadata {
@@ -6335,6 +6342,10 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
         )
         .await;
     let live_history = session.clone_history().await.annotated_items().to_vec();
+    accepted_goal
+        .metadata
+        .get_or_insert_default()
+        .mcp_attribution = Some(mcp_attribution);
     assert_eq!(&live_history[1..], &[accepted_goal]);
 
     session.flush_rollout().await.expect("flush checkpoints");

@@ -19,6 +19,20 @@ async fn backend_sessions_poll_three_sources_and_isolate_closed_or_paused_stream
         let (mut session, _, proxy) =
             session_lifecycle_requests::start_recording_remote_app_server(&app.config).await?;
         let thread = session.start_thread(&app.config).await?.session.thread_id;
+        time::timeout(Duration::from_secs(/*secs*/ 5), async {
+            loop {
+                let event = session.next_event().await.expect("live session events");
+                if matches!(
+                    event.event,
+                    codex_app_server_client::AppServerEvent::ServerNotification(notification)
+                        if matches!(notification.as_ref(), ServerNotification::ThreadStarted(started)
+                            if started.thread.id == thread.to_string())
+                ) {
+                    break;
+                }
+            }
+        })
+        .await?;
         assert!(
             session
                 .thread_settings_update(ThreadSettingsUpdateParams {

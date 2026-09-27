@@ -35,7 +35,7 @@ Settings:
 03:message/developer[3]:
     [01] <context_window>
     [02]
-        Agent name: /root
+        Agent name: Main
         First context window id: <UUID 1>
         Current context window id: <UUID 1>
 
@@ -72,7 +72,7 @@ Settings: same as window 1
 03:message/developer[3]:
     [01] <context_window>
     [02]
-        Agent name: /root
+        Agent name: Main
         First context window id: <UUID 1>
         Current context window id: <UUID 2>
         Previous context window id: <UUID 1>

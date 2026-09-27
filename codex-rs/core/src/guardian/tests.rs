@@ -2006,7 +2006,10 @@ async fn guardian_reuse_respects_effective_policy_and_personality_opt_out(
             /*max_attempts*/ 1,
         )
         .await;
-        assert!(matches!(outcome, GuardianReviewOutcome::Completed(_)));
+        assert!(
+            matches!(&outcome, GuardianReviewOutcome::Completed(_)),
+            "review {index} returned {outcome:?}"
+        );
     }
     let requests = responses.requests();
     assert_eq!(requests.len(), 4);
@@ -2603,6 +2606,15 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     )
     .await;
     session
+        .guardian_review_session()
+        .expect("Guardian pool installed")
+        .trunk()
+        .await
+        .unwrap_or_else(|| panic!("missing first reviewer after {:?}", first_outcome.0))
+        .committed_fork_rollout_items_for_test()
+        .await
+        .expect("first review keeps a committed reusable snapshot");
+    session
         .record_conversation_items(
             turn.as_ref(),
             turn.model_info(),
@@ -2666,7 +2678,12 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
         .expect("Guardian pool installed")
         .trunk()
         .await
-        .expect("reviewer")
+        .unwrap_or_else(|| {
+            panic!(
+                "missing reviewer after first={:?}, second={:?}",
+                first_outcome.0, second_outcome.0
+            )
+        })
         .committed_fork_rollout_items_for_test()
         .await
         .expect("committed guardian fork snapshot");
@@ -2795,7 +2812,10 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     };
     let (GuardianReviewOutcome::Completed(second_assessment), second_metadata) = second_outcome
     else {
-        panic!("expected second guardian assessment");
+        panic!(
+            "expected second guardian assessment; got {:?}",
+            second_outcome.0
+        );
     };
     let (GuardianReviewOutcome::Completed(third_assessment), third_metadata) = third_outcome else {
         panic!("expected third guardian assessment");
@@ -3069,7 +3089,10 @@ async fn guardian_reused_trunk_ignores_stale_prior_turn_completion() -> anyhow::
     .await;
     let (GuardianReviewOutcome::Completed(second_assessment), second_metadata) = second_outcome
     else {
-        panic!("expected second guardian assessment");
+        panic!(
+            "expected second guardian assessment; got {:?}",
+            second_outcome.0
+        );
     };
     assert_eq!(second_assessment.outcome, GuardianAssessmentOutcome::Allow);
     assert_eq!(second_assessment.rationale, "second guardian rationale");
@@ -3238,7 +3261,7 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
     .await;
 
     let GuardianReviewOutcome::Completed(assessment) = outcome else {
-        panic!("expected guardian assessment");
+        panic!("expected guardian assessment; got {outcome:?}");
     };
     assert_eq!(assessment.outcome, GuardianAssessmentOutcome::Allow);
     assert_eq!(assessment.rationale, "retry succeeded");
@@ -3328,7 +3351,7 @@ async fn guardian_review_retries_two_parse_failures_then_approves() -> anyhow::R
     .await;
 
     let GuardianReviewOutcome::Completed(assessment) = outcome else {
-        panic!("expected guardian assessment");
+        panic!("expected guardian assessment; got {outcome:?}");
     };
     assert_eq!(assessment.outcome, GuardianAssessmentOutcome::Allow);
     assert_eq!(assessment.rationale, "retry succeeded");
@@ -3380,7 +3403,11 @@ async fn guardian_review_exhausts_three_failures_with_one_terminal_event() -> an
     .await;
 
     assert!(matches!(decision, ReviewDecision::Denied { .. }));
-    assert_eq!(request_log.requests().len(), 3);
+    assert_eq!(
+        request_log.requests().len(),
+        3,
+        "review terminated with {decision:?}"
+    );
     let mut statuses = Vec::new();
     while let Ok(event) = rx.try_recv() {
         if let EventMsg::GuardianAssessment(event) = event.msg {
@@ -3773,10 +3800,14 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
             }
         })
         .await;
-        assert!(
-            second_request_observed.is_ok(),
-            "second guardian request was not observed"
-        );
+        if second_request_observed.is_err() {
+            let completed = if second_review.is_finished() {
+                Some((&mut second_review).await)
+            } else {
+                None
+            };
+            panic!("second guardian request was not observed; completed result: {completed:?}");
+        }
         session
             .record_conversation_items(
                 turn.as_ref(), turn.model_info(),

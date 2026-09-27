@@ -37,7 +37,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_remote;
 use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
-use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use pretty_assertions::assert_eq;
@@ -113,13 +112,11 @@ async fn user_turn_includes_skill_instructions() -> Result<()> {
         });
     let test = builder.build_with_auto_env(&server).await?;
 
-    let skill_path = test
-        .config
-        .cwd
-        .join(".agents/skills/demo/SKILL.md")
-        .canonicalize()
-        .unwrap_or_else(|_| test.config.cwd.join(".agents/skills/demo/SKILL.md"))
-        .to_path_buf();
+    // The legacy Skill input stores a native path in the selected executor.
+    let skill_path = std::path::PathBuf::from(
+        test.workspace_path_uri(".agents/skills/demo/SKILL.md")?
+            .inferred_native_path_string(),
+    );
 
     let mock = mount_sse_once(
         &server,
@@ -147,7 +144,6 @@ async fn user_turn_includes_skill_instructions() -> Result<()> {
                 },
             ])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_requests(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

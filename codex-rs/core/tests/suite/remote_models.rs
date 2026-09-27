@@ -238,7 +238,7 @@ async fn remote_models_config_context_window_override_clamps_to_max_context_wind
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let test = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             config.model = Some(requested_model.to_string());
@@ -246,6 +246,7 @@ async fn remote_models_config_context_window_override_clamps_to_max_context_wind
         })
         .build(&server)
         .await?;
+    let TestCodex { codex, .. } = &test;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -254,7 +255,7 @@ async fn remote_models_config_context_window_override_clamps_to_max_context_wind
         }]))
         .await?;
 
-    let turn_started_event = wait_for_event(&codex, |event| {
+    let turn_started_event = wait_for_event(codex, |event| {
         matches!(
             event,
             EventMsg::TurnStarted(started)
@@ -299,7 +300,7 @@ async fn remote_models_config_override_above_max_uses_max_context_window() -> Re
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let test = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             config.model = Some(requested_model.to_string());
@@ -307,6 +308,7 @@ async fn remote_models_config_override_above_max_uses_max_context_window() -> Re
         })
         .build(&server)
         .await?;
+    let TestCodex { codex, .. } = &test;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -315,7 +317,7 @@ async fn remote_models_config_override_above_max_uses_max_context_window() -> Re
         }]))
         .await?;
 
-    let turn_started_event = wait_for_event(&codex, |event| {
+    let turn_started_event = wait_for_event(codex, |event| {
         matches!(
             event,
             EventMsg::TurnStarted(started)
@@ -360,13 +362,14 @@ async fn remote_models_use_context_window_when_config_override_is_absent() -> Re
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let test = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             config.model = Some(requested_model.to_string());
         })
         .build(&server)
         .await?;
+    let TestCodex { codex, .. } = &test;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -375,7 +378,7 @@ async fn remote_models_use_context_window_when_config_override_is_absent() -> Re
         }]))
         .await?;
 
-    let turn_started_event = wait_for_event(&codex, |event| {
+    let turn_started_event = wait_for_event(codex, |event| {
         matches!(
             event,
             EventMsg::TurnStarted(started)
@@ -447,7 +450,7 @@ async fn remote_models_long_model_slug_is_sent_with_supported_reasoning(
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let test = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             config.model = Some(requested_model.to_string());
@@ -455,6 +458,7 @@ async fn remote_models_long_model_slug_is_sent_with_supported_reasoning(
         })
         .build_with_auto_env(&server)
         .await?;
+    let TestCodex { codex, .. } = &test;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -463,7 +467,7 @@ async fn remote_models_long_model_slug_is_sent_with_supported_reasoning(
         }]))
         .await?;
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     let request = response_mock.single_request();
     let body = request.body_json();
@@ -523,10 +527,11 @@ async fn namespaced_model_slug_uses_catalog_metadata_without_fallback_warning() 
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let test = test_codex()
         .with_model(requested_model)
         .build(&server)
         .await?;
+    let TestCodex { codex, .. } = &test;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -537,7 +542,7 @@ async fn namespaced_model_slug_uses_catalog_metadata_without_fallback_warning() 
 
     let mut fallback_warning_count = 0;
     loop {
-        let event = wait_for_event(&codex, |_| true).await;
+        let event = wait_for_event(codex, |_| true).await;
         match event {
             EventMsg::Warning(warning)
                 if warning.message.contains("Defaulting to fallback metadata") =>
@@ -636,13 +641,15 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         .with_config(|config| {
             config.model = Some("gpt-5.4".to_string());
         });
+    // Keep the temporary home and executor guard alive through the actual tool call.
+    let test = builder.build(&server).await?;
     let TestCodex {
         codex,
         cwd,
         config,
         thread_manager,
         ..
-    } = builder.build(&server).await?;
+    } = &test;
 
     let models_manager = thread_manager.get_models_manager();
     let available_model = wait_for_model_available(&models_manager, REMOTE_MODEL_SLUG).await;
@@ -655,7 +662,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
     assert_eq!(model_info.shell_type, ConfigShellToolType::UnifiedExec);
 
     core_test_support::submit_thread_settings(
-        &codex,
+        codex,
         ThreadSettingsOverrides {
             model: Some(REMOTE_MODEL_SLUG.to_string()),
             ..Default::default()
@@ -702,7 +709,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         )
         .await?;
 
-    let begin_event = wait_for_event_match(&codex, |msg| match msg {
+    let begin_event = wait_for_event_match(codex, |msg| match msg {
         EventMsg::ExecCommandBegin(event) if event.call_id == call_id => Some(event.clone()),
         _ => None,
     })
@@ -710,7 +717,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
 
     assert_eq!(begin_event.source, ExecCommandSource::UnifiedExecStartup);
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     let request = response_mock
         .requests()

@@ -37,6 +37,10 @@ use wiremock::http::HeaderValue;
 use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
 
+#[cfg(test)]
+#[path = "responses_match_tests.rs"]
+mod match_tests;
+
 #[derive(Debug, Clone)]
 pub struct ResponseMock {
     requests: Arc<Mutex<Vec<ResponsesRequest>>>,
@@ -1121,9 +1125,25 @@ pub async fn mount_response_once_match<M>(
 where
     M: wiremock::Match + Send + Sync + 'static,
 {
-    let (mock, response_mock) = base_mock();
-    mock.and(matcher)
-        .respond_with(response)
+    let (mock, response_mock) = matched_base_mock(matcher);
+    mock.respond_with(response)
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
+pub async fn mount_responder_once_match<M, R>(
+    server: &MockServer,
+    matcher: M,
+    responder: R,
+) -> ResponseMock
+where
+    M: wiremock::Match + Send + Sync + 'static,
+    R: Respond + Send + Sync + 'static,
+{
+    let (mock, response_mock) = matched_base_mock(matcher);
+    mock.respond_with(responder)
         .up_to_n_times(1)
         .mount(server)
         .await;
@@ -1135,6 +1155,22 @@ fn base_mock() -> (MockBuilder, ResponseMock) {
     let mock = Mock::given(method("POST"))
         .and(path_regex(".*/responses$"))
         .and(response_mock.clone());
+    (mock, response_mock)
+}
+
+fn matched_base_mock<M>(matcher: M) -> (MockBuilder, ResponseMock)
+where
+    M: wiremock::Match + Send + Sync + 'static,
+{
+    let response_mock = ResponseMock::new();
+    let recorder = response_mock.clone();
+    // Matchers can be evaluated for a request ultimately handled by another mock.
+    // Record and validate only after this mock's complete predicate accepts it.
+    let mock = Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .and(move |request: &wiremock::Request| {
+            matcher.matches(request) && recorder.matches(request)
+        });
     (mock, response_mock)
 }
 
@@ -1150,9 +1186,25 @@ pub async fn mount_sse_once_match<M>(server: &MockServer, matcher: M, body: Stri
 where
     M: wiremock::Match + Send + Sync + 'static,
 {
-    let (mock, response_mock) = base_mock();
-    mock.and(matcher)
-        .respond_with(sse_response(body))
+    let (mock, response_mock) = matched_base_mock(matcher);
+    mock.respond_with(sse_response(body))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
+pub async fn mount_sse_once_match_with_delay<M>(
+    server: &MockServer,
+    matcher: M,
+    body: String,
+    delay: Duration,
+) -> ResponseMock
+where
+    M: wiremock::Match + Send + Sync + 'static,
+{
+    let (mock, response_mock) = matched_base_mock(matcher);
+    mock.respond_with(sse_response(body).set_delay(delay))
         .up_to_n_times(1)
         .mount(server)
         .await;
@@ -1536,11 +1588,11 @@ pub async fn mount_sse_sequence(server: &MockServer, bodies: Vec<String>) -> Res
     };
 
     let (mock, response_mock) = base_mock();
-    mock.respond_with(responder)
-        .up_to_n_times(num_calls as u64)
-        .expect(num_calls as u64)
-        .mount(server)
-        .await;
+    let mut mock = mock.respond_with(responder).expect(num_calls as u64);
+    if num_calls > 0 {
+        mock = mock.up_to_n_times(num_calls as u64);
+    }
+    mock.mount(server).await;
 
     response_mock
 }
