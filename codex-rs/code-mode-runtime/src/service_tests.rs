@@ -398,8 +398,14 @@ async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
 }
 
 async fn wait_until_finished<T>(task: &tokio::task::JoinHandle<T>) {
-    for _ in 0..10_000 {
+    // V8 runs on a real OS thread, so a count of Tokio yields is not a time budget.
+    // Keep this task runnable to prevent the paused clock from auto-advancing past
+    // the grace deadline while the runtime thread finishes.
+    let deadline = std::time::Instant::now() + Duration::from_secs(/*secs*/ 10);
+    let virtual_time = tokio::time::Instant::now();
+    while std::time::Instant::now() < deadline {
         if task.is_finished() {
+            assert_eq!(tokio::time::Instant::now(), virtual_time);
             return;
         }
         tokio::task::yield_now().await;
@@ -408,7 +414,8 @@ async fn wait_until_finished<T>(task: &tokio::task::JoinHandle<T>) {
 }
 
 async fn wait_until_tool_started(delegate: &ReleasableToolDelegate) {
-    for _ in 0..10_000 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(/*secs*/ 10);
+    while std::time::Instant::now() < deadline {
         if delegate.tool_started.load(Ordering::Acquire) {
             return;
         }

@@ -38,10 +38,34 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 
 pub(super) type RecordedRequests = Arc<Mutex<Vec<JSONRPCRequest>>>;
 pub(super) type RecordingAppServer = (AppServerSession, RecordedRequests, JoinHandle<Result<()>>);
+
+// A peer can close before a read or an unsolicited notification finishes. Both paths must
+// reach embedded-server cleanup. Request/response writes deliberately remain strict.
+fn recording_peer_io<T>(
+    result: std::result::Result<T, WebSocketError>,
+) -> std::result::Result<Option<T>, WebSocketError> {
+    match result {
+        Err(WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => Ok(None),
+        Err(WebSocketError::Io(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            Ok(None)
+        }
+        result => result.map(Some),
+    }
+}
+
+#[path = "recording_peer_tests.rs"]
+mod recording_peer_tests;
 
 async fn complete_managed_worktree_creation(
     app: &mut App,
@@ -299,22 +323,19 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                     if let codex_app_server_client::InProcessServerEvent::ServerNotification(notification) = event
                         && matches!(*notification, ServerNotification::ThreadSettingsUpdated(_))
                     {
-                        websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await?;
+                        let sent = websocket.send(Message::Text(serde_json::to_string(&notification)?.into())).await;
+                        if recording_peer_io(sent)?.is_none() {
+                            break;
+                        }
                     }
                     continue;
                 }
             };
             let Some(frame) = frame else { break };
-            // The client can close with an unread settings notification during shutdown.
-            match &frame {
-                Err(tokio_tungstenite::tungstenite::Error::Protocol(
-                    tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
-                )) => break,
-                Err(tokio_tungstenite::tungstenite::Error::Io(error))
-                    if matches!(error.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset) => break,
-                _ => {}
-            }
-            let Message::Text(text) = frame? else {
+            let Some(frame) = recording_peer_io(frame)? else {
+                break;
+            };
+            let Message::Text(text) = frame else {
                 continue;
             };
             let message = serde_json::from_str::<JSONRPCMessage>(&text)?;

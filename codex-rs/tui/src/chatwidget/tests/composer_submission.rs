@@ -1911,7 +1911,28 @@ async fn restore_thread_input_state_applies_running_state_policy() {
         chat.input_queue.queued_user_message_history_records,
         VecDeque::from([pending_history, queued_history])
     );
-    assert!(chat.maybe_send_next_queued_input());
+    assert!(!chat.maybe_send_next_queued_input());
+    assert_no_submit_op(&mut op_rx);
+    assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
+    // Restoring an idle projection does not acknowledge the outstanding steer.
+    // Only the server's exact submission receipt can release the next queued prompt.
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: chat.thread_id.expect("configured test thread").to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::UserMessage {
+                id: "confirmed-steer".to_string(),
+                client_id: Some("test-submission".to_string()),
+                content: vec![UserInput::Text {
+                    text: "submitted to the interrupted turn".to_string(),
+                    text_elements: Vec::new(),
+                }],
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    assert!(chat.input_queue.pending_steers.is_empty());
     assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
     assert_eq!(chat.queued_user_message_texts(), vec!["already queued"]);
 

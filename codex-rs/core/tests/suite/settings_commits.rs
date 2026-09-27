@@ -156,11 +156,15 @@ impl ConfigContributor<Config> for PauseAfterCommit {
         let Some((entered, release)) = self.gate.lock().expect("commit gate lock").take() else {
             return;
         };
-        entered.send(()).expect("test is waiting for the commit");
-        // The callback is synchronous, so this test uses a second runtime worker.
-        release
-            .recv_timeout(TIMEOUT)
-            .expect("test releases the committed update");
+        // A second worker cannot steal every task queued on this worker. Hand the
+        // scheduler off before announcing the gate, so the work that releases it
+        // can run while this synchronous callback retains the committed update.
+        tokio::task::block_in_place(move || {
+            entered.send(()).expect("test is waiting for the commit");
+            release
+                .recv_timeout(TIMEOUT)
+                .expect("test releases the committed update");
+        });
     }
 }
 

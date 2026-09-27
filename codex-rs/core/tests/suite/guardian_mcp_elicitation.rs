@@ -764,6 +764,8 @@ async fn strict_browser_nested_review_requires_live_browser_identity(
         "args": ["-u", "-c", ELICITATION_SERVER, "{}", "browser",
                  json!({"_meta": meta}).to_string(), registered_connector_id],
         "default_tools_approval_mode": "approve",
+        "environment_id": remote_aware_environment_id(),
+        "cwd": remote_aware_stdio_server_cwd(),
     }))?;
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.mcp_server_contributor(Arc::new(BrowserMcpServer(fixture_config)));

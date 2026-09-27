@@ -2881,7 +2881,13 @@ PYTHON"#;
                     vec![(marker.clone(), command)]
                 );
                 let prompt = guardian
-                    .single_request()
+                    .requests()
+                    .into_iter()
+                    .find(|request| {
+                        request.body_json()["client_metadata"]["x-openai-subagent"].as_str()
+                            == Some("guardian")
+                    })
+                    .context("expected the matched Guardian request")?
                     .message_input_texts("user")
                     .join("");
                 let permissions = prompt
@@ -2974,7 +2980,7 @@ async fn escalated_owner_network_terminal_requires_stdin_approval(
     let command = format!(
         "python3 -c \"import os; assert '{PROXY_ACTIVE_ENV_KEY}' not in os.environ; print('INPUT:' + input())\""
     );
-    let mut args = network_exec_args(&command);
+    let mut args = network_exec_args_for_environment(&command, REMOTE_ENVIRONMENT_ID);
     args["environment_id"] = json!(REMOTE_ENVIRONMENT_ID);
     args["tty"] = json!(true);
     args["sandbox_permissions"] = json!("require_escalated");
@@ -3030,15 +3036,28 @@ async fn escalated_owner_network_terminal_requires_stdin_approval(
         }
     }
     assert_eq!(
-        approvals,
+        approvals
+            .iter()
+            .map(|(kind, call_id, _)| (*kind, call_id.as_str()))
+            .collect::<Vec<_>>(),
         vec![
-            (ExecApprovalKind::Command, launch_call.to_string(), None),
-            (
-                ExecApprovalKind::WriteStdin,
-                launch_call.to_string(),
-                Some(stdin_call.to_string()),
-            ),
-        ]
+            (ExecApprovalKind::Command, launch_call),
+            (ExecApprovalKind::WriteStdin, launch_call),
+        ],
+        "launch result: {:?}; stdin result: {:?}",
+        responses.function_call_output_text(launch_call),
+        responses.function_call_output_text(stdin_call),
+    );
+    let approval_ids = approvals
+        .iter()
+        .map(|(_, _, id)| id.as_deref().expect("approval has a fresh request ID"))
+        .collect::<Vec<_>>();
+    assert!(approval_ids.iter().all(|id| !id.is_empty()));
+    assert_ne!(approval_ids[0], approval_ids[1]);
+    assert!(
+        approval_ids
+            .iter()
+            .all(|id| *id != launch_call && *id != stdin_call)
     );
     let output = responses
         .function_call_output_text(stdin_call)
@@ -3138,7 +3157,9 @@ async fn approved_network_host_for_one_environment_still_prompts_in_another() ->
     wait_for_turn_complete(&test).await;
     assert_eq!(
         remote_responses.function_call_output_text("exec-network-remote"),
-        Some(rejection.to_string())
+        Some(format!(
+            "exec_command failed: ProcessFailed {{ message: {rejection:?} }}"
+        ))
     );
 
     test.fs()

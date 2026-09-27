@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 254
 expression: "context_snapshot::format_request_history_snapshot(\"Code Mode exposes explicit MCP schema limits in its prompt and runtime tool catalog.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Code Mode exposes explicit MCP schema limits in its prompt and runtime tool catalog.
@@ -16,10 +17,12 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (4; hash=ee397215c4055252):
-    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=485f26f17d4a2899
+  tools (5; hash=a0ffb8cc6b7614ab):
+    - custom/exec: Run JavaScript code to orchestrate/compose tool calls - Evaluates the provided JavaScript code in...; hash=8e19f21331fae527
     - function/wait: Waits on a yielded `exec` cell and returns new output or completion. - Use `wait` only after `exe...; args=[cell_id, max_tokens, terminate, yield_time_ms]; hash=6692d8f6c55be489
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
+    - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=7588b1d61090050c
+      - function/check_mail
     - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
 00:message/developer:

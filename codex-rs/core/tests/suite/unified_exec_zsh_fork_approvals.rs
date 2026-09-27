@@ -1,5 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
+use codex_config::AbsolutePathBuf;
 use codex_config::permissions_toml::FilesystemPermissionToml;
 use codex_config::permissions_toml::PermissionProfileToml;
 use codex_config::types::ApprovalsReviewer;
@@ -54,6 +55,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use test_case::test_case;
 use toml_edit::Key as TomlKey;
 use wiremock::MockServer;
 
@@ -103,6 +105,29 @@ async fn unified_exec_zsh_fork_parent_approval_preserves_denied_reads() -> Resul
     )
     .await?;
     approve_expected_exec(&test, &command).await?;
+    // The intercepted executable retains its own approval decision. Even an
+    // explicit approval there must not turn denied reads into an unsandboxed run.
+    let intercepted = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+        )
+    })
+    .await;
+    let EventMsg::ExecApprovalRequest(intercepted) = intercepted else {
+        anyhow::bail!("expected the intercepted denied-read command to require approval");
+    };
+    let [program, argument] = intercepted.command.as_slice() else {
+        anyhow::bail!("unexpected intercepted command: {:?}", intercepted.command);
+    };
+    assert_eq!(
+        Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("cat")
+    );
+    assert_eq!(argument.as_str(), denied_path.to_string_lossy().as_ref());
+    approve_exec(&test, intercepted.effective_approval_id()).await?;
     wait_for_completion_without_approval(&test).await;
 
     let result = command_result(&results, call_id);
@@ -449,9 +474,18 @@ async fn unified_exec_zsh_fork_guardian_reviews_intercepted_execve() -> Result<(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum PersistentTerminalCase {
+    CurrentReviewer,
+    DeniedReadDrift,
+}
+
+#[test_case(PersistentTerminalCase::CurrentReviewer; "current reviewer")]
+#[test_case(PersistentTerminalCase::DeniedReadDrift; "new denied reads reject input")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_turn() -> Result<()>
-{
+async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_turn(
+    case: PersistentTerminalCase,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let approval_policy = AskForApproval::OnRequest;
@@ -460,7 +494,12 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
         .path()
         .join("unified-exec-zsh-fork-current-turn.txt");
     let initial_denied_path = outside_dir.path().join("original-environment-private");
-    let permission_profile = denied_read_permission_profile(&initial_denied_path)?;
+    let permission_profile = match case {
+        PersistentTerminalCase::CurrentReviewer => restrictive_workspace_write_profile(),
+        PersistentTerminalCase::DeniedReadDrift => {
+            denied_read_permission_profile(&initial_denied_path)?
+        }
+    };
     let rules = r#"prefix_rule(pattern=["touch"], decision="prompt")"#.to_string();
 
     let outside_path_for_hook = outside_path.clone();
@@ -471,8 +510,9 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
         move |home| {
             let _ = fs::remove_file(&outside_path_for_hook);
             let rules_dir = home.join("rules");
-            fs::create_dir_all(&rules_dir).unwrap();
-            fs::write(rules_dir.join("default.rules"), &rules).unwrap();
+            fs::create_dir_all(&rules_dir).expect("create current-turn fixture rules directory");
+            fs::write(rules_dir.join("default.rules"), &rules)
+                .expect("write current-turn fixture approval rule");
         },
     )
     .await?
@@ -495,32 +535,33 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
         "session_id": 1000,
         "yield_time_ms": 5_000,
     });
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
-            sse(vec![
-                ev_response_created("resp-cross-turn-open"),
-                ev_function_call(
-                    open_call_id,
-                    "exec_command",
-                    &serde_json::to_string(&open_args)?,
-                ),
-                ev_completed("resp-cross-turn-open"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-cross-turn-first-done"),
-                ev_assistant_message("msg-cross-turn-first-done", "terminal is running"),
-                ev_completed("resp-cross-turn-first-done"),
-            ]),
-            sse(vec![
-                ev_response_created("resp-cross-turn-write"),
-                ev_function_call(
-                    write_call_id,
-                    "write_stdin",
-                    &serde_json::to_string(&write_args)?,
-                ),
-                ev_completed("resp-cross-turn-write"),
-            ]),
+    let mut response_sequence = vec![
+        sse(vec![
+            ev_response_created("resp-cross-turn-open"),
+            ev_function_call(
+                open_call_id,
+                "exec_command",
+                &serde_json::to_string(&open_args)?,
+            ),
+            ev_completed("resp-cross-turn-open"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-cross-turn-first-done"),
+            ev_assistant_message("msg-cross-turn-first-done", "terminal is running"),
+            ev_completed("resp-cross-turn-first-done"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-cross-turn-write"),
+            ev_function_call(
+                write_call_id,
+                "write_stdin",
+                &serde_json::to_string(&write_args)?,
+            ),
+            ev_completed("resp-cross-turn-write"),
+        ]),
+    ];
+    if matches!(case, PersistentTerminalCase::CurrentReviewer) {
+        response_sequence.extend([
             sse(vec![
                 ev_response_created("resp-cross-turn-write-guardian"),
                 ev_assistant_message("msg-cross-turn-write-guardian", r#"{"outcome":"allow"}"#),
@@ -531,14 +572,14 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
                 ev_assistant_message("msg-cross-turn-execve-guardian", r#"{"outcome":"allow"}"#),
                 ev_completed("resp-cross-turn-execve-guardian"),
             ]),
-            sse(vec![
-                ev_response_created("resp-cross-turn-second-done"),
-                ev_assistant_message("msg-cross-turn-second-done", "done"),
-                ev_completed("resp-cross-turn-second-done"),
-            ]),
-        ],
-    )
-    .await;
+        ]);
+    }
+    response_sequence.push(sse(vec![
+        ev_response_created("resp-cross-turn-second-done"),
+        ev_assistant_message("msg-cross-turn-second-done", "done"),
+        ev_completed("resp-cross-turn-second-done"),
+    ]));
+    let responses = mount_sse_sequence(&server, response_sequence).await;
 
     submit_turn_with_session_permissions(
         &test,
@@ -559,10 +600,14 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
     let next_cwd = test.config.cwd.join("next-turn");
     fs::create_dir(&next_cwd)?;
     let next_denied_path = next_cwd.join("next-environment-private");
-    let (sandbox_policy, permission_profile) = turn_permission_fields(
-        denied_read_permission_profile(next_denied_path.as_path())?,
-        next_cwd.as_path(),
-    );
+    let next_permissions = match case {
+        PersistentTerminalCase::CurrentReviewer => restrictive_workspace_write_profile(),
+        PersistentTerminalCase::DeniedReadDrift => {
+            denied_read_permission_profile(next_denied_path.as_path())?
+        }
+    };
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(next_permissions, next_cwd.as_path());
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -582,10 +627,14 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
     let mut current_turn_id = None;
     let mut stdin_assessment = None;
     let mut intercepted_assessment = None;
+    let mut assessment_count = 0;
     loop {
         let event = tokio::time::timeout(Duration::from_secs(30), test.codex.next_event())
             .await
             .context("timed out waiting for current-turn intercepted execve Guardian review")??;
+        if matches!(&event.msg, EventMsg::GuardianAssessment(_)) {
+            assessment_count += 1;
+        }
         match event.msg {
             EventMsg::TurnStarted(started) => current_turn_id = Some(started.turn_id),
             EventMsg::GuardianAssessment(assessment)
@@ -614,6 +663,33 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
 
     let current_turn_id = current_turn_id.context("expected the second turn to start")?;
     assert_ne!(current_turn_id, first_completion.turn_id);
+    let requests = responses.requests();
+    if matches!(case, PersistentTerminalCase::DeniedReadDrift) {
+        // Approval cannot retrofit a new filesystem restriction onto a running
+        // terminal. This must fail before either stdin or intercepted-exec review.
+        assert_eq!(assessment_count, 0);
+        assert!(stdin_assessment.is_none());
+        assert!(intercepted_assessment.is_none());
+        assert_eq!(requests.len(), 4);
+        assert_eq!(
+            requests[3]
+                .function_call_output_text(write_call_id)
+                .as_deref(),
+            Some(
+                "write_stdin rejected: this terminal cannot enforce the current denied-read restrictions; start a new terminal"
+            ),
+        );
+        assert!(
+            !outside_path.exists(),
+            "rejected input must not reach the terminal"
+        );
+        assert!(requests.iter().all(|request| {
+            request.body_json()["client_metadata"]["x-openai-subagent"] != "guardian"
+        }));
+        test.codex.shutdown_durably_and_wait().await?;
+        return Ok(());
+    }
+    assert_eq!(requests.len(), 6);
     let stdin_assessment =
         stdin_assessment.context("expected an approved Guardian assessment for stdin")?;
     assert_eq!(
@@ -632,8 +708,7 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
         "Guardian-approved command from the second turn should create the file"
     );
 
-    let guardian_requests = responses
-        .requests()
+    let guardian_requests = requests
         .into_iter()
         .filter(|request| {
             request.body_json()["client_metadata"]["x-openai-subagent"].as_str() == Some("guardian")
@@ -652,9 +727,10 @@ async fn unified_exec_zsh_fork_guardian_reviews_persistent_terminal_in_current_t
         .and_then(|(_, text)| text.split_once("PARENT TURN PERMISSION CONTEXT END"))
         .map(|(permissions, _)| permissions)
         .context("intercepted command's Guardian permissions")?;
-    assert!(permissions.contains(initial_denied_path.to_string_lossy().as_ref()));
+    assert!(permissions.contains("has no explicit denied-read paths/globs"));
     assert!(!permissions.contains(next_denied_path.to_string_lossy().as_ref()));
 
+    test.codex.shutdown_durably_and_wait().await?;
     Ok(())
 }
 
@@ -745,9 +821,10 @@ fn permission_profile_from_toml(profile: &str) -> Result<PermissionProfile> {
                 ":project_roots" => FileSystemPath::Special {
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
-                _ if *access == FileSystemAccessMode::Deny => FileSystemPath::GlobPattern {
-                    pattern: path.clone(),
-                },
+                // This fixture supplies an exact temporary path, not a glob to expand.
+                _ if *access == FileSystemAccessMode::Deny => {
+                    FileSystemPath::from(AbsolutePathBuf::from_absolute_path_checked(path)?)
+                }
                 _ => anyhow::bail!("unexpected filesystem entry in test profile: {path}"),
             };
             Ok(FileSystemSandboxEntry {

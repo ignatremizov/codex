@@ -22,6 +22,7 @@ fn screen(tui: &tui::Tui) -> String {
 #[tokio::test]
 async fn warning_notice_keeps_details_in_transcript_and_preserves_draft() -> Result<()> {
     let mut app = crate::app::test_support::make_test_app().await;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     tui.set_owned_screen(/*owned*/ true)?;
     let size = Size::new(/*width*/ 80, /*height*/ 24);
@@ -79,11 +80,18 @@ async fn warning_notice_keeps_details_in_transcript_and_preserves_draft() -> Res
     app.chat_widget.handle_key_event(KeyCode::Esc.into());
     app.open_transcript_overlay(&mut tui);
     app.render_owned_transcript(&mut tui, size)?;
+    assert!(app.handle_owned_transcript_event(
+        &mut tui,
+        &mut server,
+        &TuiEvent::Key(KeyCode::Char('v').into())
+    )?);
+    app.render_owned_transcript(&mut tui, size)?;
     let detailed = screen(&tui);
     assert!(detailed.contains("MCP example handshake failed"));
     assert!(detailed.contains("Sample runtime warning"));
-    assert!(app.handle_owned_backtrack_event(
+    assert!(app.handle_owned_transcript_event(
         &mut tui,
+        &mut server,
         &TuiEvent::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL))
     )?);
     app.render_owned_transcript(&mut tui, size)?;
@@ -93,6 +101,7 @@ async fn warning_notice_keeps_details_in_transcript_and_preserves_draft() -> Res
     app.render_owned_transcript(&mut tui, size)?;
     assert!(!screen(&tui).contains("warnings"));
     assert_eq!(history_cell::warning_count(&app.transcript_cells), 0);
+    server.shutdown().await?;
     tui.set_owned_screen(/*owned*/ false)?;
     Ok(())
 }

@@ -222,6 +222,10 @@ impl ExecServerHarness {
         }
     }
 
+    pub(crate) fn try_exit_status(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
     pub(crate) async fn shutdown(&mut self) -> anyhow::Result<()> {
         self.child.start_kill()?;
         timeout(CONNECT_TIMEOUT, self.child.wait())
