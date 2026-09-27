@@ -176,6 +176,30 @@ fn test_user_first_name() -> String {
         .unwrap_or_else(|| "there".to_string())
 }
 
+async fn wait_for_completed_startup_prewarm(server: &responses::WebSocketTestServer) -> Result<()> {
+    // Shared-endpoint fixtures must serve the non-generating Responses exchange
+    // before realtime starts. Closing a handshake-only socket makes prewarm
+    // reconnect and consume the next connection's unrelated session.updated reply.
+    let request = timeout(
+        Duration::from_secs(2),
+        server.wait_for_request(/*connection_index*/ 0, /*request_index*/ 0),
+    )
+    .await
+    .context("startup prewarm should send its request")?;
+    let body = request.body_json();
+    assert_eq!(
+        (body["type"].as_str(), body["generate"].as_bool()),
+        (Some("response.create"), Some(false)),
+    );
+    assert!(
+        server
+            .wait_for_closed_connections(/*expected*/ 1, Duration::from_secs(2))
+            .await,
+        "startup script should send its completion before closing",
+    );
+    Ok(())
+}
+
 async fn wait_for_matching_websocket_request<F>(
     server: &core_test_support::responses::WebSocketTestServer,
     description: &str,
@@ -273,7 +297,10 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_websocket_server(vec![
-        vec![],
+        vec![vec![
+            responses::ev_response_created("prewarm"),
+            responses::ev_completed("prewarm"),
+        ]],
         vec![
             vec![json!({
                 "type": "session.updated",
@@ -302,11 +329,7 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
 
     let mut builder = test_codex();
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(
-        server
-            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
-            .await
-    );
+    wait_for_completed_startup_prewarm(&server).await?;
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -2497,8 +2520,9 @@ async fn conversation_text_before_start_emits_error() -> Result<()> {
 async fn conversation_second_start_replaces_runtime() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    // A Responses prewarm retry must not consume a realtime session's scripted reply.
+    let startup_server = start_websocket_server(vec![vec![]]).await;
     let server = start_websocket_server(vec![
-        vec![],
         vec![vec![json!({
             "type": "session.updated",
             "session": { "id": "sess_old", "instructions": "old" }
@@ -2517,10 +2541,15 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
         ],
     ])
     .await;
-    let mut builder = test_codex();
-    let test = builder.build_with_websocket_server(&server).await?;
+    let mut builder = test_codex().with_config({
+        let realtime_base_url = server.uri().to_string();
+        move |config| {
+            config.experimental_realtime_ws_base_url = Some(realtime_base_url);
+        }
+    });
+    let test = builder.build_with_websocket_server(&startup_server).await?;
     assert!(
-        server
+        startup_server
             .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
             .await
     );
@@ -2621,29 +2650,30 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
     .await;
 
     let connections = server.connections();
-    assert_eq!(connections.len(), 3);
-    assert_eq!(connections[1].len(), 1);
+    assert_eq!(connections.len(), 2);
+    assert_eq!(connections[0].len(), 1);
     let old_instructions =
-        websocket_request_instructions(&connections[1][0]).expect("old session instructions");
+        websocket_request_instructions(&connections[0][0]).expect("old session instructions");
     assert!(old_instructions.starts_with("old"));
     assert_eq!(
-        server.handshakes()[1].header("x-session-id").as_deref(),
+        server.handshakes()[0].header("x-session-id").as_deref(),
         Some("conv_old")
     );
-    assert_eq!(connections[2].len(), 2);
+    assert_eq!(connections[1].len(), 2);
     let new_instructions =
-        websocket_request_instructions(&connections[2][0]).expect("new session instructions");
+        websocket_request_instructions(&connections[1][0]).expect("new session instructions");
     assert!(new_instructions.starts_with("new"));
     assert_eq!(
-        server.handshakes()[2].header("x-session-id").as_deref(),
+        server.handshakes()[1].header("x-session-id").as_deref(),
         Some("conv_new")
     );
     assert_eq!(
-        connections[2][1].body_json()["type"].as_str(),
+        connections[1][1].body_json()["type"].as_str(),
         Some("input_audio_buffer.append")
     );
 
     server.shutdown().await;
+    startup_server.shutdown().await;
     Ok(())
 }
 
@@ -2730,7 +2760,10 @@ async fn conversation_uses_default_realtime_backend_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_websocket_server(vec![
-        vec![],
+        vec![vec![
+            responses::ev_response_created("prewarm"),
+            responses::ev_completed("prewarm"),
+        ]],
         vec![vec![json!({
             "type": "session.updated",
             "session": { "id": "sess_default", "instructions": "default" }
@@ -2743,11 +2776,7 @@ async fn conversation_uses_default_realtime_backend_prompt() -> Result<()> {
             Some("controlled startup context".to_string());
     });
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(
-        server
-            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
-            .await
-    );
+    wait_for_completed_startup_prewarm(&server).await?;
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -2807,8 +2836,8 @@ async fn conversation_uses_default_realtime_backend_prompt() -> Result<()> {
 async fn conversation_uses_empty_instructions_for_null_or_empty_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    let startup_server = start_websocket_server(vec![vec![]]).await;
     let server = start_websocket_server(vec![
-        vec![],
         vec![vec![json!({
             "type": "session.updated",
             "session": { "id": "sess_null", "instructions": "" }
@@ -2820,12 +2849,16 @@ async fn conversation_uses_empty_instructions_for_null_or_empty_prompt() -> Resu
     ])
     .await;
 
-    let mut builder = test_codex().with_config(|config| {
-        config.experimental_realtime_ws_startup_context = Some(String::new());
+    let mut builder = test_codex().with_config({
+        let realtime_base_url = server.uri().to_string();
+        move |config| {
+            config.experimental_realtime_ws_startup_context = Some(String::new());
+            config.experimental_realtime_ws_base_url = Some(realtime_base_url);
+        }
     });
-    let test = builder.build_with_websocket_server(&server).await?;
+    let test = builder.build_with_websocket_server(&startup_server).await?;
     assert!(
-        server
+        startup_server
             .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
             .await
     );
@@ -2881,15 +2914,16 @@ async fn conversation_uses_empty_instructions_for_null_or_empty_prompt() -> Resu
     }
 
     let connections = server.connections();
-    assert_eq!(connections.len(), 3);
+    assert_eq!(connections.len(), 2);
     let null_instructions =
-        websocket_request_instructions(&connections[1][0]).expect("null prompt instructions");
+        websocket_request_instructions(&connections[0][0]).expect("null prompt instructions");
     let empty_instructions =
-        websocket_request_instructions(&connections[2][0]).expect("empty prompt instructions");
+        websocket_request_instructions(&connections[1][0]).expect("empty prompt instructions");
     assert_eq!(null_instructions, "");
     assert_eq!(empty_instructions, "");
 
     server.shutdown().await;
+    startup_server.shutdown().await;
     Ok(())
 }
 
@@ -2898,7 +2932,10 @@ async fn conversation_uses_explicit_start_voice() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_websocket_server(vec![
-        vec![],
+        vec![vec![
+            responses::ev_response_created("prewarm"),
+            responses::ev_completed("prewarm"),
+        ]],
         vec![vec![json!({
             "type": "session.updated",
             "session": { "id": "sess_voice", "instructions": "backend prompt" }
@@ -2906,11 +2943,7 @@ async fn conversation_uses_explicit_start_voice() -> Result<()> {
     ])
     .await;
     let test = test_codex().build_with_websocket_server(&server).await?;
-    assert!(
-        server
-            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
-            .await
-    );
+    wait_for_completed_startup_prewarm(&server).await?;
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -2965,7 +2998,10 @@ async fn conversation_uses_configured_realtime_voice() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_websocket_server(vec![
-        vec![],
+        vec![vec![
+            responses::ev_response_created("prewarm"),
+            responses::ev_completed("prewarm"),
+        ]],
         vec![vec![json!({
             "type": "session.updated",
             "session": { "id": "sess_config_voice", "instructions": "backend prompt" }
@@ -2976,11 +3012,7 @@ async fn conversation_uses_configured_realtime_voice() -> Result<()> {
         config.realtime.voice = Some(RealtimeVoice::Cove);
     });
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(
-        server
-            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
-            .await
-    );
+    wait_for_completed_startup_prewarm(&server).await?;
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -3081,7 +3113,10 @@ async fn conversation_uses_experimental_realtime_ws_backend_prompt_override() ->
     skip_if_no_network!(Ok(()));
 
     let server = start_websocket_server(vec![
-        vec![],
+        vec![vec![
+            responses::ev_response_created("prewarm"),
+            responses::ev_completed("prewarm"),
+        ]],
         vec![vec![json!({
             "type": "session.updated",
             "session": { "id": "sess_override", "instructions": "prompt from config" }
@@ -3093,11 +3128,7 @@ async fn conversation_uses_experimental_realtime_ws_backend_prompt_override() ->
         config.experimental_realtime_ws_backend_prompt = Some("prompt from config".to_string());
     });
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(
-        server
-            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
-            .await
-    );
+    wait_for_completed_startup_prewarm(&server).await?;
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {

@@ -165,6 +165,21 @@ fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard
     if command != "exec-server" {
         return;
     }
+    #[cfg(unix)]
+    {
+        // This constructor dispatches before Rust's runtime initializes SIGPIPE.
+        // Match normal Rust process startup: a closed child-input pipe must return
+        // BrokenPipe, not terminate the entire executor. Spawned commands still
+        // receive their own default signal dispositions from the process launcher.
+        // SAFETY: This changes only the current helper process before its workers start.
+        if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
+            eprintln!(
+                "failed to initialize executor SIGPIPE handling: {}",
+                std::io::Error::last_os_error()
+            );
+            std::process::exit(1);
+        }
+    }
     // Enable requested child diagnostics so integration tests can observe background failures.
     if env::var_os("RUST_LOG").is_some()
         && let Err(error) = tracing_subscriber::fmt()

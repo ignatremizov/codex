@@ -551,7 +551,16 @@ async fn external_editor_writable_directory_rejected_snapshot() -> Result<()> {
 #[tokio::test]
 async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let thread_id = ThreadId::new();
+    let (mut app_server, requests, proxy) = session_lifecycle_requests::start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    // The later selection checks the server's live identity. Keep the approval
+    // buffered before App attachment, but give it a real server-owned session.
+    let started = app_server.start_thread(&app.config).await?;
+    let thread_id = started.session.thread_id;
     let approval_request =
         exec_approval_request(thread_id, "turn-1", "call-1", /*approval_id*/ None);
 
@@ -565,12 +574,6 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
         .insert(thread_id, vec![approval_request.clone()]);
     app.enqueue_primary_thread_request(approval_request.clone())
         .await?;
-    let (mut app_server, requests, proxy) = session_lifecycle_requests::start_recording_app_server(
-        &app.config,
-        /*blocked_thread_list*/ None,
-        /*failed_thread_name*/ None,
-    )
-    .await?;
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
@@ -584,11 +587,8 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
     )
     .await;
     assert_eq!(app.agents_overview.dispatched_requests[&thread_id].len(), 1);
-    app.enqueue_primary_thread_session(
-        test_thread_session(thread_id, test_path_buf("/tmp/project")),
-        Vec::new(),
-    )
-    .await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
 
     let rx = app
         .active_thread_rx
@@ -639,6 +639,8 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
     )
     .await?;
     Box::pin(app.select_agent_thread(&mut tui, &mut app_server, thread_id)).await?;
+    assert_eq!(app.active_thread_id, Some(thread_id));
+    assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
 
     assert!(
         !app.pending_app_server_requests
@@ -1951,8 +1953,13 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
     );
     app.chat_widget
         .apply_external_edit("queued follow-up".to_string());
+    // Tab queues locally; Enter would submit a steer owned by Core after interruption.
     app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        app.chat_widget.queued_user_message_texts(),
+        vec!["queued follow-up".to_string()]
+    );
     let input_state = app
         .chat_widget
         .capture_thread_input_state()

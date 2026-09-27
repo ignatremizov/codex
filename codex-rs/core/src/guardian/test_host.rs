@@ -38,7 +38,11 @@ pub(crate) fn install(session: &Session, config: &Config) {
         )),
         /*analytics_events_client*/ None,
         crate::passthrough_image_store(),
-        Arc::clone(&session.services.thread_store),
+        // The synthetic parent has no persistence owner or SQLite metadata store.
+        // Reviewers still need one coherent store for canonical writes, metadata,
+        // and completion barriers. Keep it shared across this host's review pool;
+        // application-level tests retain the real extension's configured store.
+        Arc::new(codex_thread_store::InMemoryThreadStore::default()),
         /*agent_graph_store*/ None,
         session.installation_id.clone(),
         /*attestation_provider*/ None,

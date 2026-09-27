@@ -3,6 +3,8 @@
 use super::session_lifecycle_requests::recorded_params;
 use super::session_lifecycle_requests::start_recording_app_server;
 use super::*;
+use crate::bottom_pane::SelectionItem;
+use crate::bottom_pane::SelectionViewParams;
 use app_test_support::create_fake_rollout;
 use pretty_assertions::assert_eq;
 
