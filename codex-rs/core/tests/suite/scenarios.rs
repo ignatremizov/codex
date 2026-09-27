@@ -1184,6 +1184,36 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
     use core_test_support::responses;
     use wiremock::matchers::header;
 
+    async fn wait_for_phase<T>(
+        server: &wiremock::MockServer,
+        phase: &str,
+        future: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        match tokio::time::timeout(Duration::from_secs(/*secs*/ 30), future).await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let requests = responses::received_responses_requests(server)
+                    .await
+                    .iter()
+                    .map(|request| {
+                        json!({
+                            "thread_id": request.header("thread-id"),
+                            "model": request.body_json()["model"],
+                            "calls": request.inputs_of_type("function_call"),
+                            "outputs": request.inputs_of_type("function_call_output"),
+                            "assistant_messages": request.message_input_texts("assistant"),
+                            "agent_messages": request.inputs_of_type("agent_message"),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                anyhow::bail!(
+                    "timed out during {phase}: {error}; captured Responses requests:\n{}",
+                    serde_json::to_string_pretty(&requests)?,
+                );
+            }
+        }
+    }
+
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1208,10 +1238,16 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
         .build_with_auto_env(&server)
         .await?;
     // A pending client tool holds the real child result until the parent is idle.
-    test.codex.shutdown_and_wait().await?;
-    let root = test
-        .thread_manager
-        .start_thread(StartThreadOptions {
+    wait_for_phase(
+        &server,
+        "initial thread shutdown",
+        test.codex.shutdown_and_wait(),
+    )
+    .await??;
+    let root = wait_for_phase(
+        &server,
+        "parent startup with release-check tool",
+        test.thread_manager.start_thread(StartThreadOptions {
             dynamic_tools: vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
                 name: "check_release".to_string(),
                 description: "Check whether the release is ready.".to_string(),
@@ -1220,8 +1256,9 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
             })],
             environments: Some(vec![test.executor_environment().request()]),
             ..StartThreadOptions::new(test.config.clone())
-        })
-        .await?;
+        }),
+    )
+    .await??;
     test.codex = root.thread;
     test.session_configured = root.session_configured;
     let parent_id = test.session_configured.thread_id.to_string();
@@ -1252,7 +1289,7 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
                 .headers
                 .get("thread-id")
                 .is_some_and(|id| id == expected_parent.as_str())
-                && String::from_utf8_lossy(&request.body).contains("spawn-worker")
+                && responses::body_contains(request, "spawn-worker")
         },
         sse(vec![final_answer, ev_completed("parent-finished")]),
     )
@@ -1273,16 +1310,28 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
     )
     .await;
 
-    test.submit_text_turn("Ask a worker to check the release, then finish your turn.")
-        .await?;
+    wait_for_phase(
+        &server,
+        "parent delegation and final answer",
+        test.submit_text_turn("Ask a worker to check the release, then finish your turn."),
+    )
+    .await??;
     ThreadIdle::wait(&test.codex).await;
     let child_id = created.try_recv()?;
     let child = test.thread_manager.get_thread(child_id).await?;
-    let call = wait_for_event_match(&child, |event| match event {
-        EventMsg::DynamicToolCallRequest(call) => Some(call.clone()),
-        _ => None,
-    })
-    .await;
+    let call = wait_for_phase(
+        &server,
+        "child release-check tool request",
+        wait_for_event_match(&child, |event| match event {
+            EventMsg::DynamicToolCallRequest(call) => Some(call.clone()),
+            EventMsg::Error(error) => panic!("child failed before release check: {error:?}"),
+            EventMsg::TurnComplete(completed) => {
+                panic!("child completed without requesting release check: {completed:?}")
+            }
+            _ => None,
+        }),
+    )
+    .await?;
     assert_eq!(call.call_id, "worker-check");
 
     responses::mount_sse_once_match(
@@ -1317,11 +1366,20 @@ async fn child_completion_wakes_parent_after_final_answer() -> Result<()> {
             },
         })
         .await?;
-    wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    wait_for_phase(
+        &server,
+        "child completion after release-check response",
+        wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))),
+    )
+    .await?;
+    wait_for_phase(
+        &server,
+        "parent wake after child completion",
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        }),
+    )
+    .await?;
     ThreadIdle::wait(&test.codex).await;
     assert_ne!(
         parent_finished.single_request().body_json()["client_metadata"]["turn_id"],
@@ -2430,6 +2488,10 @@ async fn guardian_code_mode_messaging_request_history() -> Result<()> {
         (
             r#"(For this action on environment )"(?:local|remote)","#,
             "$1\"<ENVIRONMENT>\",",
+        ),
+        (
+            r#"(The active permission profile for environment )"(?:local|remote)""#,
+            "$1\"<ENVIRONMENT>\"",
         ),
         (r#"(?m)^(\s*"cwd": )"[^"]*""#, "$1\"<CWD>\""),
         (

@@ -247,7 +247,7 @@ async fn disconnected_v2_child_lifecycle(unload_delay_secs: u64, ephemeral: bool
                         "spawn",
                         "collaboration",
                         "spawn_agent",
-                        &json!({"task_name": "child", "message": "Reply done", "fork_turns": "none"})
+                        &json!({"task_name": "child", "message": "Reply done", "task_message": "Reply done", "fork_turns": "none"})
                             .to_string(),
                     ),
                 ]),
@@ -270,7 +270,7 @@ async fn disconnected_v2_child_lifecycle(unload_delay_secs: u64, ephemeral: bool
                         "followup",
                         "collaboration",
                         "followup_task",
-                        &json!({"target": "child", "message": "Recall your previous reply"})
+                        &json!({"target": "child", "message": "Recall your previous reply", "task_message": "Recall your previous reply"})
                             .to_string(),
                     ),
                     responses::ev_completed("followup"),

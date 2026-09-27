@@ -522,6 +522,7 @@ async fn migration_projects_explicit_and_implicit_legacy_completed_items() {
                 "agentPath": "/root/worker",
                 "model": model,
                 "reasoningEffort": model.map(|_| "high"),
+                "prompt": None::<String>,
             })
         );
     }

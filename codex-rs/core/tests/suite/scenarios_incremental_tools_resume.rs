@@ -24,6 +24,7 @@ fn builder(incremental_tools: bool, token_budget: bool) -> TestCodexBuilder {
             model.tool_mode = Some(ToolMode::CodeMode);
         })
         .with_config(move |config| {
+            config.update_plan_enabled = false;
             if incremental_tools {
                 config
                     .features

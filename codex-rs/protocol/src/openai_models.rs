@@ -1920,7 +1920,7 @@ mod tests {
     fn model_preset_preserves_availability_nux() {
         let preset = ModelPreset::from(ModelInfo {
             availability_nux: Some(ModelAvailabilityNux {
-                message: "Try Spark.".to_string(),
+                message: "Try the faster model.".to_string(),
             }),
             additional_speed_tiers: vec![SPEED_TIER_FAST.to_string()],
             default_service_tier: Some(ServiceTier::Fast.request_value().to_string()),
@@ -1931,7 +1931,7 @@ mod tests {
         assert_eq!(
             preset.availability_nux,
             Some(ModelAvailabilityNux {
-                message: "Try Spark.".to_string(),
+                message: "Try the faster model.".to_string(),
             })
         );
         assert!(preset.supports_fast_mode());

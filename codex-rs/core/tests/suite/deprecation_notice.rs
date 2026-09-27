@@ -184,9 +184,7 @@ unified_exec_zsh_fork = true
         );
     }
     let shell = match core_test_support::test_target_os() {
-        core_test_support::TestTargetOs::Linux | core_test_support::TestTargetOs::MacOs => {
-            "/bin/sh"
-        }
+        core_test_support::TestTargetOs::Linux | core_test_support::TestTargetOs::MacOs => "bash",
         core_test_support::TestTargetOs::Windows => "powershell",
     };
     let arguments = serde_json::json!({
