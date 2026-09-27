@@ -3574,10 +3574,10 @@ impl ThreadRequestProcessor {
         let mut raw_events_enabled = false;
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             let config_snapshot = thread.config_snapshot().await;
-            self.thread_watch_manager
-                .upsert_thread(&thread_id.to_string())
-                .await;
             if let Some(parent_thread_id) = config_snapshot.parent_thread_id {
+                self.thread_watch_manager
+                    .upsert_thread(&thread_id.to_string())
+                    .await;
                 raw_events_enabled = self
                     .thread_state_manager
                     .thread_state(parent_thread_id)
@@ -3585,6 +3585,13 @@ impl ThreadRequestProcessor {
                     .lock()
                     .await
                     .experimental_raw_events;
+            } else {
+                // Root creation RPCs introduce the thread with their response and
+                // ThreadStarted notification. This concurrent observer must not
+                // announce an initial Idle status before that boundary.
+                self.thread_watch_manager
+                    .upsert_thread_silently(&thread_id.to_string())
+                    .await;
             }
         }
 
