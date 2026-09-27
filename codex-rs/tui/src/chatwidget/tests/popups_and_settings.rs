@@ -3390,6 +3390,26 @@ async fn model_picker_refreshes_startup_catalog() {
         }
 
         assert_eq!(chat.model_catalog.try_list_models().unwrap(), refreshed);
+        let (view_id, expected_selection) = if explicit_all_models {
+            (
+                super::super::model_popups::ALL_MODELS_SELECTION_VIEW_ID,
+                "gpt-5.5",
+            )
+        } else {
+            (
+                super::super::model_popups::MODEL_SELECTION_VIEW_ID,
+                "All models",
+            )
+        };
+        let selected = chat
+            .bottom_pane
+            .selected_index_for_present_view(view_id)
+            .expect("refreshed model picker has a selection");
+        assert_eq!(
+            chat.model_popup_model_ids.get(selected).map(String::as_str),
+            Some(expected_selection),
+            "a newly inserted auto model must not inherit the previous row's highlight"
+        );
         insta::allow_duplicates! {
             assert_chatwidget_snapshot!(
                 if explicit_all_models {

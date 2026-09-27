@@ -66,7 +66,15 @@ impl ChatWidget {
         let selected_model = selected_index.and_then(|index| self.model_popup_model_ids.get(index));
         params.initial_selected_idx = model_ids
             .iter()
-            .position(|model| Some(model) == selected_model);
+            .position(|model| Some(model) == selected_model)
+            .or(params.initial_selected_idx)
+            .or_else(|| {
+                // An old row number can now identify a different model (or submenu).
+                // Supply a semantic fallback before the generic list refresh keeps it.
+                params.items.iter().position(|item| {
+                    item.is_current && !item.is_disabled && item.disabled_reason.is_none()
+                })
+            });
         self.model_popup_model_ids = model_ids;
         if let Some(view_id) = params.view_id.filter(|_| selected_index.is_some()) {
             self.bottom_pane
