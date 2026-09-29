@@ -264,6 +264,7 @@ mod observed_input;
 mod response_observation;
 pub(crate) use observed_input::ObservedTurnInputSubmission;
 mod agent_identity;
+mod async_questions;
 mod reply_route_publication;
 mod user_agent_publication;
 pub(crate) use agent_identity::AgentSessionOwnershipOverride;

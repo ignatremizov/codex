@@ -127,6 +127,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                     TurnItem::AgentMessage(item)
                         if item.has_sub_agent_completion_identity()
                             || item.is_attributed_agent_input_presentation()
+                            || item.questions.is_some()
                 )
         }
         EventMsg::TokenCount(_)

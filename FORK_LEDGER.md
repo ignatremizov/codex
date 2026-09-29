@@ -4,7 +4,7 @@ This is the living maintenance map for capabilities carried by `fork` beyond its
 
 The 0.160 integration is pinned to upstream source commit `cb7799623b2241f536d799f2d46259148fb987ce`, including its maintenance backports. The upstream release-notes/version commit `a956835d020762cb2b570053af06f643a11c0ecc` is deliberately excluded. Neither rolling `upstream/main` nor local `main` defines the integration base. Keep release-version changes at the final release owner.
 
-The replay manifest inventories the 130 original downstream commits in `f1b21bb2931f86819e32df0cafa1bf69570d84ee..ac0f63abe470b8fa83d7852db7e5d39282c88434`. Reviewed dispositions distinguish retained owners, target adaptations, and explicitly deferred repairs assigned to their defining feature. After integration completes, inspect the resulting downstream stack with `git log --reverse cb7799623b2241f536d799f2d46259148fb987ce..fork`; during replay, `fork` still names the original branch tip. The complete pre-rebase ledger remains the policy-preservation checklist; a partially replayed foundation is not evidence that its later capabilities were dropped or that the new source has passed CI.
+The replay manifest inventories the 130 original downstream commits in `f1b21bb2931f86819e32df0cafa1bf69570d84ee..ac0f63abe470b8fa83d7852db7e5d39282c88434`. Initial replay, source-owner repairs, qualification-tail consolidation, and batched formatting reconciliation are complete. Reviewed dispositions preserve every original change or record its existing defining owner; source-only history cleanup is not executable qualification. Inspect the resulting stack with `git log --reverse cb7799623b2241f536d799f2d46259148fb987ce..fork`. The complete pre-rebase ledger remains the policy-preservation checklist, and final-source schemas, snapshots, dependency locks, and remote tests remain separate validation gates.
 
 Use exact semantic commit subjects as ownership anchors rather than commit hashes. Refresh those anchors after splitting, squashing, or rewording their owning commits. Describe each capability's purpose, implementation entrypoints, and upstream integration seams so its ownership remains understandable after rebasing.
 
@@ -23,10 +23,11 @@ Direct CLI/TUI use, including over a remote terminal or SSH, is the supported cl
 
 ## Maintained Capabilities
 
-This checkpoint inventories the integrated owners through payload-free mailbox activity, conditional final subscriptions, and invocation-owned asynchronous terminal waits, alongside live sibling/mailbox receipts and FIFO asynchronous presentation, shared agent identity styling, fresh spawn references, fixed-claim mailbox outcome projection, compact receiver-scoped identities, available-agent navigation, durable receiver-selected input delivery, directional user-selected observation controls, shared-server custom instruction forwarding, model-hidden root conclusion oversight, and root-scoped running-agent activity. It also retains attributed V1 input, task-path discovery, live subtree messaging, acknowledged reply routes, settled rendering caches, absolute transcript navigation, scoped replies, queued work, and user-controlled delegation. Later replay commits and unimplemented proposals are not represented as completed features. Entrypoints name the current integrated layout; source integration does not claim executable validation.
+This checkpoint includes compact replies to upstream asynchronous questions, captured credential profiles, durable owning-subtree unload, batch input, owned sleep progress, conditional mailbox finals, and invocation-owned terminal waits. It also retains live sibling/mailbox receipts, FIFO asynchronous presentation, shared agent identity styling, receiver-selected input delivery, user-controlled observation and delegation, acknowledged reply routes, canonical history, and source-preserving transcript navigation. Unimplemented proposals remain proposals. Entrypoints and semantic subjects name the integrated source; neither this inventory nor formatting success claims executable validation.
 
 | Capability | Kind | Purpose | Primary fork entrypoints | Required upstream seams | Commits |
 | --- | --- | --- | --- | --- | --- |
+| Compact asynchronous question replies | Efficiency | Add thread-local question references to upstream's asynchronous question tool, shorten recognized replies only in disposable model input, and recover numbering from complete canonical artifacts across compaction and resume. Preserve original transport, replay, question dismissal, and unknown or mixed-text replies. | `codex-rs/context-fragments/src/answered_question.rs`<br>`codex-rs/core/src/session/async_questions.rs`<br>`codex-rs/core/src/context_manager/history.rs`<br>`codex-rs/core/src/tools/handlers/request_user_input_async.rs` | Existing asynchronous question identity and UI, source-aware request envelopes, raw artifact lineage, Legacy/Paginated event persistence, and final dependency-lock qualification | `feat(context): compact async question replies with durable short references` |
 | Build-profile-independent display fixtures | Release | Keep layout-sensitive unit snapshots stable across source and release builds while production headers, status, and update notices retain the actual package version. Runtime update decisions and client/server version checks remain independent from test display normalization. | `codex-rs/tui/src/version.rs`<br>`codex-rs/tui/src/app/history_ui.rs`<br>`codex-rs/tui/src/history_cell/`<br>`codex-rs/tui/src/status/card.rs` | Source-backed startup and clear headers, status copy, optional version footer, full snapshot metadata, and the final packaging boundary | `test(tui): stabilize display versions across build profiles` |
 | Durable owning-subtree unload | Capability | Stop a selected task's owning root and loaded spawn descendants only after exact runtimes acknowledge producer drain, persistence, and writer release; retain failed actors and cancelled-spawn cleanup for retry. Graceful TUI exit uses unload, while explicit shared-server disconnect leaves server-owned work running. | `codex-rs/core/src/thread_manager/loaded_subtree.rs`<br>`codex-rs/core/src/session/durable_shutdown.rs`<br>`codex-rs/core/src/unified_exec/shutdown.rs`<br>`codex-rs/core/src/thread_manager/owned_resume_startup.rs`<br>`codex-rs/app-server/src/request_processors/thread_unload.rs`<br>`codex-rs/tui/src/app/exit_lifecycle.rs` | Exact lifecycle and subscription fences, canonical completion ownership, captured startup/controller authority, Code Mode and Guardian teardown, real process exit, and writer-lease release | `feat(lifecycle): durably unload owning subtrees on graceful client exit` |
 | Captured credential profiles with shared storage | Capability | Select saved credentials with `CODEX_AUTH_FILE` without relocating configuration, skills, rollouts, or ownership. Preserve provider/API-key precedence, strict browser dictation, and captured reload/login/logout identity; isolate daemon lifecycle and recovery by profile and verify the actual local connection's home and profile before reuse. | `codex-rs/login/src/auth_file_selection.rs`<br>`codex-rs/login/src/auth_profile.rs`<br>`codex-rs/login/src/auth/manager.rs`<br>`codex-rs/app-server-daemon/src/launch_options.rs`<br>`codex-rs/tui/src/auth_profile_connection.rs` | Config/bootstrap capture, account-bound network policy, model-catalog caching, daemon package/PID ownership, actual connection verification, and current TUI startup/reconnect boundaries | `feat(auth): select credential profiles while sharing thread storage` |
@@ -103,10 +104,11 @@ source-backed clear headers, the optional version footer, startup/SSH fixtures, 
 normalization share the display contract without replacing upstream's current layout.
 
 The historical release owner is partitioned rather than replayed as a 0.156.1 package bump.
-Its non-display fixture corrections remain assigned to their earlier downstream owners, and its
-generated exports require coordinated final-source remote regeneration. The workspace remains
-at its source version during replay; the 0.160 release identity and actual-version snapshots
-belong to the final packaging commit. Snapshot normalization is not an executed snapshot result.
+Its non-display fixture corrections are integrated into their earlier downstream owners, and its
+generated exports require coordinated final-source remote regeneration. Reusable feature commits
+retain the source version; the 0.160.0 identity belongs to a separate final version-only commit.
+Actual-version snapshots require remote qualification. Snapshot normalization is not an executed
+snapshot result, and setting a package version does not produce or validate release binaries.
 
 ### Built-in collaboration role schemas
 
@@ -461,9 +463,9 @@ MCP completion and App-owned realtime controls are not replaced by older helper 
 Source tests cover producer cancellation/drain, real shutdown publication, detached audit isolation,
 live idle output, and model-failure independence. They have not run. An inherited long-command
 wrapping snapshot is explicitly assigned to its earlier preview owner for final regeneration;
-owner90 adds only the new process-ID contract. Later user-shell queued completion policies remain
-with their separate feature owner. Formatting, generated contracts, and executable validation
-remain pending.
+owner90 adds only the new process-ID contract. User-shell queued completion policies remain
+with their separate feature owner. Batched formatting is folded into the relevant source owners;
+generated contracts and executable validation remain pending.
 
 ### Queued user-shell completion ownership
 
@@ -874,8 +876,8 @@ require remote qualification, including complete inspection/layout snapshot gene
 - Stable and experimental app-server schemas/bundles, configuration descriptions, persisted-history/embedded Python SDK artifacts, and Bazel dependency locks require coordinated final-source remote regeneration. Historical generated artifacts are not evidence that the current source contracts have been validated.
 - Canonical publication ambiguity quarantines the exact session. Readable history is not acknowledgment, accepted receipts cannot be retargeted, and process-local ownership fences do not promise crash-atomic transfers or fsync durability.
 - The model-tool terminal-wake and workspace-root AGENTS documents remain proposals. Explicit settled close-response replay, scoped replies, and target-owned queue input are integrated under their existing owners. Automatic retry, crash-atomic replay, and generalized close-replay guarantees are not implied; these features do not implement model-terminal process-exit wake scheduling.
-- The current rebase records per-owner source reviews and explicit deferred repairs. Batched formatting fixes must be folded into their owning downstream commits after replay; no local compilation, tests, or generation are authorized. Previously built 0.156.1 binaries are not qualification of this source.
-- Release-version changes remain at the final release owner; this inventory does not announce the historical 0.147.0 release as the integrated tip.
+- Per-owner source reviews, source repairs, qualification-tail relocations, and the single batched formatting result are recorded and folded into their downstream owners. No local compilation, tests, or compile-dependent generation were performed. Previously built 0.156.1 binaries are not qualification of this source.
+- The 0.160.0 release identity is isolated in the final version-only owner, not imported through the excluded upstream release commit. Packaging still requires remotely verified binaries, native components, exact producer identities, and reviewed generated contracts; a versioned source tree is not a published release.
 
 ## Update Protocol
 
