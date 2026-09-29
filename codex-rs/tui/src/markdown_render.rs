@@ -38,12 +38,11 @@
 //! body rows, or even 3-char-wide columns cannot fit, body rows render as
 //! key/value records.
 //!
-//! Inline code and local file paths share the active syntax theme's raw-markup foreground.
+//! Inline code, local file paths, and web links share cyan; web links are underlined.
 
 use crate::markdown_text_merge::DecodedTextMerge;
 use crate::render::highlight::current_syntax_theme;
 use crate::render::highlight::foreground_style_for_scopes;
-use crate::render::highlight::foreground_style_for_scopes_with_theme;
 use crate::render::highlight::highlight_code_to_lines;
 use crate::render::line_utils::line_to_static;
 use crate::style::accent_color;
@@ -122,12 +121,6 @@ struct MarkdownStyles {
 
 impl Default for MarkdownStyles {
     fn default() -> Self {
-        Self::for_theme(&crate::render::highlight::current_syntax_theme())
-    }
-}
-
-impl MarkdownStyles {
-    fn for_theme(theme: &syntect::highlighting::Theme) -> Self {
         Self {
             h1: Style::new().bold().underlined(),
             h2: Style::new().bold(),
@@ -135,20 +128,13 @@ impl MarkdownStyles {
             h4: Style::new().italic(),
             h5: Style::new().italic(),
             h6: Style::new().italic(),
-            code: foreground_style_for_scopes_with_theme(
-                theme,
-                &[
-                    "markup.inline.raw.string.markdown",
-                    "markup.raw.inline.markdown",
-                ],
-            )
-            .unwrap_or_else(|| Style::new().fg(accent_color())),
+            code: Style::new().cyan(),
             emphasis: Style::new().italic(),
             strong: Style::new().bold(),
             strikethrough: Style::new().crossed_out(),
             ordered_list_marker: Style::new().fg(accent_color()),
             unordered_list_marker: Style::new(),
-            link: Style::new().fg(accent_color()).underlined(),
+            link: Style::new().cyan().underlined(),
             blockquote: Style::new().green(),
         }
     }

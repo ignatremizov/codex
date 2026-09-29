@@ -10,7 +10,6 @@ use super::status_line_setup::StatusLineItem;
 use crate::render::highlight::foreground_style_for_scopes;
 use crate::style::readable_color_on;
 use crate::style::secondary_text_style;
-use crate::thread_color::thread_color;
 use codex_protocol::ThreadId;
 
 const STATUS_LINE_SEPARATOR: &str = " · ";
@@ -111,19 +110,16 @@ where
     I: IntoIterator<Item = (StatusLineItem, String)>,
     F: Fn(StatusLineAccent) -> Option<Style>,
 {
+    let _ = thread_id;
     let mut spans = Vec::new();
     for (item, text) in segments {
         if !spans.is_empty() {
             spans.push(STATUS_LINE_SEPARATOR.set_style(secondary_text_style()));
         }
-        let style = if use_theme_colors
-            && matches!(
-                item,
-                StatusLineItem::ThreadName | StatusLineItem::ThreadTitle
-            )
-            && let Some(thread_id) = thread_id
-        {
-            Style::default().fg(thread_color(thread_id))
+        let style = if use_theme_colors && item == StatusLineItem::ThreadName {
+            Style::default().light_cyan()
+        } else if use_theme_colors && item == StatusLineItem::ThreadTitle {
+            Style::default().light_green()
         } else if use_theme_colors {
             let accent = StatusLineAccent::for_item(item);
             soften_status_line_style(
@@ -332,6 +328,46 @@ mod tests {
         .expect("status line");
 
         assert_eq!(line.spans[0].style, secondary_text_style().underlined());
+    }
+
+    #[test]
+    fn thread_name_and_title_use_stable_pale_accents() {
+        let first_thread = ThreadId::new();
+        let second_thread = ThreadId::new();
+        let render = |item, thread_id| {
+            status_line_from_segments_with_resolver(
+                [(item, "thread".to_string())],
+                /*use_theme_colors*/ true,
+                Some(thread_id),
+                |_| Some(Style::default().red()),
+            )
+            .expect("status line")
+            .spans[0]
+                .style
+        };
+
+        assert_eq!(
+            render(StatusLineItem::ThreadName, first_thread),
+            render(StatusLineItem::ThreadName, second_thread),
+        );
+        assert_eq!(
+            render(StatusLineItem::ThreadTitle, first_thread),
+            render(StatusLineItem::ThreadTitle, second_thread),
+        );
+        assert_eq!(
+            render(StatusLineItem::ThreadName, first_thread).fg,
+            Some(readable_color_on(
+                Color::LightCyan,
+                /*background*/ None
+            )),
+        );
+        assert_eq!(
+            render(StatusLineItem::ThreadTitle, first_thread).fg,
+            Some(readable_color_on(
+                Color::LightGreen,
+                /*background*/ None,
+            )),
+        );
     }
 
     #[test]
