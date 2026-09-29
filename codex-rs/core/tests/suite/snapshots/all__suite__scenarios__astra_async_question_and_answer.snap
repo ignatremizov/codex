@@ -39,7 +39,7 @@ Scenario: Astra uses the catalog question schema to ask who a launch update is f
 07:configuration_update:reasoning={"effort":"low"}
 -- request 2 (request) --
 08:function_call/functions.request_user_input_async:{"questions":[{"options":["Internal team","Customers"],"title":"Who should receive the launch update?"}]}
-09:function_call_output:{"accepted":true}
+09:function_call_output:{"accepted":true,"question_refs":["q1"]}
 -- request 3 (request) --
 10:message/assistant:
     I drafted a short launch update.
