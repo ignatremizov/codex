@@ -2997,6 +2997,7 @@ dependencies = [
  "codex-protocol-test-support",
  "codex-utils-string",
  "pretty_assertions",
+ "serde",
  "serde_json",
 ]
 
