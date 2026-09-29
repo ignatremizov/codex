@@ -116,8 +116,11 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
                 messages.push(lines.join("\n"));
             }
 
+            let references = session
+                .reserve_async_question_refs(args.questions.len())
+                .await?;
             let item = TurnItem::AgentMessage(AgentMessageItem {
-                id: call_id,
+                id: codex_context_fragments::async_question_item_id(references.start, &call_id),
                 attribution: None,
                 input: None,
                 content: vec![AgentMessageContent::Text {
@@ -133,7 +136,10 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputAsyncHandler {
             session.emit_turn_item_completed(turn.as_ref(), item).await;
 
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                r#"{"accepted":true}"#.to_string(),
+                serde_json::json!({
+                    "accepted": true,
+                    "question_refs": references.map(|number| format!("q{number}")).collect::<Vec<_>>(),
+                }).to_string(),
                 /*success*/ Some(true),
             )))
         })

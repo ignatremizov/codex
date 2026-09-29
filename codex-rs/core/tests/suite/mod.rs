@@ -45,6 +45,8 @@ mod apply_patch_cli;
 mod apply_patch_serialization;
 #[cfg(not(target_os = "windows"))]
 mod approvals;
+#[path = "async_question_refs_tests.rs"]
+mod async_question_refs;
 mod audio_truncation;
 mod auto_review;
 mod catalog_permission_messages;

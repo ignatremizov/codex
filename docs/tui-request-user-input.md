@@ -55,3 +55,22 @@ does not control the countdown; `isBlocking` selects the behavior.
 The layout prefers to keep the question and all options visible. Notes and
 footer hints collapse as space shrinks, with notes falling back to a single-line
 "Notes: ..." input in tight terminals.
+
+## Asynchronous questions
+
+`request_user_input_async` uses the separate non-blocking question pane. Its accepted
+tool result includes `question_refs` in question order, for example `["q1", "q2"]`.
+Replies to these numbered questions reach model context as `q2: Tomorrow`, without
+repeating the prompt, options, transport ID, or verbose reply envelope.
+
+Canonical transport and replay still retain the original question and stable item
+identity for clients to display and dismiss the correct question. Older desktop
+reply envelopes remain readable; unknown or mixed-text replies are not guessed at
+or shortened. The compact projection is applied only to the model-input copy,
+including compaction input.
+
+Numbers advance across batches, compaction, and cold resume by recovering the
+high-water mark from canonical artifacts, not the current model window. A fork or
+paginated history revert starts from its retained lineage. Transport identities
+also retain the source call ID, so matching display numbers on different branches
+do not identify the same question.
