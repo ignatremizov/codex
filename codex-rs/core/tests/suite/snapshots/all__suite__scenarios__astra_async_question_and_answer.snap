@@ -1,21 +1,22 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 375
+assertion_line: 428
 expression: "context_snapshot::format_context_snapshot(\"Astra uses the catalog question schema to ask who a launch update is for, keeps working, and receives the user's answer in the active turn.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Astra uses the catalog question schema to ask who a launch update is for, keeps working, and receives the user's answer in the active turn.
 
 ## Window 1
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=ae153e78f6722d2b):
-        - namespace/functions; hash=f1de44f63c977f3d
+00:additional_tools/developer (3; hash=e52d12133a59d70c):
+        - namespace/functions; hash=1db9e5d00c310d5c
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
+          - function/send_user_message_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=b263e3c84ad07c37
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=fa938390146e0df3
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -37,7 +38,7 @@ Scenario: Astra uses the catalog question schema to ask who a launch update is f
     Draft a short launch update. Ask me who it is for and keep working while I answer.
 -- request 2 (request) --
 07:function_call/functions.request_user_input_async:{"questions":[{"options":["Internal team","Customers"],"title":"Who should receive the launch update?"}]}
-08:function_call_output:{"accepted":true}
+08:function_call_output:{"accepted":true,"question_refs":["q1"]}
 -- request 3 (request) --
 09:message/assistant:
     I drafted a short launch update.

@@ -612,7 +612,22 @@ impl ContextManager {
         input_modalities: &[InputModality],
     ) -> Vec<ResponseItemEnvelope> {
         self.normalize_history(input_modalities);
-        Arc::unwrap_or_clone(self.items)
+        let mut items = Arc::unwrap_or_clone(self.items);
+        for envelope in &mut items {
+            if let ResponseItem::Message { role, content, .. } = &mut envelope.item
+                && role == "user"
+            {
+                for item in content {
+                    if let ContentItem::InputText { text } = item
+                        && let Some(compact) =
+                            codex_context_fragments::compact_answered_question(text)
+                    {
+                        *text = compact;
+                    }
+                }
+            }
+        }
+        items
     }
 
     /// Iterates over raw response items without exposing their history envelopes.
@@ -1439,3 +1454,7 @@ fn user_message_positions(items: &[ResponseItemEnvelope]) -> Vec<usize> {
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "history_question_tests.rs"]
+mod question_tests;

@@ -473,7 +473,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
     assert_eq!(
         serde_json::to_value(&started)?,
         serde_json::to_value(AgentMessageItem {
-            id: CALL_ID.to_string(),
+            id: codex_context_fragments::async_question_item_id(1, CALL_ID),
             attribution: None,
             input: None,
             content: vec![AgentMessageContent::Text {
@@ -548,7 +548,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
     }
     assert_eq!(
         requests[1].function_call_output_text(CALL_ID),
-        Some(r#"{"accepted":true}"#.to_string())
+        Some(r#"{"accepted":true,"question_refs":["q1","q2"]}"#.to_string())
     );
     let has_synthetic_assistant_message = requests[1].input().into_iter().any(|item| {
         item["type"] == "message" && item["role"] == "assistant" && item.to_string().contains(TITLE)
