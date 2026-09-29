@@ -1,5 +1,8 @@
 mod answered_question;
 pub use answered_question::AnsweredQuestion;
+pub use answered_question::async_question_item_id;
+pub use answered_question::async_question_number;
+pub use answered_question::compact_answered_question;
 mod additional_context;
 mod annotated_content;
 mod fragment;

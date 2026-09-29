@@ -104,6 +104,9 @@ pub(crate) struct SessionState {
     /// Retained after completion so later turns do not repeat speculative captures.
     pub(crate) shell_snapshot_prewarm: Option<AbortOnDropHandle<()>>,
     pub(crate) current_time_reminder: CurrentTimeReminderState,
+    /// Highest reserved async-question number, lazily restored from canonical artifacts.
+    /// Compaction and rollback never reset this runtime high-water mark.
+    pub(crate) async_question_high_water: Option<u64>,
     pub(crate) active_connector_selection: HashSet<String>,
     pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
     next_turn_is_first: bool,
@@ -148,6 +151,7 @@ impl SessionState {
             startup_prewarm: None,
             shell_snapshot_prewarm: None,
             current_time_reminder: CurrentTimeReminderState::default(),
+            async_question_high_water: None,
             active_connector_selection: HashSet::new(),
             pending_session_start_sources: VecDeque::new(),
             next_turn_is_first: true,

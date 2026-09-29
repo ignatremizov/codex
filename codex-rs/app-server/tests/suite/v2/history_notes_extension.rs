@@ -437,7 +437,7 @@ async fn history_notes_and_async_message_emit_control_tool_analytics() -> Result
     );
     assert_eq!(
         response_mock.requests()[10].function_call_output_text("call-9"),
-        Some(r#"{"accepted":true}"#.to_string())
+        Some(r#"{"accepted":true,"question_refs":["q1"]}"#.to_string())
     );
     assert_eq!(
         response_mock.requests()[11].function_call_output_text("call-10"),
