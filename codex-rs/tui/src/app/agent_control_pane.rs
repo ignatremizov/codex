@@ -344,7 +344,7 @@ impl App {
                     status_line.push(format!(" · ref {agent_ref}").dim());
                 }
                 let mut detail_lines = vec![
-                    base_name.clone().fg(identity_color).bold().into(),
+                    base_name.fg(identity_color).bold().into(),
                     status_line.into(),
                     vec!["UUID: ".bold(), uuid.clone().dim()].into(),
                 ];
