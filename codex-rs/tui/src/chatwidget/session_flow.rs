@@ -207,7 +207,7 @@ impl ChatWidget {
                 &self.config,
                 &self.local_settings,
                 &model_for_header,
-                self.model_catalog.display_name(&session.model),
+                crate::model_catalog::model_display_name(&session.model),
                 &session,
                 self.show_welcome_banner,
                 startup_tooltip_override,
