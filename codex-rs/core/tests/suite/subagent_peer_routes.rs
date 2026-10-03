@@ -189,6 +189,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
     response_flags: &str,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    eprintln!("[peer-route] initializing test");
     let server = start_mock_server().await;
     let test = test_codex()
         .with_history_mode(history_mode)
@@ -201,6 +202,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         })
         .build_with_auto_env(&server)
         .await?;
+    eprintln!("[peer-route] spawning sender");
     let sender_id = test
         .codex
         .spawn_agent(UserAgentSpawnOptions {
@@ -209,6 +211,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         })
         .await?
         .target_thread_id;
+    eprintln!("[peer-route] spawning recipient");
     let recipient_id = test
         .codex
         .spawn_agent(UserAgentSpawnOptions {
@@ -225,6 +228,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
     // Exercise the actual model-facing tool before enable, on two enabled turns, and after
     // disable. A grant names a recipient; it does not make Main subscribe to peer replies.
     for (index, enabled) in [false, true, true, false].into_iter().enumerate() {
+        eprintln!("[peer-route] turn {index}: enabled={enabled}");
         if index == 1 || index == 3 {
             let mode = if enabled {
                 UserAgentReplyRouteMode::Enabled
@@ -292,6 +296,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         )
         .await;
 
+        eprintln!("[peer-route] turn {index}: submitting sender prompt");
         test.codex
             .prompt_live_agent(
                 &sender_id.to_string(),
@@ -303,6 +308,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
             )
             .await?;
         let sent = wait_for_request_containing_text(&invocation, &prompt).await?;
+        eprintln!("[peer-route] turn {index}: received sender request");
         assert_eq!(
             sent.message_input_texts("user")
                 .iter()
@@ -315,9 +321,11 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         let output = returned
             .function_call_output_text(&call_id)
             .expect("send result text");
+        eprintln!("[peer-route] turn {index}: received tool result");
         wait_for_terminal_status(sender.as_ref()).await?;
         if enabled {
             let received = wait_for_request_containing_text(&receiver_request, &payload).await?;
+            eprintln!("[peer-route] turn {index}: received recipient request");
             let envelopes = received
                 .message_input_texts("user")
                 .into_iter()
@@ -332,6 +340,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
                 envelopes.last(),
                 Some(&json!({"ref": "2", "message": payload})),
             );
+            eprintln!("[peer-route] turn {index}: waiting for recipient audit");
             let item = wait_for_event_match(recipient.as_ref(), |event| {
                 let EventMsg::ItemCompleted(event) = event else {
                     return None;
@@ -344,6 +353,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
                 }
             })
             .await;
+            eprintln!("[peer-route] turn {index}: received recipient audit");
             let attribution = item
                 .attribution
                 .as_ref()
@@ -379,13 +389,15 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
             assert!(receiver_request.requests().is_empty());
         }
     }
+    eprintln!("[peer-route] validating root status");
     assert_eq!(
         test.codex.agent_status().await,
         root_status,
         "audit does not wake Main"
     );
     let mut audits = Vec::new();
-    for _ in 0..2 {
+    for index in 0..2 {
+        eprintln!("[peer-route] waiting for root audit {index}");
         audits.push(
             wait_for_event_match(&test.codex, |event| {
                 let EventMsg::ItemCompleted(event) = event else {
@@ -403,6 +415,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
             .await,
         );
     }
+    eprintln!("[peer-route] validating mirrored audits");
     assert_eq!(
         audits, received_audits,
         "Main mirrors the complete trusted recipient item"
@@ -411,8 +424,10 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
     // Main gets live ItemCompleted notifications, not another stored payload. The original
     // received input remains available in the recipient's canonical history in either mode.
     for thread in [test.codex.as_ref(), recipient.as_ref()] {
+        eprintln!("[peer-route] flushing a thread rollout");
         thread.flush_rollout().await?;
     }
+    eprintln!("[peer-route] loading canonical histories");
     let root_history = test
         .thread_store
         .load_canonical_artifact_segments(LoadThreadHistoryParams {
@@ -454,6 +469,7 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         ]),
     )
     .await;
+    eprintln!("[peer-route] submitting final root context check");
     test.submit_turn("check Main context after peer messaging")
         .await?;
     let request = root_turn.single_request();
@@ -461,5 +477,6 @@ async fn user_grants_peer_route_and_root_only_sees_audit(
         !request.body_contains_text("peer-only contract revision"),
         "presentation-only copies must not become Main's model input"
     );
+    eprintln!("[peer-route] completed");
     Ok(())
 }
