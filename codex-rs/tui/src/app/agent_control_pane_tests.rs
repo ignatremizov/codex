@@ -273,14 +273,25 @@ async fn agent_rows_and_details_keep_the_nickname_identity_color() {
     assert!(selected_position.0 < detail_position.0);
     let identity_color = crate::agent_color::nickname_color("Hume");
     let selected_style = buffer[*selected_position].style();
-
-    assert_eq!(
-        selected_style.fg,
+    let selection_style = crate::style::selection_style();
+    let reversed = selection_style.add_modifier.contains(Modifier::REVERSED);
+    // An unknown terminal palette uses reversed default colors for selection.
+    // Explicit fills retain the nickname hue, adjusted against the painted fill.
+    let selected_foreground = if reversed {
+        selection_style.fg
+    } else {
         Some(crate::style::readable_color_on(
             identity_color,
-            selected_style.bg,
-        )),
+            selection_style.bg,
+        ))
+    };
+    assert_eq!(selected_style.bg, selection_style.bg);
+    assert!(selected_style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        selected_style.add_modifier.contains(Modifier::REVERSED),
+        reversed,
     );
+    assert_eq!(selected_style.fg, selected_foreground);
     assert_eq!(buffer[*detail_position].style().fg, Some(identity_color));
 }
 
