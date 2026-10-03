@@ -7,10 +7,11 @@ runs:
     - name: Install pinned sccache
       uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
       with:
-        tool: sccache@0.12.0
+        tool: sccache@0.18.0
 
     # Runtime cache credentials are available to JavaScript actions, not ordinary
-    # shell steps. sccache 0.12 uses the v2 results endpoint, not ACTIONS_CACHE_URL.
+    # shell steps. Select the v2 protocol as well as its results endpoint;
+    # otherwise OpenDAL sends obsolete /_apis/artifactcache requests there.
     - name: Export GitHub cache runtime
       uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
       with:
@@ -23,6 +24,7 @@ runs:
             core.setSecret(value);
             core.exportVariable(name, value);
           }
+          core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'true');
           core.exportVariable('SCCACHE_GHA_ENABLED', 'true');
 
     - name: Configure cache and diagnostics
@@ -46,4 +48,24 @@ runs:
         sccache --start-server
         sccache --zero-stats
         sccache --show-stats
-        echo "Rust compilation cache: GitHub Actions v2; idle shutdown disabled"
+
+    - name: Verify persistent cache round trip before compiling the workspace
+      shell: bash
+      run: |
+        set -euo pipefail
+        probe="$(mktemp -d "${RUNNER_TEMP}/sccache-probe.XXXXXX")"
+        printf 'pub fn cache_probe() -> u8 { 42 }\n' > "$probe/probe.rs"
+        sccache rustc --crate-name codex_ci_cache_probe --crate-type rlib \
+          --emit dep-info,link --out-dir "$probe" "$probe/probe.rs"
+        sccache --stop-server
+        sccache --start-server
+        sccache --zero-stats
+        sccache rustc --crate-name codex_ci_cache_probe --crate-type rlib \
+          --emit dep-info,link --out-dir "$probe" "$probe/probe.rs"
+        sccache --show-stats | tee "${RELEASE_DIAGNOSTICS_DIR}/cache-probe.txt"
+        grep -Eq '^Cache hits[[:space:]]+[1-9][0-9]*[[:space:]]*$' \
+          "${RELEASE_DIAGNOSTICS_DIR}/cache-probe.txt"
+        grep -Eq '^Cache write errors[[:space:]]+0[[:space:]]*$' \
+          "${RELEASE_DIAGNOSTICS_DIR}/cache-probe.txt"
+        sccache --zero-stats
+        echo "Rust compilation cache: verified GitHub Actions v2 round trip across a server restart"

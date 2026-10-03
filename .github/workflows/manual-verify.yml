@@ -99,6 +99,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: just bazel-lock-update
 
+      # Preserve generated inputs before the potentially long compile/test phase.
+      - name: Upload regenerated Cargo and Bazel lockfiles
+        if: always() && steps.refresh_cargo_workspace.outcome == 'success' && steps.regenerate_bazel_lock.outcome == 'success'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel-module-lock-${{ github.run_id }}
+          path: |
+            codex-rs/Cargo.lock
+            MODULE.bazel.lock
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Configure rusty_v8 artifact overrides and verify checksums
         uses: ./.github/actions/setup-rusty-v8
         with:
@@ -294,17 +306,6 @@ jobs:
             sdk/python/src/openai_codex/generated/v2_all.py
             sdk/python/src/openai_codex/generated/notification_registry.py
             sdk/python/src/openai_codex/api.py
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload regenerated Cargo and Bazel lockfiles
-        if: always() && steps.refresh_cargo_workspace.outcome == 'success' && steps.regenerate_bazel_lock.outcome == 'success'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: bazel-module-lock-${{ github.run_id }}
-          path: |
-            codex-rs/Cargo.lock
-            MODULE.bazel.lock
           if-no-files-found: error
           retention-days: 14
 

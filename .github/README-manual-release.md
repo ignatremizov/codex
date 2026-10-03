@@ -22,9 +22,12 @@ its V8 runtime, has a separate job. Native voice preparation remains separate.
 Packaging requires every selected component to pass; a partial component is not
 published as a complete release.
 
-The shared sccache action uses the documented GitHub Actions v2 runtime export
-through a JavaScript action. It refuses silent fallback to an unpersisted local
-cache. Runtime credentials are masked. The pinned cache daemon has idle shutdown
+The shared sccache action uses GitHub Actions v2 runtime credentials and explicitly
+exports `ACTIONS_CACHE_SERVICE_V2` through a JavaScript action. Both the endpoint
+and protocol selection are required. Before building the workspace, it compiles a
+tiny CI-only probe twice across a cache-daemon restart and requires a cache hit
+with no write errors. It refuses silent fallback to an unpersisted local cache.
+Runtime credentials are masked. The pinned cache daemon has idle shutdown
 disabled, and warnings go to the diagnostics artifact. Source-download caches no
 longer restore `~/.cargo/bin` over freshly installed rustup or build tools.
 

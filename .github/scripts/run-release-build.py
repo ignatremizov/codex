@@ -51,6 +51,8 @@ def sample(path: Path, stop: threading.Event) -> None:
                                 "Compile requests",
                                 "Cache hits",
                                 "Cache misses",
+                                "Cache read errors",
+                                "Cache write errors",
                                 "Cache location",
                             )
                         ):
