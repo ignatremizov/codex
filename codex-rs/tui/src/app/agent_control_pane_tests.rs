@@ -258,7 +258,10 @@ async fn agent_rows_and_details_keep_the_nickname_identity_color() {
         .filter(|(_, line)| line.contains("Hume [reviewer]"))
         .map(|(row, line)| {
             let name_start = line.find("Hume").expect("visible Hume identity");
-            (UnicodeWidthStr::width(&line[..name_start]) as u16, row as u16)
+            (
+                UnicodeWidthStr::width(&line[..name_start]) as u16,
+                row as u16,
+            )
         })
         .collect::<Vec<_>>();
     // The preview heading can appear above the selected row. Identify the list
@@ -278,10 +281,7 @@ async fn agent_rows_and_details_keep_the_nickname_identity_color() {
             selected_style.bg,
         )),
     );
-    assert_eq!(
-        buffer[*detail_position].style().fg,
-        Some(identity_color),
-    );
+    assert_eq!(buffer[*detail_position].style().fg, Some(identity_color));
 }
 
 #[test]

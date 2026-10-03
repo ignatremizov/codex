@@ -99,7 +99,10 @@ fn supporting_terminals_render_only_the_styled_label_and_keep_its_target() {
         let display = WebLinkDisplay::for_terminal(&terminal(name), /*term*/ None);
         for (markdown, label) in [
             ("[label](https://example.com)", "label".cyan().underlined()),
-            ("[`label`](https://example.com)", "label".cyan().underlined()),
+            (
+                "[`label`](https://example.com)",
+                "label".cyan().underlined(),
+            ),
             (
                 "[**label**](https://example.com)",
                 "label".cyan().bold().underlined(),
