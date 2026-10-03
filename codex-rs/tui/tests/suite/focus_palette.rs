@@ -177,7 +177,7 @@ fn owned_screen_entry_paints_before_sync_ends_and_exit_clears_inline_draft() -> 
         terminal.parser.screen().alternate_screen(),
         "owned screen did not open"
     );
-    terminal.wait_for_screen("GPT-5.6-Terra")?;
+    terminal.wait_for_screen("gpt-5.6-terra")?;
     ensure!(
         terminal.parser.screen().alternate_screen(),
         "fullscreen did not survive application startup"
@@ -261,7 +261,7 @@ fn fullscreen_transcript_defaults_to_terminal_scrollback() -> Result<()> {
     write_test_config(codex_home.path(), &repo_root)?;
     let mut terminal = PtyCodex::start(&repo_root, codex_home, &[])?;
     terminal.wait_for_startup()?;
-    terminal.wait_for_screen("GPT-5.6-Terra")?;
+    terminal.wait_for_screen("gpt-5.6-terra")?;
     ensure!(
         !terminal
             .output

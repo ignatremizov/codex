@@ -252,22 +252,24 @@ async fn agent_rows_and_details_keep_the_nickname_identity_color() {
     let buffer = render_agent_layout_buffer(&view, width, height);
     let rows =
         render_agent_layout_buffer_region(&buffer, height, /*start*/ 0, /*end*/ width);
-    let hume_rows = rows
+    let mut hume_positions = rows
         .iter()
         .enumerate()
         .filter(|(_, line)| line.contains("Hume [reviewer]"))
+        .map(|(row, line)| {
+            let name_start = line.find("Hume").expect("visible Hume identity");
+            (UnicodeWidthStr::width(&line[..name_start]) as u16, row as u16)
+        })
         .collect::<Vec<_>>();
-    let [(selected_row, selected_line), (detail_row, detail_line)] = hume_rows.as_slice() else {
+    // The preview heading can appear above the selected row. Identify the list
+    // and preview by their columns, not by their vertical rendering order.
+    hume_positions.sort_unstable_by_key(|(column, _)| *column);
+    let [selected_position, detail_position] = hume_positions.as_slice() else {
         panic!("expected Hume in the selected row and detail heading");
     };
-    let selected_start = UnicodeWidthStr::width(
-        &selected_line[..selected_line.find("Hume").expect("selected Hume")],
-    ) as u16;
-    let detail_start =
-        UnicodeWidthStr::width(&detail_line[..detail_line.find("Hume").expect("detail Hume")])
-            as u16;
+    assert!(selected_position.0 < detail_position.0);
     let identity_color = crate::agent_color::nickname_color("Hume");
-    let selected_style = buffer[(selected_start, *selected_row as u16)].style();
+    let selected_style = buffer[*selected_position].style();
 
     assert_eq!(
         selected_style.fg,
@@ -277,7 +279,7 @@ async fn agent_rows_and_details_keep_the_nickname_identity_color() {
         )),
     );
     assert_eq!(
-        buffer[(detail_start, *detail_row as u16)].style().fg,
+        buffer[*detail_position].style().fg,
         Some(identity_color),
     );
 }

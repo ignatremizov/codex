@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/status_and_layout.rs
+assertion_line: 3923
 expression: "format!(\"before interrupt:\\n{before_interrupt}\\nafter interrupt:\\n{}\",\nhook_status_frame(&chat, 80))"
 ---
 before interrupt:
@@ -9,10 +10,10 @@ before interrupt:
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  GPT-5.6-Sol default · /tmp/project                                            "
+"  gpt-5.6-sol default · /tmp/project                                            "
 after interrupt:
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  GPT-5.6-Sol default · /tmp/project                                            "
+"  gpt-5.6-sol default · /tmp/project                                            "

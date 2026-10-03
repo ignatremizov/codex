@@ -6469,10 +6469,10 @@ async fn closed_child_selection_restores_model_and_effort_from_rollout() -> Resu
     let footer = render_bottom_popup(&app.chat_widget, /*width*/ 120);
     let footer_model_line = footer
         .lines()
-        .find(|line| line.contains("GPT-5.6-Sol"))
+        .find(|line| line.contains("gpt-5.6-sol"))
         .expect("restored footer model line");
     let footer_model = footer_model_line[footer_model_line
-        .find("GPT-5.6-Sol")
+        .find("gpt-5.6-sol")
         .expect("footer model position")..]
         .split_whitespace()
         .take(2)
@@ -6481,8 +6481,8 @@ async fn closed_child_selection_restores_model_and_effort_from_rollout() -> Resu
     insta::assert_snapshot!(
         format!("session header: {session_model_line}\nfooter: {footer_model}"),
         @r"
-    session header: model: GPT-5.6-Sol low /model to change
-    footer: GPT-5.6-Sol low
+    session header: model: gpt-5.6-sol low /model to change
+    footer: gpt-5.6-sol low
     "
     );
 

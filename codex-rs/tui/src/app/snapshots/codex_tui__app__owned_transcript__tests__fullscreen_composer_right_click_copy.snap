@@ -1,6 +1,6 @@
 ---
 source: tui/src/app/owned_transcript_tests.rs
-assertion_line: 1245
+assertion_line: 1322
 expression: "format!(\"{}\\n\\n{}\", selection_frames.join(\"\\n\\n\"),\nnormalize_snapshot_paths(buffer_text(crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal))))"
 ---
 keyboard Err("clipboard unavailable")
@@ -49,4 +49,4 @@ hello world
 
 › hello world
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project

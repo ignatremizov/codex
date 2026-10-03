@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/sleep_tests.rs
+assertion_line: 94
 expression: "render_bottom_popup(&chat, 100)"
 ---
 • Sleeping (1m 00s left • esc to interrupt)
@@ -7,4 +8,4 @@ expression: "render_bottom_popup(&chat, 100)"
 
 › Ask Codex to do anything
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project

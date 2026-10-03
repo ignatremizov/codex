@@ -27,14 +27,11 @@ fn bare_urls_are_styled_without_coloring_surrounding_prose() {
         text,
         Text::from(Line::from(vec![
             "界 (".into(),
-            "https://example.com/a".fg(accent_color()).underlined(),
+            "https://example.com/a".cyan().underlined(),
             "); ".into(),
-            "https://example.com/b".fg(accent_color()).underlined(),
+            "https://example.com/b".cyan().underlined(),
             "! ".into(),
-            "https://example.com/c"
-                .bold()
-                .fg(accent_color())
-                .underlined(),
+            "https://example.com/c".bold().cyan().underlined(),
         ])),
     );
     assert_debug_snapshot!(text);
@@ -101,29 +98,20 @@ fn supporting_terminals_render_only_the_styled_label_and_keep_its_target() {
     ] {
         let display = WebLinkDisplay::for_terminal(&terminal(name), /*term*/ None);
         for (markdown, label) in [
-            (
-                "[label](https://example.com)",
-                "label".fg(accent_color()).underlined(),
-            ),
-            (
-                "[`label`](https://example.com)",
-                "label".fg(accent_color()).underlined(),
-            ),
+            ("[label](https://example.com)", "label".cyan().underlined()),
+            ("[`label`](https://example.com)", "label".cyan().underlined()),
             (
                 "[**label**](https://example.com)",
-                "label".fg(accent_color()).bold().underlined(),
+                "label".cyan().bold().underlined(),
             ),
             (
                 "[*label*](https://example.com)",
-                "label".fg(accent_color()).italic().underlined(),
+                "label".cyan().italic().underlined(),
             ),
-            (
-                "[<b>](https://example.com)",
-                "<b>".fg(accent_color()).underlined(),
-            ),
+            ("[<b>](https://example.com)", "<b>".cyan().underlined()),
             (
                 "[https://example.com](https://example.com)",
-                "https://example.com".fg(accent_color()).underlined(),
+                "https://example.com".cyan().underlined(),
             ),
         ] {
             let label_width = label.width();

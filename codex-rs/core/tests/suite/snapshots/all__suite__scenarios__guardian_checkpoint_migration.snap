@@ -17,8 +17,8 @@ Settings:
   stream: true
   text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (9; hash=bf3f6aa8973dc474):
-    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=b6c97dad079843f3
+  tools (9; hash=f4dd7ca068cff9cf):
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=841a4b17cc4e6a88
     - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=47f6053a3c9aecc5
     - function/update_plan: Updates the task plan. Provide an optional explanation and a list of plan items, each with a step...; args=[explanation, plan]; hash=cbba5ed302a9c0eb
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=7c8f464569dbaa9c
@@ -52,8 +52,8 @@ Settings: relative to window 1
   reasoning: {"context":"all_turns","effort":"medium"}
   tools: <removed>
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=d4059f1320a9f8bd):
-        - namespace/functions; hash=e6ca9f9ea54e53fc
+00:additional_tools/developer (2; hash=83f267e22a272b90):
+        - namespace/functions; hash=533f43e2efca073d
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -83,8 +83,8 @@ Settings: relative to window 2
   reasoning: {"context":"all_turns","effort":"low"}
   text: {"format":{"name":"codex_output_schema","schema":{"additionalProperties":false,"properties":{"outcome":{"enum":["allow","deny"],"type":"string"},"rationale":{"type":"string"},"risk_level":{"enum":["low","medium","high","critical"],"type":"string"},"user_authorization":{"enum":["unknown","low","medium","high"],"type":"string"}},"required":["outcome"],"type":"object"},"strict":false,"type":"json_schema"},"verbosity":"low"}
 -- request 6 (turn) --
-00:additional_tools/developer (1; hash=fe682f6e37cb4988):
-        - namespace/functions; hash=e6e7b32aaddf8b68
+00:additional_tools/developer (1; hash=c0680317bec30199):
+        - namespace/functions; hash=3b1cde3a907eb8cb
           - custom/exec
           - function/wait
 01:message/developer:
@@ -169,8 +169,8 @@ Settings: relative to window 2
 ## Window 4 (after request 6: input diverged at item 00)
 Settings: same as window 2
 -- request 7 (turn) --
-00:additional_tools/developer (2; hash=d4059f1320a9f8bd):
-        - namespace/functions; hash=e6ca9f9ea54e53fc
+00:additional_tools/developer (2; hash=83f267e22a272b90):
+        - namespace/functions; hash=533f43e2efca073d
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -200,8 +200,8 @@ Settings: same as window 2
 ## Window 5 (after request 8: input diverged at item 04)
 Settings: same as window 2
 -- request 9 (turn) --
-00:additional_tools/developer (2; hash=d4059f1320a9f8bd):
-        - namespace/functions; hash=e6ca9f9ea54e53fc
+00:additional_tools/developer (2; hash=83f267e22a272b90):
+        - namespace/functions; hash=533f43e2efca073d
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -228,8 +228,8 @@ Settings: same as window 2
 ## Window 6 (after request 9: input diverged at item 00)
 Settings: same as window 3
 -- request 10 (turn) --
-00:additional_tools/developer (1; hash=fe682f6e37cb4988):
-        - namespace/functions; hash=e6e7b32aaddf8b68
+00:additional_tools/developer (1; hash=c0680317bec30199):
+        - namespace/functions; hash=3b1cde3a907eb8cb
           - custom/exec
           - function/wait
 01:message/developer:
@@ -315,8 +315,8 @@ Settings: same as window 3
 ## Window 7 (after request 10: input diverged at item 00)
 Settings: same as window 2
 -- request 11 (turn) --
-00:additional_tools/developer (2; hash=d4059f1320a9f8bd):
-        - namespace/functions; hash=e6ca9f9ea54e53fc
+00:additional_tools/developer (2; hash=83f267e22a272b90):
+        - namespace/functions; hash=533f43e2efca073d
           - custom/exec
           - function/wait
           - function/request_user_input

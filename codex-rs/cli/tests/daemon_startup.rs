@@ -124,7 +124,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
         };
         let expected = if command == "start" {
             // The draft header is visible before the session's command composer is ready.
-            steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+            steps.push_back(("gpt-5.6-terra", b"/status\r"));
             "Server:Localbackgroundserver"
         } else if bedrock_onboarding {
             "UseAmazonBedrock"

@@ -1,5 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/slash_commands.rs
+assertion_line: 2769
 expression: normalized_status
 ---
 >_ OpenAI Codex (vVERSION)
@@ -7,7 +8,7 @@ expression: normalized_status
 Visit https://chatgpt.com/codex/settings/usage for up-to-date
 information on rate limits and credits
 
- Model:                GPT-5.5 (reasoning medium, summaries auto)
+ Model:                gpt-5.5 (reasoning medium, summaries auto)
  Model provider:       openai
  Directory:            [[workspace]]
  Permissions:          Read Only (Ask for approval)

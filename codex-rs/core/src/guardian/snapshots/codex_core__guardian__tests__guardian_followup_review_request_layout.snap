@@ -1,14 +1,14 @@
 ---
 source: core/src/guardian/tests.rs
-assertion_line: 2757
+assertion_line: 2758
 expression: "format!(\"{}\\n\\nshared_prompt_cache_key: {}\\nfollowup_contains_first_rationale: {}\",\nnormalize_guardian_snapshot_paths(format_guardian_requests_snapshot(\"Guardian follow-up review request layout\",\n&[(\"Initial Guardian Review Request\", &requests[0]),\n(\"Follow-up Guardian Review Request\", &requests[1]),],)),\nfirst_body[\"prompt_cache_key\"] == second_body[\"prompt_cache_key\"],\nsecond_body.to_string().contains(first_rationale),)"
 ---
 Scenario: Guardian follow-up review request layout
 
 ## Window 1
 -- request 1 (request; Initial Guardian Review Request) --
-00:additional_tools/developer (1; hash=fe682f6e37cb4988):
-        - namespace/functions; hash=e6e7b32aaddf8b68
+00:additional_tools/developer (1; hash=c0680317bec30199):
+        - namespace/functions; hash=3b1cde3a907eb8cb
           - custom/exec
           - function/wait
 01:message/developer:

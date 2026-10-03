@@ -1,14 +1,14 @@
 ---
 source: core/src/guardian/tests.rs
-assertion_line: 2346
+assertion_line: 2347
 expression: "normalize_guardian_snapshot_paths(format_guardian_requests_snapshot(\"Guardian review request layout\",\n&[(\"Guardian Review Request\", &request)],))"
 ---
 Scenario: Guardian review request layout
 
 ## Window 1
 -- request 1 (request; Guardian Review Request) --
-00:additional_tools/developer (1; hash=fe682f6e37cb4988):
-        - namespace/functions; hash=e6e7b32aaddf8b68
+00:additional_tools/developer (1; hash=c0680317bec30199):
+        - namespace/functions; hash=3b1cde3a907eb8cb
           - custom/exec
           - function/wait
 01:message/developer:

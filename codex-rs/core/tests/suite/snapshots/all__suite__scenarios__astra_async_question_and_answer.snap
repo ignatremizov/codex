@@ -7,8 +7,8 @@ Scenario: Astra asks who a launch update is for, keeps working, and receives the
 
 ## Window 1
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=4768d93165050b74):
-        - namespace/functions; hash=0ddd0c9649cb49d7
+00:additional_tools/developer (3; hash=95621636bd1dc751):
+        - namespace/functions; hash=703d697f3b4e6610
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -38,7 +38,7 @@ Scenario: Astra asks who a launch update is for, keeps working, and receives the
     Draft a short launch update. Ask me who it is for and keep working while I answer.
 -- request 2 (request) --
 07:function_call/functions.request_user_input_async:{"questions":[{"options":["Internal team","Customers"],"title":"Who should receive the launch update?"}]}
-08:function_call_output:{"accepted":true}
+08:function_call_output:{"accepted":true,"question_refs":["q1"]}
 -- request 3 (request) --
 09:message/assistant:
     I drafted a short launch update.

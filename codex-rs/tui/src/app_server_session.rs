@@ -4653,7 +4653,7 @@ mod tests {
                     @"
             › Ask Codex to do anything
 
-              GPT-5.4 default · /tmp/pr… Plan mode
+              gpt-5.4 default · /tmp/pr… Plan mode
             "
                 );
             }
