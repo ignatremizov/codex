@@ -98,35 +98,16 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
           restore-keys: |
-            manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-
-            manual-rust-cargo-home-${{ runner.os }}-
+            manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.lockhash.outputs.hash }}-
+            manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Install sccache
+      - uses: ./.github/actions/setup-shared-sccache
         if: steps.static_marker.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: sccache
-
-      - name: Configure shared sccache backend
-        if: steps.static_marker.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-            echo "Using repository-wide sccache GitHub Actions backend"
-          else
-            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
-            echo "SCCACHE_DIR=${CI_BUILD_ROOT}/sccache" >> "$GITHUB_ENV"
-            echo "GitHub sccache backend unavailable; using runner-local cache"
-          fi
-          echo "RUSTC_WRAPPER=$(command -v sccache)" >> "$GITHUB_ENV"
 
       - name: cargo fmt --check
         if: steps.static_marker.outputs.cache-hit != 'true'
@@ -140,14 +121,18 @@ jobs:
 
       - name: cargo clippy --workspace --tests
         if: steps.static_marker.outputs.cache-hit != 'true' && inputs.run_clippy
-        run: cargo clippy --workspace --tests --timings -- -D warnings
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run-release-build.py" \
+            --phase clippy -- cargo clippy --workspace --tests --timings -- -D warnings
 
       - name: Upload Cargo timings
         if: ${{ always() && steps.static_marker.outputs.cache-hit != 'true' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: cargo-timings-rust-static-${{ github.run_id }}-${{ github.job }}
-          path: ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
+          path: |
+            ${{ runner.temp }}/release-diagnostics/*
+            ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
           if-no-files-found: warn
           retention-days: 14
 
@@ -161,11 +146,10 @@ jobs:
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: manual-rust-cargo-home-${{ runner.os }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Create static-success marker
         if: ${{ success() && steps.static_marker.outputs.cache-hit != 'true' }}
