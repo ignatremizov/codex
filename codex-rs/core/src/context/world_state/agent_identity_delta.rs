@@ -209,7 +209,7 @@ fn parse_fragment_body(body: &str) -> Option<IdentityFragment> {
         return None;
     }
     let (_, payload) = body.split_once('\n')?;
-    let value = serde_json::from_str(payload).ok()?;
+    let value: Value = serde_json::from_str(payload).ok()?;
     if value.is_array() {
         let (instructions, _) = body.split_once('\n')?;
         IdentityMapping::from_value(value, instructions.contains(OMITTED_IDENTITIES))
