@@ -67,6 +67,49 @@ fn code_mode_materializes_mcp_output_schemas() {
 }
 
 #[test]
+fn tool_search_propagates_the_effective_input_schema_budget() {
+    for (mcp_budget, code_mode_budget, expected_budget) in [
+        (None, None, codex_code_mode::DEFAULT_INPUT_SCHEMA_MAX_BYTES),
+        (
+            Some(1_000),
+            Some(500),
+            codex_code_mode::DEFAULT_INPUT_SCHEMA_MAX_BYTES,
+        ),
+        (None, Some(30_000), 30_000),
+        (Some(30_000), Some(20_000), 30_000),
+        (Some(20_000), Some(30_000), 30_000),
+    ] {
+        let mut parameters = JsonSchema::object(
+            BTreeMap::from([(
+                "query".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
+            Some(vec!["query".to_string()]),
+            Some(AdditionalProperties::Boolean(false)),
+        );
+        parameters.mcp_input_schema_max_bytes = mcp_budget;
+        let input_schema = serde_json::to_value(&parameters).expect("serialize search schema");
+        let spec = ToolSpec::ToolSearch {
+            execution: "sync".to_string(),
+            description: "Search deferred tools".to_string(),
+            parameters,
+        };
+        assert_eq!(
+            super::collect_code_mode_exec_prompt_tool_definitions([&spec], code_mode_budget),
+            vec![codex_code_mode::ToolDefinition {
+                name: "tool_search".to_string(),
+                tool_name: ToolName::plain("tool_search"),
+                description: "Search deferred tools".to_string(),
+                kind: codex_code_mode::CodeModeToolKind::Function,
+                input_schema: Some(input_schema),
+                input_schema_max_bytes: Some(expected_budget),
+                output_schema: None,
+            }],
+        );
+    }
+}
+
+#[test]
 fn code_mode_tool_names_do_not_prefix_the_default_namespace() {
     for tool_name in [
         ToolName::plain("apply_patch"),
@@ -238,17 +281,21 @@ declare const tools: { editor__apply_patch(input: string): Promise<unknown>; };
 }
 
 #[test]
-fn tool_spec_to_code_mode_tool_definition_skips_unsupported_variants() {
-    assert_eq!(
-        tool_spec_to_code_mode_tool_definition(&ToolSpec::ToolSearch {
-            execution: "sync".to_string(),
-            description: "Search".to_string(),
-            parameters: JsonSchema::object(
-                BTreeMap::new(),
-                /*required*/ None,
-                /*additional_properties*/ None
-            ),
-        }),
-        None
-    );
+fn tool_spec_to_code_mode_tool_definition_supports_tool_search() {
+    let definition = tool_spec_to_code_mode_tool_definition(&ToolSpec::ToolSearch {
+        execution: "sync".to_string(),
+        description: "Search".to_string(),
+        parameters: JsonSchema::object(
+            BTreeMap::new(),
+            /*required*/ None,
+            /*additional_properties*/ None,
+        ),
+    })
+    .expect("tool_search should be available in code mode");
+
+    assert_eq!(definition.name, "tool_search");
+    assert_eq!(definition.tool_name, ToolName::plain("tool_search"));
+    assert!(definition.description.contains("Search"));
+    assert!(definition.description.contains("tool_search(args:"));
+    assert!(definition.description.contains("Promise<unknown>"));
 }
