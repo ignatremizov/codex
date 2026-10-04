@@ -420,7 +420,7 @@ async fn right_click_paste_uses_normal_input_and_discards_stale_reads() {
                 .await
                 .unwrap();
         } else if change == "readonly" {
-            app.chat_widget.set_parent_owned_thread();
+            app.chat_widget.show_external_writer_thread();
         }
         if !read_completed {
             release.send(()).unwrap();
