@@ -1,4 +1,3 @@
-use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
 use codex_app_server_protocol::ThreadGuardianAssessment;
@@ -191,8 +190,6 @@ impl TurnRequestProcessor {
         cancellation: &CancellationToken,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -244,12 +241,10 @@ impl TurnRequestProcessor {
 
     pub(crate) async fn thread_prepare_approved_plan(
         &self,
-        request_id: &ConnectionRequestId,
+        _request_id: &ConnectionRequestId,
         params: ThreadPrepareApprovedPlanParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         let actual_chars = params.markdown.chars().count();
         if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
             return Err(Self::input_too_large_error(actual_chars));
@@ -285,8 +280,6 @@ impl TurnRequestProcessor {
         params: TurnSettingsUpdateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         let environments =
             resolve_turn_environment_requests(self.thread_manager.as_ref(), params.environments)?;
         let (reply, outcome) = oneshot::channel();
@@ -415,8 +408,6 @@ impl TurnRequestProcessor {
         params: ReviewStartParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -464,18 +455,6 @@ impl TurnRequestProcessor {
             .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
 
         Ok((thread_id, thread))
-    }
-
-    async fn ensure_direct_input_allowed(
-        &self,
-        request_id: &ConnectionRequestId,
-        thread: &CodexThread,
-    ) -> Result<(), JSONRPCErrorError> {
-        ensure_direct_input_allowed(thread)
-            .await
-            .inspect_err(|error| {
-                self.track_error_response(request_id, error, /*error_type*/ None);
-            })
     }
 
     fn normalize_collaboration_mode(
@@ -585,8 +564,6 @@ impl TurnRequestProcessor {
                 .inspect_err(|error| {
                     self.track_error_response(&request_id, error, /*error_type*/ None);
                 })?;
-        self.ensure_direct_input_allowed(&request_id, thread.as_ref())
-            .await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -1016,8 +993,6 @@ impl TurnRequestProcessor {
         params: ThreadSettingsUpdateParams,
     ) -> Result<ThreadSettingsUpdateResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         let cwd = resolve_request_cwd(params.cwd)?;
         let environments =
             resolve_turn_environment_requests(self.thread_manager.as_ref(), params.environments)?;
@@ -1080,8 +1055,6 @@ impl TurnRequestProcessor {
         params: ThreadInjectItemsParams,
     ) -> Result<ThreadInjectItemsResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
 
         let items = params
             .items
@@ -1127,8 +1100,6 @@ impl TurnRequestProcessor {
             .inspect_err(|error| {
                 self.track_error_response(request_id, error, /*error_type*/ None);
             })?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
@@ -1267,8 +1238,6 @@ impl TurnRequestProcessor {
         thread_id: &str,
     ) -> Result<Option<(ThreadId, Arc<CodexThread>)>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
 
         match self
             .ensure_conversation_listener(
