@@ -1569,7 +1569,7 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
             ThreadItem::ExitedReviewMode { id, review } => json!({
                 "type": "exitedReviewMode", "id": id, "review": truncate(review, DEFAULT_OUTPUT_CHARS)
             }),
-            ThreadItem::ContextCompaction { id } => json!({
+            ThreadItem::ContextCompaction { id, .. } => json!({
                 "type": "contextCompaction", "id": id
             }),
         })

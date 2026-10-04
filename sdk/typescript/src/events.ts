@@ -61,6 +61,13 @@ export type ItemCompletedEvent = {
   item: ThreadItem;
 };
 
+/** Indicates that the conversation context was compacted. */
+export type ContextCompactedEvent = {
+  type: "context.compacted";
+  summary: string | null;
+  message: string | null;
+};
+
 /** Fatal error emitted by the stream. */
 export type ThreadError = {
   message: string;
@@ -81,4 +88,5 @@ export type ThreadEvent =
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
+  | ContextCompactedEvent
   | ThreadErrorEvent;

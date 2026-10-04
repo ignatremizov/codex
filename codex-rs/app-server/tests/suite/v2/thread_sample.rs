@@ -209,6 +209,10 @@ async fn sample_preserves_context_and_keeps_source_unchanged(
             }}),
             responses::ev_completed_with_tokens("compacted", /*total_tokens*/ 200),
         ]));
+        parent_responses.push(responses::sse(vec![
+            responses::ev_assistant_message("handoff", "Preserved the parent's context."),
+            responses::ev_completed("handoff-response"),
+        ]));
     }
     let sample_index = parent_responses.len();
     parent_responses.extend([
