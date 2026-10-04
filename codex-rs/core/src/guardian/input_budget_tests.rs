@@ -3,12 +3,19 @@
 use super::*;
 use codex_guardian_context::ContextPresentation;
 use codex_guardian_context::ContextProfile;
+use codex_guardian_context::NodeReplContext;
+use codex_guardian_context::NodeReplResponse;
+use codex_guardian_context::NodeReplReviewEvidenceMode;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PlannedActionKind;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use test_case::test_case;
 
 fn required_context(text: String) -> ComposedContext {
     let action = PlannedAction {
@@ -221,4 +228,146 @@ async fn compacted_review_restores_originals_once_and_persists_the_request_prefi
         .await
         .unwrap();
     assert_eq!(prompt.input, persisted);
+}
+
+#[test_case(false; "text transcript")]
+#[test_case(true; "native encrypted transcript")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn image_selection_uses_post_compaction_history_without_replaying_text(
+    native_transcript: bool,
+) {
+    const IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let (session, mut turn) = crate::session::tests::make_session_and_context().await;
+    Arc::make_mut(&mut turn.config)
+        .features
+        .disable(Feature::UnifiedImageBudget)
+        .unwrap();
+    let model = Arc::make_mut(&mut Arc::make_mut(&mut turn.initial_settings).model_info);
+    model.used_fallback_model_metadata = false;
+    model.context_window = Some(100_000);
+    model.max_context_window = Some(100_000);
+    model.input_modalities = vec![InputModality::Text, InputModality::Image];
+    let session = Arc::new(session);
+    let step = StepContext::for_test(Arc::new(turn));
+    let screenshot = UserInput::Image {
+        image: ImageReference::Inline {
+            image_url: IMAGE.to_owned(),
+        },
+        detail: Some(ImageDetail::High),
+    };
+    let screenshots = [screenshot.clone()];
+    let evidence = NodeReplContext {
+        responses: vec![NodeReplResponse {
+            sequence: 7,
+            provenance: "tool=node_repl.js cell=1 call=screenshot",
+            items: &screenshots,
+        }],
+        omitted_responses: 0,
+        mode: NodeReplReviewEvidenceMode::Multimodal,
+    };
+    let parent_history = Vec::from_iter(native_transcript.then_some(ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".into(),
+        recipient: "/root/worker".into(),
+        content: vec![AgentMessageInputContent::EncryptedContent {
+            encrypted_content: "opaque-parent-reply".to_owned(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    }));
+    let context = super::super::prompt::collect_guardian_context(
+        &parent_history,
+        super::super::GUARDIAN_MAX_TOOL_ENTRY_TOKENS,
+        &[],
+        &[],
+        /*planned_action*/ None,
+        /*permissions*/ None,
+        Some(&evidence),
+    )
+    .unwrap();
+    let transcript = ContextProfile::synchronous()
+        .render_transcript(context.transcript_entries(), /*entry_number_offset*/ 0);
+    let context = context
+        .compose(
+            ContextPresentation::SyncFull {
+                session_id: "test-parent",
+            },
+            transcript,
+        )
+        .unwrap();
+    let admitted_text = UserInput::Text {
+        text: "already-admitted REPL text".to_owned(),
+        text_elements: Vec::new(),
+    };
+    for history_contains_image in [true, false] {
+        session
+            .services
+            .thread_extension_data
+            .insert(PendingReviewContext(context.clone()));
+        let mut retained = vec![admitted_text.clone()];
+        if history_contains_image {
+            retained.push(screenshot.clone());
+        }
+        session
+            .replace_history(
+                vec![session.response_item_from_user_input(retained)],
+                /*reference_context_item*/ None,
+            )
+            .await;
+        let content = match context.clone().into_user_inputs() {
+            Ok(content) => {
+                assert!(!native_transcript);
+                content
+            }
+            Err(codex_guardian_context::SectionError::UnsupportedDelivery {
+                section: "conversation_transcript",
+            }) => {
+                assert!(native_transcript);
+                vec![UserInput::Text {
+                    text: super::super::prompt::GUARDIAN_TRANSCRIPT_START.to_owned(),
+                    text_elements: Vec::new(),
+                }]
+            }
+            Err(error) => panic!("unexpected review conversion: {error}"),
+        };
+        let mut input = vec![TurnInput::UserInput {
+            metadata: Default::default(),
+            content,
+            client_id: None,
+        }];
+        finalize(&session, &step, &mut input, HistoryTruncation::Preserve)
+            .await
+            .unwrap();
+
+        let mut expected = context.clone();
+        expected.retain_images(|_, _| !history_contains_image);
+        if native_transcript {
+            let actual = input
+                .iter()
+                .map(|input| {
+                    let TurnInput::ResponseItem(envelope) = input else {
+                        panic!("native review context must retain its message boundaries");
+                    };
+                    let mut item = envelope.item.clone();
+                    if let ResponseItem::Message {
+                        internal_chat_message_metadata_passthrough,
+                        ..
+                    } = &mut item
+                    {
+                        // Session-owned user-content kinds are not part of the source context.
+                        // Native author, recipient, ciphertext, and message order remain exact.
+                        *internal_chat_message_metadata_passthrough = None;
+                    }
+                    item
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected.into_messages());
+            assert!(actual.contains(&parent_history[0]));
+        } else {
+            let TurnInput::UserInput { content, .. } = &input[0] else {
+                panic!("expected finalized review input");
+            };
+            assert_eq!(*content, expected.into_user_inputs().unwrap());
+            assert!(!content.contains(&admitted_text));
+        }
+    }
 }

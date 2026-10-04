@@ -3,6 +3,11 @@
 //! recording. Budget failures preserve it for a compaction retry; successful
 //! finalization consumes it. It is not another retained history.
 
+#[path = "review_session_images.rs"]
+mod images;
+
+use std::collections::HashSet;
+
 use codex_features::Feature;
 use codex_guardian_context::ComposedContext;
 use codex_guardian_context::HistoryTruncation;
@@ -12,18 +17,24 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::user_input::UserInput;
 
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianBudgetOmission;
 use crate::context_manager::estimate_item_token_count;
+use crate::image_preparation::ImagePreparationMode;
+use crate::image_preparation::unified_image_budget_enabled;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn::build_prompt;
 use crate::session::turn_context::TurnContext;
+
+const GUARDIAN_MAX_IMAGE_ITEM_TOKENS: i64 = 10_000;
 
 #[derive(Clone)]
 pub(crate) struct PendingReviewContext(pub ComposedContext);
@@ -98,12 +109,91 @@ pub(crate) async fn finalize(
     };
     let mut context = pending.0.clone();
     let model = &step.settings.model_info;
-    let history = session.clone_history().await;
-    let history_version = history.history_version();
-    let history = history.for_prompt_annotated(&model.input_modalities);
+    let history_snapshot = session.clone_history().await;
+    let history_version = history_snapshot.history_version();
+    let history = history_snapshot
+        .clone()
+        .for_prompt_annotated(&model.input_modalities);
     // Use the history that will actually reach the model. Recompute after every
     // compaction retry; evidence removed by compaction must be delivered again.
     context.retain_new_instructions(&history);
+    // This is the history that survives pre-turn compaction, not the earlier
+    // snapshot used to compose the pending review. Keep text admission separate.
+    if context
+        .section_costs()
+        .any(|(_, cost)| cost.image_count > 0)
+    {
+        let context_window = model
+            .resolved_context_window()
+            .map(|supported| {
+                step.turn
+                    .config
+                    .model_context_window
+                    .unwrap_or(supported)
+                    .min(supported)
+                    .saturating_mul(model.effective_context_window_percent.clamp(0, 100))
+                    / 100
+            })
+            .filter(|limit| {
+                *limit > 0
+                    && !model.used_fallback_model_metadata
+                    && model.input_modalities.contains(&InputModality::Image)
+            });
+        let admit_images = if let Some(context_window) = context_window {
+            let mut reviewer_image_urls = HashSet::new();
+            let mut reviewer_file_ids = HashSet::new();
+            for envelope in &history {
+                if let ResponseItem::Message { content, .. } = &envelope.item {
+                    for item in content {
+                        if let ContentItem::InputImage { image, .. } = item {
+                            match image {
+                                ImageReference::Inline { image_url } => {
+                                    reviewer_image_urls.insert(image_url.as_str());
+                                }
+                                ImageReference::File { file_id } => {
+                                    reviewer_file_ids.insert(file_id.as_str());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let mode = if unified_image_budget_enabled(&step.turn.config.features, model) {
+                ImagePreparationMode::UnifiedBudget
+            } else {
+                ImagePreparationMode::DetailBased
+            };
+            context.retain_images(|image, detail| {
+                images::is_missing_review_image(
+                    image,
+                    detail,
+                    model,
+                    mode,
+                    &reviewer_image_urls,
+                    &reviewer_file_ids,
+                )
+            });
+            // Native encrypted transcript sections cannot be flattened into UserInput.
+            // Measure their actual message representation without dropping those sections.
+            let prompt_tokens = context
+                .clone()
+                .into_messages()
+                .iter()
+                .map(estimate_item_token_count)
+                .fold(0i64, i64::saturating_add);
+            let history_tokens = history_snapshot
+                .estimate_token_count_with_base_instructions(&session.get_base_instructions().await)
+                .unwrap_or(i64::MAX)
+                .max(session.get_total_token_usage().await);
+            prompt_tokens <= GUARDIAN_MAX_IMAGE_ITEM_TOKENS
+                && prompt_tokens.saturating_add(history_tokens) <= context_window
+        } else {
+            false
+        };
+        if !admit_images {
+            context.retain_images(|_, _| false);
+        }
+    }
     let prompt = build_prompt(
         history
             .into_iter()

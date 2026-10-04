@@ -248,19 +248,49 @@ impl NodeReplReviewEvidence {
     pub(crate) fn snapshot_since(
         &self,
         reviewed_sequence: u64,
+        replay_image_urls: &HashSet<String>,
     ) -> Option<NodeReplReviewEvidenceSnapshot> {
         let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.next_sequence <= reviewed_sequence {
-            return None;
-        }
-
         let responses = state
             .responses
             .iter()
-            .filter(|response| response.sequence > reviewed_sequence)
-            .cloned()
+            .filter_map(|response| {
+                if response.sequence > reviewed_sequence {
+                    return Some(Arc::clone(response));
+                }
+                // Compaction can remove screenshots while retaining the text that
+                // advanced the delivery cursor. Offer inline image candidates with
+                // original provenance, never already admitted text. Final input
+                // selection decides which images are missing after compaction.
+                let items = response
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        matches!(item, Image {
+                            image: ImageReference::Inline { image_url }, ..
+                        } if replay_image_urls.contains(image_url))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (!items.is_empty()).then(|| {
+                    Arc::new(NodeReplReviewResponse {
+                        sequence: response.sequence,
+                        provenance: response.provenance.clone(),
+                        items,
+                    })
+                })
+            })
             .collect::<Vec<_>>();
-        let retained_since_review = u64::try_from(responses.len()).unwrap_or(u64::MAX);
+        if state.next_sequence <= reviewed_sequence && responses.is_empty() {
+            return None;
+        }
+        let retained_since_review = u64::try_from(
+            responses
+                .iter()
+                .filter(|response| response.sequence > reviewed_sequence)
+                .count(),
+        )
+        .unwrap_or(u64::MAX);
 
         Some(NodeReplReviewEvidenceSnapshot {
             omitted_responses: state
