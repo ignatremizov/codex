@@ -89,6 +89,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
             crate::compact::CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
                 message: String::new(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,

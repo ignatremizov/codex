@@ -2751,6 +2751,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
             crate::compact::CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
                 message: String::new(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,
