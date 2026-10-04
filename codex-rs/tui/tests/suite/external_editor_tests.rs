@@ -49,7 +49,7 @@ fn external_editors_keep_the_screen_and_return_the_draft() -> Result<()> {
             .or_else(|_| codex_utils_cargo_bin::cargo_bin("codex"))?;
         let mut terminal = PtyCodex::start_binary(&codex, &repo_root, home, &args, Some(&editor))?;
         terminal.wait_for_startup()?;
-        terminal.wait_for_screen("GPT-5.6-Terra")?;
+        terminal.wait_for_screen("gpt-5.6-terra")?;
         terminal.write_input(b"initial draft")?;
         terminal.wait_for_screen("initial draft")?;
         terminal.write_input(b"\x07")?;
@@ -70,7 +70,7 @@ fn external_editors_keep_the_screen_and_return_the_draft() -> Result<()> {
             ensure!(terminal.screen_contains("initial draft"));
             if fullscreen {
                 ensure!(terminal.screen_contains("OpenAI Codex"));
-                ensure!(terminal.screen_contains("GPT-5.6-Terra"));
+                ensure!(terminal.screen_contains("gpt-5.6-terra"));
             }
             ensure!(
                 terminal.parser.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None

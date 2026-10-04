@@ -1,4 +1,4 @@
-//! Catalog display names are presentation only; model selection retains wire slugs.
+//! Pickers use catalog labels; active model indicators retain canonical wire slugs.
 
 use super::*;
 use pretty_assertions::assert_eq;
@@ -76,7 +76,7 @@ async fn custom_model_display_name_in_status_line_and_fallback() {
     preset.model = slug.to_string();
     preset.display_name = "GPT-5.6 Luna".to_string();
     preset.show_in_picker = false;
-    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset]));
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![preset.clone()]));
     chat.show_welcome_banner = false;
     chat.local_settings.tui.status_line = Some(vec![
         "model-name".to_string(),
@@ -97,6 +97,12 @@ async fn custom_model_display_name_in_status_line_and_fallback() {
 
     Arc::make_mut(&mut chat.model_catalog).models.clear();
     assert_eq!(chat.model_display_name(), slug);
+    let mut astra = preset;
+    astra.model = "gpt-6-astra".to_string();
+    astra.display_name = "GPT-6-Astra".to_string();
+    chat.model_catalog = Arc::new(ModelCatalog::new(vec![astra]));
+    chat.set_model("gpt-6-astra");
+    assert_eq!(chat.model_display_name(), "gpt-6-astra");
     chat.set_model(crate::model_catalog::LUNA_RESERVE_MODEL);
     assert_eq!(chat.model_display_name(), "Luna Reserve");
     chat.set_model("");

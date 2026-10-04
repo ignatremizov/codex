@@ -175,7 +175,7 @@ fn default_owned_screen_entry_paints_before_sync_ends_and_exit_clears_inline_dra
         terminal.parser.screen().alternate_screen(),
         "owned screen did not open"
     );
-    terminal.wait_for_screen("GPT-5.6-Terra")?;
+    terminal.wait_for_screen("gpt-5.6-terra")?;
     ensure!(
         terminal.parser.screen().alternate_screen(),
         "fullscreen did not survive application startup"
@@ -263,7 +263,7 @@ fn fullscreen_transcript_can_opt_out_to_terminal_scrollback() -> Result<()> {
         &["-c", "tui.fullscreen_transcript=false"],
     )?;
     terminal.wait_for_startup()?;
-    terminal.wait_for_screen("GPT-5.6-Terra")?;
+    terminal.wait_for_screen("gpt-5.6-terra")?;
     ensure!(
         !terminal
             .output
