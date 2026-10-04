@@ -1644,6 +1644,21 @@ async fn live_reasoning_summary_drops_empty_parts_without_losing_content() {
     assert_eq!(rendered, "• done\n");
 }
 
+fn rendered_working_elapsed(chat: &ChatWidget) -> i64 {
+    let status = render_bottom_popup(chat, /*width*/ 80);
+    let clock = regex_lite::Regex::new(r"Working \((?:(\d+)h )?(?:(\d+)m )?(\d+)s")
+        .expect("working-clock pattern");
+    let elapsed = clock.captures(&status).expect("restored working clock");
+    [(1, 3600), (2, 60), (3, 1)]
+        .into_iter()
+        .map(|(group, scale)| {
+            elapsed.get(group).map_or(0, |part| {
+                part.as_str().parse::<i64>().expect("elapsed digits") * scale
+            })
+        })
+        .sum()
+}
+
 #[tokio::test]
 async fn thread_snapshot_replayed_turn_started_marks_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -1652,6 +1667,7 @@ async fn thread_snapshot_replayed_turn_started_marks_task_running() {
     chat.handle_server_notification(
         ServerNotification::TurnStarted(TurnStartedNotification {
             thread_id: "thread-1".to_string(),
+            agent_queue: None,
             turn: AppServerTurn {
                 started_at: Some(started_at),
                 ..app_server_turn(
@@ -1668,7 +1684,7 @@ async fn thread_snapshot_replayed_turn_started_marks_task_running() {
     drain_insert_history(&mut rx);
     assert!(chat.bottom_pane.is_task_running());
     let before = chrono::Utc::now().timestamp() - started_at;
-    let elapsed = chat.bottom_pane.status_elapsed().unwrap().as_secs() as i64;
+    let elapsed = rendered_working_elapsed(&chat);
     let after = chrono::Utc::now().timestamp() - started_at;
     // The wire timestamp has second precision; reads may be separated by any CI delay.
     assert!(
@@ -1719,7 +1735,7 @@ async fn replayed_in_progress_turn_marks_task_running() {
                 (true, Some("turn-1")),
             );
             let before = chrono::Utc::now().timestamp() - started_at;
-            let elapsed = chat.bottom_pane.status_elapsed().unwrap().as_secs() as i64;
+            let elapsed = rendered_working_elapsed(&chat);
             let after = chrono::Utc::now().timestamp() - started_at;
             assert!(
                 (before - 1..=after).contains(&elapsed),

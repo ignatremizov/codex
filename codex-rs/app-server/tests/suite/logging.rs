@@ -66,7 +66,7 @@ async fn submission_metadata_reaches_persisted_and_feedback_logs() -> Result<()>
         create_escalated_command_execution_sse_response(
             vec!["echo".into(), "hello".into()],
             /*workdir*/ None,
-            /*timeout_ms*/ Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-approval",
         )?,
         create_final_assistant_message_sse_response("done")?,

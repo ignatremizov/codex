@@ -363,6 +363,14 @@ async fn guardian_attributes_local_compaction_to_assistant(
             let authors = text
                 .lines()
                 .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .map(|mut entry| {
+                    if let Some(text) = entry["text"].as_str()
+                        && let Some((summary, _)) = text.split_once("\n\n[SESSION_METADATA]")
+                    {
+                        entry["text"] = json!(summary);
+                    }
+                    entry
+                })
                 .filter(|entry| entry["text"] == summary || entry["text"] == INSTRUCTION)
                 .map(|entry| (entry["text"].clone(), entry["author"].clone()))
                 .collect::<Vec<_>>();

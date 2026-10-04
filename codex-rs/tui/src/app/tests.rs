@@ -195,6 +195,8 @@ use codex_app_server_protocol::ThreadStartedNotification;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
 use codex_app_server_protocol::ThreadUnarchivedNotification;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::TokenUsageBreakdown;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::Turn;
@@ -2881,7 +2883,17 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             );
             app.select_agent_thread(&mut tui, &mut app_server, root_thread_id)
                 .await?;
-            app_server.thread_unsubscribe(child_thread_id).await?;
+            let unsubscribe: ThreadUnsubscribeResponse = app_server
+                .request_handle()
+                .request_typed(ClientRequest::ThreadUnsubscribe {
+                    request_id: AppServerRequestId::String(Uuid::new_v4().to_string()),
+                    params: ThreadUnsubscribeParams {
+                        thread_id: child_thread_id.to_string(),
+                    },
+                })
+                .await?;
+            // Keep bounded diagnostics without consuming the queued close being tested.
+            let mut recent_events = VecDeque::new();
             let closed = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
                 while let Some(event) = app_server.next_event().await {
                     if matches!(&event.event,
@@ -2891,10 +2903,76 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                     {
                         return event;
                     }
+                    let summary = match &event.event {
+                        codex_app_server_client::AppServerEvent::ServerNotification(notification) => {
+                            match notification.as_ref() {
+                                ServerNotification::ThreadStatusChanged(changed) => {
+                                    format!("thread/status/changed: {changed:?}")
+                                }
+                                ServerNotification::ThreadClosed(closed) => {
+                                    format!("thread/closed: {closed:?}")
+                                }
+                                notification => notification.to_string(),
+                            }
+                        }
+                        codex_app_server_client::AppServerEvent::ServerRequest(request) => {
+                            format!("server request: id={:?}", request.id())
+                        }
+                        codex_app_server_client::AppServerEvent::Lagged { skipped } => {
+                            format!("lagged: {skipped}")
+                        }
+                        codex_app_server_client::AppServerEvent::Disconnected { .. } => {
+                            "disconnected".to_string()
+                        }
+                        codex_app_server_client::AppServerEvent::RequestCompleted { .. } => {
+                            "request completed".to_string()
+                        }
+                    };
+                    if recent_events.len() == 16 {
+                        recent_events.pop_front();
+                    }
+                    recent_events.push_back(summary);
                 }
-                panic!("server event stream ended before the child closed");
+                panic!(
+                    "server event stream ended before {multi_agent_version:?} child \
+                     {child_thread_id} closed; unsubscribe={unsubscribe:?}; events={recent_events:?}"
+                );
             })
-            .await?;
+            .await;
+            let closed = match closed {
+                Ok(closed) => closed,
+                Err(error) => {
+                    let request_handle = app_server.request_handle();
+                    let (thread_status, unload_delay) = tokio::join!(
+                        tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
+                            app_server
+                                .thread_read(child_thread_id, /*include_turns*/ false)
+                                .await
+                                .map(|thread| thread.status)
+                        }),
+                        tokio::time::timeout(Duration::from_secs(/*secs*/ 1), async {
+                            crate::config_update::read_effective_config(
+                                request_handle,
+                                app.config.cwd.display().to_string(),
+                            )
+                            .await
+                            .map(|response| {
+                                response
+                                    .config
+                                    .additional
+                                    .get("thread_unload_delay_secs")
+                                    .cloned()
+                            })
+                        }),
+                    );
+                    color_eyre::eyre::bail!(
+                        "waiting for thread/closed after selecting root {root_thread_id} and \
+                         unsubscribing {multi_agent_version:?} child {child_thread_id}: {error}; \
+                         unsubscribe={unsubscribe:?}; thread_status={thread_status:?}; \
+                         thread_unload_delay_secs={unload_delay:?}; events={recent_events:?}"
+                    );
+                }
+            };
             while app_event_rx.try_recv().is_ok() {}
             app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
                 .await?;
