@@ -817,11 +817,9 @@ impl LocalAgentControl {
                 if let Some(parent_thread_id) = parent_thread_id
                     && let Ok(parent_thread) = state.get_thread(parent_thread_id).await
                 {
-                    start_options.history_mode = matches!(
-                        parent_thread.config_snapshot().await.history_mode,
-                        ThreadHistoryMode::Paginated
-                    )
-                    .then_some(ThreadHistoryMode::Paginated);
+                    // Legacy is explicit too; None now defaults to Paginated.
+                    start_options.history_mode =
+                        Some(parent_thread.config_snapshot().await.history_mode);
                     if multi_agent_version == MultiAgentVersion::V2
                         && config.features.enabled(Feature::MultiAgentV2DynamicTools)
                     {

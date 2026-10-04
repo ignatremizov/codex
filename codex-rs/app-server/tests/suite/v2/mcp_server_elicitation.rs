@@ -91,7 +91,7 @@ use super::connection_handling_websocket::send_jsonrpc;
 use super::connection_handling_websocket::send_request;
 use super::connection_handling_websocket::spawn_websocket_server;
 
-const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const CONNECTOR_ID: &str = "calendar";
 const CONNECTOR_NAME: &str = "Calendar";
 const CONNECTED_ACCOUNT_EMAIL: &str = "calendar-owner@example.com";
@@ -608,6 +608,8 @@ async fn start_elicitation_services(
 
 struct ElicitationRoundTripFixture {
     mcp: TestAppServer,
+    // An explicitly configured TestAppServer home is borrowed, not owned by the server.
+    // Retain it until after the process so review/followup turns keep their databases.
     _codex_home: TempDir,
     response_mock: ResponseMock,
     _responses_server: wiremock::MockServer,

@@ -347,9 +347,9 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                 tty,
                 pipe_stdin: false,
                 arg0: (shell_name == "bash-sh").then(|| "sh".to_string()),
-                sandbox: (use_sandbox && attempt == 0).then(|| {
+                sandbox: use_sandbox.then(|| {
                     FileSystemSandboxContext::from_permission_profile(
-                        PermissionProfile::read_only(),
+                        PermissionProfile::workspace_write(),
                         cwd.clone(),
                     )
                 }),
@@ -668,12 +668,7 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
         tty,
         pipe_stdin: false,
         arg0: None,
-        sandbox: use_remote.then(|| {
-            FileSystemSandboxContext::from_permission_profile(
-                PermissionProfile::workspace_write(),
-                cwd,
-            )
-        }),
+        sandbox: None,
         enforce_managed_network: false,
         managed_network: None,
         network_proxy: None,
