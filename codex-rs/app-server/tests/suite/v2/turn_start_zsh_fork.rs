@@ -205,7 +205,7 @@ async fn turn_start_shell_zsh_fork_exec_approval_v2(
                 "print(42)".to_string(),
             ],
             launch_failed.then_some(missing_cwd.as_path()),
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-zsh-fork-decline",
         )?,
         create_final_assistant_message_sse_response("done")?,
@@ -362,7 +362,7 @@ async fn turn_start_shell_zsh_fork_exec_approval_cancel_v2() -> Result<()> {
             "print(42)".to_string(),
         ],
         /*workdir*/ None,
-        Some(5000),
+        /*yield_time_ms*/ Some(5000),
         "call-zsh-fork-cancel",
     )?];
     let server = create_mock_responses_server_sequence(responses).await;

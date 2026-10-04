@@ -26,6 +26,9 @@ use serde_json::json;
 use test_case::test_case;
 use wiremock::matchers::body_partial_json;
 
+use super::rmcp_client::remote_aware_environment_id;
+use super::rmcp_client::remote_aware_stdio_server_cwd;
+
 const SERVER: &str = r#"
 import json
 import sys
@@ -138,6 +141,8 @@ pub(super) async fn mcp_server_elicitation_scenario(
         "elicitation": {
             "command": if cfg!(windows) { "python" } else { "python3" },
             "args": ["-u", "-c", SERVER, elicitation.to_string()],
+            "environment_id": remote_aware_environment_id(),
+            "cwd": remote_aware_stdio_server_cwd(),
             "default_tools_approval_mode": "approve"
         }
     }))?)?;

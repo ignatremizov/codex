@@ -35,6 +35,9 @@ use std::time::Duration;
 use test_case::test_case;
 use wiremock::matchers::body_partial_json;
 
+use super::rmcp_client::remote_aware_environment_id;
+use super::rmcp_client::remote_aware_stdio_server_cwd;
+
 // The tool itself needs no approval. Its server requests a separate Guardian
 // review after tools/call, exercising the ordinary MCP elicitation path.
 const ELICITATION_SERVER: &str = r#"
@@ -134,7 +137,7 @@ async fn interrupt_aborts_server_initiated_mcp_guardian_review() -> Result<()> {
             .set(mcp_servers)
             .expect("set MCP fixture");
     });
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = builder.build(&server).await?;
     wait_for_mcp_server(&test.codex, "elicitation").await?;
     responses::mount_sse_once(
         &server,
@@ -271,6 +274,8 @@ async fn server_initiated_mcp_elicitation_can_require_synchronous_auto_review(
             "command": if cfg!(windows) { "python" } else { "python3" },
             "args": ["-u", "-c", ELICITATION_SERVER, serde_json::to_string(&meta)?],
             "default_tools_approval_mode": "approve",
+            "environment_id": remote_aware_environment_id(),
+            "cwd": remote_aware_stdio_server_cwd(),
         }
     }))?;
     let mut builder = test_codex()
@@ -481,6 +486,8 @@ async fn node_elicitations_attribute_independent_reviews_without_changing_action
         "args": ["-u", "-c", ELICITATION_SERVER, serde_json::to_string(&meta)?,
                  if browser { "browser" } else if call_id_source == CallIdSource::Host { "forward" } else { "omit" }],
         "default_tools_approval_mode": "approve",
+        "environment_id": remote_aware_environment_id(),
+        "cwd": remote_aware_stdio_server_cwd(),
     });
     let mut mcp_servers = json!({(server_name): fixture_config.clone()});
     if call_id_source == CallIdSource::WrongServer {
@@ -841,6 +848,8 @@ async fn user_review_preserves_unsupported_guardian_elicitations(mode: &str) -> 
             "command": if cfg!(windows) { "python" } else { "python3" },
             "args": ["-u", "-c", ELICITATION_SERVER, "{}", "", params.to_string()],
             "default_tools_approval_mode": "approve",
+            "environment_id": remote_aware_environment_id(),
+            "cwd": remote_aware_stdio_server_cwd(),
         }
     }))?;
     let test = test_codex()
@@ -952,6 +961,8 @@ async fn yielded_code_mode_elicitation_keeps_live_invocation_metadata() -> Resul
             "command": if cfg!(windows) { "python" } else { "python3" },
             "args": ["-u", "-c", ELICITATION_SERVER, meta.to_string(), "forward"],
             "default_tools_approval_mode": "approve",
+            "environment_id": remote_aware_environment_id(),
+            "cwd": remote_aware_stdio_server_cwd(),
         }
     }))?;
     let mut builder = test_codex()

@@ -133,8 +133,9 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
         for (prepared, reader) in [(&mut prepared, first), (&mut concurrent, second)] {
             if let Some(reader) = reader {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
-                prepared.command[2] =
-                    prepared.command[2].replace(&format!("/dev/fd/{fd}"), "/dev/fd/SNAPSHOT");
+                for argument in &mut prepared.command {
+                    *argument = argument.replace(&format!("/dev/fd/{fd}"), "/dev/fd/SNAPSHOT");
+                }
             }
         }
         assert_eq!(
@@ -270,6 +271,10 @@ fn snapshot_filters_profile_exports_after_capture() {
     assert_eq!(
         snapshot.environment,
         HashMap::from([("PROFILE_ALLOWED".to_string(), "override".to_string())])
+    );
+    assert_eq!(
+        snapshot.unset_environment,
+        vec!["PROFILE_DENIED".to_string(), "PROFILE_SECRET".to_string()]
     );
     assert_eq!(
         snapshot.state,
