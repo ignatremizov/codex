@@ -742,6 +742,14 @@ impl App {
                 if self.chat_widget.thread_id() != Some(thread_id) {
                     return Ok(AppRunControl::Continue);
                 }
+                if self.chat_widget.direct_input_is_blocked() {
+                    self.restore_backtrack_prompt_after_revert_error(
+                        prompt,
+                        "this conversation is read-only or unavailable",
+                    );
+                    tui.frame_requester().schedule_frame();
+                    return Ok(AppRunControl::Continue);
+                }
                 if self.app_server_target.uses_remote_workspace()
                     && (!prompt.local_images.is_empty()
                         || prompt.text.trim_start().starts_with(['/', '!']))
@@ -831,6 +839,11 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                 };
+                if self.config.features.enabled(Feature::ForkPromptEdits) {
+                    self.fork_for_prompt_edit(tui, app_server, thread_id, before_turn_id, prompt)
+                        .await;
+                    return Ok(AppRunControl::Continue);
+                }
                 let reverted = match app_server.revert_thread(thread_id, before_turn_id, &retained_turns).await {
                     Ok(reverted) => reverted,
                     Err(err) => {
