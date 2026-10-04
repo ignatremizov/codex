@@ -82,6 +82,7 @@ fn requires_a_strict_nonempty_model_prefix() {
         EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: None,
             message: None,
+            decode_error: None,
             available_skills: Vec::new(),
         }),
         EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),

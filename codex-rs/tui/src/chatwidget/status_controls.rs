@@ -20,12 +20,19 @@ impl ChatWidget {
     ) -> bool {
         // Follow-up input and background activity must not obscure compaction.
         // Retry errors still get their own status until the next notification.
-        let (header, details, details_max_lines) = if self.status_state.compaction.is_some()
+        let (header, details, details_max_lines) = if let Some(active) =
+            &self.status_state.compaction
             && self.status_state.retry_status_header.is_none()
         {
             (
-                compaction::COMPACTION_HEADER.to_string(),
-                Some(compaction::COMPACTION_DETAILS.to_string()),
+                active
+                    .status_message
+                    .clone()
+                    .unwrap_or_else(|| compaction::COMPACTION_HEADER.to_string()),
+                active
+                    .status_message
+                    .is_none()
+                    .then(|| compaction::COMPACTION_DETAILS.to_string()),
                 STATUS_DETAILS_DEFAULT_MAX_LINES,
             )
         } else {

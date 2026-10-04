@@ -1689,6 +1689,12 @@
               },
               "type": "array"
             },
+            "decodeError": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             },

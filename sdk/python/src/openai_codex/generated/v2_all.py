@@ -1140,8 +1140,19 @@ class ContextCompactedNotification(BaseModel):
         populate_by_name=True,
     )
     available_skills: Annotated[list[str] | None, Field(alias="availableSkills")] = []
+    decode_error: Annotated[str | None, Field(alias="decodeError")] = None
     message: str | None = None
     summary: str | None = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+
+
+class ContextCompactionStatusNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    item_id: Annotated[str, Field(alias="itemId")]
+    message: str
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
 
@@ -4451,6 +4462,24 @@ class ThreadEnvironmentDisconnectedServerNotification(BaseModel):
     params: EnvironmentConnectionNotification
 
 
+class ItemContextCompactionStatusServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/contextCompaction/status"],
+        Field(title="Item/contextCompaction/statusNotificationMethod"),
+    ]
+    params: ContextCompactionStatusNotification
+
+
 class ItemAgentMessageDeltaServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5623,6 +5652,7 @@ class ContextCompactionThreadItem(BaseModel):
             description="Skill names in the model-visible inventory installed after this compaction.",
         ),
     ] = []
+    decode_error: Annotated[str | None, Field(alias="decodeError")] = None
     id: str
     message: str | None = None
     summary: str | None = None
@@ -13342,6 +13372,7 @@ class ServerNotification(
         | ItemAutoApprovalReviewCompletedServerNotification
         | AutoApprovalReviewStrictReviewRequiredServerNotification
         | ItemCompletedServerNotification
+        | ItemContextCompactionStatusServerNotification
         | ItemAgentMessageDeltaServerNotification
         | ItemPlanDeltaServerNotification
         | CommandExecOutputDeltaServerNotification
@@ -13433,6 +13464,7 @@ class ServerNotification(
         | ItemAutoApprovalReviewCompletedServerNotification
         | AutoApprovalReviewStrictReviewRequiredServerNotification
         | ItemCompletedServerNotification
+        | ItemContextCompactionStatusServerNotification
         | ItemAgentMessageDeltaServerNotification
         | ItemPlanDeltaServerNotification
         | CommandExecOutputDeltaServerNotification
