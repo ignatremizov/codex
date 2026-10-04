@@ -185,7 +185,7 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     );
     assert!(ops.try_recv().is_err());
 
-    chat.set_parent_owned_thread();
+    chat.show_external_writer_thread();
     handle_error(
         &mut chat,
         "server fallback message",
@@ -194,12 +194,8 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     let cells = drain_insert_history(&mut events);
     assert!(chat.bottom_pane.no_modal_or_popup_active());
     assert_chatwidget_snapshot!(
-        "daybreak_refusal_parent_owned",
-        normalize_snapshot_paths(format!(
-            "{}\n{}",
-            lines_to_single_string(cells.last().unwrap()),
-            render_bottom_popup(&chat, /*width*/ 80)
-        ))
+        "daybreak_refusal_external_writer",
+        lines_to_single_string(cells.last().unwrap())
     );
 }
 
