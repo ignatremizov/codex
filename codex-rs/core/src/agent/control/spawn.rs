@@ -822,7 +822,14 @@ impl LocalAgentControl {
                 .await;
         }));
         let durability_wait_started_at = Instant::now();
-        if options.fork_mode.is_some() {
+        // Ordinary spawned children also need discoverable rollout metadata before
+        // publication. Retain the provisional guard and its independently joined edge write.
+        if options.fork_mode.is_some()
+            || matches!(
+                notification_source.as_ref(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+            )
+        {
             tokio::join!(
                 new_thread
                     .thread
