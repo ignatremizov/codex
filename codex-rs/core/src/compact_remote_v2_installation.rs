@@ -20,7 +20,7 @@ pub(super) async fn run_compaction(
     replacement_step_context: &Arc<StepContext>,
     mut client_session: Option<&mut ModelClientSession>,
     world_state: &WorldState,
-    compaction_metadata: CompactionTurnMetadata,
+    run: RemoteCompactRun<'_>,
     analytics_details: &mut CompactionAnalyticsDetails,
     mut started_item: Option<&TurnItem>,
     candidate: Option<BackgroundCompactionCandidate>,
@@ -33,7 +33,7 @@ pub(super) async fn run_compaction(
             replacement_step_context,
             client_session.as_deref_mut(),
             world_state,
-            compaction_metadata,
+            run,
             analytics_details,
             started_item,
             Some(candidate),
@@ -61,7 +61,7 @@ pub(super) async fn run_compaction(
         replacement_step_context,
         client_session,
         world_state,
-        compaction_metadata,
+        run,
         analytics_details,
         started_item,
         /*candidate*/ None,
@@ -76,11 +76,12 @@ async fn build_and_install_compaction(
     replacement_step_context: &Arc<StepContext>,
     mut client_session: Option<&mut ModelClientSession>,
     world_state: &WorldState,
-    compaction_metadata: CompactionTurnMetadata,
+    run: RemoteCompactRun<'_>,
     analytics_details: &mut CompactionAnalyticsDetails,
     started_item: Option<&TurnItem>,
     candidate: Option<BackgroundCompactionCandidate>,
 ) -> CodexResult<bool> {
+    let compaction_metadata = run.metadata;
     let turn_context = &step_context.turn;
     if let Some(candidate) = &candidate
         && (candidate.model_info.slug != step_context.settings.model_info.slug
@@ -89,7 +90,7 @@ async fn build_and_install_compaction(
         return Ok(false);
     }
     let needs_start = started_item.is_none();
-    let compaction_item = started_item
+    let mut compaction_item = started_item
         .cloned()
         .unwrap_or_else(|| TurnItem::ContextCompaction(ContextCompactionItem::new()));
     let compaction_id = compaction_item.id();
@@ -252,9 +253,9 @@ async fn build_and_install_compaction(
         )
         .await
     };
-    if !installed {
+    let Some(installed_history) = installed else {
         return Ok(false);
-    }
+    };
     // Rejected candidates must not supply analytics for a later foreground attempt.
     if let Some(token_usage) = token_usage {
         analytics_details.compaction_summary_tokens = Some(token_usage.output_tokens);
@@ -263,11 +264,9 @@ async fn build_and_install_compaction(
     }
     analytics_details.retained_image_count = Some(retained_images);
     if let Some(trace_input_history) = trace_input_history.as_deref() {
-        let replacement_history = sess
-            .clone_history()
-            .await
-            .raw_items()
-            .cloned()
+        let replacement_history = installed_history
+            .iter()
+            .map(|envelope| envelope.item.clone())
             .collect::<Vec<_>>();
         compaction_trace.record_installed(&CompactionCheckpointTracePayload {
             input_history: trace_input_history,
@@ -276,6 +275,17 @@ async fn build_and_install_compaction(
     }
     sess.recompute_token_usage(&replacement_step_context.turn)
         .await;
+    if let TurnItem::ContextCompaction(item) = &mut compaction_item {
+        item.available_skills =
+            crate::compact_skills_inventory::available_skill_names(&installed_history);
+        item.message = crate::compact_handoff_summary::summarize_remote_compaction_handoff(
+            sess,
+            compaction_turn_context,
+            &installed_history,
+            run.cancellation,
+        )
+        .await;
+    }
     sess.emit_turn_item_completed(compaction_turn_context, compaction_item)
         .await;
     Ok(true)

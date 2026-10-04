@@ -486,11 +486,15 @@ impl EventProcessorWithJsonOutput {
             ServerNotification::ItemCompleted(notification) => {
                 match notification.item.payload {
                     ThreadItemPayload::ContextCompaction {
-                        summary, message, ..
+                        summary,
+                        message,
+                        available_skills,
+                        ..
                     } => {
                         events.push(ThreadEvent::ContextCompacted(ContextCompactedEvent {
                             summary,
                             message,
+                            available_skills,
                         }));
                     }
                     item => {
