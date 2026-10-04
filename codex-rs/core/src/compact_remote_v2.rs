@@ -16,6 +16,7 @@ use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::compact_remote_history::HistoryItemGroup;
 use crate::compact_remote_history::history_item_groups;
+use crate::context::McpServerUseInstructions;
 use crate::context::world_state::WorldState;
 use crate::context_manager::estimate_item_token_count;
 use crate::hook_runtime::PostCompactHookOutcome;
@@ -590,8 +591,9 @@ fn is_retained_for_remote_compaction_v2(
             Some(TurnItem::UserMessage(_) | TurnItem::HookPrompt(_))
         ),
         "developer" => {
-            features.enabled(Feature::RetainClientDeveloperMessages)
-                && is_client_authored_developer_message(envelope)
+            McpServerUseInstructions::matches_response_item(item)
+                || (features.enabled(Feature::RetainClientDeveloperMessages)
+                    && is_client_authored_developer_message(envelope))
         }
         _ => false,
     }
@@ -635,6 +637,15 @@ fn truncate_retained_messages(
         .into_iter()
         .rev()
     {
+        // Explicitly requested inventories are never truncated or charged against the generic
+        // retention budget. Keep them in this same pass so client-authored blocks appear once.
+        if McpServerUseInstructions::matches_response_item(&group.source.item) {
+            if let Some(notice) = group.attached_notice {
+                truncated_reversed.push(notice);
+            }
+            truncated_reversed.push(group.source);
+            continue;
+        }
         if remaining == 0 {
             continue;
         }
@@ -788,6 +799,10 @@ fn truncate_message_text_to_token_budget(
     }
     Some(envelope)
 }
+
+#[cfg(test)]
+#[path = "compact_remote_v2_mcp_tests.rs"]
+mod mcp_tests;
 
 #[cfg(test)]
 mod tests {

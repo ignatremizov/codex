@@ -939,6 +939,21 @@ impl App {
                 app_server.thread_compact_start(thread_id).await?;
                 Ok(true)
             }
+            AppCommand::ActivateMcpServer { server_name } => {
+                let result = app_server
+                    .thread_mcp_server_activate(thread_id, server_name.clone())
+                    .await
+                    .map_err(|error| error.to_string());
+                self.enqueue_mcp_result(
+                    Some(thread_id),
+                    mcp_requests::McpThreadEvent::Activation {
+                        server_name: server_name.clone(),
+                        result,
+                    },
+                )
+                .await;
+                Ok(true)
+            }
             AppCommand::SetThreadName { name } => {
                 let name = name.to_string();
                 app_server.thread_set_name(thread_id, name.clone()).await?;
@@ -1643,6 +1658,9 @@ impl App {
                     self.enqueue_thread_history_entry_response(thread_id, event)
                         .await?;
                 }
+                ThreadBufferedEvent::Mcp(event) => {
+                    self.enqueue_mcp_result(Some(thread_id), event).await;
+                }
                 ThreadBufferedEvent::FeedbackSubmission(event) => {
                     self.enqueue_thread_feedback_event(thread_id, event).await;
                 }
@@ -1935,6 +1953,7 @@ impl App {
             })
             .then(|| snapshot.input_state.take())
             .flatten();
+        self.sync_mcp_inventory_loading();
         self.chat_widget.restore_thread_input_state(
             snapshot.input_state,
             ThreadInputStateRestoreMode {
@@ -2104,6 +2123,7 @@ impl App {
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event);
             }
+            ThreadBufferedEvent::Mcp(event) => self.render_mcp_result(event),
             ThreadBufferedEvent::FeedbackSubmission(event) => {
                 self.handle_feedback_thread_event(event);
             }
@@ -2134,6 +2154,7 @@ impl App {
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event)
             }
+            ThreadBufferedEvent::Mcp(event) => self.render_mcp_result(event),
             ThreadBufferedEvent::FeedbackSubmission(event) => {
                 self.handle_feedback_thread_event(event);
             }

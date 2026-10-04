@@ -1722,8 +1722,9 @@ impl App {
                 result,
                 detail,
                 thread_id,
+                sequence,
             } => {
-                self.handle_mcp_inventory_result(result, detail, thread_id);
+                self.handle_mcp_inventory_result(result, detail, thread_id, sequence).await;
             }
             AppEvent::SkillsListLoaded { result, .. } => {
                 self.handle_skills_list_result(

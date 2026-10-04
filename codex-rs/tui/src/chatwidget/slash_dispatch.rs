@@ -844,27 +844,7 @@ impl ChatWidget {
             SlashCommand::Ide => {
                 self.handle_ide_command_args(trimmed);
             }
-            SlashCommand::Mcp => {
-                if trimmed.eq_ignore_ascii_case("verbose") {
-                    self.add_mcp_output(McpServerStatusDetail::Full);
-                } else if let Some((command, name)) = trimmed.split_once(' ')
-                    && command.eq_ignore_ascii_case("login")
-                    && !name.trim().is_empty()
-                {
-                    if let Some(thread_id) = self.thread_id {
-                        self.app_event_tx.send(AppEvent::StartMcpLogin {
-                            name: name.trim().to_string(),
-                            thread_id,
-                        });
-                    } else {
-                        self.add_error_message(
-                            "MCP sign-in requires an active session.".to_string(),
-                        );
-                    }
-                } else {
-                    self.add_error_message("Usage: /mcp [verbose | login <name>]".to_string());
-                }
-            }
+            SlashCommand::Mcp => self.handle_mcp_args(trimmed),
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
                 "" => self.open_keymap_picker(),
                 "debug" => {

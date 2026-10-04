@@ -139,6 +139,7 @@ mod mcp_ema_config;
 mod mcp_executor_context;
 mod mcp_extension_protocol;
 mod mcp_optional_startup_grace;
+mod mcp_prompt_invocation;
 mod mcp_refresh_cleanup;
 mod mcp_startup_refresh_http_proxy;
 mod mcp_subagent_elicitation;
