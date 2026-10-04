@@ -183,6 +183,7 @@ fn persisted_event_msg(
         | EventMsg::ModelReroute(_)
         | EventMsg::ModelVerification(_)
         | EventMsg::TurnModerationMetadata(_)
+        | EventMsg::ContextCompactionStatus(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::RawResponseItem(_)

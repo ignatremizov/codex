@@ -110,12 +110,16 @@ pub(super) fn cells(
             ))));
         }
         ThreadItemPayload::ContextCompaction {
-            summary, message, ..
+            summary,
+            message,
+            decode_error,
+            ..
         } => {
             cells.push(Arc::new(history_cell::new_compaction(
                 "Context compacted".to_string(),
                 summary,
                 message,
+                decode_error,
                 show_compact_summary,
             )));
         }
