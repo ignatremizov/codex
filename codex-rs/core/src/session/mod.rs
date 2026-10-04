@@ -3686,6 +3686,14 @@ impl Session {
         previous_world_state: &Arc<WorldState>,
         step_context: &step_context::StepContext,
     ) -> CodexResult<Arc<WorldState>> {
+        if self
+            .services
+            .thread_extension_data
+            .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+            .is_some()
+        {
+            return Ok(Arc::clone(previous_world_state));
+        }
         let turn_context = step_context.turn.as_ref();
         // Render model-visible state from the same step used to build and run tools.
         let world_state = Arc::new(self.build_world_state_for_step(step_context).await?);
@@ -4107,7 +4115,7 @@ impl Session {
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
         metadata: CompactedHistoryMetadata,
-    ) {
+    ) -> Vec<ResponseItemEnvelope> {
         for envelope in &mut items {
             Self::assign_missing_response_item_id(&mut envelope.item);
         }
@@ -4132,7 +4140,8 @@ impl Session {
                 .get_or_insert_default()
                 .compaction_model_hash = metadata.compaction_model_hash;
         }
-        let replacement_history = items.clone();
+        // Return the owned snapshot after IDs and checkpoint metadata are assigned.
+        let installed_history = items.clone();
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
@@ -4167,7 +4176,7 @@ impl Session {
             }
             CompactedItem {
                 message: metadata.message,
-                replacement_history: Some(replacement_history),
+                replacement_history: Some(installed_history.clone()),
                 guardian_history: state.history.guardian_history_checkpoint(),
                 retained_context: Some(state.history.retained_context().clone()),
                 mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
@@ -4211,6 +4220,7 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
+        installed_history
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {
@@ -4678,6 +4688,16 @@ impl Session {
         &self,
         step_context: &StepContext,
     ) -> CodexResult<Arc<WorldState>> {
+        if self
+            .services
+            .thread_extension_data
+            .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+            .is_some()
+        {
+            // A decoder consumes an already-installed snapshot. Do not rediscover or append
+            // current instructions, skills, or world state after its trailing decoder prompt.
+            return Ok(Arc::new(WorldState::default()));
+        }
         let turn_context = step_context.turn.as_ref();
         let reference_context_item = {
             let state = self.state.lock().await;

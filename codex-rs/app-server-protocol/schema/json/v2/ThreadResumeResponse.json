@@ -2465,6 +2465,14 @@
         },
         {
           "properties": {
+            "availableSkills": {
+              "default": [],
+              "description": "Skill names in the model-visible inventory installed after this compaction.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "id": {
               "type": "string"
             },

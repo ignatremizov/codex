@@ -66,6 +66,7 @@ export type ContextCompactedEvent = {
   type: "context.compacted";
   summary: string | null;
   message: string | null;
+  available_skills: string[];
 };
 
 /** Fatal error emitted by the stream. */
