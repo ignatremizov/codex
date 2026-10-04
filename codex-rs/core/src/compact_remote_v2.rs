@@ -689,7 +689,7 @@ fn truncate_retained_messages(
         // the serialized estimate. Preserve their text-only boundary correction.
         let content_tokens =
             retained_message_token_count(&group.source.item, image_budget, audio_durations);
-        let source_tokens = if client_developer {
+        let source_tokens = if client_developer || is_retained_tool_output(&group.source) {
             usize::try_from(estimate_item_token_count_with_audio(
                 &group.source.item,
                 audio_durations,

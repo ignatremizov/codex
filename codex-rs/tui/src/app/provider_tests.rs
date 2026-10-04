@@ -472,8 +472,12 @@ async fn adding_a_custom_provider_saves_to_the_server_and_preserves_the_default(
     assert!(render_bottom_popup(chat, /*width*/ 19).contains("$CATALOG_KEY"));
     chat.handle_key_event(KeyCode::Tab.into());
     chat.handle_key_event(KeyCode::Enter.into());
-    // Process the write, its completion, and the subsequent catalog reload.
-    for _ in 0..4 {
+    let write = next_provider_event(&mut events).await;
+    assert!(matches!(&write, Event::Write { .. }));
+    handle(&mut app, &mut tui, &server, write);
+    assert!(render_bottom_popup(&app.chat_widget, /*width*/ 72).contains("Saving model provider…"));
+    // Process completion and the subsequent catalog reload.
+    for _ in 0..3 {
         handle(
             &mut app,
             &mut tui,

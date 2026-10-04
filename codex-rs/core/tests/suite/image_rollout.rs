@@ -195,7 +195,15 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
         session_configured,
         home: _home,
         ..
-    } = test_codex().build(&server).await?;
+    } = test_codex()
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::UnifiedImageBudget)
+                .expect("enable unified image budget");
+        })
+        .build(&server)
+        .await?;
 
     let rel_path = "images/paste.png";
     let abs_path = cwd.path().join(rel_path);
@@ -295,7 +303,15 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
         session_configured,
         home: _home,
         ..
-    } = test_codex().build(&server).await?;
+    } = test_codex()
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::UnifiedImageBudget)
+                .expect("enable unified image budget");
+        })
+        .build(&server)
+        .await?;
 
     let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==".to_string();
 
@@ -687,6 +703,10 @@ async fn resumed_history_only_emits_resize_notices_for_new_images() -> anyhow::R
     let mut resume_builder = test_codex()
         .with_image_store(resume_image_store.clone())
         .with_config(|config| {
+            config
+                .features
+                .enable(Feature::UnifiedImageBudget)
+                .expect("enable unified image budget");
             let _ = config.features.enable(Feature::ImageResizeNotice);
             let _ = config
                 .features

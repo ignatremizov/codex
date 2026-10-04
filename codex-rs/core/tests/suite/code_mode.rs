@@ -314,6 +314,11 @@ fn code_mode_test_builder(disabled_features: &'static [Feature]) -> TestCodexBui
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
             config.features.enable(Feature::CodeMode).unwrap();
+            config.features.enable(Feature::CodeModeHostGrpc).unwrap();
+            config
+                .features
+                .enable(Feature::CodeModeHostOutputTruncation)
+                .unwrap();
             for &feature in disabled_features {
                 config.features.disable(feature).unwrap();
             }
@@ -4024,9 +4029,10 @@ text(output.output);
 
     let mut builder = test_codex().with_config(move |config| {
         let _ = config.features.enable(Feature::CodeModeOnly);
-        if !grpc_stdio {
-            config.features.disable(Feature::CodeModeHostGrpc).unwrap();
-        }
+        config
+            .features
+            .set_enabled(Feature::CodeModeHostGrpc, grpc_stdio)
+            .unwrap();
     });
     #[cfg(unix)]
     {
@@ -4598,7 +4604,7 @@ text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Vari
 // The outer directive limits output after JavaScript emits it; it does not
 // limit `result.output` returned by the nested command.
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[test_case(&[]; "default_grpc")]
+#[test_case(&[]; "server_grpc")]
 #[test_case(&[Feature::CodeModeHostGrpc]; "server_stdio")]
 #[test_case(&[Feature::CodeModeHostGrpc, Feature::CodeModeHostOutputTruncation]; "client_stdio")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4676,7 +4682,7 @@ Error:\ boom\n
 
 // An overflow notice is outside the observation budget. This distinguishes
 // actual server formatting from Core silently repeating client truncation.
-#[test_case(None; "default")]
+#[test_case(None; "server_grpc")]
 #[test_case(Some(Feature::CodeModeHostGrpc); "server_stdio")]
 #[test_case(Some(Feature::CodeModeHostOutputTruncation); "client_grpc")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4695,6 +4701,11 @@ text("x".repeat(2 * 1024 * 1024));
 text("end");
 "#,
         move |config| {
+            config.features.enable(Feature::CodeModeHostGrpc).unwrap();
+            config
+                .features
+                .enable(Feature::CodeModeHostOutputTruncation)
+                .unwrap();
             if let Some(feature) = disabled_feature {
                 config.features.disable(feature).unwrap();
             }
@@ -5647,7 +5658,7 @@ impl ToolLifecycleContributor for TerminationOutputReady {
 }
 
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[test_case(&[]; "default_grpc")]
+#[test_case(&[]; "server_grpc")]
 #[test_case(&[Feature::CodeModeHostGrpc]; "server_stdio")]
 #[test_case(&[Feature::CodeModeHostGrpc, Feature::CodeModeHostOutputTruncation]; "client_stdio")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6378,7 +6389,7 @@ async fn code_mode_interrupt_terminates_active_cells_and_nested_tools() -> Resul
     Ok(())
 }
 
-#[test_case(&[]; "default_grpc")]
+#[test_case(&[]; "server_grpc")]
 #[test_case(&[Feature::CodeModeHostGrpc]; "server_stdio")]
 #[test_case(&[Feature::CodeModeHostGrpc, Feature::CodeModeHostOutputTruncation]; "client_stdio")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6768,7 +6779,12 @@ image({{
         "emit images with legacy detail arguments and MCP metadata",
         &code,
         "gpt-5.5",
-        |_| {},
+        |config| {
+            config
+                .features
+                .enable(Feature::UnifiedImageBudget)
+                .expect("enable unified image budget");
+        },
     )
     .await?;
 
@@ -6904,9 +6920,9 @@ async fn code_mode_can_use_view_image_result_with_image_helper(
         .with_model("gpt-5.5")
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
-            if !unified_image_budget {
-                let _ = config.features.disable(Feature::UnifiedImageBudget);
-            }
+            let _ = config
+                .features
+                .set_enabled(Feature::UnifiedImageBudget, unified_image_budget);
         });
     let test = builder.build(&server).await?;
 
@@ -7422,6 +7438,12 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
         .with_config(move |config| {
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            if check_detail {
+                config
+                    .features
+                    .enable(Feature::UnifiedImageBudget)
+                    .expect("enable unified image budget");
+            }
             if reviewer_constraint.is_some_and(|value| value != "large_prompt") || check_detail {
                 let reviewer = config
                     .model_catalog

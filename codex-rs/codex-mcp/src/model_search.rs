@@ -4,6 +4,8 @@
 use super::McpBinding;
 use crate::CODEX_APPS_MCP_SERVER_NAME;
 use crate::MCP_TOOL_CODEX_APPS_META_KEY;
+use crate::PreparedMcpCall;
+use crate::ToolInfo;
 use crate::pagination::MAX_CODEX_APPS_TOOL_CATALOG_ITEMS;
 use crate::pagination::collect_paginated_with_limit;
 use rmcp::model::RequestMetaObject;
@@ -44,20 +46,7 @@ impl McpBinding {
 
     /// A catalog omission, policy denial, or untrusted registration never authorizes fallback.
     pub async fn discover_model_search(&self, turn_metadata: JsonValue) -> SearchDiscovery {
-        let Some((index, original)) = self
-            .tools
-            .iter()
-            .enumerate()
-            .find(|(_, tool)| is_model_search_tool(tool))
-        else {
-            return SearchDiscovery::Unavailable;
-        };
-        let key = (original.server_name.clone(), original.tool.name.to_string());
-        let Some(call) = self
-            .calls
-            .get(&key)
-            .filter(|call| call.is_host_owned_apps())
-        else {
+        let Some((index, original, call)) = self.model_search_entry() else {
             return SearchDiscovery::Unavailable;
         };
         let meta = RequestMetaObject::from(serde_json::Map::from_iter([(
@@ -112,20 +101,78 @@ impl McpBinding {
         {
             return SearchDiscovery::Unavailable;
         }
+        SearchDiscovery::Ready(self.with_model_search_tool(index, call, projected))
+    }
+
+    /// Applies a scoped discovery to a fresh base when the search tool's configuration,
+    /// transport, and source catalog revision are identical.
+    pub fn reuse_model_search(
+        &self,
+        previous: &Self,
+        discovery: &SearchDiscovery,
+    ) -> Option<SearchDiscovery> {
+        if !Arc::ptr_eq(&self.config, &previous.config) {
+            return None;
+        }
+        let (index, tool, call) = self.model_search_entry()?;
+        let (previous_index, previous_tool, previous_call) = previous.model_search_entry()?;
+        // Catalog captures clone the managed wrapper while retaining its transport and catalog.
+        if !Arc::ptr_eq(&call.client.client, &previous_call.client.client)
+            || !Arc::ptr_eq(
+                &call.client.tool_catalog,
+                &previous_call.client.tool_catalog,
+            )
+            || call.catalog_snapshot.revision != previous_call.catalog_snapshot.revision
+            || tool != previous_tool
+        {
+            return None;
+        }
+        Some(match discovery {
+            SearchDiscovery::Ready(scoped) => SearchDiscovery::Ready(self.with_model_search_tool(
+                index,
+                call,
+                scoped.tools.get(previous_index)?.clone(),
+            )),
+            SearchDiscovery::Critical(reason) => SearchDiscovery::Critical(reason),
+            SearchDiscovery::Unavailable => SearchDiscovery::Unavailable,
+        })
+    }
+
+    fn model_search_entry(&self) -> Option<(usize, &ToolInfo, &PreparedMcpCall)> {
+        let (index, tool) = self
+            .tools
+            .iter()
+            .enumerate()
+            .find(|(_, tool)| is_model_search_tool(tool))?;
+        let key = (tool.server_name.clone(), tool.tool.name.to_string());
+        let call = self
+            .calls
+            .get(&key)
+            .filter(|call| call.is_host_owned_apps())?;
+        Some((index, tool, call))
+    }
+
+    fn with_model_search_tool(
+        &self,
+        index: usize,
+        call: &PreparedMcpCall,
+        tool: ToolInfo,
+    ) -> Arc<Self> {
         let mut tools = self.tools.to_vec();
-        tools[index] = projected.clone();
+        let key = (tool.server_name.clone(), tool.tool.name.to_string());
+        tools[index] = tool.clone();
         let mut calls = self.calls.clone();
         let mut call = call.clone();
-        call.tool_info = projected.into();
+        call.tool_info = tool.into();
         calls.insert(key, call);
-        SearchDiscovery::Ready(Arc::new(Self::new(
+        Arc::new(Self::new(
             Arc::clone(&self.connections),
             Arc::clone(&self.clients),
             Arc::clone(&self.config),
             self.plugins_available,
             tools,
             calls,
-        )))
+        ))
     }
 }
 

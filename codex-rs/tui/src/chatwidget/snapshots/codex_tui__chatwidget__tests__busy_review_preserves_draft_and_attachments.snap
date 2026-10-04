@@ -1,0 +1,37 @@
+---
+source: tui/src/chatwidget/tests/mcp_startup.rs
+assertion_line: 343
+expression: "blocked_drafts.join(\"\\n\\n\")"
+---
+/rev:
+• Booting MCP server: slow (0s • esc to interrupt)
+
+› /review  review my current changes and find issues
+
+  [Image #1]
+
+› /rev
+
+  gpt-5.6-sol default · /tmp/project
+
+/review:
+• Booting MCP server: slow (0s • esc to interrupt)
+
+› /review  review my current changes and find issues
+
+  [Image #1]
+
+› /review
+
+  gpt-5.6-sol default · /tmp/project
+
+/review check regressions:
+• Booting MCP server: slow (0s • esc to interrupt)
+
+
+  [Image #1]
+
+› /review check regressions
+
+  gpt-5.6-sol default · /tmp/project
+  tab to queue message

@@ -938,15 +938,22 @@ async fn model_lab_search_provider(
     let scoped_lists = rpc
         .iter()
         .filter(|r| r["method"] == "tools/list")
-        .filter_map(|r| {
-            r.pointer("/params/_meta/x-codex-turn-metadata/mcp_request_meta/openai~1search_context")
+        .filter_map(|r| r.pointer("/params/_meta/x-codex-turn-metadata/mcp_request_meta"))
+        .filter(|meta| {
+            meta["openai/search_context"]["model_supported_tools"] == json!(supported_tools)
         })
-        .filter(|ctx| ctx["model_supported_tools"] == json!(supported_tools))
-        .count();
+        .collect::<Vec<_>>();
     if error == Some(DiscoveryFailure::Http(503)) {
-        assert!(scoped_lists > 1, "fallback should follow a discovery retry");
+        assert!(
+            scoped_lists.len() > 1,
+            "fallback should follow a discovery retry: {scoped_lists:#?}"
+        );
     } else {
-        assert_eq!(scoped_lists, usize::from(allow_hosted));
+        assert_eq!(
+            scoped_lists.len(),
+            usize::from(allow_hosted),
+            "scoped discovery metadata: {scoped_lists:#?}"
+        );
     }
     let request = requests[0].body_json();
     let tools = request["input"]

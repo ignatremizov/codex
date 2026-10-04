@@ -831,6 +831,7 @@ stream_max_retries = 0
 
 [features]
 goals = true
+untrusted_as_tool_output = true
 {instant_interrupt_config}
 "#,
             server.uri()
@@ -862,6 +863,10 @@ goals = true
         .features
         .enable(Feature::Goals)
         .expect("test config should allow goals");
+    app.config
+        .features
+        .enable(Feature::UntrustedAsToolOutput)
+        .expect("enable goal objective tool outputs");
 
     if scenario == SafetyRetryScenario::PendingPermissions {
         app.config

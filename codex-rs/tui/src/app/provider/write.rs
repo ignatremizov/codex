@@ -54,14 +54,18 @@ impl Write {
             return;
         };
         let (view, dismissed) = progress(SAVING_VIEW, "Saving model provider…");
-        let source = match self {
-            Self::Default(_) => LIST_VIEW,
-            Self::Settings(_) => editor::VIEW_ID,
+        let started = match &self {
+            Self::Default(_) => app
+                .chat_widget
+                .replace_selection_view_if_present(LIST_VIEW, view),
+            Self::Settings(_) if app.chat_widget.active_view_is(editor::VIEW_ID) => {
+                app.chat_widget.dismiss_provider_view(editor::VIEW_ID);
+                app.chat_widget.show_selection_view(view);
+                true
+            }
+            Self::Settings(_) => false,
         };
-        if !app
-            .chat_widget
-            .replace_selection_view_if_present(source, view)
-        {
+        if !started {
             return;
         }
         let handle = server.request_handle();

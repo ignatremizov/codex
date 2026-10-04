@@ -1288,7 +1288,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::UntrustedAsToolOutput,
         key: "untrusted_as_tool_output",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ExecutedToolCallMetadata,
@@ -1330,13 +1330,13 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::CodeModeHostGrpc,
         key: "code_mode_host_grpc",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::CodeModeHostOutputTruncation,
         key: "code_mode_host_output_truncation",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::CodeModePrewarm,
@@ -1830,7 +1830,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::IncrementalToolsLegacyGcp,
         key: "incremental_tools_legacy_gcp",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::SuppressModelChangeAnnouncements,
@@ -2028,7 +2028,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::UnifiedImageBudget,
         key: "unified_image_budget",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ResizeAllImages,
@@ -2418,7 +2418,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::RetainClientToolOutputs,
         key: "retain_client_tool_outputs",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::UseAgentIdentity,

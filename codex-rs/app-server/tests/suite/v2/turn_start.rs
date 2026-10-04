@@ -815,9 +815,10 @@ async fn turn_start_additional_context_flows_to_model_input(
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
-            config: (!tool_outputs).then(|| {
-                HashMap::from([("features.untrusted_as_tool_output".to_owned(), json!(false))])
-            }),
+            config: Some(HashMap::from([(
+                "features.untrusted_as_tool_output".to_owned(),
+                json!(tool_outputs),
+            )])),
             ..Default::default()
         })
         .await?;
@@ -3021,13 +3022,13 @@ async fn turn_start_reports_personality_overrides_v2(
 }
 
 #[tokio::test]
-async fn turn_start_defaults_local_image_detail_to_original() -> Result<()> {
+async fn turn_start_defaults_local_image_detail_to_high() -> Result<()> {
     let input_images = run_local_image_turn(/*detail*/ None).await?;
 
     assert_eq!(input_images.len(), 1);
     assert_eq!(
         input_images[0].get("detail").and_then(Value::as_str),
-        Some("original")
+        Some("high")
     );
 
     Ok(())
@@ -3064,19 +3065,18 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         "import sys, time; time.sleep(0.5); print(sys.argv[1].endswith('7890'))".to_string(),
         format!("Authorization: Bearer {bearer_token}"),
     ];
-    let expected_approval_command = format_with_current_shell_display(&shlex::try_join(
-        first_shell_command.iter().map(String::as_str),
-    )?);
+    let first_command = shlex::try_join(first_shell_command.iter().map(String::as_str))?;
+    let expected_approval_command = format_with_current_shell_display(&first_command);
     let expected_display_command =
         expected_approval_command.replace(bearer_token, "[REDACTED_SECRET]");
 
-    // Mock server: first turn requests a shell call (elicitation), then completes.
+    // Mock server: first turn requests a command execution (elicitation), then completes.
     // Second turn same, but we'll set approval_policy=never to avoid elicitation.
     let responses = vec![
         create_escalated_command_execution_sse_response(
             first_shell_command,
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call1",
         )?,
         create_final_assistant_message_sse_response("done 1")?,
@@ -3087,7 +3087,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
                 "print(42)".to_string(),
             ],
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call2",
         )?,
         create_final_assistant_message_sse_response("done 2")?,
@@ -3307,9 +3307,8 @@ async fn run_turn_start_exec_approval_rejection_v2(
         "print(42)".to_string(),
         format!("Authorization: Bearer {bearer_token}"),
     ];
-    let expected_approval_command = format_with_current_shell_display(&shlex::try_join(
-        shell_command.iter().map(String::as_str),
-    )?);
+    let command = shlex::try_join(shell_command.iter().map(String::as_str))?;
+    let expected_approval_command = format_with_current_shell_display(&command);
     let expected_display_command =
         expected_approval_command.replace(bearer_token, "[REDACTED_SECRET]");
 
@@ -3317,7 +3316,7 @@ async fn run_turn_start_exec_approval_rejection_v2(
         create_escalated_command_execution_sse_response(
             shell_command,
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-decline",
         )?,
         create_final_assistant_message_sse_response("done")?,

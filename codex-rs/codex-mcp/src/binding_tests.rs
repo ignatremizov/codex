@@ -25,9 +25,15 @@ use tokio::sync::Notify;
 use super::McpBinding;
 use super::McpPermissionSource;
 use super::PreparedMcpCall;
+use super::SEARCH_CONNECTOR;
+use super::SearchDiscovery;
+use crate::CODEX_APPS_MCP_SERVER_NAME;
 use crate::McpServerPermissions;
+use crate::McpServerRegistration;
+use crate::ResolvedMcpCatalog;
 use crate::binding_clients::McpBindingClients;
 use crate::client_tool_catalog::ClientToolCatalog;
+use crate::codex_apps_mcp_server_config;
 use crate::connection_manager::McpConnectionSet;
 use crate::rmcp_client::ManagedClient;
 use crate::server::McpServerMetadata;
@@ -174,6 +180,76 @@ async fn test_step(
         client,
         tool_catalog,
     }
+}
+
+#[tokio::test]
+async fn reused_model_search_keeps_the_latest_unrelated_catalog() -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    let fixture = test_step(
+        "search",
+        AppToolApproval::Prompt,
+        /*supports_sandbox_state_meta*/ false,
+    )
+    .await;
+    let base = fixture.step;
+    let mut config = base.config().as_ref().clone();
+    let mut catalog = ResolvedMcpCatalog::builder();
+    catalog.register(McpServerRegistration::from_hosted_apps(
+        "test-apps",
+        /*contribution_order*/ 0,
+        codex_apps_mcp_server_config(
+            "https://apps.example",
+            /*apps_mcp_product_sku*/ None,
+            /*originator*/ None,
+        ),
+    ));
+    config.mcp_server_catalog = catalog.build();
+    config.server_permissions.insert(
+        CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        McpServerPermissions::Thread,
+    );
+    let config = Arc::new(config);
+    let mut search = base.tools[0].clone();
+    search.server_name = CODEX_APPS_MCP_SERVER_NAME.to_string();
+    search.connector_id = Some(SEARCH_CONNECTOR.to_string());
+    search.tool.name = "search_service.web_run".into();
+    let key = (search.server_name.clone(), search.tool.name.to_string());
+    let binding = |tools: Vec<ToolInfo>, search: ToolInfo| {
+        let mut call = base.calls[&(SERVER_NAME.to_string(), TOOL_NAME.to_string())].clone();
+        call.config = Arc::clone(&config);
+        // Match production catalog capture: a new wrapper retains the same transport.
+        call.client = Arc::new(call.client.as_ref().clone());
+        call.server_name.clone_from(&search.server_name);
+        call.tool_info = search.into();
+        McpBinding::new(
+            Arc::clone(&base.connections),
+            Arc::clone(&base.clients),
+            Arc::clone(&config),
+            /*plugins_available*/ false,
+            tools,
+            HashMap::from([(key.clone(), call)]),
+        )
+    };
+    let previous = binding(vec![search.clone()], search.clone());
+    let mut pinned = search.clone();
+    pinned.tool.description = Some("Scoped profile".into());
+    let discovery = SearchDiscovery::Ready(Arc::new(binding(vec![pinned.clone()], pinned.clone())));
+    let ordinary = base.tools[0].clone();
+    let mut current = binding(vec![ordinary.clone(), search.clone()], search);
+    let SearchDiscovery::Ready(reused) = current
+        .reuse_model_search(&previous, &discovery)
+        .context("equivalent search authority should reuse discovery")?
+    else {
+        anyhow::bail!("search profile unavailable");
+    };
+    assert_eq!(reused.tools(), &[ordinary, pinned.clone()]);
+    assert_eq!(reused.tool_info(&key.0, &key.1), Some(&pinned));
+
+    let call = current.calls.get_mut(&key).context("current search call")?;
+    Arc::make_mut(&mut call.catalog_snapshot).revision += 1;
+    assert!(current.reuse_model_search(&previous, &discovery).is_none());
+    Ok(())
 }
 
 #[tokio::test]

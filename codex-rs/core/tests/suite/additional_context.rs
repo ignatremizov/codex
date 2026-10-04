@@ -64,6 +64,10 @@ async fn additional_context_is_model_visible_but_not_a_user_message_item() -> Re
         .with_config(|config| {
             config.update_plan_enabled = true;
             config.include_environment_context = false;
+            config
+                .features
+                .enable(Feature::UntrustedAsToolOutput)
+                .expect("enable untrusted context tool outputs");
         })
         .build(&server)
         .await?;
@@ -596,7 +600,13 @@ async fn additional_context_is_deduplicated_between_turns_while_retained(
     )
     .await;
     let test = test_codex()
-        .with_config(|config| config.include_environment_context = false)
+        .with_config(|config| {
+            config.include_environment_context = false;
+            config
+                .features
+                .enable(Feature::UntrustedAsToolOutput)
+                .expect("enable untrusted context tool outputs");
+        })
         .build(&server)
         .await?;
     let mut additional_context = BTreeMap::from([(

@@ -63,6 +63,7 @@ async fn thread_inject_items_adds_raw_response_items_to_thread_history(
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::Sqlite)
         .enable_feature(Feature::RetainClientDeveloperMessages)
+        .enable_feature(Feature::UntrustedAsToolOutput)
         .with_extra_config("[memories]\ndisable_on_external_context = true")
         .write(codex_home.path())?;
     let state_db = StateRuntime::init(

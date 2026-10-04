@@ -629,7 +629,6 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
                 serde_json::from_value(json!({
                     "command": command,
                     "environment_id": environment_id,
-                    "cwd": config.cwd,
                     "env": {
                         "MCP_TEST_APP_ONLY_CWD_MARKER_FILE": app_only_cwd_marker_file,
                         "MCP_TEST_INITIALIZE_BARRIER_FILE": barrier_file,

@@ -264,9 +264,21 @@ async fn inline_review_submits_during_mcp_startup() {
 
 #[tokio::test]
 async fn review_and_fork_during_mcp_startup_preserve_drafts_when_foreground_work_is_pending() {
+    let mut blocked_drafts = Vec::new();
     for activity in ["turn", "review", "pending", "queued", "images"] {
-        for draft in ["/review", "/review changes", "/fork", "/fork named"] {
-            let command = draft.split_whitespace().next().unwrap();
+        for draft in [
+            "/rev",
+            "/review",
+            "/review check regressions",
+            "/review changes",
+            "/fork",
+            "/fork named",
+        ] {
+            let command = if draft.starts_with("/rev") {
+                "/review"
+            } else {
+                "/fork"
+            };
             if activity == "queued" && command == "/fork" {
                 continue;
             }
@@ -295,7 +307,11 @@ async fn review_and_fork_during_mcp_startup_preserve_drafts_when_foreground_work
 
             chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-            assert_eq!(chat.bottom_pane.composer_text(), draft);
+            assert_eq!(
+                chat.bottom_pane.composer_text(),
+                draft,
+                "{activity}: {draft}"
+            );
             assert_eq!(
                 chat.bottom_pane.remote_image_urls(),
                 vec!["https://example.com/image.png".to_string()]
@@ -314,8 +330,20 @@ async fn review_and_fork_during_mcp_startup_preserve_drafts_when_foreground_work
                 !std::iter::from_fn(|| op_rx.try_recv().ok())
                     .any(|op| matches!(op, Op::Review { .. } | Op::UserTurn { .. }))
             );
+            if activity == "turn"
+                && matches!(draft, "/rev" | "/review" | "/review check regressions")
+            {
+                blocked_drafts.push(format!(
+                    "{draft}:\n{}",
+                    render_bottom_popup(&chat, /*width*/ 80)
+                ));
+            }
         }
     }
+    assert_chatwidget_snapshot!(
+        "busy_review_preserves_draft_and_attachments",
+        blocked_drafts.join("\n\n")
+    );
 }
 
 #[tokio::test]

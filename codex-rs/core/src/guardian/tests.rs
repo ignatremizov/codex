@@ -2997,9 +2997,15 @@ async fn guardian_review_routes_required_actions(
 #[tokio::test]
 async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() -> anyhow::Result<()>
 {
-    // Inherit the test runner's stack budget, including the larger Windows CI setting.
+    // Keep the fork's minimum while honoring larger test-runner stack budgets.
+    let stack_size = std::env::var("RUST_MIN_STACK")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default()
+        .max(32 * 1024 * 1024);
     let handle = std::thread::Builder::new()
         .name("guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history".to_string())
+        .stack_size(stack_size)
         .spawn(|| -> anyhow::Result<()> {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

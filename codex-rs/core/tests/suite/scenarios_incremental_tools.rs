@@ -161,9 +161,10 @@ async fn prediction_fork_keeps_inherited_tools() -> Result<()> {
 #[test_case(false, None, false, AMAZON_BEDROCK_RUNTIME_PROVIDER_ID, &[]; "runtime_default")]
 #[test_case(false, None, true, AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
     &[(Feature::IncrementalToolsLegacy, true), (Feature::IncrementalToolsLegacyGcp, false)]; "runtime_enabled")]
-#[test_case(false, None, true, GCP_PROVIDER_ID, &[]; "gcp_default")]
+#[test_case(false, None, true, GCP_PROVIDER_ID,
+    &[(Feature::IncrementalToolsLegacyGcp, true)]; "gcp_opt_in")]
 #[test_case(false, None, false, GCP_PROVIDER_ID,
-    &[(Feature::IncrementalToolsLegacyGcp, false), (Feature::IncrementalToolsLegacy, true)]; "gcp_opt_out")]
+    &[(Feature::IncrementalToolsLegacy, true)]; "gcp_default_with_bedrock_opt_in")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn incremental_tools_append_changed_catalog_without_rewriting_history(
     use_responses_lite: bool,

@@ -28,7 +28,13 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
                 body: responses::sse(vec![
                     responses::ev_response_created("response-1"),
                     responses::ev_message_item_added("message-1", "I’ll inspect"),
-                    responses::ev_output_text_delta(" the **relevant streaming path"),
+                    serde_json::json!({
+                        "type": "response.output_text.delta",
+                        "item_id": "message-1",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": " the **relevant streaming path",
+                    }),
                     responses::ev_function_call(
                         "command-1",
                         "exec_command",
@@ -40,7 +46,13 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
                 gate: Some(completion_gate),
                 body: responses::sse(vec![
                     responses::ev_message_item_added("message-1", ""),
-                    responses::ev_output_text_delta(" first"),
+                    serde_json::json!({
+                        "type": "response.output_text.delta",
+                        "item_id": "message-1",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": " first",
+                    }),
                     responses::ev_assistant_message("message-1", PREAMBLE),
                 ]),
             },
@@ -115,6 +127,7 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
         .await?;
 
     let mut release_completion = Some(release_completion);
+    let mut streamed_message_identity = None;
     let mut completed_command = None;
     let mut observed_order = Vec::new();
     timeout(Duration::from_secs(/*secs*/ 15), async {
@@ -138,6 +151,7 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
                             ServerNotification::AgentMessageDelta(delta) if delta.item_id == "message-1" => {
                                 observed_order.push("agent delta");
                                 capture_preview = true;
+                                streamed_message_identity = Some((delta.turn_id.clone(), delta.item_id.clone()));
                             }
                             ServerNotification::ItemStarted(started)
                                 if matches!(&started.item.payload, ThreadItemPayload::CommandExecution { .. }) =>
@@ -149,6 +163,10 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
                                 if matches!(&completed.item.payload, ThreadItemPayload::AgentMessage { text, .. } if text == PREAMBLE) =>
                             {
                                 observed_order.push("agent completed");
+                                let ThreadItemPayload::AgentMessage { id, .. } = &completed.item.payload else {
+                                    unreachable!("matched assistant message");
+                                };
+                                assert_eq!(streamed_message_identity, Some((completed.turn_id.clone(), id.clone())));
                             }
                             ServerNotification::ItemCompleted(completed) => {
                                 if let ThreadItemPayload::CommandExecution {
@@ -261,6 +279,11 @@ async fn command_start_before_message_completion_does_not_duplicate_preamble() -
             })
             .collect::<Vec<_>>()
             .join("\n");
+        assert_eq!(
+            transcript_snapshot.matches(PREAMBLE).count(),
+            1,
+            "preamble must appear once with replay={replay}: {transcript_snapshot}"
+        );
         insta::allow_duplicates! {
             insta::assert_snapshot!(transcript_snapshot, @r"
             • I’ll inspect the relevant streaming path first.

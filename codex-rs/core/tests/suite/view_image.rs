@@ -47,7 +47,8 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
-use core_test_support::skip_if_no_remote_env;
+use core_test_support::skip_if_remote;
+use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
@@ -89,6 +90,7 @@ fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) ->
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     TurnInputRequest::user_input(items).with_thread_settings(ThreadSettingsOverrides {
+        environments: Some(test.default_environment_requests(test.config.cwd.clone())),
         approval_policy: Some(AskForApproval::Never),
         sandbox_policy: Some(sandbox_policy),
         permission_profile,
@@ -232,9 +234,10 @@ async fn assert_user_turn_local_image_resizes_to(
             }),
     };
     let mut builder = builder.with_config(move |config| {
-        if image_budget_policy == ImageBudgetPolicy::DetailBased {
-            let _ = config.features.disable(Feature::UnifiedImageBudget);
-        }
+        let _ = config.features.set_enabled(
+            Feature::UnifiedImageBudget,
+            image_budget_policy != ImageBudgetPolicy::DetailBased,
+        );
         if matches!(resize_notice_expectation, ResizeNoticeExpectation::Enabled) {
             let _ = config.features.enable(Feature::ImageResizeNotice);
         }
@@ -731,7 +734,14 @@ async fn view_image_tool_applies_local_sandbox_read_denies() -> anyhow::Result<(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
-    skip_if_no_remote_env!(Ok(()));
+    skip_if_wine_exec!(Ok(()), "hardcodes a POSIX remote cwd");
+    skip_if_remote!(
+        Ok(()),
+        "Docker-backed remote exec-server process completion is not stable in manual verify"
+    );
+    if !is_remote_test_environment() {
+        return Ok(());
+    }
 
     let server = start_mock_server().await;
     let mut builder = test_codex();
@@ -937,7 +947,12 @@ async fn view_image_unified_budget_hides_detail_but_accepts_legacy_hints() -> an
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5.5");
+    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedImageBudget)
+            .expect("enable unified image budget");
+    });
     let test = builder.build_with_auto_env(&server).await?;
     let rel_path = "assets/unified-example.png";
     write_workspace_png(

@@ -572,12 +572,10 @@ async fn additional_context_tool_outputs(tool_outputs: bool) -> Result<()> {
         .with_config(move |config| {
             configure_scenario_catalog(config);
             config.include_environment_context = false;
-            if !tool_outputs {
-                config
-                    .features
-                    .disable(Feature::UntrustedAsToolOutput)
-                    .expect("test config should allow feature update");
-            }
+            config
+                .features
+                .set_enabled(Feature::UntrustedAsToolOutput, tool_outputs)
+                .expect("test config should allow feature update");
         })
         .build_with_auto_env(&server)
         .await?;
@@ -2415,6 +2413,10 @@ async fn astra_reads_code_mode_call_timing() -> Result<()> {
         .with_config(|config| {
             configure_scenario_catalog(config);
             config.features.enable(Feature::CodeMode).unwrap();
+            config
+                .features
+                .enable(Feature::CodeModeHostOutputTruncation)
+                .expect("enable the collector whose omission notice this scenario checks");
             // Use the selected cwd as the workspace root on local and remote executors.
             config.workspace_roots = vec![config.cwd.clone()];
             config.code_mode.experimental_show_cell_overhead = true;

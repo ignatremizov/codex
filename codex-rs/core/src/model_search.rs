@@ -380,19 +380,27 @@ pub(crate) async fn resolve(
     let cached = turn
         .extension_data
         .get::<CachedSearch>()
-        .filter(|cached| Arc::ptr_eq(&cached.base, base) && cached.request == request);
-    let fresh = cached.is_none();
-    let cached = match cached {
-        Some(cached) => cached,
-        None => {
-            let cached = Arc::new(CachedSearch {
-                base: Arc::clone(base),
-                request,
-                discovery: base.discover_model_search(turn_meta).await,
-            });
-            turn.extension_data.insert_arc(Arc::clone(&cached));
-            cached
-        }
+        .filter(|cached| cached.request == request);
+    let (cached, fresh) = if let Some(cached) = cached
+        .as_ref()
+        .filter(|cached| Arc::ptr_eq(&cached.base, base))
+    {
+        (Arc::clone(cached), false)
+    } else {
+        let reused =
+            cached.and_then(|cached| base.reuse_model_search(&cached.base, &cached.discovery));
+        let fresh = reused.is_none();
+        let discovery = match reused {
+            Some(discovery) => discovery,
+            None => base.discover_model_search(turn_meta).await,
+        };
+        let cached = Arc::new(CachedSearch {
+            base: Arc::clone(base),
+            request,
+            discovery,
+        });
+        turn.extension_data.insert_arc(Arc::clone(&cached));
+        (cached, fresh)
     };
     let finish = |decision, reason| {
         if fresh {
