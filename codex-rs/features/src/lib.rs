@@ -1224,7 +1224,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::CodeModeToolSearch,
         key: "code_mode_tool_search",
         stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CodeModeBufferedExec,
