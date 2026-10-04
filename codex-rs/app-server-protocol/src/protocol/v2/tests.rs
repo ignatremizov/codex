@@ -2753,6 +2753,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
             resources: Vec::new(),
             resource_templates: Vec::new(),
             auth_status: McpAuthStatus::Unknown,
+            allow_implicit_invocation: true,
         }],
         next_cursor: None,
     };
@@ -2773,6 +2774,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
                 "resources": [],
                 "resourceTemplates": [],
                 "authStatus": "unknown",
+                "allowImplicitInvocation": true,
             }],
             "nextCursor": null,
         })
@@ -2806,6 +2808,7 @@ fn mcp_server_status_accepts_older_inventory_without_runtime_status() {
             resources: Vec::new(),
             resource_templates: Vec::new(),
             auth_status: McpAuthStatus::Unknown,
+            allow_implicit_invocation: true,
         }
     );
 }
@@ -2888,6 +2891,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
             resources: Vec::new(),
             resource_templates: Vec::new(),
             auth_status: McpAuthStatus::Unsupported,
+            allow_implicit_invocation: true,
         }],
         next_cursor: None,
     };
@@ -2915,6 +2919,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
                 "resources": [],
                 "resourceTemplates": [],
                 "authStatus": "unsupported",
+                "allowImplicitInvocation": true,
             }],
             "nextCursor": null,
         })

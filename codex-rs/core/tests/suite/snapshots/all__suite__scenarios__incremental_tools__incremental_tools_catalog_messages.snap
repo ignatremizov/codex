@@ -1,8 +1,9 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
+assertion_line: 331
 expression: "context_snapshot::format_request_history_snapshot(scenario, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
-Scenario: Catalog overrides supply the update hint, both removal headers, and namespace instructions notices. MCP refreshes remove and restore tools, then change and clear only the namespace instructions. Runtime instructions remain verbatim, and unchanged turns do not repeat notices.
+Scenario: MCP refreshes change live authorization and namespace instructions while the first advertised non-Apps declarations stay frozen. Catalog overrides apply to resource-tool removal and restoration; unchanged turns do not repeat notices.
 
 ## Window 1
 Settings:
@@ -16,17 +17,19 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=7748a53142f449b7):
-        - namespace/functions; hash=124fee69a69ed6b2
+00:additional_tools/developer (3; hash=5e2064eee8a1425c):
+        - namespace/functions; hash=5bc155b08bed33b8
           - function/exec_command
           - function/write_stdin
           - function/list_mcp_resources
           - function/list_mcp_resource_templates
           - function/read_mcp_resource
+          - function/update_plan
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=2327142bda177c50
+        - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=4c160a708f68b189
+          - function/check_mail
           - function/close_agent
           - function/resume_agent
           - function/send_input
@@ -44,66 +47,44 @@ Settings:
 04:message/user:
     Begin with the echo service.
 -- request 2 (turn) --
-05:message/developer:
-    Unavailable tools:
-    - mcp__echo_service.cwd
-06:message/user:
+05:message/user:
     Continue after disabling the cwd tool.
 -- request 3 (turn) --
-07:message/user:
+06:message/user:
     Continue with the remaining echo tool.
 -- request 4 (turn) --
-08:message/developer:
-    Unavailable namespaces:
-    - mcp__echo_service
-
+07:message/developer:
     Unavailable tools:
     - functions.list_mcp_resource_templates
     - functions.list_mcp_resources
     - functions.read_mcp_resource
-09:message/user:
+08:message/user:
     Continue after removing the echo service.
 -- request 5 (turn) --
-10:message/user:
+09:message/user:
     Continue without the echo service.
 -- request 6 (turn) --
-11:message/developer:
+10:message/developer:
     Catalog update: retain earlier tools unless explicitly removed.
-12:additional_tools/developer (2; hash=ba0bceb82aa883e0):
+11:additional_tools/developer (1; hash=3e51f299f1a7bbce):
         - namespace/functions; hash=88d1efdc7cb932a8
           - function/list_mcp_resources
           - function/list_mcp_resource_templates
           - function/read_mcp_resource
-        - namespace/mcp__echo_service: Echo service instructions.; hash=a5144e5d70d01799
-          - function/cwd
-          - function/echo
-13:message/user:
+12:message/user:
     Continue with the restored echo service.
 -- request 7 (turn) --
-14:message/user:
+13:message/user:
     Continue with the same restored tools.
 -- request 8 (turn) --
-15:message/developer:
-    Catalog update: retain earlier tools unless explicitly removed.
-16:additional_tools/developer (1; hash=d436d651bf8b57b0):
-        - namespace/functions: Use these echo tools.; hash=8b9887e764d8cfd4
-          - function/cwd
-          - function/echo
-17:message/developer:
-    Unavailable namespaces:
-    - mcp__echo_service
-18:message/user:
+14:message/user:
     Continue with the echo tools in the functions namespace.
 -- request 9 (turn) --
-19:message/developer:
-    Catalog functions: Keep {name} and {instructions} literal.
-20:message/user:
+15:message/user:
     Continue with updated echo instructions.
 -- request 10 (turn) --
-21:message/developer:
-    Cleared functions.
-22:message/user:
+16:message/user:
     Continue after clearing echo instructions.
 -- request 11 (turn) --
-23:message/user:
+17:message/user:
     Continue with the same cleared instructions.
