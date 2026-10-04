@@ -142,6 +142,7 @@
 //! pasted content and text elements are preserved when extracting args.
 //! Commands requiring dispatch validation retain their draft and defer busy-state checks to
 //! `ChatWidget`, which has the thread state needed to accept or reject the command.
+//! Popup dispatch follows the same rule; a rejected command retains attachments as well as text.
 //!
 //! # Parent-Owned Thread Mode
 //!

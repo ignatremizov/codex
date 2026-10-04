@@ -731,11 +731,8 @@ impl LocalAgentControl {
                 let history_mode = if let Some(parent_thread_id) = options.parent_thread_id
                     && let Ok(parent_thread) = state.get_thread(parent_thread_id).await
                 {
-                    matches!(
-                        parent_thread.config_snapshot().await.history_mode,
-                        ThreadHistoryMode::Paginated
-                    )
-                    .then_some(ThreadHistoryMode::Paginated)
+                    // Legacy is an explicit selection too; None now defaults to Paginated.
+                    Some(parent_thread.config_snapshot().await.history_mode)
                 } else {
                     None
                 };

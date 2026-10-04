@@ -306,7 +306,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
                 responses::ev_function_call(SETUP_CALL_ID, "unsupported_tool", "{}"),
                 responses::ev_completed_with_tokens(
                     "parent-before-compaction",
-                    /*total_tokens*/ 96,
+                    /*total_tokens*/ 9_600,
                 ),
             ]),
             responses::sse(vec![
@@ -373,7 +373,7 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
     MockResponsesConfig::new(&server.uri())
         .with_model("gpt-5.4")
         .with_root_config(&format!(
-            "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_context_window = 100\nmodel_auto_compact_token_limit = 90\ncompact_prompt = {COMPACT_PROMPT:?}"
+            "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_context_window = 10000\nmodel_auto_compact_token_limit = 9000\ncompact_prompt = {COMPACT_PROMPT:?}"
         ))
         .with_extra_config(&format!(
             "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}"

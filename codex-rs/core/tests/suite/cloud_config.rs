@@ -95,6 +95,7 @@ async fn managed_deny_read_requirements_follow_thread_permission_updates() -> Re
 
     let mut builder = test_codex()
         .with_home(home)
+        .with_exec_server_url("none")
         .with_cloud_config_bundle(
             CloudConfigBundleFixture::loader_with_enterprise_requirement(format!(
                 "[permissions.filesystem]\ndeny_read = [{denied_root:?}]\n"

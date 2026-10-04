@@ -55,6 +55,25 @@ fn body_contains_text(body: &str, text: &str) -> bool {
     body.contains(&json_fragment(text))
 }
 
+fn request_body_text(req: &wiremock::Request) -> String {
+    let is_zstd = req
+        .headers
+        .get("content-encoding")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|entry| entry.trim().eq_ignore_ascii_case("zstd"))
+        });
+    let body = if is_zstd {
+        zstd::stream::decode_all(std::io::Cursor::new(&req.body)).ok()
+    } else {
+        Some(req.body.clone())
+    };
+    body.and_then(|body| String::from_utf8(body).ok())
+        .unwrap_or_default()
+}
+
 fn json_fragment(text: &str) -> String {
     serde_json::to_string(text)
         .expect("serialize text to JSON")
@@ -548,7 +567,7 @@ async fn mount_initial_flow(server: &MockServer) -> Vec<ResponseMock> {
     let sse5 = sse(vec![ev_completed("r5")]);
 
     let match_first = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
+        let body = request_body_text(req);
         body.contains("\"text\":\"hello world\"")
             && !body.contains(&format!("\"text\":\"{SUMMARY_TEXT}\""))
             && !body.contains("\"text\":\"AFTER_COMPACT\"")
@@ -558,13 +577,14 @@ async fn mount_initial_flow(server: &MockServer) -> Vec<ResponseMock> {
     let first = mount_sse_once_match(server, match_first, sse1).await;
 
     let match_compact = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body_contains_text(body, SUMMARIZATION_PROMPT) || body.contains(&json_fragment(FIRST_REPLY))
+        let body = request_body_text(req);
+        body_contains_text(&body, SUMMARIZATION_PROMPT)
+            || body.contains(&json_fragment(FIRST_REPLY))
     };
     let compact = mount_sse_once_match(server, match_compact, sse2).await;
 
     let match_after_compact = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
+        let body = request_body_text(req);
         body.contains("\"text\":\"AFTER_COMPACT\"")
             && !body.contains("\"text\":\"AFTER_RESUME\"")
             && !body.contains("\"text\":\"AFTER_FORK\"")
@@ -572,13 +592,13 @@ async fn mount_initial_flow(server: &MockServer) -> Vec<ResponseMock> {
     let after_compact = mount_sse_once_match(server, match_after_compact, sse3).await;
 
     let match_after_resume = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
+        let body = request_body_text(req);
         body.contains("\"text\":\"AFTER_RESUME\"")
     };
     let after_resume = mount_sse_once_match(server, match_after_resume, sse4).await;
 
     let match_after_fork = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
+        let body = request_body_text(req);
         body.contains("\"text\":\"AFTER_FORK\"")
     };
     let after_fork = mount_sse_once_match(server, match_after_fork, sse5).await;

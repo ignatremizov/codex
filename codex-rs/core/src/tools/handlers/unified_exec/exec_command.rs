@@ -405,15 +405,25 @@ impl ExecCommandHandler {
         }
 
         emit_unified_exec_tty_metric(&step_context.session_telemetry, tty);
-        crate::tools::lifecycle::notify_command_start(
-            context.session.as_ref(),
-            context.step_context.turn.as_ref(),
-            &context.call_id,
-            &command,
-            &cwd,
-            fs.as_ref(),
-        )
-        .await;
+        // Unified exec owns cancellation cleanup, so its dispatch task is not
+        // forcibly aborted with the turn. Preparation must observe cancellation
+        // itself, before a process or its lifecycle has been allocated.
+        tokio::select! {
+            biased;
+            _ = context.cancellation_token.cancelled() => {
+                return Err(FunctionCallError::RespondToModel(
+                    "Command preparation was cancelled before execution.".to_string(),
+                ));
+            }
+            () = crate::tools::lifecycle::notify_command_start(
+                context.session.as_ref(),
+                context.step_context.turn.as_ref(),
+                &context.call_id,
+                &command,
+                &cwd,
+                fs.as_ref(),
+            ) => {}
+        }
         // Preparation can be cancelled. Reserve a process only once it is done.
         let process_id = manager.allocate_process_id().await;
         let request = ExecCommandRequest {

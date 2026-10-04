@@ -110,7 +110,21 @@ impl Normalizer {
 
     fn normalize_values(&mut self, text: &str) -> String {
         // Tool calls report elapsed times in an otherwise stable output header.
-        let text = if text.starts_with("Script ") || text.starts_with("Wall time: ") {
+        let text = if text.starts_with("Chunk ID: ") {
+            static EXEC_HEADER: OnceLock<Regex> = OnceLock::new();
+            EXEC_HEADER
+                .get_or_init(|| {
+                    Regex::new(
+                        r"\AChunk ID: [0-9a-f]+\nWall time: [0-9]+(?:\.[0-9]+)? seconds(\n|$)",
+                    )
+                    .expect("unified exec metadata regex")
+                })
+                .replace(
+                    text,
+                    "Chunk ID: <CHUNK_ID>\nWall time: <DURATION> seconds$1",
+                )
+                .into_owned()
+        } else if text.starts_with("Script ") || text.starts_with("Wall time: ") {
             static WALL_TIME: OnceLock<Regex> = OnceLock::new();
             WALL_TIME
                 .get_or_init(|| {
