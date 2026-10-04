@@ -42,13 +42,26 @@ fn ring_buffer_drops_front_when_full() {
 #[test]
 fn logger_layer_filters_noisy_trace_payloads() {
     let fb = CodexFeedback::new();
+    let raw_capture = CodexFeedback::new();
     let _guard = tracing_subscriber::registry()
         // Keep another TRACE subscriber interested so bridged records are
         // emitted; feedback must still reject them with its own filter.
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::sink))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(raw_capture.make_writer())
+                .with_filter(
+                    Targets::new()
+                        .with_default(LevelFilter::TRACE)
+                        .with_target("codex_api::raw_response_event", LevelFilter::TRACE),
+                ),
+        )
         .with(fb.logger_layer())
         .set_default();
 
+    tracing::trace!(
+        target: "codex_api::raw_response_event",
+        payload = "raw-response-sentinel"
+    );
     tracing::trace!(target: "codex_api::responses_websocket_timing", payload = "secret");
     tracing::event!(
         target: "codex_otel.log_only", tracing::Level::INFO,
@@ -58,6 +71,14 @@ fn logger_layer_filters_noisy_trace_payloads() {
     tracing::trace!(target: "codex_http_client::transport", "transport-trace");
     tracing::trace!(target: "codex_api::sse", "sse-trace");
     tracing::trace!(target: "codex_api::sse::responses", "nested-sse-trace");
+    tracing::debug!(
+        target: "codex_api::sse::responses",
+        error_category = "data",
+        error_line = 1,
+        error_column = 2,
+        payload_bytes = 17,
+        "malformed-response-diagnostic"
+    );
     tracing::debug!(target: "codex_http_client::transport", "transport-debug");
     tracing::debug!(target: "codex_api::sse::responses", "sse-debug");
     tracing::trace!(target: "codex_feedback_test", "unrelated-trace");
@@ -70,10 +91,13 @@ fn logger_layer_filters_noisy_trace_payloads() {
     log::debug!(target: "tungstenite::protocol", "websocket-debug");
 
     let logs = String::from_utf8(fb.snapshot(/*session_id*/ None).bytes).unwrap();
+    let raw_logs = String::from_utf8(raw_capture.snapshot(/*session_id*/ None).bytes).unwrap();
+    assert!(raw_logs.contains("raw-response-sentinel"));
     for excluded in [
         "secret",
         "private-agent-response",
         "private-guardian-rationale",
+        "raw-response-sentinel",
         "transport-trace",
         "sse-trace",
         "nested-sse-trace",
@@ -85,6 +109,7 @@ fn logger_layer_filters_noisy_trace_payloads() {
     for retained in [
         "transport-debug",
         "sse-debug",
+        "malformed-response-diagnostic",
         "unrelated-trace",
         "unrelated-log-trace",
         "websocket-debug",

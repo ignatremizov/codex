@@ -263,6 +263,7 @@ impl CodexFeedback {
                     // target before re-emitting them as `log`; tungstenite TRACE
                     // includes full websocket frames and authenticated handshakes.
                     .with_target("tungstenite", LevelFilter::DEBUG)
+                    .with_target("codex_api::raw_response_event", LevelFilter::OFF)
                     .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF)
                     .with_target("codex_core::post_sampling_token_estimate", LevelFilter::OFF),
             )
