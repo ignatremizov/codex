@@ -70,7 +70,7 @@ fn configured_thread_session(thread_id: ThreadId) -> crate::session_state::Threa
 }
 
 #[tokio::test]
-async fn session_header_uses_catalog_display_name_without_changing_model() {
+async fn session_header_uses_canonical_model_without_changing_selection() {
     let slug = "us.openai.gpt-5.6-luna";
     for (name, first_event, display_name) in [
         ("startup", true, Some("GPT-5.6 Luna")),

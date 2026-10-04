@@ -1,11 +1,12 @@
 ---
 source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 559
 expression: confirmation
 ---
                 Plugins
 › Ask Codex to  Remove Repo Marketplace marketplace?
                 This removes the configured marketplace from Codex.
-  GPT-5.6-Sol
+  gpt-5.6-sol
 
               › 1. Remove marketplace  Remove this marketplace from the available
                                        plugin list
