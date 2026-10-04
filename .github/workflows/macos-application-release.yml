@@ -1,0 +1,266 @@
+name: macos-application-release
+
+on:
+  workflow_call:
+    inputs:
+      reuse:
+        description: Exact-source component run IDs from the release planner
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  STABLE_GIT_COMMIT: ${{ github.sha }}
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  RELEASE_TARGET: x86_64-apple-darwin
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  libraries:
+    name: Checkpoint macOS application libraries
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    env:
+      CARGO_BUILD_JOBS: "2"
+      LIBRARIES_NEEDED: ${{ fromJSON(inputs.reuse).cli == '' || fromJSON(inputs.reuse).services == '' }}
+      REUSE_RUN: ${{ fromJSON(inputs.reuse).libraries }}
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Reuse a completed exact-source library checkpoint
+        if: env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.REUSE_RUN }}
+          name: macos-application-libraries-${{ env.REUSE_RUN }}
+          path: ${{ runner.temp }}/application-libraries
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN == ''
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-ci
+        if: env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN == ''
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        if: env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN == ''
+        with:
+          targets: x86_64-apple-darwin
+      - uses: ./.github/actions/setup-shared-sccache
+        if: env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN == ''
+      - name: Build the shared application dependency graph once
+        if: env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN == ''
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run-release-build.py" \
+            --phase macos-application-libraries -- \
+            cargo build --locked --target "$RELEASE_TARGET" \
+            -p codex-cli -p codex-app-server -p codex-responses-api-proxy \
+            --lib --release --timings
+      - name: Archive completed libraries and Cargo sources
+        if: env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN == ''
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/release-checkpoint.py" pack \
+            --directory "${RUNNER_TEMP}/application-libraries"
+      - name: Upload the checkpoint before any final executable build
+        if: env.LIBRARIES_NEEDED == 'true'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-application-libraries-${{ github.run_id }}
+          path: ${{ runner.temp }}/application-libraries/*
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+      - name: Upload library diagnostics
+        if: always() && env.LIBRARIES_NEEDED == 'true' && env.REUSE_RUN == ''
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-macos-application-libraries-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-diagnostics/*
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
+
+  executables:
+    name: Link macOS ${{ matrix.component }}
+    needs: libraries
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: cli
+            binaries: codex
+            targets: --bin codex
+          - component: services
+            binaries: codex-app-server codex-responses-api-proxy
+            targets: --bin codex-app-server --bin codex-responses-api-proxy
+    env:
+      CARGO_BUILD_JOBS: "1"
+      # Final executables are not cacheable by sccache. Libraries are restored
+      # intact; do not leave a cache daemon in this memory-constrained job.
+      RUSTC_WRAPPER: ""
+      REUSE_RUN: ${{ fromJSON(inputs.reuse)[matrix.component] }}
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Prepare output paths
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-component" "$RUNNER_TEMP/release-diagnostics"
+          {
+            echo "RELEASE_DIR=$RUNNER_TEMP/release-component"
+            echo "RELEASE_DIAGNOSTICS_DIR=$RUNNER_TEMP/release-diagnostics"
+          } >> "$GITHUB_ENV"
+      - name: Download an already built exact-source executable component
+        if: env.REUSE_RUN != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.REUSE_RUN }}
+          name: codex-x86_64-apple-darwin-${{ matrix.component }}-binaries-${{ env.REUSE_RUN }}
+          path: ${{ env.RELEASE_DIR }}
+      - uses: ./.github/actions/setup-ci
+        if: env.REUSE_RUN == ''
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        if: env.REUSE_RUN == ''
+        with:
+          targets: x86_64-apple-darwin
+      - name: Download completed application libraries
+        if: env.REUSE_RUN == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos-application-libraries-${{ github.run_id }}
+          path: ${{ runner.temp }}/application-libraries
+      - name: Verify and restore the exact build checkpoint
+        if: env.REUSE_RUN == ''
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/release-checkpoint.py" restore \
+            --directory "${RUNNER_TEMP}/application-libraries"
+      - name: Build final executables with a fresh runner budget
+        if: env.REUSE_RUN == ''
+        env:
+          BINARY_TARGETS: ${{ matrix.targets }}
+        run: |
+          set -euo pipefail
+          read -r -a binary_targets <<< "$BINARY_TARGETS"
+          # Keep all three selected packages to preserve feature unification
+          # from the library producer; only the binary targets differ.
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run-release-build.py" \
+            --phase macos-${{ matrix.component }}-executables -- \
+            cargo build --frozen --target "$RELEASE_TARGET" \
+            -p codex-cli -p codex-app-server -p codex-responses-api-proxy \
+            "${binary_targets[@]}" --release --jobs 1 --timings --verbose
+      - name: Stage freshly built executables
+        if: env.REUSE_RUN == ''
+        run: |
+          for binary in ${{ matrix.binaries }}; do
+            cp "${CARGO_TARGET_DIR}/${RELEASE_TARGET}/release/$binary" "$RELEASE_DIR/$binary"
+          done
+      - name: Verify existing provenance before executing reused binaries
+        if: env.REUSE_RUN != ''
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/release-component.py" verify \
+            --component "${{ matrix.component }}" --directory "$RELEASE_DIR"
+      - name: Validate native architecture and executable startup
+        run: |
+          set -euo pipefail
+          for binary in ${{ matrix.binaries }}; do
+            chmod 0755 "$RELEASE_DIR/$binary"
+            test "$(wc -c < "$RELEASE_DIR/$binary")" -gt 1000000
+            lipo "$RELEASE_DIR/$binary" -verify_arch x86_64
+            "$RELEASE_DIR/$binary" --help > "$RELEASE_DIAGNOSTICS_DIR/$binary-help.txt" 2>&1
+            test -s "$RELEASE_DIAGNOSTICS_DIR/$binary-help.txt"
+          done
+      - name: Stamp the executable component
+        if: env.REUSE_RUN == ''
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/release-component.py" write \
+            --component "${{ matrix.component }}" --directory "$RELEASE_DIR"
+      - name: Retain the completed component independently
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-apple-darwin-${{ matrix.component }}-binaries-${{ github.run_id }}
+          path: ${{ env.RELEASE_DIR }}/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+      - name: Upload executable diagnostics
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-macos-${{ matrix.component }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-diagnostics/*
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
+
+  qualify:
+    name: Qualify macOS credential-file handling
+    needs: executables
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Prepare application staging path
+        run: echo "RELEASE_DIR=$RUNNER_TEMP/application" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-x86_64-apple-darwin-cli-binaries-${{ github.run_id }}
+          path: ${{ runner.temp }}/cli
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-x86_64-apple-darwin-services-binaries-${{ github.run_id }}
+          path: ${{ runner.temp }}/services
+      - name: Verify both components and assemble application binaries
+        run: |
+          set -euo pipefail
+          for component in cli services; do
+            python3 .github/scripts/release-component.py verify \
+              --component "$component" --directory "$RUNNER_TEMP/$component"
+          done
+          mkdir -p "$RELEASE_DIR"
+          cp "$RUNNER_TEMP/cli/codex" "$RELEASE_DIR/"
+          cp "$RUNNER_TEMP/services/codex-app-server" "$RELEASE_DIR/"
+          cp "$RUNNER_TEMP/services/codex-responses-api-proxy" "$RELEASE_DIR/"
+          chmod 0755 "$RELEASE_DIR/"*
+      - name: Verify CODEX_AUTH_FILE in the actual release binaries
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/smoke-auth-file.py --bin-dir "$RELEASE_DIR" \
+            2>&1 | tee "$RELEASE_DIR/auth-file-smoke.log"
+          python3 .github/scripts/release-component.py write \
+            --component application --directory "$RELEASE_DIR"
+      - name: Upload the credential-qualified application component
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-apple-darwin-application-binaries-${{ github.run_id }}
+          path: ${{ env.RELEASE_DIR }}/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+      - name: Retain credential smoke diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-auth-file-failure-${{ github.run_id }}
+          path: ${{ env.RELEASE_DIR }}/auth-file-smoke.log
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
