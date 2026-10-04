@@ -1,0 +1,788 @@
+name: manual-release-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_linux:
+        description: Build x86_64 Linux artifact on ubuntu-24.04
+        required: true
+        default: true
+        type: boolean
+      build_macos_intel:
+        description: Build x86_64 macOS artifact on macos-15-intel
+        required: true
+        default: true
+        type: boolean
+
+      reuse_successful_components:
+        description: Reuse verified macOS components from an earlier run of this exact commit
+        required: true
+        default: true
+        type: boolean
+      package_macos_from_run:
+        description: Package only from a completed, credential-qualified macOS release run; skips all builds
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  STABLE_GIT_COMMIT: ${{ github.sha }}
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  CODEX_ZSH_RELEASE_REPOSITORY: openai/codex
+  CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0
+  CODEX_ZSH_MANIFEST_SHA256: c534eab89dcea7e3d8a5e5b3f49c025c7c64cd4e4d9814ee24871de58a9359a1
+
+jobs:
+  plan:
+    name: Plan exact-source release components
+    if: ${{ inputs.build_linux || inputs.build_macos_intel || inputs.package_macos_from_run != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      reuse: ${{ steps.plan.outputs.reuse }}
+      source_commit: ${{ steps.plan.outputs.source_commit }}
+      source_run: ${{ steps.plan.outputs.source_run }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Check release helper syntax
+        run: |
+          python3 - <<'PYTHON'
+          import ast
+          from pathlib import Path
+          for name in ('run-release-build.py', 'smoke-auth-file.py', 'release-component.py', 'release-checkpoint.py'):
+              ast.parse((Path('.github/scripts') / name).read_text(), filename=name)
+          PYTHON
+      - name: Test release provenance and monitor helpers
+        run: python3 -m unittest discover -s .github/scripts -p test_release_ci.py -v
+      - name: Find reusable components, including from failed releases
+        id: plan
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          REUSE_COMPONENTS: ${{ inputs.reuse_successful_components }}
+          BUILD_MACOS: ${{ inputs.build_macos_intel }}
+          PACKAGE_FROM_RUN: ${{ inputs.package_macos_from_run }}
+        with:
+          script: |
+            const reuse = { cli: '', services: '', libraries: '', 'code-mode': '', voice: '' };
+            core.setOutput('source_commit', context.sha);
+            core.setOutput('source_run', String(context.runId));
+            if (process.env.PACKAGE_FROM_RUN) {
+              const requested = process.env.PACKAGE_FROM_RUN;
+              if (!/^[1-9][0-9]*$/.test(requested) || !Number.isSafeInteger(Number(requested))) {
+                throw new Error('package_macos_from_run must be a positive GitHub run ID');
+              }
+              const { data: source } = await github.rest.actions.getWorkflowRun({
+                ...context.repo, run_id: Number(requested),
+              });
+              const repository = `${context.repo.owner}/${context.repo.repo}`;
+              if (source.status !== 'completed' || source.event !== 'workflow_dispatch' ||
+                  source.path !== '.github/workflows/manual-release-build.yml' ||
+                  source.head_repository?.full_name !== repository ||
+                  source.head_branch !== context.ref.replace('refs/heads/', '')) {
+                throw new Error('Packaging requires a completed release run from this repository and branch');
+              }
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                ...context.repo, run_id: source.id, filter: 'latest', per_page: 100,
+              });
+              for (const name of [
+                'static / Rust static checks',
+                'macOS application release / Qualify macOS credential-file handling',
+                'Release build — x86_64-apple-darwin (code-mode)',
+                'Voice runtime — x86_64-apple-darwin',
+              ]) {
+                if (!jobs.some(job => job.name === name && job.conclusion === 'success')) {
+                  throw new Error(`Source release has not passed ${name}`);
+                }
+              }
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                ...context.repo, run_id: source.id, per_page: 100,
+              });
+              for (const name of [
+                `codex-x86_64-apple-darwin-application-binaries-${source.id}`,
+                `codex-x86_64-apple-darwin-code-mode-binaries-${source.id}`,
+                `voice-x86_64-apple-darwin-${source.id}`,
+              ]) {
+                if (!artifacts.some(artifact => artifact.name === name && !artifact.expired)) {
+                  throw new Error(`Missing source component: ${name}`);
+                }
+              }
+              core.setOutput('source_commit', source.head_sha);
+              core.setOutput('source_run', String(source.id));
+              core.setOutput('reuse', JSON.stringify(reuse));
+              await core.summary.addHeading('Packaging-only recovery').addCodeBlock(JSON.stringify({
+                source_commit: source.head_sha, source_run: source.id,
+                packaging_workflow_commit: context.sha,
+                policy: 'No compilation; retain original source identity and recheck component checksums',
+              }, null, 2), 'json').write();
+              return;
+            }
+            if (process.env.REUSE_COMPONENTS === 'true' && process.env.BUILD_MACOS === 'true') {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id: 'manual-release-build.yml',
+                head_sha: context.sha, branch: context.ref.replace('refs/heads/', ''),
+                event: 'workflow_dispatch', per_page: 100,
+              });
+              for (const run of data.workflow_runs) {
+                if (run.head_sha !== context.sha || run.id === context.runId || run.status !== 'completed') continue;
+                const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                  ...context.repo, run_id: run.id, per_page: 100,
+                });
+                for (const component of Object.keys(reuse)) {
+                  if (reuse[component]) continue;
+                  const name = component === 'voice'
+                    ? `voice-x86_64-apple-darwin-${run.id}`
+                    : component === 'libraries'
+                      ? `macos-application-libraries-${run.id}`
+                      : `codex-x86_64-apple-darwin-${component}-binaries-${run.id}`;
+                  if (artifacts.some(a => a.name === name && !a.expired)) {
+                    reuse[component] = String(run.id);
+                  }
+                }
+                if (Object.values(reuse).every(Boolean)) break;
+              }
+            }
+            core.setOutput('reuse', JSON.stringify(reuse));
+            await core.summary.addHeading('Release plan').addCodeBlock(JSON.stringify({
+              source_commit: context.sha,
+              macos_components: reuse,
+              policy: 'Exact commit only; verify provenance and checksums before reuse',
+            }, null, 2), 'json').write();
+
+  static:
+    needs: plan
+    if: ${{ inputs.package_macos_from_run == '' && (inputs.build_linux || inputs.build_macos_intel) }}
+    uses: ./.github/workflows/rust-static-checks.yml
+    with:
+      run_clippy: true
+
+  linux:
+    name: Release build — x86_64-unknown-linux-gnu
+    if: ${{ inputs.build_linux && inputs.package_macos_from_run == '' }}
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/lib/android /usr/share/dotnet
+          docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Reserve swap headroom for release ThinLTO
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The warm-cache build reached the final Rust stage with all 15 GiB
+          # RAM and the runner's 3 GiB swap in use before the runner shut down.
+          # Keep the release profile intact; add temporary disk-backed headroom
+          # on this disposable Linux runner, never on the developer's machine.
+          swap_file="${RUNNER_TEMP:?}/codex-release.swap"
+          test ! -e "$swap_file"
+          test ! -L "$swap_file"
+          available_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
+          if (( available_kib < 40 * 1024 * 1024 )); then
+            echo "Insufficient free disk for release swap and build outputs" >&2
+            exit 1
+          fi
+          sudo fallocate -l 16G "$swap_file"
+          sudo chmod 0600 "$swap_file"
+          sudo mkswap "$swap_file"
+          sudo swapon "$swap_file"
+          free -h
+          swapon --show
+
+      - uses: ./.github/actions/setup-ci
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-apt-packages.sh" \
+            pkg-config libcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Compute lockfile hash
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.lockhash.outputs.hash }}-
+            manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - uses: ./.github/actions/setup-shared-sccache
+
+      - name: cargo build --release
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run-release-build.py" \
+            --phase linux-release -- cargo build --locked \
+            -p codex-cli --bin codex \
+            -p codex-code-mode-host --bin codex-code-mode-host \
+            -p codex-app-server --bin codex-app-server \
+            -p codex-responses-api-proxy --bin codex-responses-api-proxy \
+            --release \
+            --timings
+
+      - name: Validate Linux binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${CARGO_TARGET_DIR}/release/codex" --help > "${RUNNER_TEMP}/codex-help.txt" 2>&1
+          if [[ ! -s "${RUNNER_TEMP}/codex-help.txt" ]]; then
+            echo "codex --help produced no output" >&2
+            exit 1
+          fi
+          "${CARGO_TARGET_DIR}/release/codex-app-server" --help > "${RUNNER_TEMP}/codex-app-server-help.txt" 2>&1
+          "${CARGO_TARGET_DIR}/release/codex-responses-api-proxy" --help > "${RUNNER_TEMP}/codex-responses-api-proxy-help.txt" 2>&1
+          for binary in codex codex-code-mode-host codex-app-server codex-responses-api-proxy; do
+            binary_path="${CARGO_TARGET_DIR}/release/${binary}"
+            if [[ "$(wc -c < "${binary_path}")" -le 1000000 ]]; then
+              echo "${binary} binary is unexpectedly small" >&2
+              ls -lh "${binary_path}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify CODEX_AUTH_FILE in Linux release executables
+        run: |
+          set -euo pipefail
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/smoke-auth-file.py" \
+            --bin-dir "${CARGO_TARGET_DIR}/release" \
+            2>&1 | tee "${RELEASE_DIAGNOSTICS_DIR}/auth-file-smoke.log"
+
+      - name: Stage Linux release binaries and reclaim build space
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/linux-release"
+          timings_dir="${RUNNER_TEMP}/cargo-timings"
+          mkdir -p "${release_dir}" "${timings_dir}"
+          for binary in codex codex-code-mode-host codex-app-server codex-responses-api-proxy; do
+            cp "${CARGO_TARGET_DIR}/release/${binary}" "${release_dir}/${binary}"
+            chmod 0755 "${release_dir}/${binary}"
+          done
+          find "${CARGO_TARGET_DIR}" \
+            -path '*/cargo-timings/cargo-timing.html' \
+            -type f \
+            -exec cp '{}' "${timings_dir}/cargo-timing.html" ';' \
+            -quit
+          echo "RELEASE_DIR=${release_dir}" >> "$GITHUB_ENV"
+          echo "CARGO_TIMINGS_DIR=${timings_dir}" >> "$GITHUB_ENV"
+          cargo clean --profile release
+          df -h /
+
+      - name: Build matching development voice package inputs
+        id: voice
+        uses: ./.github/actions/setup-manual-voice
+        with:
+          target: x86_64-unknown-linux-gnu
+          purpose: package
+
+      - name: Package Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="codex-x86_64-unknown-linux-gnu"
+          mkdir -p dist/"${artifact}"
+          cp "${RELEASE_DIR}/codex" dist/"${artifact}"/codex
+          cp "${RELEASE_DIR}/codex-code-mode-host" dist/"${artifact}"/codex-code-mode-host
+          cp "${RELEASE_DIR}/codex-app-server" dist/"${artifact}"/codex-app-server
+          cp "${RELEASE_DIR}/codex-responses-api-proxy" dist/"${artifact}"/codex-responses-api-proxy
+          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
+          sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+          rm -rf "dist/${artifact}"
+
+      - name: Download packaged zsh manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/${CODEX_ZSH_RELEASE_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
+            -o "${RUNNER_TEMP}/codex-zsh"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/verify-zsh-manifest.sh" \
+            "${RUNNER_TEMP}/codex-zsh" "$CODEX_ZSH_MANIFEST_SHA256"
+
+      - name: Build Codex package archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="x86_64-unknown-linux-gnu"
+          archive_dir="dist/${target}"
+          for bundle in primary app-server; do
+            voice_args=()
+            if [[ "$bundle" == primary ]]; then
+              voice_args+=(--voice-runtime-dir "${CARGO_TARGET_DIR}/voice-native")
+            fi
+            bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+              --target "${target}" \
+              --bundle "${bundle}" \
+              --entrypoint-dir "${RELEASE_DIR}" \
+              --archive-dir "${archive_dir}" \
+              --archive-format tar.gz \
+              --zsh-manifest "${RUNNER_TEMP}/codex-zsh" \
+              "${voice_args[@]}"
+          done
+          find "${archive_dir}" -maxdepth 1 -type f \
+            \( -name 'codex-package-*.tar.gz' -o -name 'codex-app-server-package-*.tar.gz' \) \
+            -print0 |
+            while IFS= read -r -d '' archive; do
+              sha256sum "${archive}" > "${archive}.sha256"
+            done
+
+      - name: Upload Linux binaries archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-unknown-linux-gnu-binaries-${{ github.run_id }}
+          path: |
+            codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz
+            codex-rs/codex-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Linux Codex package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-package-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-package-x86_64-unknown-linux-gnu.tar.gz
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-package-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Linux app-server package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-app-server-package-x86_64-unknown-linux-gnu-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-app-server-package-x86_64-unknown-linux-gnu.tar.gz
+            codex-rs/dist/x86_64-unknown-linux-gnu/codex-app-server-package-x86_64-unknown-linux-gnu.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-manual-release-x86_64-unknown-linux-gnu
+          path: |
+            ${{ runner.temp }}/release-diagnostics/*
+            ${{ env.CARGO_TIMINGS_DIR }}/cargo-timing.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Save cargo home cache
+        if: always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+
+  macos_application:
+    name: macOS application release
+    if: ${{ inputs.build_macos_intel && inputs.package_macos_from_run == '' }}
+    needs: [static, plan]
+    uses: ./.github/workflows/macos-application-release.yml
+    with:
+      reuse: ${{ needs.plan.outputs.reuse }}
+
+  macos_intel_build:
+    name: Release build — x86_64-apple-darwin (${{ matrix.bundle }})
+    if: ${{ inputs.build_macos_intel && inputs.package_macos_from_run == '' }}
+    needs: [static, plan]
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      RELEASE_TARGET: x86_64-apple-darwin
+      REUSE_RUN: ${{ fromJSON(needs.plan.outputs.reuse)[matrix.bundle] }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # V8 lives in this separate graph; do not contend with the CLI build.
+          - bundle: code-mode
+            binaries: codex-code-mode-host
+            packages: -p codex-code-mode-host
+            cargo_args: -p codex-code-mode-host --bin codex-code-mode-host
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Prepare component paths
+        run: |
+          echo "RELEASE_DIR=${GITHUB_WORKSPACE}/codex-rs/dist/macos-binaries/${{ matrix.bundle }}" >> "$GITHUB_ENV"
+          mkdir -p "${RUNNER_TEMP}/release-diagnostics"
+
+      - name: Download a previously validated exact-source component
+        if: env.REUSE_RUN != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.REUSE_RUN }}
+          name: codex-x86_64-apple-darwin-${{ matrix.bundle }}-binaries-${{ env.REUSE_RUN }}
+          path: ${{ env.RELEASE_DIR }}
+
+      - uses: ./.github/actions/setup-ci
+        if: env.REUSE_RUN == ''
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        if: env.REUSE_RUN == ''
+        with:
+          targets: x86_64-apple-darwin
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        if: env.REUSE_RUN == '' && matrix.bundle == 'code-mode'
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-apple-darwin
+
+      - name: Cache Cargo source downloads, not installed executables
+        if: env.REUSE_RUN == ''
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: |
+            manual-rust-cargo-sources-v2-${{ runner.os }}-${{ runner.arch }}-
+      - uses: ./.github/actions/setup-shared-sccache
+        if: env.REUSE_RUN == ''
+
+      - name: Build shared release libraries
+        if: env.REUSE_RUN == ''
+        env:
+          CARGO_PACKAGES: ${{ matrix.packages }}
+        run: |
+          set -euo pipefail
+          read -r -a packages <<< "$CARGO_PACKAGES"
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run-release-build.py" \
+            --phase macos-${{ matrix.bundle }}-libraries -- \
+            cargo build --locked --target "$RELEASE_TARGET" \
+            "${packages[@]}" --lib --release --timings
+
+      - name: Build release executables without overlapping final links
+        if: env.REUSE_RUN == ''
+        env:
+          CARGO_ARGS: ${{ matrix.cargo_args }}
+        run: |
+          set -euo pipefail
+          read -r -a cargo_args <<< "$CARGO_ARGS"
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/run-release-build.py" \
+            --phase macos-${{ matrix.bundle }}-executables -- \
+            cargo build --locked --target "$RELEASE_TARGET" \
+            "${cargo_args[@]}" --release --jobs 1 --timings --verbose
+
+      - name: Stage freshly built macOS binaries
+        if: env.REUSE_RUN == ''
+        run: |
+          set -euo pipefail
+          mkdir -p "$RELEASE_DIR"
+          for binary in ${{ matrix.binaries }}; do
+            cp "${CARGO_TARGET_DIR}/${RELEASE_TARGET}/release/${binary}" "$RELEASE_DIR/$binary"
+          done
+
+      - name: Verify reused component provenance before execution
+        if: env.REUSE_RUN != ''
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/release-component.py" verify \
+            --component "${{ matrix.bundle }}" --directory "$RELEASE_DIR"
+
+      - name: Validate macOS Intel release executables
+        run: |
+          set -euo pipefail
+          for binary in ${{ matrix.binaries }}; do
+            binary_path="$RELEASE_DIR/$binary"
+            chmod 0755 "$binary_path"
+            test "$(wc -c < "$binary_path")" -gt 1000000
+            lipo "$binary_path" -verify_arch x86_64
+            "$binary_path" --help > "${RUNNER_TEMP}/release-diagnostics/${binary}-help.txt" 2>&1
+            test -s "${RUNNER_TEMP}/release-diagnostics/${binary}-help.txt"
+          done
+
+      - name: Stamp validated component provenance
+        if: env.REUSE_RUN == ''
+        run: |
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/release-component.py" write \
+            --component "${{ matrix.bundle }}" --directory "$RELEASE_DIR"
+
+      - name: Upload validated macOS component immediately
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-apple-darwin-${{ matrix.bundle }}-binaries-${{ github.run_id }}
+          path: ${{ env.RELEASE_DIR }}/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+      - name: Upload build logs, resource samples, and Cargo timings
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-manual-release-x86_64-apple-darwin-${{ matrix.bundle }}
+          path: ${{ runner.temp }}/release-diagnostics/*
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 14
+
+  macos_intel_voice:
+    name: Voice runtime — x86_64-apple-darwin
+    if: ${{ inputs.build_macos_intel && inputs.package_macos_from_run == '' }}
+    needs: [static, plan]
+    env:
+      REUSE_RUN: ${{ fromJSON(needs.plan.outputs.reuse).voice }}
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Reuse an exact-source voice archive
+        if: env.REUSE_RUN != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.REUSE_RUN }}
+          name: voice-x86_64-apple-darwin-${{ env.REUSE_RUN }}
+          path: ${{ runner.temp }}
+
+      - uses: ./.github/actions/setup-ci
+        if: env.REUSE_RUN == ''
+
+      - name: Build matching development voice package inputs
+        if: env.REUSE_RUN == ''
+        uses: ./.github/actions/setup-manual-voice
+        with:
+          target: x86_64-apple-darwin
+          purpose: package
+
+      - name: Archive macOS Intel voice inputs
+        if: env.REUSE_RUN == ''
+        run: |
+          set -euo pipefail
+          tar -C "${CARGO_TARGET_DIR}/voice-native" \
+            -czf "${RUNNER_TEMP}/voice-x86_64-apple-darwin.tar.gz" runtime codex-voice-host
+
+      - name: Upload macOS Intel voice inputs
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: voice-x86_64-apple-darwin-${{ github.run_id }}
+          path: ${{ runner.temp }}/voice-x86_64-apple-darwin.tar.gz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  macos_intel_package:
+    name: Package release — x86_64-apple-darwin
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' &&
+          (inputs.package_macos_from_run != '' ||
+           (inputs.build_macos_intel && needs.macos_intel_build.result == 'success' &&
+            needs.macos_application.result == 'success' && needs.macos_intel_voice.result == 'success')) }}
+    needs:
+      - plan
+      - macos_intel_build
+      - macos_application
+      - macos_intel_voice
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RELEASE_SOURCE_SHA: ${{ needs.plan.outputs.source_commit }}
+      STABLE_GIT_COMMIT: ${{ needs.plan.outputs.source_commit }}
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.plan.outputs.source_commit }}
+          persist-credentials: false
+
+      - name: Download application macOS binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.plan.outputs.source_run }}
+          name: codex-x86_64-apple-darwin-application-binaries-${{ needs.plan.outputs.source_run }}
+          path: ${{ runner.temp }}/macos-binaries/application
+
+      - name: Download code-mode macOS binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.plan.outputs.source_run }}
+          name: codex-x86_64-apple-darwin-code-mode-binaries-${{ needs.plan.outputs.source_run }}
+          path: ${{ runner.temp }}/macos-binaries/code-mode
+
+      - name: Assemble macOS release directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/macos-release"
+          mkdir -p "${release_dir}"
+          for component in application code-mode; do
+            component_dir="${RUNNER_TEMP}/macos-binaries/${component}"
+            GITHUB_SHA="$RELEASE_SOURCE_SHA" python3 "${GITHUB_WORKSPACE}/.github/scripts/release-component.py" verify \
+              --component "$component" --directory "$component_dir"
+            cp "$component_dir/release-manifest.json" "$release_dir/${component}-manifest.json"
+          done
+          for binary in codex codex-app-server codex-responses-api-proxy; do
+            cp "${RUNNER_TEMP}/macos-binaries/application/$binary" "$release_dir/$binary"
+          done
+          cp "${RUNNER_TEMP}/macos-binaries/code-mode/codex-code-mode-host" "$release_dir/"
+          cp "${RUNNER_TEMP}/macos-binaries/application/auth-file-smoke.log" "$release_dir/"
+          chmod 0755 "$release_dir/codex" "$release_dir/codex-app-server" \
+            "$release_dir/codex-responses-api-proxy" "$release_dir/codex-code-mode-host"
+          echo "RELEASE_DIR=${release_dir}" >> "$GITHUB_ENV"
+          for binary in codex codex-code-mode-host codex-app-server codex-responses-api-proxy; do
+            binary_path="${release_dir}/${binary}"
+            if [[ "$(wc -c < "${binary_path}")" -le 1000000 ]]; then
+              echo "${binary} binary is unexpectedly small" >&2
+              ls -lh "${binary_path}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Download matching macOS Intel voice inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.plan.outputs.source_run }}
+          name: voice-x86_64-apple-darwin-${{ needs.plan.outputs.source_run }}
+          path: ${{ runner.temp }}/voice-artifact
+
+      - name: Extract macOS Intel voice inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/macos-voice"
+          # The macOS archive interleaves read-only plugin and library
+          # directories. Defer restoring their modes until all files exist.
+          tar --delay-directory-restore -xzf "${RUNNER_TEMP}/voice-artifact/voice-x86_64-apple-darwin.tar.gz" \
+            -C "${RUNNER_TEMP}/macos-voice"
+          test -x "${RUNNER_TEMP}/macos-voice/codex-voice-host"
+          test -f "${RUNNER_TEMP}/macos-voice/runtime/runtime.json"
+
+      - name: Package macOS Intel artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="codex-x86_64-apple-darwin"
+          mkdir -p dist/"${artifact}"
+          cp "${RELEASE_DIR}/codex" dist/"${artifact}"/codex
+          cp "${RELEASE_DIR}/codex-code-mode-host" dist/"${artifact}"/codex-code-mode-host
+          cp "${RELEASE_DIR}/codex-app-server" dist/"${artifact}"/codex-app-server
+          cp "${RELEASE_DIR}/codex-responses-api-proxy" dist/"${artifact}"/codex-responses-api-proxy
+          cp "${RELEASE_DIR}/application-manifest.json" "${RELEASE_DIR}/code-mode-manifest.json" \
+            "${RELEASE_DIR}/auth-file-smoke.log" dist/"${artifact}"/
+          tar -C dist -czf "${artifact}.tar.gz" "${artifact}"
+          sha256sum "${artifact}.tar.gz" > "${artifact}.tar.gz.sha256"
+
+      - name: Download packaged zsh manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/${CODEX_ZSH_RELEASE_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
+            -o "${RUNNER_TEMP}/codex-zsh"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/verify-zsh-manifest.sh" \
+            "${RUNNER_TEMP}/codex-zsh" "$CODEX_ZSH_MANIFEST_SHA256"
+
+      - name: Build Codex package archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="x86_64-apple-darwin"
+          archive_dir="dist/${target}"
+          for bundle in primary app-server; do
+            voice_args=()
+            if [[ "$bundle" == primary ]]; then
+              voice_args+=(--voice-runtime-dir "${RUNNER_TEMP}/macos-voice")
+            fi
+            bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+              --target "${target}" \
+              --bundle "${bundle}" \
+              --entrypoint-dir "${RELEASE_DIR}" \
+              --archive-dir "${archive_dir}" \
+              --archive-format tar.gz \
+              --zsh-manifest "${RUNNER_TEMP}/codex-zsh" \
+              "${voice_args[@]}"
+          done
+          find "${archive_dir}" -maxdepth 1 -type f \
+            \( -name 'codex-package-*.tar.gz' -o -name 'codex-app-server-package-*.tar.gz' \) \
+            -print0 |
+            while IFS= read -r -d '' archive; do
+              sha256sum "${archive}" > "${archive}.sha256"
+            done
+
+      - name: Upload macOS Intel binaries archive
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-x86_64-apple-darwin-binaries-${{ github.run_id }}
+          path: |
+            codex-rs/codex-x86_64-apple-darwin.tar.gz
+            codex-rs/codex-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload macOS Intel Codex package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-package-x86_64-apple-darwin-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-apple-darwin/codex-package-x86_64-apple-darwin.tar.gz
+            codex-rs/dist/x86_64-apple-darwin/codex-package-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
+
+      - name: Upload macOS Intel app-server package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-app-server-package-x86_64-apple-darwin-${{ github.run_id }}
+          path: |
+            codex-rs/dist/x86_64-apple-darwin/codex-app-server-package-x86_64-apple-darwin.tar.gz
+            codex-rs/dist/x86_64-apple-darwin/codex-app-server-package-x86_64-apple-darwin.tar.gz.sha256
+          retention-days: 14
