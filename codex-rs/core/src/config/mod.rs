@@ -804,6 +804,9 @@ pub struct Config {
     /// Right-click text paste fallback for the fullscreen TUI.
     pub tui_right_click_paste: codex_config::types::RightClickPaste,
 
+    /// Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`.
+    pub show_compact_summary: bool,
+
     /// Start the TUI in the specified collaboration mode (plan/default).
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
@@ -4534,6 +4537,12 @@ impl Config {
                 .as_ref()
                 .map(|tui| tui.right_click_paste)
                 .unwrap_or_default(),
+
+            show_compact_summary: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.show_compact_summary)
+                .unwrap_or(true),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()
