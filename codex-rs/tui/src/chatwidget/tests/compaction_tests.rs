@@ -12,7 +12,11 @@ fn compaction_started(id: &str) -> ServerNotification {
     ServerNotification::ItemStarted(ItemStartedNotification::new(
         "thread-1".to_string(),
         "turn-1".to_string(),
-        AppServerThreadItemPayload::ContextCompaction { id: id.to_string() },
+        AppServerThreadItemPayload::ContextCompaction {
+            id: id.to_string(),
+            summary: None,
+            message: None,
+        },
         chrono::Utc::now().timestamp_millis(),
     ))
 }
@@ -21,10 +25,73 @@ fn compaction_completed(id: &str) -> ServerNotification {
     ServerNotification::ItemCompleted(ItemCompletedNotification::new(
         "thread-1".to_string(),
         "turn-1".to_string(),
-        AppServerThreadItemPayload::ContextCompaction { id: id.to_string() },
+        AppServerThreadItemPayload::ContextCompaction {
+            id: id.to_string(),
+            summary: None,
+            message: None,
+        },
         /*started_at_ms*/ None,
         /*completed_at_ms*/ 0,
     ))
+}
+
+#[tokio::test]
+async fn compaction_payload_keeps_live_duration_and_full_detail() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+    chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
+    chat.status_state.compaction.as_mut().unwrap().started_at =
+        Instant::now() - Duration::from_secs(/*secs*/ 83);
+    let ServerNotification::ItemCompleted(mut completed) = compaction_completed("compact-1") else {
+        unreachable!();
+    };
+    completed.item.payload = AppServerThreadItemPayload::ContextCompaction {
+        id: "compact-1".into(),
+        summary: Some("Short summary".into()),
+        message: Some("Full prompt\n\nLast line".into()),
+    };
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(completed),
+        /*replay_kind*/ None,
+    );
+    let lines = drain_insert_history(&mut rx)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let rendered = normalize_compaction_snapshot(lines_to_single_string(&lines));
+    insta::assert_snapshot!(rendered.lines().map(str::trim_end).collect::<Vec<_>>().join("\n"), @"
+    • Context compacted · <elapsed>
+      Full prompt
+
+      Last line
+    ");
+    assert!(chat.status_state.compaction.is_none());
+}
+
+#[tokio::test]
+async fn compaction_empty_message_falls_back_to_summary() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let ServerNotification::ItemCompleted(mut completed) = compaction_completed("old") else {
+        unreachable!();
+    };
+    completed.item.payload = AppServerThreadItemPayload::ContextCompaction {
+        id: "old".into(),
+        summary: Some("Retained summary".into()),
+        message: Some(" \n ".into()),
+    };
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(completed),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    let lines = drain_insert_history(&mut rx)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    insta::assert_snapshot!(lines_to_single_string(&lines), @"
+    • Context compacted
+      Retained summary
+    ");
+    assert!(chat.status_state.compaction.is_none());
 }
 
 #[tokio::test]

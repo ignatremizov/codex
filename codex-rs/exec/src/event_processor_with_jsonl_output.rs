@@ -30,6 +30,7 @@ use crate::exec_events::CollabToolCallItem;
 use crate::exec_events::CollabToolCallStatus;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus as ExecCommandExecutionStatus;
+use crate::exec_events::ContextCompactedEvent;
 use crate::exec_events::ErrorItem;
 use crate::exec_events::FileChangeItem;
 use crate::exec_events::FileUpdateChange;
@@ -483,13 +484,25 @@ impl EventProcessorWithJsonOutput {
                 CodexStatus::Running
             }
             ServerNotification::ItemCompleted(notification) => {
-                if let Some(item) = self.map_completed_item_mut(notification.item.payload) {
-                    if let ThreadItemDetails::AgentMessage(AgentMessageItem { text }) =
-                        &item.details
-                    {
-                        self.final_message = Some(text.clone());
+                match notification.item.payload {
+                    ThreadItemPayload::ContextCompaction {
+                        summary, message, ..
+                    } => {
+                        events.push(ThreadEvent::ContextCompacted(ContextCompactedEvent {
+                            summary,
+                            message,
+                        }));
                     }
-                    events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent { item }));
+                    item => {
+                        if let Some(item) = self.map_completed_item_mut(item) {
+                            if let ThreadItemDetails::AgentMessage(AgentMessageItem { text }) =
+                                &item.details
+                            {
+                                self.final_message = Some(text.clone());
+                            }
+                            events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent { item }));
+                        }
+                    }
                 }
                 CodexStatus::Running
             }
@@ -597,6 +610,7 @@ impl EventProcessorWithJsonOutput {
                 events.push(ThreadEvent::TurnStarted(TurnStartedEvent {}));
                 CodexStatus::Running
             }
+            ServerNotification::ContextCompacted(_) => CodexStatus::Running,
             _ => CodexStatus::Running,
         };
 

@@ -15,6 +15,14 @@ pub(super) fn render_text(
     options: &ContextSnapshotOptions,
     normalizer: &mut Normalizer,
 ) -> String {
+    // Session identity, path and turn-size bookkeeping are not the generated summary.
+    // Normalize only compaction summaries, leaving literal metadata in user text visible.
+    let text = if text.starts_with(codex_core::compact::SUMMARY_PREFIX) {
+        text.split_once("\n\n[SESSION_METADATA]\n")
+            .map_or(text, |(summary, _)| summary)
+    } else {
+        text
+    };
     if text.is_empty() && matches!(source, TextSource::ModelInstructions) {
         return "\"\"".to_string();
     }

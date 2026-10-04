@@ -440,8 +440,12 @@ impl ChatWidget {
             ThreadItemPayload::ExitedReviewMode { .. } => {
                 self.exit_review_mode_after_item();
             }
-            ThreadItemPayload::ContextCompaction { id } => {
-                self.on_context_compaction_completed(&id, from_replay);
+            ThreadItemPayload::ContextCompaction {
+                id,
+                summary,
+                message,
+            } => {
+                self.on_context_compaction_completed(&id, from_replay, summary, message);
             }
             ThreadItemPayload::FunctionCallOutput {
                 name,

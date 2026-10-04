@@ -465,6 +465,8 @@ fn thread_items_list_round_trips() {
                 item: ThreadItem {
                     payload: ThreadItemPayload::ContextCompaction {
                         id: "item_1".to_string(),
+                        summary: Some("compact summary".to_string()),
+                        message: Some("full compacted prompt".to_string()),
                     },
                     started_at_ms,
                     completed_at_ms,
@@ -481,7 +483,11 @@ fn thread_items_list_round_trips() {
             json!({
                 "data": [{
                     "turnId": "turn_456",
-                    "item": {"type": "contextCompaction", "id": "item_1", "startedAtMs": started_at_ms, "completedAtMs": completed_at_ms},
+                    "item": {
+                        "type": "contextCompaction", "id": "item_1",
+                        "summary": "compact summary", "message": "full compacted prompt",
+                        "startedAtMs": started_at_ms, "completedAtMs": completed_at_ms,
+                    },
                     "startedAtMs": started_at_ms,
                     "completedAtMs": completed_at_ms,
                 }],
