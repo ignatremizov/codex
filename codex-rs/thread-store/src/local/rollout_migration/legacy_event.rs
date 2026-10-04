@@ -232,6 +232,7 @@ pub(super) fn completed_item(
                 id: next_item_id()?,
                 summary: event.summary.clone(),
                 message: event.message.clone(),
+                decode_error: event.decode_error.clone(),
                 available_skills: event.available_skills.clone(),
             }),
             None,
