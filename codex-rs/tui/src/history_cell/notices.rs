@@ -319,12 +319,14 @@ impl HistoryCell for DeprecationNoticeCell {
 pub(crate) struct CompactionCell {
     header: String,
     detail: Option<String>,
+    decode_error: Option<String>,
 }
 
 pub(crate) fn new_compaction(
     header: String,
     summary: Option<String>,
     message: Option<String>,
+    decode_error: Option<String>,
     show_compact_summary: bool,
 ) -> CompactionCell {
     let detail = if show_compact_summary {
@@ -334,7 +336,11 @@ pub(crate) fn new_compaction(
     } else {
         None
     };
-    CompactionCell { header, detail }
+    CompactionCell {
+        header,
+        detail,
+        decode_error: decode_error.filter(|text| !text.trim().is_empty()),
+    }
 }
 
 impl HistoryCell for CompactionCell {
@@ -344,6 +350,16 @@ impl HistoryCell for CompactionCell {
         }
 
         let mut lines = vec![vec!["• ".dim(), self.header.clone().into()].into()];
+        if let Some(error) = &self.decode_error {
+            let diagnostic = format!("Compacted prompt decoding failed: {error}");
+            let wrapped = crate::wrapping::word_wrap_lines(
+                raw_lines_from_source(&diagnostic)
+                    .into_iter()
+                    .map(Line::red),
+                width.saturating_sub(2).max(1) as usize,
+            );
+            lines.extend(prefix_lines(wrapped, "  ".into(), "  ".into()));
+        }
         if let Some(detail) = &self.detail {
             let wrapped = crate::wrapping::word_wrap_lines(
                 raw_lines_from_source(detail),
@@ -356,6 +372,11 @@ impl HistoryCell for CompactionCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![Line::from(format!("• {}", self.header))];
+        if let Some(error) = &self.decode_error {
+            lines.extend(raw_lines_from_source(&format!(
+                "Compacted prompt decoding failed: {error}"
+            )));
+        }
         if let Some(detail) = &self.detail {
             lines.extend(raw_lines_from_source(detail));
         }

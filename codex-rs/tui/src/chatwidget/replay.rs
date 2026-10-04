@@ -430,9 +430,17 @@ impl ChatWidget {
                 id,
                 summary,
                 message,
+                decode_error,
                 ..
             } => {
-                self.on_context_compaction_completed(&id, from_replay, summary, message);
+                self.on_context_compaction_completed(
+                    &id,
+                    &turn_id,
+                    from_replay,
+                    summary,
+                    message,
+                    decode_error,
+                );
             }
             ThreadItem::FunctionCallOutput {
                 name,

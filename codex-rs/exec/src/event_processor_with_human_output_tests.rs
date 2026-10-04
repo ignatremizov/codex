@@ -61,6 +61,23 @@ fn compaction_preserves_complete_output_without_replacing_the_final_answer() {
             processor.compaction_section("Compacted summary", "summary"),
             "Compacted summary\n  summary"
         );
+        let error = "Decoder unavailable.\n\n  retained detail  ";
+        let expected = if show_compact_summary {
+            format!(
+                "compacted prompt decoding failed: {error}\n{}",
+                processor.compaction_section("Compacted prompt", message)
+            )
+        } else {
+            format!("compacted prompt decoding failed: {error}")
+        };
+        assert_eq!(
+            processor.compaction_output(Some("summary"), Some(message), Some(error)),
+            expected,
+        );
+        assert_eq!(
+            processor.compaction_output(/*summary*/ None, /*message*/ None, Some(" \n ")),
+            "context compacted",
+        );
         let completed = ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
@@ -70,6 +87,7 @@ fn compaction_preserves_complete_output_without_replacing_the_final_answer() {
                 summary: Some("summary".to_string()),
                 message: Some(message.to_string()),
                 available_skills: vec!["test-tui".to_string()],
+                decode_error: None,
             },
         });
         let compatibility = ServerNotification::ContextCompacted(ContextCompactedNotification {
@@ -78,13 +96,26 @@ fn compaction_preserves_complete_output_without_replacing_the_final_answer() {
             summary: Some("summary".to_string()),
             message: Some(message.to_string()),
             available_skills: vec!["test-tui".to_string()],
+            decode_error: None,
         });
         assert_eq!(
             [
                 processor.process_server_notification(completed),
                 processor.process_server_notification(compatibility),
+                processor.process_server_notification(ServerNotification::ContextCompactionStatus(
+                    codex_app_server_protocol::ContextCompactionStatusNotification {
+                        thread_id: "thread-1".into(),
+                        turn_id: "turn-1".into(),
+                        item_id: "compact-1".into(),
+                        message: "Decoding".into(),
+                    },
+                )),
             ],
-            [CodexStatus::Running, CodexStatus::Running]
+            [
+                CodexStatus::Running,
+                CodexStatus::Running,
+                CodexStatus::Running
+            ]
         );
         assert_eq!(
             (

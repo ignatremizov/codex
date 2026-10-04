@@ -7,6 +7,7 @@ use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
 use crate::protocol::v2::CommandExecutionOutputDeltaNotification;
+use crate::protocol::v2::ContextCompactionStatusNotification;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileChangePatchUpdatedNotification;
@@ -417,6 +418,14 @@ pub fn item_event_to_server_notification(
                 completed_at_ms: item_completed_event.completed_at_ms,
             })
         }
+        EventMsg::ContextCompactionStatus(event) => {
+            ServerNotification::ContextCompactionStatus(ContextCompactionStatusNotification {
+                thread_id,
+                turn_id,
+                item_id: event.item_id,
+                message: event.message,
+            })
+        }
         EventMsg::PatchApplyUpdated(event) => {
             ServerNotification::FileChangePatchUpdated(FileChangePatchUpdatedNotification {
                 thread_id,
@@ -472,6 +481,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
+    use codex_protocol::protocol::ContextCompactionStatusEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
     use pretty_assertions::assert_eq;
@@ -609,6 +619,30 @@ mod tests {
                 item_id: "call-1".to_string(),
                 delta: "hello".to_string(),
             },
+        );
+    }
+
+    #[test]
+    fn context_compaction_status_maps_to_serialized_notification() {
+        let notification = item_event_to_server_notification(
+            EventMsg::ContextCompactionStatus(ContextCompactionStatusEvent {
+                item_id: "item-1".to_string(),
+                message: "Decoding".to_string(),
+            }),
+            "thread-1",
+            "turn-1",
+        );
+        assert_eq!(
+            serde_json::to_value(notification).expect("serialize status notification"),
+            serde_json::json!({
+                "method": "item/contextCompaction/status",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": "item-1",
+                    "message": "Decoding",
+                },
+            })
         );
     }
 }
