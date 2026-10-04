@@ -26,6 +26,8 @@ use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use std::sync::Arc;
 
@@ -155,7 +157,13 @@ pub(super) async fn create_spawn(
         .thread
         .emit_subagent_session_started(client_metadata, /*resumed_created_at*/ None)
         .await;
-    if child.session_configured.forked_from_id.is_some() {
+    // The creation notification must also expose readable metadata for fresh hosted children.
+    if child.session_configured.forked_from_id.is_some()
+        || matches!(
+            &child.thread.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        )
+    {
         child.thread.ensure_rollout_materialized().await;
     }
     let config = effective_spawn_config(&child.thread).await?;

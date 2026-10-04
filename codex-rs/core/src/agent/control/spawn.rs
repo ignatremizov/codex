@@ -824,7 +824,14 @@ impl LocalAgentControl {
         }
 
         let durability_wait_started_at = Instant::now();
-        if options.fork_mode.is_some() {
+        // Ordinary spawned children also need discoverable rollout metadata before
+        // publication. Their spawn edge was already persisted before child startup.
+        if options.fork_mode.is_some()
+            || matches!(
+                notification_source.as_ref(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+            )
+        {
             new_thread.thread.ensure_rollout_materialized().await;
         }
         let durability_wait = edge_write + durability_wait_started_at.elapsed();

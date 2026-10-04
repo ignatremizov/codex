@@ -185,6 +185,7 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
     assert!(after.get_allowed_prefixes().contains(&amendment.command));
     environments.upsert_environment("workspace".into(), url, /*connect_timeout*/ None)?;
     let child_id = ThreadId::new();
+    let mut created = manager.subscribe_thread_created();
     parent
         .create_child(
             &invocation,
@@ -201,7 +202,15 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
             },
         )
         .await?;
+    assert_eq!(created.try_recv()?, child_id);
     let child = manager.get_thread(child_id).await?;
+    // No child input or explicit flush is needed after its creation is published.
+    let meta = codex_rollout::read_session_meta_line(
+        &child.rollout_path().expect("published child rollout"),
+    )
+    .await?;
+    assert_eq!(meta.meta.id, child_id);
+    assert_eq!(meta.meta.source, child.session_source);
     assert!(
         child
             .thread_extension_data()

@@ -799,7 +799,11 @@ enabled_tools = []
                 error
                     .error
                     .message
-                    .contains("cannot resume an unloaded multi-agent v2 sub-agent"),
+                    .contains("required MCP servers failed to initialize: fails_once:")
+                    && error
+                        .error
+                        .message
+                        .contains("simulated non-retryable Apps MCP startup failure"),
                 "unexpected error: {}",
                 error.error.message
             );

@@ -256,10 +256,9 @@ async fn same_manager_creation_preserves_live_bindings_and_attachments(
     ));
     let child_network_policy = worker.config().await.application_network_policy.clone();
     assert_eq!(child_network_policy, network_policy);
-    assert_eq!(
+    assert!(
         worker.rollout_path().context("child rollout")?.is_file(),
-        fork_history,
-        "only copied history should be materialized at creation"
+        "creation must expose readable metadata for fresh and copied children"
     );
     // Once creation returns, ending the spawning invocation leaves the idle child available.
     finish_spawn_tool(&server, &parent, &invocation).await?;
