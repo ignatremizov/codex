@@ -1,6 +1,5 @@
 use super::MarkdownStyles;
 use crate::render::highlight::set_syntax_theme;
-use crate::style::accent_color;
 use pretty_assertions::assert_eq;
 use ratatui::style::Modifier;
 use ratatui::style::Stylize;
@@ -754,69 +753,21 @@ fn inline_code() {
 }
 
 #[test]
-fn inline_code_and_file_paths_follow_syntax_theme() {
-    let markdown = "# Heading\n\n**Bold** *Italic* [Link](https://example.com)\n\n> Quote\n\n1. Ordered\n\n- Unordered\n\nUse `src/main.rs` and [](./src/lib.rs).";
-    let mut rendered = Vec::new();
-    for (name, background) in [
-        ("catppuccin-mocha", "dark"),
-        ("catppuccin-mocha", "light"),
-        ("catppuccin-latte", "light"),
-        ("nord", "dark"),
-        ("ansi", "dark"),
-        ("no-markup-color", "dark"),
-    ] {
-        let theme = if name == "no-markup-color" {
-            syntect::highlighting::Theme::default()
-        } else {
-            crate::render::highlight::resolve_theme_by_name(name, /*codex_home*/ None)
-                .expect("bundled theme")
-        };
-        let colors = if background == "light" {
-            crate::terminal_probe::DefaultColors {
-                fg: (30, 30, 30),
-                bg: (255, 255, 255),
-            }
-        } else {
-            crate::terminal_probe::DefaultColors {
-                fg: (220, 220, 220),
-                bg: (20, 20, 20),
-            }
-        };
-        crate::terminal_palette::with_test_default_colors(colors, || {
-            let styles = MarkdownStyles::for_theme(&theme);
-            let code_style = styles.code;
-            let parser = pulldown_cmark::Parser::new(markdown).into_offset_iter();
-            let mut writer = super::Writer::new(
-                markdown,
-                /*wrap_width*/ Some(24),
-                /*cwd*/ None,
-                &|_| false,
-            );
-            writer.styles = styles;
-            let mut parser = parser;
-            writer.run(&mut parser);
-            let lines = crate::terminal_hyperlinks::visible_lines(writer.text);
-            let paths = lines
-                .iter()
-                .flat_map(|line| &line.spans)
-                .filter(|span| matches!(span.content.as_ref(), "src/main.rs" | "src/lib.rs"))
-                .cloned()
-                .collect::<Vec<_>>();
-            assert_eq!(
-                paths,
-                vec![
-                    Span::styled("src/main.rs", code_style),
-                    Span::styled("src/lib.rs", code_style),
-                ],
-            );
-            if name == "no-markup-color" {
-                assert_eq!(code_style, ratatui::style::Style::new().fg(accent_color()));
-            } else {
-                rendered.push((name, background, lines));
-            }
-        });
-    }
-    assert_debug_snapshot!(rendered);
+fn inline_code_and_file_paths_use_stable_cyan() {
+    let markdown = "Use `src/main.rs` and [src/lib.rs](./src/lib.rs).";
+    let text = render_markdown_text_with_width(markdown, Some(24));
+    let paths = text
+        .lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter(|span| matches!(span.content.as_ref(), "src/main.rs" | "./src/lib.rs"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec!["src/main.rs".cyan(), "./src/lib.rs".cyan()],
+    );
+    assert_debug_snapshot!(text);
 }
 
 #[test]
@@ -861,9 +812,9 @@ fn link() {
     set_syntax_theme(syntect::highlighting::Theme::default());
     let text = render_markdown_text("[Link](https://example.com)");
     let expected = Text::from(Line::from_iter([
-        "Link".fg(accent_color()).underlined(),
+        "Link".cyan().underlined(),
         " (".into(),
-        "https://example.com".fg(accent_color()).underlined(),
+        "https://example.com".cyan().underlined(),
         ")".into(),
     ]));
     assert_eq!(text, expected);
@@ -873,12 +824,12 @@ fn link() {
 fn web_link_labels_use_link_style_and_preserve_inline_formatting() {
     set_syntax_theme(syntect::highlighting::Theme::default());
     for (label, expected_label) in [
-        ("plain", "plain".fg(accent_color()).underlined()),
-        ("`code`", "code".fg(accent_color()).underlined()),
-        ("**bold**", "bold".fg(accent_color()).bold().underlined()),
+        ("plain", "plain".cyan().underlined()),
+        ("`code`", "code".cyan().underlined()),
+        ("**bold**", "bold".cyan().bold().underlined()),
         (
             "*italic*",
-            "italic".fg(accent_color()).italic().underlined(),
+            "italic".cyan().italic().underlined(),
         ),
     ] {
         let text = render_markdown_text(&format!(
@@ -888,7 +839,7 @@ fn web_link_labels_use_link_style_and_preserve_inline_formatting() {
             "before ".into(),
             expected_label,
             " (".into(),
-            "https://example.com".fg(accent_color()).underlined(),
+            "https://example.com".cyan().underlined(),
             ")".into(),
             " after ".into(),
             Span::styled("code", MarkdownStyles::default().code),
@@ -918,9 +869,9 @@ fn web_link_labels_keep_link_style_in_wrapped_prose_and_tables() {
             assert_eq!(
                 labels,
                 vec![
-                    "plain".fg(accent_color()).underlined(),
-                    "code".fg(accent_color()).underlined(),
-                    "<b>".fg(accent_color()).underlined()
+                    "plain".cyan().underlined(),
+                    "code".cyan().underlined(),
+                    "<b>".cyan().underlined()
                 ]
             );
         }
@@ -1279,9 +1230,9 @@ fn url_link_shows_destination() {
     set_syntax_theme(syntect::highlighting::Theme::default());
     let text = render_markdown_text("[docs](https://example.com/docs)");
     let expected = Text::from(Line::from_iter([
-        "docs".fg(accent_color()).underlined(),
+        "docs".cyan().underlined(),
         " (".into(),
-        "https://example.com/docs".fg(accent_color()).underlined(),
+        "https://example.com/docs".cyan().underlined(),
         ")".into(),
     ]));
     assert_eq!(text, expected);

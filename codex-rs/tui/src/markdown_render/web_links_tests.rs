@@ -1,5 +1,4 @@
 use super::WebLinkDisplay;
-use crate::markdown_render::MarkdownStyles;
 use crate::markdown_render::render_markdown_lines_with_width_cwd_and_hidden_link_destinations;
 use crate::markdown_render::render_streaming_markdown_lines_with_width_and_cwd;
 use crate::style::accent_color;
@@ -14,7 +13,6 @@ use pretty_assertions::assert_eq;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
-use ratatui::text::Span;
 use ratatui::text::Text;
 use std::collections::BTreeSet;
 
@@ -29,11 +27,11 @@ fn bare_urls_are_styled_without_coloring_surrounding_prose() {
         text,
         Text::from(Line::from(vec![
             "界 (".into(),
-            Span::styled("https://example.com/a", MarkdownStyles::default().link),
+            "https://example.com/a".cyan().underlined(),
             "); ".into(),
-            Span::styled("https://example.com/b", MarkdownStyles::default().link),
+            "https://example.com/b".cyan().underlined(),
             "! ".into(),
-            Span::styled("https://example.com/c", MarkdownStyles::default().link).bold(),
+            "https://example.com/c".bold().cyan().underlined(),
         ])),
     );
     assert_debug_snapshot!(text);
@@ -100,29 +98,23 @@ fn supporting_terminals_render_only_the_styled_label_and_keep_its_target() {
     ] {
         let display = WebLinkDisplay::for_terminal(&terminal(name), /*term*/ None);
         for (markdown, label) in [
-            (
-                "[label](https://example.com)",
-                Span::styled("label", MarkdownStyles::default().link),
-            ),
+            ("[label](https://example.com)", "label".cyan().underlined()),
             (
                 "[`label`](https://example.com)",
-                Span::styled("label", MarkdownStyles::default().link),
+                "label".cyan().underlined(),
             ),
             (
                 "[**label**](https://example.com)",
-                Span::styled("label", MarkdownStyles::default().link).bold(),
+                "label".cyan().bold().underlined(),
             ),
             (
                 "[*label*](https://example.com)",
-                Span::styled("label", MarkdownStyles::default().link).italic(),
+                "label".cyan().italic().underlined(),
             ),
-            (
-                "[<b>](https://example.com)",
-                Span::styled("<b>", MarkdownStyles::default().link),
-            ),
+            ("[<b>](https://example.com)", "<b>".cyan().underlined()),
             (
                 "[https://example.com](https://example.com)",
-                Span::styled("https://example.com", MarkdownStyles::default().link),
+                "https://example.com".cyan().underlined(),
             ),
         ] {
             let label_width = label.width();
