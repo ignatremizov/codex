@@ -1113,6 +1113,7 @@ class ContextCompactedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    available_skills: Annotated[list[str] | None, Field(alias="availableSkills")] = []
     message: str | None = None
     summary: str | None = None
     thread_id: Annotated[str, Field(alias="threadId")]
@@ -5492,6 +5493,13 @@ class ContextCompactionThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    available_skills: Annotated[
+        list[str] | None,
+        Field(
+            alias="availableSkills",
+            description="Skill names in the model-visible inventory installed after this compaction.",
+        ),
+    ] = []
     id: str
     message: str | None = None
     summary: str | None = None

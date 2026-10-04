@@ -458,27 +458,32 @@ async fn run_compact_task_inner_impl(
         new_history,
     )
     .await;
-    sess.replace_compacted_history(
-        new_history,
-        replacement_step_context.to_turn_context_item(),
-        world_state_baseline,
-        CompactedHistoryMetadata {
-            input_goal_ids,
-            message: summary_text.clone(),
-            window_number,
-            window_ids,
-            compaction_response_id: Some(compaction_response.response_id),
-            compaction_model_hash: turn_context.model_info().comp_hash.clone(),
-            reviewer_compaction_hash: None,
-        },
-    )
-    .await;
+    let installed_history = sess
+        .replace_compacted_history(
+            new_history,
+            replacement_step_context.to_turn_context_item(),
+            world_state_baseline,
+            CompactedHistoryMetadata {
+                input_goal_ids,
+                message: summary_text.clone(),
+                window_number,
+                window_ids,
+                compaction_response_id: Some(compaction_response.response_id),
+                compaction_model_hash: turn_context.model_info().comp_hash.clone(),
+                reviewer_compaction_hash: None,
+            },
+        )
+        .await;
     sess.recompute_token_usage(&replacement_step_context.turn)
         .await;
 
     let mut completed_compaction_item = compaction_item;
     completed_compaction_item.summary = summary_for_event_text;
     completed_compaction_item.message = Some(summary_text);
+    completed_compaction_item.available_skills =
+        crate::compact_skills_inventory::available_skill_names(
+            installed_history.as_deref().unwrap_or_default(),
+        );
 
     sess.emit_turn_item_completed(
         &turn_context,
