@@ -15,10 +15,15 @@ use codex_protocol::protocol::TokenUsage;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 
-#[test_case::test_case(CompactionTrigger::Auto; "optional ready adoption")]
-#[test_case::test_case(CompactionTrigger::Manual; "manual ready reuse")]
+#[test_case::test_case(CompactionTrigger::Auto, false; "optional ready adoption")]
+#[test_case::test_case(CompactionTrigger::Manual, false; "manual ready reuse")]
+#[test_case::test_case(CompactionTrigger::Auto, true; "optional ready adoption with decoder")]
+#[test_case::test_case(CompactionTrigger::Manual, true; "manual ready reuse with decoder")]
 #[tokio::test]
-async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: CompactionTrigger) {
+async fn cancelled_turn_skips_launch_but_preserves_existing_work(
+    trigger: CompactionTrigger,
+    decode_handoff: bool,
+) {
     let phase = CompactionPhase::MidTurn;
     let server = responses::start_mock_server().await;
     let mut provider =
@@ -27,7 +32,7 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
     provider.base_url = Some(format!("{}/v1", server.uri()));
     provider.supports_websockets = false;
     let server_uri = server.uri();
-    let (sess, mut turn, _events) =
+    let (sess, mut turn, events) =
         crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
             CodexAuth::create_dummy_chatgpt_auth_for_testing(),
             Vec::new(),
@@ -38,6 +43,7 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
                 config.async_compaction_threshold_percent = 50;
                 config.model_provider = provider;
                 config.chatgpt_base_url = server_uri;
+                config.remote_compaction_handoff_enabled = decode_handoff;
                 config.features.enable(Feature::AsyncCompaction).unwrap();
                 config.features.disable(Feature::TokenBudget).unwrap();
             },
@@ -51,21 +57,24 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
                 .push(InputModality::Audio);
         },
     );
-    let request = responses::mount_response_sequence(
-        &server,
-        vec![
-            wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({
-                "error": {"message": "Invalid input: Unknown `file_id` in input content."}
-            })),
-            responses::sse_response(responses::sse(vec![
-                serde_json::json!({"type":"response.output_item.done", "item": {
-                    "type":"compaction", "encrypted_content":"prepared-summary"
-                }}),
-                responses::ev_completed("prepared"),
-            ])),
-        ],
-    )
-    .await;
+    let mut replies = vec![
+        wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": {"message": "Invalid input: Unknown `file_id` in input content."}
+        })),
+        responses::sse_response(responses::sse(vec![
+            serde_json::json!({"type":"response.output_item.done", "item": {
+                "type":"compaction", "encrypted_content":"prepared-summary"
+            }}),
+            responses::ev_completed("prepared"),
+        ])),
+    ];
+    if decode_handoff {
+        replies.push(responses::sse_response(responses::sse(vec![
+            responses::ev_assistant_message("decoded", "Prepared handoff"),
+            responses::ev_completed("decoder"),
+        ])));
+    }
+    let request = responses::mount_response_sequence(&server, replies).await;
     let turn_cancellation = CancellationToken::new();
     let step = sess
         .capture_step_context(Arc::clone(&turn), &turn_cancellation)
@@ -181,8 +190,11 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
                     next_step,
                     &mut client_session,
                     world_state,
-                    CompactionReason::ContextLimit,
-                    phase,
+                    crate::compact_remote_v2::AutoCompactRun {
+                        reason: CompactionReason::ContextLimit,
+                        phase,
+                        cancellation: &CancellationToken::new(),
+                    },
                     Some(candidate),
                     crate::compact_remote_v2::CompactionFallback::Skip,
                 )
@@ -195,6 +207,7 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
                 Arc::clone(&sess),
                 next_step,
                 world_state,
+                &CancellationToken::new(),
             )
             .await
             .expect("manual compaction reuses the completed request");
@@ -212,13 +225,31 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
         .collect::<Vec<_>>();
     assert_eq!(summaries, ["prepared-summary"]);
     let requests = request.requests();
-    assert_eq!(requests.len(), 2);
-    for (index, request) in requests.into_iter().enumerate() {
+    assert_eq!(requests.len(), if decode_handoff { 3 } else { 2 });
+    for (index, request) in requests.iter().take(2).enumerate() {
         let body = request.body_json().to_string();
         assert!(body.contains("original turn"));
         assert!(!body.contains(rejected_file_id));
         assert_eq!(body.contains("file_expired_since_last_turn"), index == 0);
     }
+    if decode_handoff {
+        let decoded_input = requests[2].body_json().to_string();
+        assert!(!decoded_input.contains(rejected_file_id));
+        assert!(!decoded_input.contains("file_expired_since_last_turn"));
+    }
+    let completion = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event.msg {
+            codex_protocol::protocol::EventMsg::ItemCompleted(completed) => match completed.item {
+                codex_protocol::items::TurnItem::ContextCompaction(item) => Some(item),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("prepared compaction completed");
+    assert_eq!(
+        completion.message,
+        decode_handoff.then(|| "Prepared handoff".to_string()),
+    );
     shutdown(&sess).await;
 }
 

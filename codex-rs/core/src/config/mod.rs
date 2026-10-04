@@ -717,6 +717,15 @@ pub struct Config {
     /// `None` uses `approvals_reviewer`, including programmatically constructed configs.
     pub requested_approvals_reviewer: Option<ApprovalsReviewer>,
 
+    /// Model used specifically to decode remote compaction handoff text for display.
+    pub remote_compaction_handoff_model: Option<String>,
+
+    /// Fallback model used when remote compaction handoff decoding fails.
+    pub remote_compaction_handoff_fallback_model: Option<String>,
+
+    /// Whether remote compaction should decode handoff text for display.
+    pub remote_compaction_handoff_enabled: bool,
+
     /// enforce_residency means web traffic cannot be routed outside of a
     /// particular geography. HTTP clients should direct their requests
     /// using backend-specific headers or URLs to enforce this.
@@ -4345,6 +4354,9 @@ impl Config {
         .await?;
         let compact_prompt = compact_prompt.or(file_compact_prompt);
         let review_model = override_review_model.or(cfg.review_model);
+        let remote_compaction_handoff_model = cfg.remote_compaction_handoff_model;
+        let remote_compaction_handoff_fallback_model =
+            cfg.remote_compaction_handoff_fallback_model;
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
@@ -4599,6 +4611,9 @@ impl Config {
             requested_approvals_reviewer: (requested_approvals_reviewer
                 != constrained_approvals_reviewer.value())
             .then_some(requested_approvals_reviewer),
+            remote_compaction_handoff_model,
+            remote_compaction_handoff_fallback_model,
+            remote_compaction_handoff_enabled: true,
             enforce_residency: enforce_residency.value,
             notify: cfg.notify,
             base_instructions,
