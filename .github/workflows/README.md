@@ -35,3 +35,58 @@ The workflows in this directory are split so that pull requests get fast, review
 - If a build/test/clippy check can be expressed in Bazel, prefer putting the PR-time version in `bazel.yml`.
 - Keep `rust-ci.yml` fast enough that it usually does not dominate PR latency.
 - Reserve `rust-ci-full.yml` for heavyweight Cargo-native coverage that Bazel does not replace yet.
+
+## Manual Verify and Build
+
+Run `scripts/run-manual-ci.sh` to dispatch `manual-verify.yml`, start
+`manual-release-build.yml` after workspace Clippy succeeds, and monitor both workflows. The script
+uses long polls, retries pre-execution GitHub Actions infrastructure failures, and can attach to
+existing runs with `--verify-run` and `--build-run`. Release monitoring reports Linux readiness
+independently from the macOS primary, app-server, voice-runtime, and packaging jobs.
+Successful Linux artifacts remain visible while macOS is still building or has failed.
+
+The macOS voice runtime and code-mode host build independently. CLI, app-server,
+and proxy libraries share an exact-source checkpoint; the CLI and services then
+receive separate six-hour final-executable job budgets without weakening the
+release profile. Native credential-file checks qualify the assembled application
+component before packaging. Validated components upload immediately, so a later
+packaging failure does not require recompilation. Packaging-only recovery checks
+the original producer revision and component hashes; it never relabels an older
+binary as a build of the packaging workflow's revision.
+
+The fork's verification and release entrypoints are manual. Upstream Bazel jobs
+and tag-release publication remain repository-gated, including independent
+Windows and Clippy jobs that are not downstream of the main Bazel test job. The
+upstream-removed `rust-release-prepare.yml` workflow stays removed.
+
+Manual checks build the pinned `third_party/voice` SDK and prepared link/runtime
+trees through `setup-manual-voice`. Cargo probes GStreamer and GLib only in that
+SDK; platform libraries such as ALSA use the runner's normal development packages.
+Archive shards receive the same prepared libraries and standalone helpers and
+restore them under the producer's Cargo target paths, with executable permissions.
+Package-scoped verification explicitly builds and transports the MCP test servers,
+`codex-exec`, and the shell escalation wrapper alongside the CLI, Code Mode host,
+sandbox, and voice helper. A dependency on a crate's library does not build its
+standalone test helpers. Regeneration starts the remote executor from the already
+built `ci-test` CLI and Code Mode host rather than rebuilding them in `debug`.
+
+Manual primary packages include a same-commit voice helper and the prepared
+development runtime. Their package version is the workspace version plus the
+build commit. These are private development artifacts, not signed or notarized
+public releases: `--voice-runtime-dir` uses the assembler's development receipt
+contract, while `--voice-release-dir` still requires a matching release version
+and public-release receipt. Bare binary archives do not contain this runtime.
+
+Schema uploads require their generating step to succeed. App-server generation
+also updates the Python SDK. Both manual generation workflows upload
+`python-sdk-generated-<run_id>` only after app-server generation succeeds; its
+root contains `api.py` and `generated/{v2_all.py,notification_registry.py}`.
+Restore those files under `sdk/python/src/openai_codex/`. The existing
+`app-server-schema-<run_id>` artifact layout is unchanged. The standalone
+`manual-write-generated.yml` workflow also retains these tracked SDK changes in
+its repository-wide `generated.patch`.
+
+Snapshot regeneration
+uses `INSTA_UPDATE=always` and uploads complete `.snap` files (including embedded
+multi-width metadata) only after the test step succeeds; `.snap.new` files remain
+separate failure diagnostics, never accepted output.
