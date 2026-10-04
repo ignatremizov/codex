@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use codex_protocol::models::ImageReference;
 use codex_protocol::user_input::UserInput;
 use codex_protocol_test_support::ContentItemTestExt;
@@ -51,7 +53,7 @@ fn evidence_snapshots_keep_response_order_and_escape_closing_markers() {
     evidence.record("browser", "cell-2", "call-2", vec![closing_marker]);
 
     let first = evidence
-        .snapshot_since(/*reviewed_sequence*/ 0)
+        .snapshot_since(/*reviewed_sequence*/ 0, &HashSet::new())
         .expect("completed responses should produce evidence");
     let body = first
         .context(NodeReplReviewEvidenceMode::TextOnly)
@@ -66,7 +68,7 @@ fn evidence_snapshots_keep_response_order_and_escape_closing_markers() {
     assert_eq!(inputs.len(), 1);
 
     let delta = evidence
-        .snapshot_since(/*reviewed_sequence*/ 1)
+        .snapshot_since(/*reviewed_sequence*/ 1, &HashSet::new())
         .expect("newer responses should produce delta evidence");
     assert!(
         !delta
@@ -75,7 +77,11 @@ fn evidence_snapshots_keep_response_order_and_escape_closing_markers() {
             .expect_text()
             .contains("first")
     );
-    assert!(evidence.snapshot_since(/*reviewed_sequence*/ 2).is_none());
+    assert!(
+        evidence
+            .snapshot_since(/*reviewed_sequence*/ 2, &HashSet::new())
+            .is_none()
+    );
 }
 
 #[test]
@@ -83,7 +89,7 @@ fn evidence_bounds_visible_text_and_marks_empty_completed_responses() {
     let evidence = NodeReplReviewEvidence::default();
     evidence.record("js", "cell", "empty", Vec::new());
     let empty = evidence
-        .snapshot_since(/*reviewed_sequence*/ 0)
+        .snapshot_since(/*reviewed_sequence*/ 0, &HashSet::new())
         .expect("empty successful responses should produce evidence")
         .context(NodeReplReviewEvidenceMode::TextOnly)
         .render()
@@ -92,7 +98,7 @@ fn evidence_bounds_visible_text_and_marks_empty_completed_responses() {
     let snapshot = "page-middle".repeat(2_000);
     evidence.record("js", "cell", "snapshot", vec![text_input(&snapshot)]);
     let full = evidence
-        .snapshot_since(/*reviewed_sequence*/ 1)
+        .snapshot_since(/*reviewed_sequence*/ 1, &HashSet::new())
         .expect("large DOM snapshots should produce evidence")
         .context(NodeReplReviewEvidenceMode::TextOnly)
         .render()
@@ -106,7 +112,7 @@ fn evidence_bounds_visible_text_and_marks_empty_completed_responses() {
     );
 
     let oversized = evidence
-        .snapshot_since(/*reviewed_sequence*/ 0)
+        .snapshot_since(/*reviewed_sequence*/ 0, &HashSet::new())
         .expect("completed responses should produce evidence");
     assert!(
         rendered_text(&oversized.responses[2].items).len()
@@ -133,12 +139,82 @@ fn evidence_preserves_tail_text_after_oversized_image_response() {
         text_input("FINAL IMPORTANT"),
     ];
     evidence.record("browser", "cell", "long", items);
-    let fragment = evidence.snapshot_since(/*reviewed_sequence*/ 0).unwrap();
+    let fragment = evidence
+        .snapshot_since(/*reviewed_sequence*/ 0, &HashSet::new())
+        .unwrap();
     let inputs = fragment
         .context(NodeReplReviewEvidenceMode::Multimodal)
         .render_inputs();
     assert_eq!(inputs.len(), 6);
     assert!(rendered_text(&inputs).contains("FINAL IMPORTANT"));
+}
+
+#[test]
+fn missing_screenshots_replay_without_readmitting_old_text() {
+    let evidence = NodeReplReviewEvidence::default();
+    let image_url = "data:image/png;base64,retained-screenshot";
+    evidence.record(
+        "node_repl.js",
+        "cell-1",
+        "call-1",
+        vec![
+            text_input("already admitted before"),
+            image_input(image_url),
+            file_image_input("unavailable-file"),
+            text_input("already admitted after"),
+        ],
+    );
+    let replay_urls = HashSet::from([image_url.to_string(), "unavailable-file".to_string()]);
+    let snapshot = evidence
+        .snapshot_since(/*reviewed_sequence*/ 1, &replay_urls)
+        .expect("missing screenshot survives an unchanged text cursor");
+    assert_eq!((snapshot.sequence, snapshot.omitted_responses), (1, 0));
+    assert_eq!(
+        snapshot
+            .responses
+            .iter()
+            .map(|response| {
+                (
+                    response.sequence,
+                    response.provenance.as_str(),
+                    response.items.clone(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![(
+            1,
+            "tool=node_repl.js cell=cell-1 call=call-1",
+            vec![image_input(image_url)],
+        )],
+    );
+
+    evidence.record(
+        "cua_repl.js",
+        "cell-2",
+        "call-2",
+        vec![text_input("new evidence")],
+    );
+    let snapshot = evidence
+        .snapshot_since(/*reviewed_sequence*/ 1, &replay_urls)
+        .expect("replay and new evidence share the bounded snapshot");
+    assert_eq!((snapshot.sequence, snapshot.omitted_responses), (2, 0));
+    assert_eq!(
+        snapshot
+            .responses
+            .iter()
+            .map(|response| (response.sequence, response.items.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, vec![image_input(image_url)]),
+            (2, vec![text_input("new evidence")]),
+        ],
+    );
+    assert!(
+        evidence
+            .snapshot_since(/*reviewed_sequence*/ 2, &HashSet::new())
+            .is_none(),
+        "retained reviewer images must not generate another evidence delta"
+    );
 }
 
 #[test]
@@ -149,7 +225,9 @@ fn file_backed_images_are_retained_but_omitted_from_guardian_views() {
 
     evidence.record("browser", "cell", "file", items.clone());
 
-    let snapshot = evidence.snapshot_since(/*reviewed_sequence*/ 0).unwrap();
+    let snapshot = evidence
+        .snapshot_since(/*reviewed_sequence*/ 0, &HashSet::new())
+        .unwrap();
     assert_eq!(snapshot.responses.len(), 1);
     assert_eq!(snapshot.responses[0].items, items);
     assert!(snapshot.responses[0].has_images());
@@ -176,6 +254,7 @@ fn evidence_evicts_complete_oldest_responses_and_rejects_oversized_items() {
     let evidence = NodeReplReviewEvidence::default();
     let max = NodeReplReviewEvidence::MAX_RETAINED_BYTES;
     let image = format!("data:image/png;base64,{}", "a".repeat(max - 1_024));
+    let replay_urls = HashSet::from([image.clone()]);
     evidence.record("js", "cell", "evicted", vec![image_input(&image)]);
     evidence.record("js", "cell", "first", vec![text_input("earlier")]);
     let items = vec![text_input("recent"), image_input(&image)];
@@ -183,7 +262,9 @@ fn evidence_evicts_complete_oldest_responses_and_rejects_oversized_items() {
     let image = image_input(&format!("data:image/png;base64,{}", "c".repeat(max)));
     let items = vec![text_input(&"oversized text".repeat(128)), image];
     evidence.record("js", "cell", "oversized", items);
-    let retained = evidence.snapshot_since(/*reviewed_sequence*/ 0).unwrap();
+    let retained = evidence
+        .snapshot_since(/*reviewed_sequence*/ 0, &HashSet::new())
+        .unwrap();
     let body = retained
         .context(NodeReplReviewEvidenceMode::TextOnly)
         .body()
@@ -194,6 +275,12 @@ fn evidence_evicts_complete_oldest_responses_and_rejects_oversized_items() {
     assert!(evidence.0.lock().unwrap().retained_bytes <= max);
     assert!(retained.responses.iter().all(|item| !item.has_images()));
     assert!(body.contains("node_repl_responses=\"1\""));
+    assert!(
+        evidence
+            .snapshot_since(retained.sequence, &replay_urls)
+            .is_none(),
+        "image replay must not resurrect evicted payloads"
+    );
 }
 
 #[test]
@@ -206,7 +293,9 @@ fn mixed_evidence_bounds_headers_and_empty_response_placeholders() {
             evidence.record(&provenance, &provenance, &provenance, items);
         }
 
-        let fragment = evidence.snapshot_since(/*reviewed_sequence*/ 0).unwrap();
+        let fragment = evidence
+            .snapshot_since(/*reviewed_sequence*/ 0, &HashSet::new())
+            .unwrap();
         let text = rendered_text(
             &fragment
                 .context(NodeReplReviewEvidenceMode::Multimodal)
