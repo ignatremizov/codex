@@ -952,6 +952,9 @@
             "fast_mode": {
               "type": "boolean"
             },
+            "fork_prompt_edits": {
+              "type": "boolean"
+            },
             "goals": {
               "type": "boolean"
             },
@@ -7502,6 +7505,9 @@
           "type": "boolean"
         },
         "fast_mode": {
+          "type": "boolean"
+        },
+        "fork_prompt_edits": {
           "type": "boolean"
         },
         "goals": {
