@@ -142,6 +142,17 @@ bindings use that same threshold; never pair a native 64-byte threshold with
 GN's size-zero binding constant. These are fixed platform choices, not additional
 developer build switches.
 
+The published 152.2.0 sandbox pair for x86_64 GNU/Linux is a known exception:
+its native archive uses the 64-byte threshold, but its raw Rust binding declares
+zero. The setup action, package Cargo resolver, and explicit Bazel prebuilt
+binding selector use prebuilt_binding.py to produce a separate corrected binding
+after authenticating the raw inputs. The correction is restricted to the exact
+version, target, profile, archive hash, and binding hash, and it checks the full
+derived binding hash. Only the TypedArray constant changes. Raw release assets,
+their checksum manifests, other targets and profiles, explicit caller overrides,
+and source-generated bindings remain unchanged. The V8 PoC still checks native
+placement before copying zero-, short-, boundary-, and oversized TypedArrays.
+
 Use a native Visual Studio Developer PowerShell with the C++ tools and Windows
 SDK available. The SDK supplies headers, libraries, `dumpbin.exe`, and the
 assembler. From the repo root, build the archive for that host:

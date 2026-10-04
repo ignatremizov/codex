@@ -19,6 +19,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use test_case::test_case;
 
+use super::rmcp_client::remote_aware_environment_id;
+use super::rmcp_client::remote_aware_stdio_server_cwd;
+
 const SERVER: &str = r#"
 import json
 import sys
@@ -89,7 +92,9 @@ async fn mcp_user_verification_rejects_configured_servers(source: CapabilitySour
     config.mcp_servers.set(serde_json::from_value(json!({
         "verification": {
             "command": if cfg!(windows) { "python" } else { "python3" },
-            "args": ["-u", "-c", SERVER], "default_tools_approval_mode": "approve"
+            "args": ["-u", "-c", SERVER], "default_tools_approval_mode": "approve",
+            "environment_id": remote_aware_environment_id(),
+            "cwd": remote_aware_stdio_server_cwd(),
         }
     }))?)?;
     let thread = test

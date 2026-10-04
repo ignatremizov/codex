@@ -521,13 +521,16 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
                 .enable(Feature::RequestPermissionsTool)
                 .expect("test config should allow feature update");
         });
+    // Keep the owning fixture alive: dropping its home removes the databases needed by
+    // the parent and Guardian sessions, including the parent's post-review followup.
+    let test = builder.build(&server).await?;
     let TestCodex {
         codex,
         cwd,
         config,
         thread_manager,
         ..
-    } = builder.build(&server).await?;
+    } = &test;
 
     let models_manager = thread_manager.get_models_manager();
     timeout(
@@ -556,7 +559,7 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
     );
 
     core_test_support::submit_thread_settings(
-        &codex,
+        codex,
         ThreadSettingsOverrides {
             model: Some(model.to_string()),
             ..Default::default()
@@ -583,7 +586,7 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
         )
         .await?;
 
-    let permissions_request = wait_for_event(&codex, |event| {
+    let permissions_request = wait_for_event(codex, |event| {
         matches!(
             event,
             EventMsg::RequestPermissions(_) | EventMsg::TurnComplete(_)
@@ -606,7 +609,7 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
         .await?;
 
     wait_for_event_with_timeout(
-        &codex,
+        codex,
         |event| matches!(event, EventMsg::TurnComplete(_)),
         Duration::from_secs(15),
     )

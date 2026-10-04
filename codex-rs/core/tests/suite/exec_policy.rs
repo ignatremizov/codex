@@ -35,9 +35,9 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
 use core_test_support::responses::start_mock_server;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_target_windows;
 use core_test_support::skip_if_wine_exec;
-use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -76,7 +76,7 @@ async fn submit_user_turn(
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_requests(test.config.cwd.clone())),
+                environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                 approval_policy: Some(approval_policy),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -247,7 +247,12 @@ async fn granular_complex_forced_rm_denial_explains_why_the_command_was_rejected
     skip_if_target_windows!(Ok(()), "uses a POSIX shell command fixture");
 
     let server = start_mock_server().await;
-    let mut builder = test_codex();
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_with_auto_env(&server).await?;
     let call_id = "forced-rm-denied";
     let args = json!({
@@ -311,7 +316,12 @@ async fn granular_complex_forced_rm_requests_approval_when_allowed() -> Result<(
     skip_if_target_windows!(Ok(()), "uses a POSIX shell command fixture");
 
     let server = start_mock_server().await;
-    let mut builder = test_codex();
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_with_auto_env(&server).await?;
     let call_id = "forced-rm-approval";
     let args = json!({
@@ -386,6 +396,10 @@ async fn granular_complex_forced_rm_requests_approval_when_allowed() -> Result<(
 async fn deeply_nested_forced_rm_is_rejected_before_execution_when_approvals_are_disabled()
 -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses a POSIX shell command fixture");
+    skip_if_remote!(
+        Ok(()),
+        "legacy shell_command and its sentinel fixture are host-local"
+    );
 
     let server = start_mock_server().await;
     let mut builder = test_codex();
@@ -657,7 +671,7 @@ async fn execpolicy_blocks_shell_invocation() -> Result<()> {
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_requests(test.config.cwd.clone())),
+                environments: Some(test.default_environment_requests(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,

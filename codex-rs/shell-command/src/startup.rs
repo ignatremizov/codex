@@ -3,8 +3,14 @@
 
 use crate::shell_detect::ShellType;
 
-/// Load the interactive configuration used by snapshot capture in a login shell.
-/// The caller must already launch the shell with its usual login startup flags.
+/// Return a script that loads interactive configuration for snapshot capture.
+///
+/// Callers choose the shell's launch flags and whether login profiles run. Core
+/// capture can use login startup, while executor Bash capture suppresses login
+/// profiles and automatic `.bashrc` loading before running this script.
+/// Bash sources `$HOME/.bashrc` only when `BASH_ENV` is unset or empty, otherwise
+/// relying on the shell's automatic `BASH_ENV` startup. Zsh sources `.zshrc` from
+/// `ZDOTDIR`, falling back to `HOME`.
 /// Only Bash and Zsh are supported here; POSIX sh's ENV handling remains in capture.
 pub fn shell_startup_script(shell_type: ShellType) -> &'static str {
     match shell_type {

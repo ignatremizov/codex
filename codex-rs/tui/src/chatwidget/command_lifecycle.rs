@@ -251,6 +251,9 @@ impl ChatWidget {
         else {
             return;
         };
+        // Replay-only starts also need to commit a preceding streamed preamble
+        // before replacing its active tail with an execution cell.
+        self.flush_answer_stream_with_separator();
         let (command, parsed_cmd) =
             command_execution_command_and_parsed(&command, &command_actions);
         // Ensure the status indicator is visible while the command runs.

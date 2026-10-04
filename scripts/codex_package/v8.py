@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -42,10 +44,30 @@ def resolve_codex_v8_cargo_env(
             "Cargo package builds need RUSTY_V8_ARCHIVE and RUSTY_V8_SRC_BINDING_PATH set together."
         )
 
-    artifacts = fetch_codex_v8_artifacts(spec, cache_root=cache_root)
+    version = resolved_v8_crate_version()
+    artifacts = fetch_codex_v8_artifacts(spec, version=version, cache_root=cache_root)
+    binding = Path(
+        subprocess.check_output(
+            [
+                sys.executable,
+                str(REPO_ROOT / "third_party/v8/prebuilt_binding.py"),
+                "--version",
+                version,
+                "--target",
+                spec.target,
+                "--profile",
+                V8_ARTIFACT_PROFILE,
+                "--archive",
+                str(artifacts.archive),
+                "--binding",
+                str(artifacts.binding),
+            ],
+            text=True,
+        ).strip()
+    )
     return {
         "RUSTY_V8_ARCHIVE": str(artifacts.archive),
-        "RUSTY_V8_SRC_BINDING_PATH": str(artifacts.binding),
+        "RUSTY_V8_SRC_BINDING_PATH": str(binding),
     }
 
 

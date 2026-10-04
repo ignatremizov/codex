@@ -229,7 +229,7 @@ async fn check_thread_shell_command_in_active_turn(timeout_ms: Option<i64>) -> R
                 "print(42)".to_string(),
             ],
             /*workdir*/ None,
-            Some(5000),
+            /*yield_time_ms*/ Some(5000),
             "call-approve",
         )?,
         create_final_assistant_message_sse_response("done")?,

@@ -2,6 +2,7 @@ load("@@//third_party/v8:artifact_profile.bzl", "v8_artifact_files")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@rules_cc//cc:cc_static_library.bzl", "cc_static_library")
 load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_python//python:defs.bzl", "py_binary")
 load("@rules_rs//rs:rules_rust_bindgen.bzl", "rust_bindgen")
 
 package(default_visibility = ["//visibility:public"])
@@ -153,6 +154,34 @@ alias(
     actual = ":rusty_v8_source_binding_for_target",
 )
 
+# The published GNU/Linux pair has a native 64-byte TypedArray threshold,
+# but its raw binding declares zero. Correct only this exact verified pair.
+# Source bindings continue to come directly from the source profile.
+py_binary(
+    name = "prepare_prebuilt_binding",
+    srcs = ["prebuilt_binding.py"],
+    main = "prebuilt_binding.py",
+)
+
+genrule(
+    name = "src_binding_x86_64_unknown_linux_gnu_152_2_0_prebuilt",
+    srcs = [
+        "@rusty_v8_152_2_0_x86_64_unknown_linux_gnu_archive//file",
+        "@rusty_v8_152_2_0_x86_64_unknown_linux_gnu_binding//file",
+    ],
+    outs = ["src_binding_ptrcomp_sandbox_release_x86_64-unknown-linux-gnu.typed-array-64.rs"],
+    cmd = """
+        $(location :prepare_prebuilt_binding) \
+            --version 152.2.0 \
+            --target x86_64-unknown-linux-gnu \
+            --profile ptrcomp_sandbox_release \
+            --archive "$(location @rusty_v8_152_2_0_x86_64_unknown_linux_gnu_archive//file)" \
+            --binding "$(location @rusty_v8_152_2_0_x86_64_unknown_linux_gnu_binding//file)" \
+            --output "$@"
+    """,
+    tools = [":prepare_prebuilt_binding"],
+)
+
 alias(
     name = "rusty_v8_prebuilt_binding_for_target",
     actual = select({
@@ -161,7 +190,7 @@ alias(
         "@rules_rs//rs/platforms/config:aarch64-apple-darwin": "@rusty_v8_152_2_0_aarch64_apple_darwin_binding//file",
         "@llvm//platforms/config:linux_aarch64_gnu": "@rusty_v8_152_2_0_aarch64_unknown_linux_gnu_binding//file",
         "@rules_rs//rs/platforms/config:x86_64-apple-darwin": "@rusty_v8_152_2_0_x86_64_apple_darwin_binding//file",
-        "@llvm//platforms/config:linux_x86_64_gnu": "@rusty_v8_152_2_0_x86_64_unknown_linux_gnu_binding//file",
+        "@llvm//platforms/config:linux_x86_64_gnu": ":src_binding_x86_64_unknown_linux_gnu_152_2_0_prebuilt",
         "@llvm//platforms/config:linux_aarch64_musl": "@rusty_v8_152_2_0_aarch64_unknown_linux_musl_binding//file",
         "@llvm//platforms/config:linux_x86_64_musl": "@rusty_v8_152_2_0_x86_64_unknown_linux_musl_binding//file",
         "//conditions:default": ":rusty_v8_source_binding_for_target",

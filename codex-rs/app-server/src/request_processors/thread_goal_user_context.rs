@@ -4,6 +4,7 @@
 use super::*;
 use codex_core::context::ContextualUserFragment;
 use codex_core::context::UserGoalUpdate;
+use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
 
 impl ThreadGoalRequestProcessor {

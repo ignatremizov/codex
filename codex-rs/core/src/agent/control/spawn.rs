@@ -82,11 +82,8 @@ pub(in crate::agent) async fn fresh_child_history_and_tools(
     config: &Config,
     version: MultiAgentVersion,
 ) -> (Option<ThreadHistoryMode>, Vec<DynamicToolSpec>) {
-    let history_mode = matches!(
-        parent.config_snapshot().await.history_mode,
-        ThreadHistoryMode::Paginated
-    )
-    .then_some(ThreadHistoryMode::Paginated);
+    // Legacy is explicit too; None now defaults to Paginated.
+    let history_mode = Some(parent.config_snapshot().await.history_mode);
     (
         history_mode,
         inherited_dynamic_tools(parent, config, version).await,

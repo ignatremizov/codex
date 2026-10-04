@@ -11,6 +11,7 @@ use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::EnvironmentConfigReadParams;
 use codex_exec_server::ExecServerRuntimeOptions;
+use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_features::Feature;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -1514,7 +1515,7 @@ async fn executor_plugin_hook_fixture(
             "environment_id": if config.features.enabled(Feature::ExecutorCapabilityDiscoveryV2) {
                 codex_exec_server::REMOTE_ENVIRONMENT_ID.to_string()
             } else {
-                remote_aware_environment_id()
+                LOCAL_ENVIRONMENT_ID.to_string()
             },
         }))
         .expect("valid Node REPL MCP server configuration");
@@ -1527,7 +1528,8 @@ async fn executor_plugin_hook_fixture(
             )
             .expect("configure Node REPL MCP server");
     });
-    let test = builder.build_with_auto_env(&server).await?;
+    // Ordinary fixtures attach a local Node REPL; V2 fixtures supply an explicit executor URL.
+    let test = builder.build(&server).await?;
     wait_for_mcp_server(&test.codex, "node_repl").await?;
 
     let mut plugin_roots = Vec::new();

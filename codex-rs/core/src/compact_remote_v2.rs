@@ -632,7 +632,7 @@ fn truncate_retained_messages(
         } else {
             message_text_token_count(&group.source.item)
         };
-        let source_tokens = if client_developer {
+        let source_tokens = if client_developer || is_retained_tool_output(&group.source) {
             usize::try_from(estimate_item_token_count(&group.source.item)).unwrap_or(usize::MAX)
         } else {
             content_tokens.max(1)

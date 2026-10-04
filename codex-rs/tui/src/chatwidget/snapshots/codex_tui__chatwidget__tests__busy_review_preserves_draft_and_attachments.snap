@@ -1,0 +1,35 @@
+---
+source: tui/src/chatwidget/tests/mcp_startup.rs
+expression: "blocked_drafts.join(\"\\n\\n\")"
+---
+/rev:
+• Booting MCP server: slow (0s • esc to interrupt)
+
+› /review  review my current changes and find issues
+
+  [Image #1]
+
+› /rev
+
+  tab to queue message                                       100% context left
+
+/review:
+• Booting MCP server: slow (0s • esc to interrupt)
+
+› /review  review my current changes and find issues
+
+  [Image #1]
+
+› /review
+
+  tab to queue message                                       100% context left
+
+/review check regressions:
+• Booting MCP server: slow (0s • esc to interrupt)
+
+
+  [Image #1]
+
+› /review check regressions
+
+  tab to queue message                                       100% context left

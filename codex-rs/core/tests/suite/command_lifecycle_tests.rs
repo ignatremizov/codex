@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_config::Constrained;
 use codex_core::TurnInputRequest;
@@ -303,7 +304,9 @@ async fn interrupting_command_preparation_does_not_start_the_command(
     )
     .await;
     start_command_turn(test).await?;
-    timeout(Duration::from_secs(30), entered_rx).await??;
+    timeout(Duration::from_secs(30), entered_rx)
+        .await
+        .context("command preparation callback did not start")??;
     test.codex.submit(Op::Interrupt).await?;
     wait_for_event(&test.codex, |event| {
         assert!(
@@ -314,7 +317,8 @@ async fn interrupting_command_preparation_does_not_start_the_command(
     })
     .await;
     timeout(Duration::from_secs(30), completed_rx)
-        .await?
+        .await
+        .context("interruption did not drop the command preparation callback")?
         .expect_err("cancellation must drop the callback's completion sender");
     contributor.release.notify_one();
 
