@@ -502,7 +502,7 @@ pub fn thread_store_from_config(
                         let sqlite = sqlite.clone();
                         Box::pin(async move {
                             let boards = thread_ids.into_iter().map(Into::into).collect::<Vec<_>>();
-                            LocalAgentMessageBoard::delete_boards(
+                            LocalAgentMessageBoard::ensure_thread_deletion_preserves_boards(
                                 &sqlite,
                                 &local_board_options(),
                                 &boards,
@@ -511,7 +511,7 @@ pub fn thread_store_from_config(
                             .map_err(|err| {
                                 ThreadStoreError::Internal {
                                     message: format!(
-                                        "failed to delete agent message boards: {err}"
+                                        "agent message-board cleanup blocked thread deletion: {err}"
                                     ),
                                 }
                             })
