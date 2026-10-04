@@ -229,6 +229,14 @@ AWS profile `credential_process` commands are run by the AWS SDK; their network 
 the application's HTTP policy. Configured credential exporters and AWS reauthentication commands
 require unrestricted application policy; policy revocation cancels their active work.
 
+## Live thread direct-input capability
+
+`thread/read` projects loaded threads from their live runtime while retaining available
+stored metadata. Start, read, resume, and fork responses for loaded threads report
+`canAcceptDirectInput: true`, including spawned children. Unloaded stored threads report
+`null` because their live capability is unavailable. This field does not bypass ordinary
+turn validation, active-turn requirements for steering, or managed provider requirements.
+
 ## Stored thread attachments
 
 - `thread/attachment/add` — add a durable resource reference to a stored thread without loading it. Repeated writes with the same attachment type and identity key return the existing attachment.

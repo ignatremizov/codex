@@ -13,7 +13,6 @@ use crossterm::event::MouseEventKind;
 impl ChatComposer {
     pub(crate) fn can_paste_on_right_click(&self) -> bool {
         self.draft.input_enabled
-            && !self.blocks_direct_input
             && self.history_search.is_none()
             && self.draft.textarea.vim_query().is_none()
             && self.draft.textarea.mouse_selection_range().is_none()
@@ -67,7 +66,6 @@ impl ChatComposer {
 
     pub(crate) fn prepare_mouse(&mut self, event: MouseEvent) -> bool {
         if !self.draft.input_enabled
-            || self.blocks_direct_input
             || self.history_search.is_some()
             || self.draft.textarea.vim_query().is_some()
         {
