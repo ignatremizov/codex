@@ -1,5 +1,5 @@
 //! Owns the local database schema and pool registry shared by runtime handles and setup.
-//! Initialization and deletion recovery share the registry lock to exclude stale pools.
+//! Initialization serializes pool creation without replacing unreadable databases.
 
 use super::storage_error;
 use codex_protocol::error::Result;
@@ -14,8 +14,8 @@ use tokio::sync::Mutex;
 
 pub(super) const DATABASE_FILE: &str = "agent_message_board_1.sqlite";
 
-// Weak entries let the last board handle release its pool. Initialization and
-// recovery share one lock so concurrent starts cannot open duplicate or stale pools.
+// Weak entries let the last board handle release its pool. Initialization uses
+// one lock so concurrent starts cannot open duplicate pools.
 pub(super) static POOLS: LazyLock<Mutex<HashMap<PathBuf, Weak<SqlitePool>>>> =
     LazyLock::new(Mutex::default);
 
