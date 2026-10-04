@@ -510,8 +510,10 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
             /*animations_enabled*/ false,
         )));
 
+    let sequence = app.mcp_requests.start(/*thread_id*/ None);
     app.handle_mcp_inventory_result(
         Ok(vec![McpServerStatus {
+            allow_implicit_invocation: true,
             server_capabilities: None,
             tool_list_meta: None,
             tools_error: None,
@@ -527,7 +529,9 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
         }]),
         McpServerStatusDetail::ToolsAndAuthOnly,
         /*thread_id*/ None,
-    );
+        sequence,
+    )
+    .await;
 
     assert_eq!(app.transcript_cells.len(), 0);
 
@@ -537,11 +541,15 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
             /*animations_enabled*/ false,
         )));
 
+    let origin_thread_id = ThreadId::new();
+    let sequence = app.mcp_requests.start(Some(origin_thread_id));
     app.handle_mcp_inventory_result(
         Ok(Vec::new()),
         McpServerStatusDetail::ToolsAndAuthOnly,
-        Some(ThreadId::new()),
-    );
+        Some(origin_thread_id),
+        sequence,
+    )
+    .await;
 
     assert_eq!(app.transcript_cells.len(), 1);
 }
@@ -6568,6 +6576,7 @@ async fn make_test_app() -> Box<App> {
         last_subagent_backfill_attempt: None,
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),
+        mcp_requests: mcp_requests::McpRequests::default(),
         pending_app_server_requests: PendingAppServerRequests::default(),
         dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
         dynamic_tool_tasks: HashMap::new(),
@@ -6694,6 +6703,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            mcp_requests: mcp_requests::McpRequests::default(),
             pending_app_server_requests: PendingAppServerRequests::default(),
             dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
             dynamic_tool_tasks: HashMap::new(),

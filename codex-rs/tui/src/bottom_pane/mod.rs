@@ -153,6 +153,7 @@ mod experimental_features_view;
 mod file_search_popup;
 mod footer;
 mod list_selection_view;
+mod mcp_completion;
 mod memories_settings_view;
 mod mention_usage;
 pub(crate) use mention_usage::MentionUsage;
@@ -532,6 +533,11 @@ impl BottomPane {
         matches: Vec<crate::task_mentions::TaskMention>,
     ) {
         self.composer.on_task_search_result(query, matches);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_mcp_server_names(&mut self, names: Vec<String>) {
+        self.composer.set_mcp_server_names(names);
         self.request_redraw();
     }
 

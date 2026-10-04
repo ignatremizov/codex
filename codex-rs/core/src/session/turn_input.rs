@@ -704,7 +704,8 @@ impl Session {
             return None;
         }
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
-        if !has_trigger_turn
+        if !self.input_queue.has_queued_turn_trigger().await
+            && !has_trigger_turn
             && !self.has_outstanding_durable_sleep()
             && !self.should_wake_on_agent_messages().await
         {
@@ -744,9 +745,11 @@ impl Session {
             return None;
         }
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
+        let has_queued_turn_trigger = self.input_queue.has_queued_turn_trigger().await;
         let state = self.state.lock().await;
         let configuration = &state.session_configuration;
-        if !has_trigger_turn
+        if !has_queued_turn_trigger
+            && !has_trigger_turn
             && !self.has_outstanding_durable_sleep()
             && !TurnStartKind::Automatic
                 .permits_mode(configuration.step_settings.collaboration_mode.mode)

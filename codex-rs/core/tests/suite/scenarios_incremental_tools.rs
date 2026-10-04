@@ -383,7 +383,7 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
 #[test_case(false; "bundled")]
 #[test_case(true; "catalog_messages")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
+async fn mcp_refresh_preserves_frozen_declarations_and_updates_resource_tools(
     catalog_messages: bool,
 ) -> Result<()> {
     skip_if_wine_exec!(
@@ -486,6 +486,13 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
             /*meta*/ None,
         )
         .await?;
+    assert!(
+        test.codex
+            .call_mcp_tool("echo_service", "cwd", Some(json!({})), /*meta*/ None)
+            .await
+            .is_err(),
+        "frozen declarations must not preserve revoked call authorization"
+    );
     test.submit_text_turn("Continue after disabling the cwd tool.")
         .await?;
     test.submit_text_turn("Continue with the remaining echo tool.")
@@ -583,12 +590,12 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
     let (snapshot_name, scenario) = if catalog_messages {
         (
             "incremental_tools_catalog_messages",
-            "Catalog overrides supply the update hint, both removal headers, and namespace instructions notices. MCP refreshes remove and restore tools, then change and clear only the namespace instructions. Runtime instructions remain verbatim, and unchanged turns do not repeat notices.",
+            "MCP refreshes change live authorization and namespace instructions while the first advertised non-Apps declarations stay frozen. Catalog overrides apply to resource-tool removal and restoration; unchanged turns do not repeat notices.",
         )
     } else {
         (
             "incremental_tool_removals",
-            "MCP refreshes remove one tool, then its whole namespace, before restoring both tools. Removal notices append alone; restoration appends one developer notice before both namespace declarations. Unchanged turns do not repeat updates.",
+            "MCP refreshes revoke and restore live tools while the first advertised non-Apps declarations stay frozen. Resource-tool removal and restoration append notices without rewriting history; unchanged turns do not repeat updates.",
         )
     };
     insta::assert_snapshot!(

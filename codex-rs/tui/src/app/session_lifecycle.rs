@@ -842,6 +842,7 @@ impl App {
         self.last_subagent_backfill_attempt = None;
         self.primary_session_configured = None;
         self.pending_primary_events.clear();
+        self.mcp_requests.reset();
         if voice_owner.is_none() {
             let side_thread_ids: Vec<_> = self.side_threads.keys().copied().collect();
             for thread_id in side_thread_ids {
@@ -919,6 +920,7 @@ impl App {
                         server_request_thread_id(request) == Some(thread_id)
                     }
                     ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::Mcp(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 });
                 let previous_pending = std::mem::take(&mut self.pending_app_server_requests);
