@@ -457,6 +457,7 @@ async fn scheduled_check_fires_after_thirty_minutes() {
     let thread_id = ThreadId::new();
     let now = Instant::now();
     let mut app = make_test_app().await;
+    app.local_settings.tui.auto_recap = true;
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     app.app_event_tx = AppEventSender::new(event_tx);
 
@@ -486,6 +487,7 @@ async fn rescheduling_check_cancels_the_earlier_timer() {
     let thread_id = ThreadId::new();
     let first_turn = Instant::now();
     let mut app = make_test_app().await;
+    app.local_settings.tui.auto_recap = true;
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     app.app_event_tx = AppEventSender::new(event_tx);
 
@@ -524,6 +526,7 @@ async fn auto_recap_opt_out_cancels_scheduling_after_restored_progress() {
     let thread_id = ThreadId::new();
     let now = Instant::now();
     let mut app = make_test_app().await;
+    app.local_settings.tui.auto_recap = true;
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     app.app_event_tx = AppEventSender::new(event_tx);
     app.recap.note_focus_lost(now);
@@ -533,6 +536,7 @@ async fn auto_recap_opt_out_cancels_scheduling_after_restored_progress() {
     };
     app.recap.seed_from_progress(progress, now);
     app.schedule_recap_check(thread_id, now);
+    assert!(app.recap.scheduled_check.is_some());
     tokio::task::yield_now().await;
 
     app.local_settings.tui.auto_recap = false;
@@ -954,6 +958,7 @@ fn track_in_flight_recap(app: &mut App, thread_id: ThreadId) -> (RecapRequest, T
 
 async fn app_with_visible_thread(thread_id: ThreadId) -> Box<App> {
     let mut app = make_test_app().await;
+    app.local_settings.tui.auto_recap = true;
     app.active_thread_id = Some(thread_id);
     app
 }
@@ -990,7 +995,9 @@ async fn auto_recap_opt_out_discards_results_without_retrying() {
         Ok(serde_json::json!({ "summary": "obsolete", "next_action": null }).to_string()),
         Err("temporary failure".to_string()),
     ] {
+        app.local_settings.tui.auto_recap = true;
         let (request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
+        assert!(app.recap.in_flight_request.is_some());
         app.local_settings.tui.auto_recap = false;
 
         assert!(
@@ -1049,6 +1056,7 @@ async fn newer_terminal_turn_invalidates_generated_recap() {
 async fn manual_recap_failure_does_not_schedule_retry() {
     let thread_id = ThreadId::new();
     let mut app = app_with_visible_thread(thread_id).await;
+    app.local_settings.tui.auto_recap = false;
     let (mut request, temporary_thread_id) = track_in_flight_recap(&mut app, thread_id);
     request.trigger = RecapTrigger::Manual;
     app.recap.in_flight_trigger = Some(RecapTrigger::Manual);
