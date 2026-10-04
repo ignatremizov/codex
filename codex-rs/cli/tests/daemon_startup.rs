@@ -265,33 +265,33 @@ async fn daemon_startup(command: &str) -> Result<()> {
         };
         let expected = if command == "start" {
             // The draft header is visible before the session's command composer is ready.
-            steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+            steps.push_back(("gpt-5.6-terra", b"/status\r"));
             "Server:Localbackgroundserver"
         } else if command == "agents" {
             args.push("agents".into());
             steps.push_back(("Notasksyet", b"\x1b"));
-            steps.push_back(("GPT-5.6-Terra", b"/daemon\r"));
+            steps.push_back(("gpt-5.6-terra", b"/daemon\r"));
             steps.push_back(("Restartbackgroundserver", b"\x1b[F\r"));
             "Restartbackgroundserver?"
         } else if command == "discovered" {
             args.extend(["--disable".into(), "daemon_auto_start".into()]);
             // Empty drafts need not survive a daemon restart. Renaming materializes the
             // thread; wait for the confirmed footer name, not the echoed command.
-            steps.push_back(("GPT-5.6-Terra", b"/rename daemon-restart-test\r"));
+            steps.push_back(("gpt-5.6-terra", b"/rename daemon-restart-test\r"));
             steps.push_back(("·daemon-restart-test", b"/daemon\r"));
             steps.push_back(("Restartbackgroundserver", b"2"));
             steps.push_back(("Restartbackgroundserver?", b"2\r"));
-            steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+            steps.push_back(("gpt-5.6-terra", b"/status\r"));
             "Server:Localbackgroundserver"
         } else if elevated_launch || command == "restrictive-job" && elevated {
             if let Some(action) = command.strip_prefix("elevated-") {
                 args.push(action.into());
                 steps.push_back(("Nosessionsyet", b"\x1b"));
             }
-            steps.push_back(("GPT-5.6-Terra", b"\x14"));
+            steps.push_back(("gpt-5.6-terra", b"\x14"));
             "Runningasadministrator:sharedbackgroundserverdisabled."
         } else if command == "restrictive-job" {
-            steps.push_back(("GPT-5.6-Terra", b"\x14"));
+            steps.push_back(("gpt-5.6-terra", b"\x14"));
             "Runningwithoutthesharedbackgroundserver:thisWindowslauncher"
         } else if mismatch {
             args.extend(if disabling && !persisted {
@@ -309,7 +309,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
             if command == "mismatch-cancel" {
                 "--no-daemon"
             } else {
-                steps.push_back(("GPT-5.6-Terra", b"/status\r"));
+                steps.push_back(("gpt-5.6-terra", b"/status\r"));
                 if restart { "Server:Localbackgroundserver" } else { "Model:" }
             }
         } else if bedrock_onboarding {
@@ -317,7 +317,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
         } else {
             args.extend([command.into(), "--strict-config".into()]);
             steps.push_back(("Nosessionsyet", b"\x1b"));
-            steps.push_back(("GPT-5.6-Terra", b"\x14"));
+            steps.push_back(("gpt-5.6-terra", b"\x14"));
             if elevated {
                 "Runningasadministrator:sharedbackgroundserverdisabled."
             } else {
@@ -387,7 +387,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                     if command == "discovered" {
                         if *ready == "Restartbackgroundserver?" {
                             existing_daemon = Some(fs::read(&pid_file)?);
-                        } else if *ready == "GPT-5.6-Terra" {
+                        } else if *ready == "gpt-5.6-terra" {
                             // The header renders before thread/start completes. Wait for the
                             // live status line to confirm there is a session to reconnect.
                             if !screen.screen().contents().split_whitespace().any(|part| {
