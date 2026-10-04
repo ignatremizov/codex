@@ -1,4 +1,4 @@
-//! Covers optional MCP startup deadlines in the initial model-visible tool catalog.
+//! Covers optional MCP startup deadlines and refreshed model-visible tool discovery.
 
 use std::time::Duration;
 
@@ -188,18 +188,29 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
         AppsTestServer::mount_with_startup_control(&mcp_server).await?;
     let release_startup = startup_control.hold_next_successful_initialize();
     let server_url = format!("{}/api/codex/ps/mcp", http_server.chatgpt_base_url);
-    let initial_response = responses::mount_sse_once(
+    let initial_search_id = "search-initial-grace";
+    let initial_response = responses::mount_sse_sequence(
         &responses_server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-initial-grace"),
-            responses::ev_assistant_message("msg-initial-grace", "done"),
-            responses::ev_completed("resp-initial-grace"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-initial-search"),
+                responses::ev_tool_search_call(
+                    initial_search_id,
+                    &json!({"query": TOOL_NAME, "limit": 1}),
+                ),
+                responses::ev_completed("resp-initial-search"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-initial-grace"),
+                responses::ev_assistant_message("msg-initial-grace", "done"),
+                responses::ev_completed("resp-initial-grace"),
+            ]),
+        ],
     )
     .await;
 
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = true)
         .with_config(move |config| {
             config.mcp_optional_startup_grace = Duration::from_millis(50);
             let mut servers = config.mcp_servers.get().clone();
@@ -229,22 +240,32 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
     .await
     .context("optional MCP initialization should begin before the initial turn")?;
 
-    // Allow for turn setup on remote workers while still finishing before the
-    // pending MCP startup timeout. The server remains gated throughout.
-    tokio::time::timeout(
-        TURN_TIMEOUT,
-        fixture.submit_turn("show initial optional MCP tools"),
-    )
-    .await
-    .context("the initial startup grace should omit the pending server")??;
+    // The grace bounds initial inference, not the tool-search round trip and
+    // final model response. Keep startup gated while observing that boundary.
+    // Retain the remote-runner budget, well below the pending server timeout.
+    let (first_request, initial_turn) = tokio::join!(
+        tokio::time::timeout(TURN_TIMEOUT, async {
+            while initial_response.requests().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }),
+        tokio::time::timeout(
+            TURN_TIMEOUT,
+            fixture.submit_turn("show initial optional MCP tools"),
+        ),
+    );
+    first_request.context("the initial startup grace should omit the pending server")?;
+    initial_turn.context("the initial tool-search turn should finish while startup is gated")??;
+    let initial_requests = initial_response.requests();
+    assert_eq!(initial_requests.len(), 2);
     assert!(
         responses::namespace_child_tool(
-            &initial_response.single_request().body_json(),
+            &initial_requests[1].tool_search_output(initial_search_id),
             TOOL_NAMESPACE,
             TOOL_NAME,
         )
         .is_none(),
-        "the pending optional MCP tool should be absent before configuration refresh"
+        "the pending optional MCP tool must not be discoverable before configuration refresh"
     );
 
     let refreshed_grace = Duration::from_millis(250);
@@ -264,13 +285,24 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
         "the existing thread should retain the refreshed optional MCP startup grace"
     );
 
-    let refreshed_response = responses::mount_sse_once(
+    let refreshed_search_id = "search-refreshed-grace";
+    let refreshed_response = responses::mount_sse_sequence(
         &responses_server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-refreshed-grace"),
-            responses::ev_assistant_message("msg-refreshed-grace", "done"),
-            responses::ev_completed("resp-refreshed-grace"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-refreshed-search"),
+                responses::ev_tool_search_call(
+                    refreshed_search_id,
+                    &json!({"query": TOOL_NAME, "limit": 1}),
+                ),
+                responses::ev_completed("resp-refreshed-search"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-refreshed-grace"),
+                responses::ev_assistant_message("msg-refreshed-grace", "done"),
+                responses::ev_completed("resp-refreshed-grace"),
+            ]),
+        ],
     )
     .await;
     let mut refreshed_turn = Box::pin(fixture.submit_turn("show refreshed optional MCP tools"));
@@ -286,15 +318,24 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
     tokio::time::timeout(Duration::from_secs(2), &mut refreshed_turn)
         .await
         .context("an optional MCP ready within the refreshed grace should reach the model")??;
+    let refreshed_requests = refreshed_response.requests();
+    assert_eq!(refreshed_requests.len(), 2);
     assert!(
         responses::namespace_child_tool(
-            &refreshed_response.single_request().body_json(),
+            &refreshed_requests[1].tool_search_output(refreshed_search_id),
             TOOL_NAMESPACE,
             TOOL_NAME,
         )
         .is_some(),
-        "the refreshed optional MCP startup grace should expose the ready tool"
+        "the refreshed optional MCP startup grace should make the ready tool discoverable"
     );
+    // Late readiness updates discovery, not the direct-tool contract frozen by the first turn.
+    for request in initial_requests.iter().chain(&refreshed_requests) {
+        assert!(
+            responses::namespace_child_tool(&request.body_json(), TOOL_NAMESPACE, TOOL_NAME)
+                .is_none()
+        );
+    }
 
     fixture.codex.shutdown_and_wait().await?;
     Ok(())

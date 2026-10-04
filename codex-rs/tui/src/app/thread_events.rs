@@ -23,6 +23,7 @@ pub(super) enum ThreadBufferedEvent {
     Notification(Box<ServerNotification>),
     Request(Box<ServerRequest>),
     HistoryEntryResponse(HistoryLookupResponse),
+    Mcp(mcp_requests::McpThreadEvent),
     FeedbackSubmission(FeedbackThreadEvent),
 }
 
@@ -94,7 +95,9 @@ impl ThreadEventStore {
             return true;
         }
         match event {
-            ThreadBufferedEvent::Request(_) | ThreadBufferedEvent::FeedbackSubmission(_) => true,
+            ThreadBufferedEvent::Request(_)
+            | ThreadBufferedEvent::Mcp(_)
+            | ThreadBufferedEvent::FeedbackSubmission(_) => true,
             ThreadBufferedEvent::Notification(notification) => matches!(
                 notification.as_ref(),
                 ServerNotification::HookStarted(_)
@@ -339,6 +342,7 @@ impl ThreadEventStore {
                 ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::Notification(_)
                 | ThreadBufferedEvent::HistoryEntryResponse(_)
+                | ThreadBufferedEvent::Mcp(_)
                 | ThreadBufferedEvent::FeedbackSubmission(_) => None,
             })
             .collect()
@@ -368,6 +372,7 @@ impl ThreadEventStore {
                         .should_replay_snapshot_request(request.as_ref()),
                     ThreadBufferedEvent::Notification(_)
                     | ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::Mcp(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 })
                 .cloned()

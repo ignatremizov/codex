@@ -97,8 +97,10 @@ use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::ev_tool_search_call;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -1161,6 +1163,7 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
     let server = start_mock_server().await;
     let apps = core_test_support::apps_test_server::AppsTestServer::mount(&server).await?;
     let mcp_url = format!("{}/api/codex/ps/mcp", apps.chatgpt_base_url);
+    let search_call_id = "search-promoted-environment";
     let response_mock = mount_sse_sequence(
         &server,
         vec![
@@ -1194,15 +1197,23 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
             ]),
             sse(vec![
                 ev_response_created("after-promotion"),
-                ev_assistant_message("after-promotion-message", "done"),
+                ev_tool_search_call(
+                    search_call_id,
+                    &json!({"query": "calendar_list_events", "limit": 1}),
+                ),
                 ev_completed("after-promotion"),
+            ]),
+            sse(vec![
+                ev_response_created("after-discovery"),
+                ev_assistant_message("after-promotion-message", "done"),
+                ev_completed("after-discovery"),
             ]),
         ],
     )
     .await;
     let mut builder = test_codex()
         .with_exec_server_url(format!("ws://{}", listener.local_addr()?))
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = true)
         .with_config(move |config| {
             config
                 .mcp_servers
@@ -1338,11 +1349,20 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
     .await;
 
     let requests = response_mock.requests();
+    assert_eq!(requests.len(), 4);
     assert!(
-        requests[2]
-            .tool_by_name("mcp__deferred", "calendar_list_events")
-            .is_some()
+        namespace_child_tool(
+            &requests[3].tool_search_output(search_call_id),
+            "mcp__deferred",
+            "calendar_list_events",
+        )
+        .is_some()
     );
+    assert!(requests.iter().all(|request| {
+        request
+            .tool_by_name("mcp__deferred", "calendar_list_events")
+            .is_none()
+    }));
     let updated_context = requests[2]
         .message_input_texts("user")
         .into_iter()

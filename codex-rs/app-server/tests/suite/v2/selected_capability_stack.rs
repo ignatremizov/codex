@@ -81,20 +81,36 @@ enum PluginMention {
     Structured,
 }
 
-#[test_case(PluginMention::Unmentioned, false; "optional direct")]
-#[test_case(PluginMention::Unmentioned, true; "optional batched")]
-#[test_case(PluginMention::Link, false; "plugin link direct")]
-#[test_case(PluginMention::Link, true; "plugin link batched")]
-#[test_case(PluginMention::Structured, false; "structured mention direct")]
-#[test_case(PluginMention::Structured, true; "structured mention batched")]
+#[derive(Clone, Copy)]
+enum McpPromptExposure {
+    Implicit,
+    ExplicitOnly,
+}
+
+#[test_case(PluginMention::Unmentioned, false, McpPromptExposure::Implicit; "optional direct")]
+#[test_case(PluginMention::Unmentioned, true, McpPromptExposure::Implicit; "optional batched")]
+#[test_case(PluginMention::Link, false, McpPromptExposure::Implicit; "plugin link direct")]
+#[test_case(PluginMention::Link, true, McpPromptExposure::Implicit; "plugin link batched")]
+#[test_case(PluginMention::Structured, false, McpPromptExposure::Implicit; "structured mention direct")]
+#[test_case(PluginMention::Structured, true, McpPromptExposure::Implicit; "structured mention batched")]
+#[test_case(PluginMention::Structured, false, McpPromptExposure::ExplicitOnly; "explicit only plugin direct")]
+#[test_case(PluginMention::Structured, true, McpPromptExposure::ExplicitOnly; "explicit only plugin batched")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn selected_plugin_mcp_startup_respects_explicit_mentions(
     mention: PluginMention,
     executor_capability_discovery: bool,
+    exposure: McpPromptExposure,
 ) -> Result<()> {
     let explicitly_mentioned = !matches!(mention, PluginMention::Unmentioned);
+    let allow_implicit_invocation = matches!(exposure, McpPromptExposure::Implicit);
     let responses_server = responses::start_mock_server().await;
     let fixture = selected_capability_fixture(&responses_server.uri(), &responses_server.uri())?;
+    let mcp_config_path = fixture._plugin.path().join(".mcp.json");
+    let mut mcp_config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&mcp_config_path)?)?;
+    mcp_config["mcpServers"][MCP_SERVER_NAME]["allow_implicit_invocation"] =
+        json!(allow_implicit_invocation);
+    std::fs::write(mcp_config_path, serde_json::to_vec(&mcp_config)?)?;
     mount_analytics_capture(&responses_server, fixture.codex_home.path()).await?;
     let config_path = fixture.codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?.replace(
@@ -180,7 +196,7 @@ async fn selected_plugin_mcp_startup_respects_explicit_mentions(
         request
             .tool_by_name(&format!("mcp__{MCP_SERVER_NAME}"), "echo")
             .is_some(),
-        explicitly_mentioned,
+        explicitly_mentioned && allow_implicit_invocation,
     );
 
     let event = wait_for_matching_analytics_event(&responses_server, READ_TIMEOUT, |event| {

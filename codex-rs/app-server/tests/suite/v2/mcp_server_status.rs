@@ -72,9 +72,16 @@ use wiremock::matchers::path;
 
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[path = "mcp_server_activation_tests.rs"]
+mod activation_tests;
+
 /// Selected status reads return the thread's tools without repeating MCP discovery.
+#[test_case(true; "implicit server")]
+#[test_case(false; "explicit-only server")]
 #[tokio::test]
-async fn mcp_server_status_list_reuses_thread_connection() -> Result<()> {
+async fn mcp_server_status_list_reuses_thread_connection(
+    allow_implicit_invocation: bool,
+) -> Result<()> {
     let server = MockServer::start().await;
     let tool = json!({
         "name": "open_widget",
@@ -86,7 +93,8 @@ async fn mcp_server_status_list_reuses_thread_connection() -> Result<()> {
     Mock::given(method("POST"))
         .and(path("/mcp"))
         .respond_with(move |request: &wiremock::Request| {
-            let request: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let request: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("MCP requests contain valid JSON");
             let result = match request["method"].as_str() {
                 Some("initialize") => json!({
                     "protocolVersion": "2025-11-25",
@@ -107,7 +115,7 @@ async fn mcp_server_status_list_reuses_thread_connection() -> Result<()> {
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri())
         .with_extra_config(&format!(
-            "[mcp_servers.widget]\nurl = \"{}/mcp\"",
+            "[mcp_servers.widget]\nurl = \"{}/mcp\"\nallow_implicit_invocation = {allow_implicit_invocation}",
             server.uri()
         ))
         .write(codex_home.path())?;
@@ -148,6 +156,10 @@ async fn mcp_server_status_list_reuses_thread_connection() -> Result<()> {
         assert_eq!(response.data.len(), 1);
         assert_eq!(response.data[0].name, "widget");
         assert_eq!(
+            response.data[0].allow_implicit_invocation,
+            allow_implicit_invocation
+        );
+        assert_eq!(
             response.data[0].tools,
             std::collections::HashMap::from([(
                 "open_widget".to_string(),
@@ -159,7 +171,7 @@ async fn mcp_server_status_list_reuses_thread_connection() -> Result<()> {
     let discovery_methods: Vec<_> = server
         .received_requests()
         .await
-        .unwrap()
+        .expect("MCP request recording is enabled")
         .iter()
         .filter_map(|request| serde_json::from_slice::<serde_json::Value>(&request.body).ok())
         .filter_map(|request| request["method"].as_str().map(str::to_owned))

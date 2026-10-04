@@ -213,6 +213,7 @@ enum McpCallEvent {
 }
 
 const REMOTE_MCP_ENVIRONMENT: &str = "remote";
+const REMOTE_MCP_TEST_ENV_DIR: &str = "/tmp/codex-remote-env";
 
 pub(super) fn remote_aware_environment_id() -> String {
     if is_remote_test_environment() {
@@ -255,7 +256,7 @@ pub(super) fn remote_aware_stdio_server_bin() -> anyhow::Result<String> {
 fn unique_remote_path(binary_name: &str) -> anyhow::Result<String> {
     let unique_suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     Ok(format!(
-        "/tmp/codex-remote-env/{binary_name}-{}-{unique_suffix}",
+        "{REMOTE_MCP_TEST_ENV_DIR}/{binary_name}-{}-{unique_suffix}",
         std::process::id()
     ))
 }
@@ -273,7 +274,7 @@ fn copy_binary_to_remote_env(
             container_name,
             "mkdir",
             "-p",
-            "/tmp/codex-remote-env",
+            REMOTE_MCP_TEST_ENV_DIR,
         ])
         .output()
         .context("create remote MCP test binary directory")?;
@@ -386,6 +387,7 @@ fn insert_mcp_server(
             supports_parallel_tool_calls: options.supports_parallel_tool_calls,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: Some(Duration::from_secs(10)),
             tool_timeout_sec: options.tool_timeout_sec,
@@ -777,7 +779,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
     }
     let fixture = test_codex()
         .with_home(codex_home)
-        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = true)
         .with_config(move |config| {
             if !from_plugin {
                 for server_name in ["allowed", "blocked"] {
@@ -895,21 +897,41 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
         )
         .await?;
 
-    let response = mount_sse_once(
+    let search_call_id = "search-environment-policy";
+    let response = responses::mount_sse_sequence(
         &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-2"),
-            responses::ev_assistant_message("msg-2", "done"),
-            responses::ev_completed("resp-2"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-search"),
+                responses::ev_tool_search_call(
+                    search_call_id,
+                    &json!({"query": "echo", "limit": 10}),
+                ),
+                responses::ev_completed("resp-search"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-2"),
+                responses::ev_assistant_message("msg-2", "done"),
+                responses::ev_completed("resp-2"),
+            ]),
+        ],
     )
     .await;
     fixture
         .submit_text_turn("show the available MCP tools")
         .await?;
-    let body = response.single_request().body_json();
-    assert!(responses::namespace_child_tool(&body, "mcp__allowed", "echo").is_some());
-    assert!(responses::namespace_child_tool(&body, "mcp__blocked", "echo").is_none());
+    let requests = response.requests();
+    assert_eq!(requests.len(), 2);
+    let discovered = requests[1].tool_search_output(search_call_id);
+    assert!(responses::namespace_child_tool(&discovered, "mcp__allowed", "echo").is_some());
+    assert!(responses::namespace_child_tool(&discovered, "mcp__blocked", "echo").is_none());
+    assert!(responses::namespace_child_tool(&discovered, "mcp__unselected", "echo").is_none());
+    for request in requests {
+        assert!(
+            responses::namespace_child_tool(&request.body_json(), "mcp__allowed", "echo").is_none(),
+            "environment readiness must not mutate the frozen direct-tool contract"
+        );
+    }
 
     fixture
         .codex
@@ -952,7 +974,25 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
                 ),
                 responses::ev_completed("paused"),
             ]),
+            responses::sse(vec![
+                responses::ev_function_call_with_namespace(
+                    "active-policy-call",
+                    "mcp__environment_policy",
+                    "echo",
+                    r#"{"message":"active policy"}"#,
+                ),
+                responses::ev_completed("active-call"),
+            ]),
             responses::sse(vec![responses::ev_completed("active-done")]),
+            responses::sse(vec![
+                responses::ev_function_call_with_namespace(
+                    "next-policy-call",
+                    "mcp__environment_policy",
+                    "echo",
+                    r#"{"message":"revoked policy"}"#,
+                ),
+                responses::ev_completed("next-call"),
+            ]),
             responses::sse(vec![responses::ev_completed("next-done")]),
         ],
     )
@@ -979,7 +1019,13 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
         .build_with_auto_env(&server)
         .await?;
     wait_for_mcp_server(&fixture.codex, "environment_policy").await?;
-    let selection = fixture.codex.environment_selections().await.remove(0);
+    let selection = fixture
+        .codex
+        .environment_selections()
+        .await
+        .into_iter()
+        .find(|selection| selection.environment_id == remote_aware_environment_id())
+        .context("thread should select the MCP server's executor environment")?;
     let mut config = EnvironmentConfig {
         allow_login_shell: fixture.config.permissions.allow_login_shell,
         workspace_roots: selection.workspace_roots.clone(),
@@ -1047,12 +1093,51 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
             },
         })
         .await?;
+    let EventMsg::McpToolCallEnd(active_call) = wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::McpToolCallEnd(end) if end.call_id == "active-policy-call")
+    })
+    .await
+    else {
+        unreachable!("event predicate guarantees the active MCP result");
+    };
+    assert_eq!(
+        active_call
+            .result
+            .map_err(anyhow::Error::msg)?
+            .structured_content
+            .and_then(|content| content.get("echo").cloned()),
+        Some(json!("ECHOING: active policy")),
+    );
     wait_for_event(&fixture.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    fixture.submit_text_turn("start the next turn").await?;
+    fixture
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "start the next turn".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let EventMsg::McpToolCallEnd(denied_call) = wait_for_event(
+        &fixture.codex,
+        |event| matches!(event, EventMsg::McpToolCallEnd(end) if end.call_id == "next-policy-call"),
+    )
+    .await
+    else {
+        unreachable!("event predicate guarantees the denied MCP result");
+    };
+    assert_eq!(
+        denied_call.result.as_ref().err().map(String::as_str),
+        Some("MCP tool `environment_policy/echo` is not available to the model"),
+    );
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
+    // Non-Apps declarations stay frozen, but they are not call authority.
+    // The old turn can still call; the new turn must reject the same tool.
     let tool_is_visible = response
         .requests()
         .iter()
@@ -1061,7 +1146,7 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
                 .is_some()
         })
         .collect::<Vec<_>>();
-    assert_eq!(tool_is_visible, vec![true, true, false]);
+    assert_eq!(tool_is_visible, vec![true; 5]);
     Ok(())
 }
 
@@ -4550,8 +4635,8 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
 
     let request = response_mock.single_request().body_json();
     assert!(
-        responses::namespace_child_tool(&request, &namespace, "echo").is_some(),
-        "the recovered MCP tool must be advertised to the model"
+        responses::namespace_child_tool(&request, &namespace, "echo").is_none(),
+        "late OAuth recovery must not rewrite the first turn's frozen direct declarations"
     );
     server.verify().await;
 

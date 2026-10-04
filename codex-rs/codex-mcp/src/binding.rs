@@ -89,11 +89,10 @@ impl McpBinding {
             .map(PreparedMcpCall::tool_info)
     }
 
-    /// Binds a model-visible call to the exact client and metadata in this binding.
+    /// Binds a permitted call independently of its prompt visibility.
     pub fn prepare_call(&self, server: &str, tool: &str) -> Option<PreparedMcpCall> {
         self.calls
             .get(&(server.to_string(), tool.to_string()))
-            .filter(|call| crate::tool_is_model_visible(call.tool_info()))
             .cloned()
     }
 

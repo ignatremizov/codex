@@ -815,6 +815,7 @@ impl App {
         self.last_subagent_backfill_attempt = None;
         self.primary_session_configured = None;
         self.pending_primary_events.clear();
+        self.mcp_requests.reset();
         if voice_owner.is_none() {
             self.pending_app_server_requests.clear();
         }
@@ -867,6 +868,7 @@ impl App {
                         server_request_thread_id(request) == Some(thread_id)
                     }
                     ThreadBufferedEvent::HistoryEntryResponse(_)
+                    | ThreadBufferedEvent::Mcp(_)
                     | ThreadBufferedEvent::FeedbackSubmission(_) => true,
                 });
                 self.pending_app_server_requests.clear();

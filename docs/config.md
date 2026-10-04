@@ -34,6 +34,26 @@ Only enable parallel calls for MCP servers whose tools are safe to run at the
 same time. If tools read and write shared state, files, databases, or external
 resources, review those read/write race conditions before enabling this setting.
 
+### Explicit MCP prompt invocation
+
+Set `allow_implicit_invocation = false` on an MCP server to keep its tools out of the default direct tool declarations. The server remains enabled, and permitted tools remain available through deferred discovery, search, and calls. This is a prompt-exposure setting, not an authorization control.
+
+```toml
+[mcp_servers.docs]
+command = "docs-server"
+allow_implicit_invocation = false
+```
+
+Use `/mcp use docs` to add that server's complete current tool inventory, including schemas and metadata, to subsequent context in the selected thread. The command preserves the case of the configured server name and trims surrounding whitespace. Existing MCP server-name validation still applies.
+
+Explicit use adds context forward without rewriting earlier messages or promoting tools into the frozen non-Apps direct tool contract. It never starts a model turn by itself. Before the first user turn, the request is queued; during an active turn, insertion waits for a safe input boundary. Each distinct accepted inventory block survives compaction in order. Inventories are deliberately complete and can be large, so invoke only the servers whose details you want in model context.
+
+The default is `true`. Non-Apps direct declarations are frozen from ready inventory when the model first sees tools; Apps remain turn-scoped. Status checks, prewarming, and activation queries do not themselves freeze the direct contract. Configuration reload and runtime permissions remain authoritative for calls regardless of an older visible declaration or context block.
+
+Executor and selected-plugin servers ready for that first sampling request use their resolved thread-scoped catalog policy too. A plugin mention can require startup without overriding `allow_implicit_invocation = false`; once the direct contract is frozen, later discovery does not add declarations to it.
+
+The frozen contract covers direct model declarations, not the callable Code Mode inventory. In Code Mode-only sessions, MCP tools remain available to later cells even though the first sampling request advertises no direct MCP declarations.
+
 ## MCP tool approvals
 
 Codex stores approval defaults and per-tool overrides for custom MCP servers
