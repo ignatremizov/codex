@@ -69,6 +69,65 @@ fn code_mode_materializes_mcp_output_schemas() {
 }
 
 #[test]
+fn tool_search_propagates_the_effective_input_schema_budget() {
+    for (mcp_budget, code_mode_budget, expected_budget) in [
+        (None, None, codex_code_mode::DEFAULT_INPUT_SCHEMA_MAX_BYTES),
+        (
+            Some(1_000),
+            Some(500),
+            codex_code_mode::DEFAULT_INPUT_SCHEMA_MAX_BYTES,
+        ),
+        (None, Some(30_000), 30_000),
+        (Some(30_000), Some(20_000), 30_000),
+        (Some(20_000), Some(30_000), 30_000),
+    ] {
+        let mut parameters = JsonSchema::object(
+            BTreeMap::from([(
+                "query".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
+            Some(vec!["query".to_string()]),
+            Some(AdditionalProperties::Boolean(false)),
+        );
+        parameters.mcp_input_schema_max_bytes = mcp_budget;
+        let input_schema = serde_json::to_value(&parameters).expect("serialize search schema");
+        let spec = ToolSpec::ToolSearch {
+            execution: "client".to_string(),
+            description: "Search deferred tools".to_string(),
+            parameters,
+        };
+        assert_eq!(
+            super::collect_code_mode_exec_prompt_tool_definitions([&spec], code_mode_budget),
+            vec![codex_code_mode::ToolDefinition {
+                name: "tool_search".to_string(),
+                tool_name: ToolName::plain("tool_search"),
+                description: codex_code_mode::TOOL_SEARCH_GUIDANCE.to_string(),
+                kind: codex_code_mode::CodeModeToolKind::Function,
+                input_schema: Some(input_schema),
+                input_schema_max_bytes: Some(expected_budget),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "tools": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "description": { "type": "string" }
+                                },
+                                "required": ["name", "description"]
+                            }
+                        }
+                    },
+                    "required": ["tools"]
+                })),
+            }],
+        );
+    }
+}
+
+#[test]
 fn code_mode_tool_names_do_not_prefix_the_default_namespace() {
     for tool_name in [
         ToolName::plain("apply_patch"),
