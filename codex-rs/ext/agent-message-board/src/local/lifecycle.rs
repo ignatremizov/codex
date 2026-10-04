@@ -1,12 +1,11 @@
-//! Permanent board deletion, serialized with writes across all open handles.
+//! Non-destructive thread deletion preflight and explicitly authorized board deletion.
 //!
-//! Keep only a root ID tombstone so delayed writes cannot resurrect deleted data.
-//! Recovery closes the cached pool before backing up and recreating the database,
-//! and excludes new handles until the replacement's deletion tombstones are saved.
+//! Thread deletion cannot prove exclusive ownership of shared board evidence.
+//! Authorized board deletion keeps a tombstone to reject delayed writes.
+//! Neither operation recovers corruption by replacing the shared database.
 
 use super::DATABASE_FILE;
 use super::LocalAgentMessageBoard;
-use super::POOLS;
 use super::SCHEMA;
 use super::invalid;
 use super::storage_error;
@@ -15,49 +14,67 @@ use codex_protocol::error::Result;
 use codex_state::SqliteConfig;
 use sqlx::Sqlite;
 use sqlx::Transaction;
-use std::sync::Weak;
 
 impl LocalAgentMessageBoard {
+    /// Refuses thread deletion if it would require disposing of populated boards.
+    ///
+    /// Spawn ancestry alone does not account for adopted members or concurrent creation.
+    /// Without a fenced ownership proof, preserve all board data, including when the feature
+    /// or state DB is unavailable. Empty or missing boards need no cleanup: leave them
+    /// untombstoned so concurrent late writes cannot lose evidence.
+    pub async fn ensure_thread_deletion_preserves_boards(
+        sqlite: &SqliteConfig,
+        roots: &[SessionId],
+    ) -> Result<()> {
+        let path = sqlite.home().join(DATABASE_FILE);
+        if roots.is_empty() || !tokio::fs::try_exists(&path).await? {
+            return Ok(());
+        }
+        let pool = sqlite
+            .open_read_only_pool(&path, /*busy_timeout*/ None)
+            .await
+            .map_err(storage_error)?;
+        let result = async {
+            for root in roots {
+                let populated: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM channels WHERE board=?)
+                         OR EXISTS(SELECT 1 FROM posts WHERE board=?)
+                         OR EXISTS(SELECT 1 FROM subscriptions WHERE board=?)",
+                )
+                .bind(root.to_string())
+                .bind(root.to_string())
+                .bind(root.to_string())
+                .fetch_one(&pool)
+                .await
+                .map_err(storage_error)?;
+                if populated {
+                    return Err(invalid(format!(
+                        "cannot delete thread {root}: its message board contains shared history; exclusive cleanup ownership cannot be established"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        .await;
+        // Close only this private read-only pool, including on query failure.
+        pool.close().await;
+        result
+    }
+
     /// Permanently removes boards owned by these roots, including their posts and subscriptions.
     /// A child's ID does not match its parent's board. Unload and archive must not call this.
+    /// Callers must first prove exclusive disposal authority and fence new membership.
+    /// Ordinary thread deletion must use `ensure_thread_deletion_preserves_boards` instead.
     /// Safe to retry and independent of whether the feature is currently enabled.
-    /// Recovering an unopenable corrupt database resets all boards, retaining a backup.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "recovery excludes new handles until replacement deletion tombstones are saved"
-    )]
     pub async fn delete_boards(sqlite: &SqliteConfig, roots: &[SessionId]) -> Result<()> {
         let path = sqlite.home().join(DATABASE_FILE);
         if roots.is_empty() || !tokio::fs::try_exists(&path).await? {
             return Ok(());
         }
-        let path = tokio::fs::canonicalize(sqlite.home())
-            .await?
-            .join(DATABASE_FILE);
-        let mut pools = POOLS.lock().await;
-        let pool = match sqlite.open_read_write_pool(&path).await {
-            Ok(pool) => pool,
-            Err(error) => {
-                let error = error.into();
-                if !codex_state::is_sqlite_corruption_error(&error) {
-                    return Err(storage_error(error));
-                }
-                if let Some(pool) = pools.get(&path).and_then(Weak::upgrade) {
-                    pool.close().await;
-                }
-                pools.remove(&path);
-                let backups = codex_state::backup_runtime_db_for_fresh_start(&path).await?;
-                tracing::warn!(
-                    database = %path.display(),
-                    ?backups,
-                    "Backed up corrupt agent message-board storage; recreating it for thread deletion. Existing data for all boards is unavailable."
-                );
-                sqlite
-                    .open_read_write_pool(&path)
-                    .await
-                    .map_err(storage_error)?
-            }
-        };
+        let pool = sqlite
+            .open_read_write_pool(&path)
+            .await
+            .map_err(storage_error)?;
         // Also handles databases created before permanent deletion was supported.
         sqlx::raw_sql(SCHEMA)
             .execute(&pool)
