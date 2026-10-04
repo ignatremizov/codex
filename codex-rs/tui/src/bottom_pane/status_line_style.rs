@@ -12,7 +12,6 @@ use crate::style::secondary_text_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_palette::StdoutColorLevel;
 use crate::terminal_palette::effective_stdout_color_level;
-use crate::thread_color::thread_color;
 use codex_protocol::ThreadId;
 
 pub(crate) const STATUS_LINE_SEPARATOR: &str = " · ";
@@ -123,6 +122,7 @@ where
     I: IntoIterator<Item = (StatusLineItem, String)>,
     F: Fn(StatusLineAccent) -> Option<Style>,
 {
+    let _ = thread_id;
     let mut line = HyperlinkLine::default();
     for (item, mut text) in segments {
         // Paragraph skips control characters, so they must not enter this single row's link offsets.
@@ -135,10 +135,8 @@ where
             && matches!(
                 item,
                 StatusLineItem::ThreadName | StatusLineItem::ThreadTitle
-            )
-            && let Some(thread_id) = thread_id
-        {
-            Style::default().fg(thread_color(thread_id))
+            ) {
+            Style::default().light_cyan()
         } else if use_theme_colors {
             let accent = StatusLineAccent::for_item(item);
             soften_status_line_style(
@@ -369,6 +367,59 @@ mod tests {
         .line;
 
         assert_eq!(line.spans[0].style, secondary_text_style().underlined());
+    }
+
+    #[test]
+    fn thread_name_and_title_use_stable_pale_accents() {
+        let first_thread = ThreadId::new();
+        let second_thread = ThreadId::new();
+        let render = |item, thread_id| {
+            status_line_from_segments_with_resolver(
+                [(item, "thread".to_string())],
+                /*use_theme_colors*/ true,
+                Some(thread_id),
+                /*pull_request_url*/ None,
+                |_| Some(Style::default().red()),
+            )
+            .expect("status line")
+            .line
+            .spans[0]
+                .style
+        };
+
+        assert_eq!(
+            render(StatusLineItem::ThreadName, first_thread),
+            render(StatusLineItem::ThreadName, second_thread),
+        );
+        assert_eq!(
+            render(StatusLineItem::ThreadTitle, first_thread),
+            render(StatusLineItem::ThreadTitle, second_thread),
+        );
+        assert_eq!(
+            render(StatusLineItem::ThreadName, first_thread).fg,
+            Some(readable_color_on(
+                Color::LightCyan,
+                /*background*/ None
+            )),
+        );
+        assert_eq!(
+            render(StatusLineItem::ThreadTitle, first_thread).fg,
+            Some(readable_color_on(
+                Color::LightCyan,
+                /*background*/ None,
+            )),
+        );
+        insta::assert_snapshot!(
+            format!(
+                "thread name: {:?}\nthread title: {:?}",
+                render(StatusLineItem::ThreadName, first_thread).fg,
+                render(StatusLineItem::ThreadTitle, second_thread).fg,
+            ),
+            @"
+            thread name: Some(LightCyan)
+            thread title: Some(LightCyan)
+            "
+        );
     }
 
     #[test]

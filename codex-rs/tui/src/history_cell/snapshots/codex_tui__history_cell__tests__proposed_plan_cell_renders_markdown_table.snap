@@ -1,5 +1,6 @@
 ---
 source: tui/src/history_cell/tests.rs
+assertion_line: 374
 expression: lines
 ---
 [
@@ -11,8 +12,8 @@ expression: lines
     Line::from(" ").bg(Color::Rgb(244, 244, 244)),
     Line::from_iter([
         Span::from("  "),
-        Span::from("## ").fg(Color::Rgb(191, 74, 7)).bold(),
-        Span::from("Plan").fg(Color::Rgb(191, 74, 7)).bold(),
+        Span::from("## ").bold(),
+        Span::from("Plan").bold(),
     ]).bg(Color::Rgb(244, 244, 244)),
     Line::from("  ").bg(Color::Rgb(244, 244, 244)),
     Line::from_iter([

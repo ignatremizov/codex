@@ -10,10 +10,10 @@ Text::from_iter([
     Line::from(Span::from("━━━━━━━━━━━━━━━━━━━━").dim()),
     Line::from_iter([
         Span::from(" "),
-        Span::from("https://").fg(Color::Reset).underlined(),
+        Span::from("https://").cyan().underlined(),
     ]),
     Line::from_iter([
         Span::from(" "),
-        Span::from("example.com/docs").fg(Color::Reset).underlined(),
+        Span::from("example.com/docs").cyan().underlined(),
     ]),
 ])

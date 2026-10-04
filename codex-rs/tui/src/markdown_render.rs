@@ -38,17 +38,13 @@
 //! body rows, or even 3-char-wide columns cannot fit, body rows render as
 //! key/value records.
 //!
-//! Markdown prose uses foregrounds from the active syntax theme's markup scopes,
-//! retaining its usual modifiers and falling back when a scope has no foreground.
-//! Inline code and local file paths share the active syntax theme's raw-markup foreground.
+//! Inline code, local file paths, and web links share cyan; web links are underlined.
 
 use crate::markdown_text_merge::DecodedTextMerge;
 use crate::render::highlight::current_syntax_theme;
 use crate::render::highlight::foreground_style_for_scopes;
-use crate::render::highlight::foreground_style_for_scopes_with_theme;
 use crate::render::highlight::highlight_code_to_lines;
 use crate::render::line_utils::line_to_static;
-use crate::style::accent_color;
 use crate::style::table_separator_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::remap_wrapped_line;
@@ -129,56 +125,21 @@ struct MarkdownStyles {
 
 impl Default for MarkdownStyles {
     fn default() -> Self {
-        Self::for_theme(&crate::render::highlight::current_syntax_theme())
-    }
-}
-
-impl MarkdownStyles {
-    fn for_theme(theme: &syntect::highlighting::Theme) -> Self {
-        let foreground = |scopes: &[&str]| {
-            let mut style =
-                foreground_style_for_scopes_with_theme(theme, scopes).unwrap_or_default();
-            style.fg = style.fg.map(|foreground| {
-                crate::style::readable_color_on(foreground, /*background*/ None)
-            });
-            style
-        };
         Self {
-            h1: foreground(&["markup.heading.1.markdown", "markup.heading.markdown"])
-                .bold()
-                .underlined(),
-            h2: foreground(&["markup.heading.2.markdown", "markup.heading.markdown"]).bold(),
-            h3: foreground(&["markup.heading.3.markdown", "markup.heading.markdown"])
-                .bold()
-                .italic(),
-            h4: foreground(&["markup.heading.4.markdown", "markup.heading.markdown"]).italic(),
-            h5: foreground(&["markup.heading.5.markdown", "markup.heading.markdown"]).italic(),
-            h6: foreground(&["markup.heading.6.markdown", "markup.heading.markdown"]).italic(),
-            code: foreground_style_for_scopes_with_theme(
-                theme,
-                &[
-                    "markup.inline.raw.string.markdown",
-                    "markup.raw.inline.markdown",
-                ],
-            )
-            .unwrap_or_else(|| Style::new().fg(accent_color())),
-            emphasis: foreground(&["markup.italic.markdown"]).italic(),
-            strong: foreground(&["markup.bold.markdown"]).bold(),
+            h1: Style::new().bold().underlined(),
+            h2: Style::new().bold(),
+            h3: Style::new().bold().italic(),
+            h4: Style::new().italic(),
+            h5: Style::new().italic(),
+            h6: Style::new().italic(),
+            code: Style::new().cyan(),
+            emphasis: Style::new().italic(),
+            strong: Style::new().bold(),
             strikethrough: Style::new().crossed_out(),
-            ordered_list_marker: Style::new()
-                .light_blue()
-                .patch(foreground(&["markup.list.numbered.markdown"])),
-            unordered_list_marker: foreground(&[
-                "markup.list.unnumbered.markdown",
-                "markup.list.bullet.markdown",
-            ]),
-            link: Style::new()
-                .fg(accent_color())
-                .patch(foreground(&["markup.underline.link.markdown"]))
-                .underlined(),
-            blockquote: Style::new()
-                .green()
-                .patch(foreground(&["markup.quote.markdown"])),
+            ordered_list_marker: Style::new().light_blue(),
+            unordered_list_marker: Style::new(),
+            link: Style::new().cyan().underlined(),
+            blockquote: Style::new().green(),
         }
     }
 }

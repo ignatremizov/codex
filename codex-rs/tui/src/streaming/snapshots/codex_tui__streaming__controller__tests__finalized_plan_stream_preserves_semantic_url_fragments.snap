@@ -1,5 +1,6 @@
 ---
 source: tui/src/streaming/controller.rs
+assertion_line: 1976
 expression: lines
 ---
 [
@@ -24,8 +25,8 @@ expression: lines
     HyperlinkLine {
         line: Line::from_iter([
             Span::from("  "),
-            Span::from("# ").fg(Color::Rgb(210, 15, 57)).bold().underlined(),
-            Span::from("Plan").fg(Color::Rgb(210, 15, 57)).bold().underlined(),
+            Span::from("# ").bold().underlined(),
+            Span::from("Plan").bold().underlined(),
         ]).bg(Color::Rgb(244, 244, 244)),
         hyperlinks: [],
     },
@@ -38,7 +39,7 @@ expression: lines
             Span::from("  "),
             Span::from("> "),
             Span::from("Quote"),
-        ]).fg(Color::Rgb(165, 82, 143)).bg(Color::Rgb(244, 244, 244)),
+        ]).green().bg(Color::Rgb(244, 244, 244)),
         hyperlinks: [],
     },
     HyperlinkLine {
@@ -73,7 +74,7 @@ expression: lines
             Span::from(" "),
             Span::from("  "),
             Span::from(" "),
-            Span::from("https://example.com/").fg(Color::Rgb(29, 101, 244)).underlined(),
+            Span::from("https://example.com/").cyan().underlined(),
         ]).bg(Color::Rgb(244, 244, 244)),
         hyperlinks: [
             TerminalHyperlink {
@@ -91,7 +92,7 @@ expression: lines
             Span::from(" "),
             Span::from("  "),
             Span::from(" "),
-            Span::from("a/very/long/path/to/").fg(Color::Rgb(29, 101, 244)).underlined(),
+            Span::from("a/very/long/path/to/").cyan().underlined(),
         ]).bg(Color::Rgb(244, 244, 244)),
         hyperlinks: [
             TerminalHyperlink {
@@ -109,7 +110,7 @@ expression: lines
             Span::from(" "),
             Span::from("  "),
             Span::from(" "),
-            Span::from("a/table/artifact").fg(Color::Rgb(29, 101, 244)).underlined(),
+            Span::from("a/table/artifact").cyan().underlined(),
         ]).bg(Color::Rgb(244, 244, 244)),
         hyperlinks: [
             TerminalHyperlink {

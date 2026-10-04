@@ -1,0 +1,20 @@
+---
+source: tui/src/markdown_render_tests.rs
+assertion_line: 753
+expression: text
+---
+Text::from_iter([
+    Line::from_iter([
+        Span::from("Use "),
+        Span::from("src/main.rs").cyan(),
+        Span::from(" and "),
+        Span::from("src/"),
+    ]),
+    Line::from_iter([
+        Span::from("lib.rs"),
+        Span::from(" ("),
+        Span::from("./src/lib.rs").cyan(),
+        Span::from(")"),
+        Span::from("."),
+    ]),
+])
