@@ -238,6 +238,7 @@ fn persisted_item_completed_event<'a>(
             (matches!(
                 event.item,
                 TurnItem::FunctionCallOutput(_)
+                    | TurnItem::ContextCompaction(_)
                     | TurnItem::Plan(_)
                     | TurnItem::Extension(ExtensionItem::Sleep(_))
             ) || matches!(

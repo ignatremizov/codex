@@ -15,7 +15,11 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use ratatui::style::Stylize as _;
 use std::sync::Arc;
 
-pub(super) fn cells(item: ThreadItem, cwd: &AbsolutePathBuf) -> TranscriptCells {
+pub(super) fn cells(
+    item: ThreadItem,
+    cwd: &AbsolutePathBuf,
+    show_compact_summary: bool,
+) -> TranscriptCells {
     let mut cells: TranscriptCells = Vec::new();
     match item {
         ThreadItem::FileChange {
@@ -103,10 +107,14 @@ pub(super) fn cells(item: ThreadItem, cwd: &AbsolutePathBuf) -> TranscriptCells 
                 "<< Code review finished: {review} >>"
             ))));
         }
-        ThreadItem::ContextCompaction { .. } => {
-            cells.push(Arc::new(history_cell::new_info_event(
+        ThreadItem::ContextCompaction {
+            summary, message, ..
+        } => {
+            cells.push(Arc::new(history_cell::new_compaction(
                 "Context compacted".to_string(),
-                /*hint*/ None,
+                summary,
+                message,
+                show_compact_summary,
             )));
         }
         // These items do not have richer history-cell presentations yet.

@@ -1139,6 +1139,8 @@ class ContextCompactedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    message: str | None = None
+    summary: str | None = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
 
@@ -5614,6 +5616,8 @@ class ContextCompactionThreadItem(BaseModel):
         populate_by_name=True,
     )
     id: str
+    message: str | None = None
+    summary: str | None = None
     type: Annotated[Literal["contextCompaction"], Field(title="ContextCompactionThreadItemType")]
 
 

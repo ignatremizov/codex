@@ -5,6 +5,7 @@ use codex_app_server_protocol::CollabAgentToolCallStatus as ApiCollabAgentToolCa
 use codex_app_server_protocol::CommandAction;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus as ApiCommandExecutionStatus;
+use codex_app_server_protocol::ContextCompactedNotification;
 use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::FileUpdateChange as ApiFileUpdateChange;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -49,6 +50,7 @@ use codex_exec::CollabToolCallStatus;
 use codex_exec::CollectedThreadEvents;
 use codex_exec::CommandExecutionItem;
 use codex_exec::CommandExecutionStatus;
+use codex_exec::ContextCompactedEvent as ExecContextCompactedEvent;
 use codex_exec::ErrorItem;
 use codex_exec::EventProcessorWithJsonOutput;
 use codex_exec::ExecThreadItem;
@@ -163,6 +165,84 @@ fn turn_started_emits_turn_started_event() {
             status: CodexStatus::Running,
         }
     );
+}
+
+#[test]
+fn context_compaction_item_emits_context_compacted_event() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+
+    let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        ItemCompletedNotification {
+            item: ThreadItem::ContextCompaction {
+                id: "compact-1".to_string(),
+                summary: Some("short summary".to_string()),
+                message: Some("compacted prompt".to_string()),
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+        },
+    ));
+
+    assert_eq!(
+        collected,
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ContextCompacted(ExecContextCompactedEvent {
+                summary: Some("short summary".to_string()),
+                message: Some("compacted prompt".to_string()),
+            })],
+            status: CodexStatus::Running,
+        }
+    );
+
+    assert_eq!(processor.final_message(), None);
+
+    let compatibility = processor.collect_thread_events(ServerNotification::ContextCompacted(
+        ContextCompactedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            summary: Some("short summary".to_string()),
+            message: Some("compacted prompt".to_string()),
+        },
+    ));
+    assert_eq!(
+        compatibility,
+        CollectedThreadEvents {
+            events: Vec::new(),
+            status: CodexStatus::Running,
+        }
+    );
+
+    let agent_message = processor.collect_thread_events(ServerNotification::ItemCompleted(
+        ItemCompletedNotification {
+            item: ThreadItem::AgentMessage {
+                id: "message-1".to_string(),
+                text: "final answer".to_string(),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+        },
+    ));
+    assert_eq!(
+        agent_message,
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                item: ExecThreadItem {
+                    id: "item_0".to_string(),
+                    details: ThreadItemDetails::AgentMessage(AgentMessageItem {
+                        text: "final answer".to_string(),
+                    }),
+                },
+            })],
+            status: CodexStatus::Running,
+        }
+    );
+    assert_eq!(processor.final_message(), Some("final answer"));
 }
 
 #[test]

@@ -42,6 +42,32 @@ fn captured(body: &Value) -> String {
 }
 
 #[test]
+fn compaction_metadata_is_normalized_without_hiding_ordinary_user_text() {
+    let summary = format!(
+        "{}\nKeep the next step.",
+        codex_core::compact::SUMMARY_PREFIX
+    );
+    let with_metadata =
+        format!("{summary}\n\n[SESSION_METADATA]\nsession_id: changing\n[/SESSION_METADATA]");
+    for options in [
+        ContextSnapshotOptions::default(),
+        ContextSnapshotOptions::default().rewrite_known_segments(),
+    ] {
+        assert_eq!(
+            render_test_items(&[message("user", &with_metadata)], &options),
+            render_test_items(&[message("user", &summary)], &options)
+        );
+        assert!(
+            render_test_items(
+                &[message("user", "Keep this\n\n[SESSION_METADATA]\nliteral")],
+                &options
+            )
+            .contains("literal")
+        );
+    }
+}
+
+#[test]
 fn lite_tool_catalog_and_code_calls_are_visible() {
     let rendered = render_test_items(
         &[
