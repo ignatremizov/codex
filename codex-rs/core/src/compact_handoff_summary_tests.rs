@@ -4,6 +4,60 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use pretty_assertions::assert_eq;
 
+#[tokio::test]
+async fn handoff_decode_requires_remote_compaction_feature_and_internal_flag() {
+    let mut config = crate::config::test_config().await;
+    config.remote_compaction_handoff_enabled = true;
+    config
+        .features
+        .disable(Feature::RemoteCompaction)
+        .expect("disable remote compaction");
+    assert!(!should_decode_remote_compaction_handoff(&config));
+
+    config
+        .features
+        .enable(Feature::RemoteCompaction)
+        .expect("enable remote compaction");
+    assert!(should_decode_remote_compaction_handoff(&config));
+
+    config.remote_compaction_handoff_enabled = false;
+    assert!(!should_decode_remote_compaction_handoff(&config));
+}
+
+#[tokio::test]
+async fn cancelled_handoff_decode_wins_over_invalid_helper_config() {
+    let (session, mut turn_context) = crate::session::tests::make_session_and_context().await;
+    let mut config = turn_context.config.as_ref().clone();
+    config.remote_compaction_handoff_enabled = true;
+    config
+        .features
+        .enable(Feature::RemoteCompaction)
+        .expect("enable remote compaction");
+    config.web_search_mode = Constrained::allow_only(WebSearchMode::Live);
+    let selection = HandoffModelSelection {
+        model: "helper-model".to_string(),
+        reasoning_effort: Some(ReasoningEffort::Low),
+    };
+    assert!(
+        build_remote_compaction_handoff_config(&config, &selection).is_err(),
+        "test setup must make helper configuration invalid"
+    );
+    turn_context.config = Arc::new(config);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    assert_eq!(
+        summarize_remote_compaction_handoff(
+            &Arc::new(session),
+            &Arc::new(turn_context),
+            &[],
+            &cancellation,
+        )
+        .await,
+        RemoteCompactionHandoff::Skipped,
+    );
+}
+
 fn preset(model: &str, default: ReasoningEffort, supported: &[ReasoningEffort]) -> ModelPreset {
     ModelPreset {
         id: model.to_string(),

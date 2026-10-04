@@ -11,6 +11,7 @@ use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::CodexErrorInfo;
+use codex_app_server_protocol::ContextCompactionStatusNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
@@ -434,6 +435,22 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
     }
 
     let started = wait_for_context_compaction_started(&mut mcp).await?;
+    if let CompactionRoute::Remote = route {
+        let status: ContextCompactionStatusNotification = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_notification("item/contextCompaction/status"),
+        )
+        .await??;
+        assert_eq!(
+            status,
+            ContextCompactionStatusNotification {
+                thread_id: thread_id.clone(),
+                turn_id: started.turn_id.clone(),
+                item_id: started.item.id().to_string(),
+                message: codex_protocol::protocol::CONTEXT_COMPACTION_DECODING_MESSAGE.to_string(),
+            },
+        );
+    }
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
 
     let ThreadItem::ContextCompaction {
@@ -441,6 +458,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         summary: started_summary,
         message: started_message,
         available_skills: started_skills,
+        decode_error: started_decode_error,
     } = started.item
     else {
         unreachable!("started item should be context compaction");
@@ -450,6 +468,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         summary: completed_summary,
         message: completed_message,
         available_skills: completed_skills,
+        decode_error: completed_decode_error,
     } = completed.item
     else {
         unreachable!("completed item should be context compaction");
@@ -461,6 +480,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
     assert_eq!(started_summary, None);
     assert_eq!(started_message, None);
     assert_eq!(started_skills, Vec::<String>::new());
+    assert_eq!((started_decode_error, completed_decode_error), (None, None));
     match route {
         CompactionRoute::Local => {
             assert_eq!(completed_summary, Some("LOCAL_SUMMARY".to_string()));
