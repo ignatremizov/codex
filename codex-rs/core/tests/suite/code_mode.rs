@@ -3751,12 +3751,10 @@ if (!tool) {
                     tool_description_first,
                 )
                 .expect("test config should allow description order update");
-            if ranked_search {
-                config
-                    .features
-                    .enable(Feature::CodeModeToolSearch)
-                    .expect("ranked Code Mode search should be enabled");
-            }
+            config
+                .features
+                .set_enabled(Feature::CodeModeToolSearch, ranked_search)
+                .expect("ranked Code Mode search preference should be applied");
             let mut model_catalog =
                 bundled_models_response().expect("bundled models.json should parse");
             let model = model_catalog
@@ -3859,6 +3857,222 @@ if (!tool) {
                     == Some(&serde_json::json!(test.session_configured.session_id))
                 && call.pointer("/params/_meta/windowId")
                     == Some(&call_body["client_metadata"]["x-codex-window-id"])
+        }),
+        "the nested MCP call should inherit its code cell's originating Responses item"
+    );
+
+    Ok(())
+}
+
+#[test_case(false, false; "code mode with deferred world state disabled")]
+#[test_case(false, true; "code mode with deferred world state enabled")]
+#[test_case(true, false; "code mode only with deferred world state disabled")]
+#[test_case(true, true; "code mode only with deferred world state enabled")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_guides_tool_search_and_calls_deferred_app_tools(
+    code_mode_only: bool,
+    deferred_world_state: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
+    let originating_item_id = "ctc_code_mode_origin";
+    let mut deferred_tool_call = ev_custom_tool_call(
+        "call-tool",
+        "exec",
+        r#"
+const toolName = load("discoveredToolName");
+if (typeof toolName !== "string") {
+  throw new Error("tool_search did not provide a callable tool name");
+}
+const result = await tools[toolName]({ timezone: "UTC" });
+text(JSON.stringify({
+  isError: Boolean(result.isError),
+  text: result.content?.[0]?.text ?? "",
+}));
+"#,
+    );
+    deferred_tool_call["item"]["id"] = serde_json::json!(originating_item_id);
+    let responses = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_custom_tool_call(
+                    "call-search",
+                    "exec",
+                    r#"
+const { tools: searchResult } = await tools.tool_search({
+  query: "calendar_timezone_option_99", limit: 1,
+});
+const tool = searchResult.find(
+  ({ name }) => name === "mcp__codex_apps__calendar_timezone_option_99"
+);
+store("discoveredToolName", tool?.name);
+text(JSON.stringify({
+  found: Boolean(tool),
+  searchFound: Array.isArray(searchResult) && searchResult.length > 0,
+}));
+"#,
+                ),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                deferred_tool_call,
+                ev_completed("resp-2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    let apps_base_url = apps_server.chatgpt_base_url.clone();
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::Apps)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::CodeMode)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .set_enabled(Feature::CodeModeOnly, code_mode_only)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .set_enabled(Feature::DeferredToolWorldState, deferred_world_state)
+                .expect("test config should allow feature update");
+            let mut model_catalog =
+                bundled_models_response().expect("bundled models.json should parse");
+            let model = model_catalog
+                .models
+                .iter_mut()
+                .find(|model| model.slug == "gpt-5.5")
+                .expect("gpt-5.5 exists in bundled models.json");
+            config.chatgpt_base_url = apps_base_url;
+            config.model = Some("gpt-5.5".to_string());
+            model.supports_search_tool = true;
+            config.model_catalog = Some(model_catalog);
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    test.submit_turn("inspect tools in code mode only").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let first_body = requests[0].body_json();
+    let first_tool_names = tool_names(&first_body);
+    for expected in ["exec", "wait", "request_user_input", "web_search"] {
+        assert!(
+            first_tool_names.iter().any(|name| name == expected),
+            "missing {expected} from Code Mode tools: {first_tool_names:?}"
+        );
+    }
+
+    let exec_description = first_body
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find_map(|tool| {
+                if tool
+                    .get("name")
+                    .or_else(|| tool.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("exec")
+                {
+                    tool.get("description").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+        })
+        .expect("exec description should be present");
+    assert!(exec_description.contains("filter `ALL_TOOLS` by `name` and `description`"));
+    assert_eq!(
+        exec_description.contains("### `tool_search`"),
+        code_mode_only
+    );
+    assert_eq!(
+        exec_description.contains("Shared MCP Types:"),
+        code_mode_only
+    );
+    assert!(!exec_description.contains("calendar_timezone_option_99"));
+    assert!(!exec_description.contains("You have access to tools from the following sources:"));
+
+    let tool_search = first_body
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find(|tool| {
+                tool.get("name")
+                    .or_else(|| tool.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("tool_search")
+            })
+        });
+    assert_eq!(tool_search.is_some(), !code_mode_only);
+    if let Some(tool_search) = tool_search {
+        let description = tool_search
+            .get("description")
+            .and_then(Value::as_str)
+            .expect("tool_search description should be present");
+        assert_eq!(
+            description.contains("You have access to tools from the following sources:"),
+            !deferred_world_state
+        );
+    }
+
+    let (search_output, search_success) =
+        custom_tool_output_body_and_success(&requests[1], "call-search");
+    assert_ne!(
+        search_success,
+        Some(false),
+        "code_mode_only deferred app tool search failed unexpectedly: {search_output}"
+    );
+    let search_result: Value = serde_json::from_str(&search_output).with_context(|| {
+        format!("deferred app tool search output should be JSON: {search_output:?}")
+    })?;
+    assert_eq!(
+        search_result,
+        serde_json::json!({
+            "found": true,
+            "searchFound": true,
+        })
+    );
+
+    let (tool_output, tool_success) =
+        custom_tool_output_body_and_success(&requests[2], "call-tool");
+    assert_ne!(
+        tool_success,
+        Some(false),
+        "code_mode_only deferred app tool call failed unexpectedly: {tool_output}"
+    );
+    let tool_result: Value = serde_json::from_str(&tool_output).with_context(|| {
+        format!("deferred app tool call output should be JSON: {tool_output:?}")
+    })?;
+    assert_eq!(
+        tool_result,
+        serde_json::json!({
+            "isError": false,
+            "text": "called calendar_timezone_option_99 for  at  with ",
+        })
+    );
+    let apps_tool_calls = recorded_apps_tool_calls(&server).await;
+    assert!(
+        apps_tool_calls.iter().any(|call| {
+            call.pointer("/params/_meta/itemId") == Some(&serde_json::json!(originating_item_id))
+                && call.pointer("/params/_meta/sessionId")
+                    == Some(&serde_json::json!(test.session_configured.session_id))
+                && call.pointer("/params/_meta/windowId")
+                    == Some(&first_body["client_metadata"]["x-codex-window-id"])
         }),
         "the nested MCP call should inherit its code cell's originating Responses item"
     );
