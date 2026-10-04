@@ -1,5 +1,6 @@
 use crate::session::tests::update_turn_settings_for_test;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use codex_features::Feature;
@@ -599,6 +600,13 @@ async fn reviewer_tool_policy_exclude_optional_core_tools() {
         &step_context.settings.model_info,
         &step_context.environments,
         &step_context.mcp,
+        &session.mcp_prompt.exposure(
+            &step_context.mcp,
+            &turn.config,
+            /*apps_enabled*/ false,
+            &HashSet::new(),
+            /*search_enabled*/ false,
+        ),
         /*apps_enabled*/ false,
         &turn.extension_data,
         /*tool_suggest_candidates*/ None,
@@ -652,6 +660,13 @@ async fn reviewer_tool_policy_respect_managed_shell_restrictions() {
             &step_context.settings.model_info,
             &step_context.environments,
             &step_context.mcp,
+            &session.mcp_prompt.exposure(
+                &step_context.mcp,
+                &turn.config,
+                /*apps_enabled*/ false,
+                &HashSet::new(),
+                /*search_enabled*/ false,
+            ),
             /*apps_enabled*/ false,
             &turn.extension_data,
             /*tool_suggest_candidates*/ None,
@@ -689,6 +704,13 @@ async fn reviewer_tool_policy_preserve_code_mode() {
         &step_context.settings.model_info,
         &step_context.environments,
         &step_context.mcp,
+        &session.mcp_prompt.exposure(
+            &step_context.mcp,
+            &turn.config,
+            /*apps_enabled*/ false,
+            &HashSet::new(),
+            /*search_enabled*/ false,
+        ),
         /*apps_enabled*/ false,
         &turn.extension_data,
         /*tool_suggest_candidates*/ None,
@@ -760,6 +782,13 @@ async fn reviewer_tool_policy_require_managed_secondary_environments() {
             &step_context.settings.model_info,
             &step_context.environments,
             &step_context.mcp,
+            &session.mcp_prompt.exposure(
+                &step_context.mcp,
+                &turn.config,
+                /*apps_enabled*/ false,
+                &HashSet::new(),
+                /*search_enabled*/ false,
+            ),
             /*apps_enabled*/ false,
             &turn.extension_data,
             /*tool_suggest_candidates*/ None,

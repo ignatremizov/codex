@@ -21,6 +21,7 @@ fn stdio_server(command: &str, args: &[&str]) -> McpServerConfig {
         supports_parallel_tool_calls: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,

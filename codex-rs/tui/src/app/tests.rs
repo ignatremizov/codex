@@ -506,6 +506,105 @@ async fn next_thread_settings_updated(
 }
 
 #[tokio::test]
+async fn queued_mcp_activation_revalidates_target_input_authority() -> Result<()> {
+    let (mut app, _events, _ops) = make_test_app_with_channels().await;
+    let (mut server, requests, proxy) = session_lifecycle_requests::start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    let first = server.start_thread(&app.config).await?;
+    let second = server.start_thread(&app.config).await?;
+    let first_id = first.session.thread_id;
+    let second_id = second.session.thread_id;
+    app.active_thread_id = Some(first_id);
+    app.chat_widget.handle_thread_session_quiet(first.session);
+    app.ensure_thread_channel(first_id);
+    app.ensure_thread_channel(second_id);
+    let op = AppCommand::ActivateMcpServer {
+        server_name: "missing-test-server".into(),
+    };
+
+    app.chat_widget.show_provider_error(
+        codex_app_server_protocol::ModelProviderError::ModelProviderNotConfigured {
+            model_provider: "old-provider".into(),
+        },
+        /*rejected_message_id*/ None,
+    );
+    assert!(!app.chat_widget.is_external_writer_view());
+    assert!(
+        app.try_submit_active_thread_op_via_app_server(&mut server, first_id, &op)
+            .await?
+    );
+    assert!(
+        session_lifecycle_requests::recorded_params(&requests, "thread/mcpServer/activate")
+            .is_empty()
+    );
+
+    let input_state = app.chat_widget.capture_thread_input_state();
+    app.ensure_thread_channel(first_id)
+        .store
+        .lock()
+        .await
+        .input_state = input_state;
+    let (mut other_chat, _sender, _receiver, _other_ops) =
+        crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
+    other_chat.handle_thread_session_quiet(second.session);
+    let blocked_chat = std::mem::replace(&mut app.chat_widget, other_chat);
+    app.active_thread_id = Some(second_id);
+    app.submit_thread_op(&mut server, first_id, op.clone())
+        .await?;
+    assert!(
+        session_lifecycle_requests::recorded_params(&requests, "thread/mcpServer/activate")
+            .is_empty()
+    );
+
+    // A different displayed thread's provider quarantine cannot block this target.
+    let mut other_chat = std::mem::replace(&mut app.chat_widget, blocked_chat);
+    app.active_thread_id = Some(first_id);
+    app.submit_thread_op(&mut server, second_id, op.clone())
+        .await?;
+    let admitted =
+        session_lifecycle_requests::recorded_params(&requests, "thread/mcpServer/activate");
+    assert_eq!(admitted.len(), 1);
+    assert_eq!(admitted[0]["threadId"], second_id.to_string());
+    assert_eq!(admitted[0]["serverName"], "missing-test-server");
+
+    // Selection bookkeeping can advance before the widget switches conversations.
+    app.active_thread_id = Some(second_id);
+    app.submit_thread_op(&mut server, second_id, op.clone())
+        .await?;
+    assert_eq!(
+        session_lifecycle_requests::recorded_params(&requests, "thread/mcpServer/activate").len(),
+        2,
+    );
+
+    other_chat.show_external_writer_thread();
+    let blocked_chat = std::mem::replace(&mut app.chat_widget, other_chat);
+    app.active_thread_id = Some(second_id);
+    assert!(
+        app.try_submit_active_thread_op_via_app_server(&mut server, second_id, &op)
+            .await?
+    );
+    app.chat_widget = blocked_chat;
+    app.active_thread_id = Some(first_id);
+    app.ensure_thread_channel(second_id).mark_external_writer();
+    assert!(
+        app.try_submit_active_thread_op_via_app_server(&mut server, second_id, &op)
+            .await?
+    );
+    assert_eq!(
+        session_lifecycle_requests::recorded_params(&requests, "thread/mcpServer/activate").len(),
+        2,
+    );
+    assert!(session_lifecycle_requests::recorded_params(&requests, "turn/start").is_empty());
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn handle_mcp_inventory_result_respects_origin_thread() {
     let mut app = make_test_app().await;
     app.transcript_cells
@@ -513,8 +612,10 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
             /*animations_enabled*/ false,
         )));
 
+    let sequence = app.mcp_requests.start(/*thread_id*/ None);
     app.handle_mcp_inventory_result(
         Ok(vec![McpServerStatus {
+            allow_implicit_invocation: true,
             server_capabilities: None,
             tool_list_meta: None,
             tools_error: None,
@@ -530,7 +631,9 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
         }]),
         McpServerStatusDetail::ToolsAndAuthOnly,
         /*thread_id*/ None,
-    );
+        sequence,
+    )
+    .await;
 
     assert_eq!(app.transcript_cells.len(), 0);
 
@@ -540,11 +643,15 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
             /*animations_enabled*/ false,
         )));
 
+    let origin_thread_id = ThreadId::new();
+    let sequence = app.mcp_requests.start(Some(origin_thread_id));
     app.handle_mcp_inventory_result(
         Ok(Vec::new()),
         McpServerStatusDetail::ToolsAndAuthOnly,
-        Some(ThreadId::new()),
-    );
+        Some(origin_thread_id),
+        sequence,
+    )
+    .await;
 
     assert_eq!(app.transcript_cells.len(), 1);
 }
@@ -6722,6 +6829,7 @@ async fn make_test_app() -> Box<App> {
         last_subagent_backfill_attempt: None,
         primary_session_configured: None,
         pending_primary_events: VecDeque::new(),
+        mcp_requests: mcp_requests::McpRequests::default(),
         pending_app_server_requests: PendingAppServerRequests::default(),
         dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
         dynamic_tool_tasks: HashMap::new(),
@@ -6849,6 +6957,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             last_subagent_backfill_attempt: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            mcp_requests: mcp_requests::McpRequests::default(),
             pending_app_server_requests: PendingAppServerRequests::default(),
             dynamic_tool_status_updates: tokio::sync::broadcast::channel(/*capacity*/ 64).0,
             dynamic_tool_tasks: HashMap::new(),

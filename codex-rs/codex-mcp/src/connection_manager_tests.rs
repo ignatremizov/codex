@@ -2606,9 +2606,13 @@ async fn capture_binding_preserves_ready_client_catalog_and_shares_prepared_meta
             .and_then(|tool| tool.connector_id.as_deref()),
         Some("z-hidden")
     );
-    assert!(
+    assert_eq!(
         step.prepare_call(CODEX_APPS_MCP_SERVER_NAME, "collision")
-            .is_none()
+            .expect("permitted app-only tool should remain callable")
+            .tool_info()
+            .connector_id
+            .as_deref(),
+        Some("z-hidden")
     );
     assert!(
         step.prepare_call(CODEX_APPS_MCP_SERVER_NAME, "shared_cached_tool")
@@ -5080,6 +5084,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 supports_parallel_tool_calls: false,
                 tool_input_schema_max_bytes: None,
                 omit_tools_from: None,
+                allow_implicit_invocation: true,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -5110,6 +5115,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 supports_parallel_tool_calls: false,
                 tool_input_schema_max_bytes: None,
                 omit_tools_from: None,
+                allow_implicit_invocation: true,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -5226,6 +5232,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
         supports_parallel_tool_calls: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -5394,6 +5401,7 @@ fn mcp_init_error_display_reports_generic_errors() {
         supports_parallel_tool_calls: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -5475,6 +5483,7 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
         supports_parallel_tool_calls: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -7144,4 +7153,62 @@ async fn view_only_changes_reuse_connection_and_preserve_the_old_step() {
         vec!["search".to_string()]
     );
     assert_eq!(new_call.tool_approval_mode(), AppToolApproval::Approve);
+
+    // Frozen prompt declarations may outlive a visibility update. The live call
+    // path must still apply the current catalog and approval authority.
+    let mut hidden_search = create_test_tool("docs", "search");
+    hidden_search.tool.meta = Some(
+        serde_json::from_value(serde_json::json!({"ui": {"visibility": ["app"]}}))
+            .expect("visibility metadata"),
+    );
+    hidden_search.tool.description = Some("Current hidden search schema".into());
+    let client = reconciled
+        .test_client("docs")
+        .client()
+        .await
+        .expect("ready client");
+    client
+        .tool_catalog
+        .refresh(
+            || async {
+                Ok((
+                    vec![hidden_search, create_test_tool("docs", "write")],
+                    None,
+                    (),
+                ))
+            },
+            |_, _, ()| {},
+        )
+        .await
+        .expect("publish hidden catalog");
+    let current_call = reconciled
+        .prepare_call_for_tool(Arc::clone(new_step.config()), old_call.tool_info())
+        .await
+        .expect("prompt-hidden tool retains current call authority");
+    assert!(!tool_is_model_visible(current_call.tool_info()));
+    assert_eq!(
+        current_call.tool_info().tool.description.as_deref(),
+        Some("Current hidden search schema")
+    );
+    assert_eq!(current_call.tool_approval_mode(), AppToolApproval::Approve);
+    assert_eq!(old_call.tool_approval_mode(), AppToolApproval::Prompt);
+    assert!(
+        reconciled
+            .prepare_call_for_tool(
+                Arc::clone(new_step.config()),
+                &create_test_tool("docs", "write"),
+            )
+            .await
+            .is_none(),
+        "current enabled_tools filter still rejects a retained declaration"
+    );
+    let mut revoked = new_step.config().as_ref().clone();
+    revoked.server_permission_profiles.clear();
+    assert!(
+        reconciled
+            .prepare_call_for_tool(Arc::new(revoked), old_call.tool_info())
+            .await
+            .is_none(),
+        "a hidden tool cannot recover revoked server permission"
+    );
 }

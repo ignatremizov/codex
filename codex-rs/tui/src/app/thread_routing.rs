@@ -826,6 +826,49 @@ impl App {
                 app_server.thread_compact_start(thread_id).await?;
                 Ok(true)
             }
+            AppCommand::ActivateMcpServer { server_name } => {
+                // A queued activation can outlive its original input authority or selection.
+                let input_blocked = if self.chat_widget.thread_id() == Some(thread_id) {
+                    self.chat_widget.direct_input_is_blocked()
+                } else if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+                    channel
+                        .store
+                        .lock()
+                        .await
+                        .input_state
+                        .as_ref()
+                        .is_some_and(|state| state.provider_error.is_some())
+                } else {
+                    false
+                };
+                let external_writer = self
+                    .thread_event_channels
+                    .get(&thread_id)
+                    .is_some_and(|channel| {
+                        channel.attachment() == ThreadEventAttachment::ExternalWriter
+                    });
+                let result = if input_blocked
+                    || external_writer
+                    || self.thread_unavailable(thread_id)
+                {
+                    Err("This conversation is read-only or unavailable; no activation was sent."
+                        .to_string())
+                } else {
+                    app_server
+                        .thread_mcp_server_activate(thread_id, server_name.clone())
+                        .await
+                        .map_err(|error| error.to_string())
+                };
+                self.enqueue_mcp_result(
+                    Some(thread_id),
+                    mcp_requests::McpThreadEvent::Activation {
+                        server_name: server_name.clone(),
+                        result,
+                    },
+                )
+                .await;
+                Ok(true)
+            }
             AppCommand::SetThreadName { name } => {
                 let name = name.to_string();
                 app_server.thread_set_name(thread_id, name.clone()).await?;
@@ -1553,6 +1596,9 @@ impl App {
                     self.enqueue_thread_history_entry_response(thread_id, event)
                         .await?;
                 }
+                ThreadBufferedEvent::Mcp(event) => {
+                    self.enqueue_mcp_result(Some(thread_id), event).await;
+                }
                 ThreadBufferedEvent::FeedbackSubmission(event) => {
                     self.enqueue_thread_feedback_event(thread_id, event).await;
                 }
@@ -1845,6 +1891,7 @@ impl App {
             })
             .then(|| snapshot.input_state.take())
             .flatten();
+        self.sync_mcp_inventory_loading();
         self.chat_widget.restore_thread_input_state(
             snapshot.input_state,
             ThreadInputStateRestoreMode {
@@ -2031,6 +2078,7 @@ impl App {
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event);
             }
+            ThreadBufferedEvent::Mcp(event) => self.render_mcp_result(event),
             ThreadBufferedEvent::FeedbackSubmission(event) => {
                 self.handle_feedback_thread_event(event);
             }
@@ -2061,6 +2109,7 @@ impl App {
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event)
             }
+            ThreadBufferedEvent::Mcp(event) => self.render_mcp_result(event),
             ThreadBufferedEvent::FeedbackSubmission(event) => {
                 self.handle_feedback_thread_event(event);
             }

@@ -609,6 +609,7 @@ pub(crate) async fn run_turn(
             }
 
             // Construct the input that we will send to the model.
+            sess.record_queued_mcp_use(step_context.as_ref()).await;
             let sampling_request_input = sess
                 .clone_history()
                 .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
@@ -2142,12 +2143,20 @@ pub(crate) async fn built_tools(
             .instrument(trace_span!("built_tools.load_discoverable_tools"))
             .await
         };
+    let exposure = sess.mcp_prompt.exposure(
+        mcp,
+        &turn_context.config,
+        apps_enabled,
+        &sess.get_connector_selection().await,
+        model_info.supports_search_tool,
+    );
     Ok(Arc::new(build_tool_router(
         sess,
         turn_context,
         model_info,
         environments,
         mcp,
+        &exposure,
         apps_enabled,
         step_store,
         tool_suggest_candidates.as_ref(),
@@ -2911,6 +2920,14 @@ async fn try_run_sampling_request(
     } else {
         None
     };
+    if cancellation_token.is_cancelled() {
+        return Err(CodexErr::TurnAborted);
+    }
+    // Incremental requests carry their declarations in history, leaving prompt.tools empty.
+    sess.mcp_prompt.freeze(
+        step_context.mcp.tools(),
+        &step_context.tool_router.model_visible_specs(),
+    );
     let stream = client_session
         .stream(
             &prompt,
@@ -3230,6 +3247,7 @@ async fn try_run_sampling_request(
                         .config
                         .features
                         .enabled(Feature::DeferMailboxPreemption)
+                    && !sess.active_turn_has_pending_mcp_server_use_boundary().await
                     && sess.input_queue.has_pending_mailbox_items().await
                 {
                     tracing::event!(

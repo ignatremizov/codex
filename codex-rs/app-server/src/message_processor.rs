@@ -1788,6 +1788,10 @@ impl MessageProcessor {
                     .mcp_server_status_list(&request_id, params)
                     .await
             }
+            ClientRequest::ThreadMcpServerActivate { params, .. } => {
+                // Keep explicit inventory discovery out of the shared dispatcher's stack frame.
+                Box::pin(self.mcp_processor.thread_mcp_server_activate(params)).await
+            }
             ClientRequest::McpResourceRead { params, .. } => {
                 self.mcp_processor
                     .mcp_resource_read(&request_id, params)

@@ -1006,10 +1006,22 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
         "starting the cached server must invalidate the dormant binding"
     );
     assert_definition(
-        "child after deferred startup",
+        "child after deferred startup (frozen direct declarations)",
         &cached_done_response,
-        &format!("Use the tools from {second_process}."),
-        &format!("Echo from {second_process}."),
+        &format!("Use the tools from {cached_process}."),
+        &format!("Echo from {cached_process}."),
+    );
+    assert_eq!(
+        cached_done_response.single_request().body_json()["tools"],
+        cached_response.single_request().body_json()["tools"],
+        "refreshing the live client must not rewrite its frozen model declarations"
+    );
+    assert!(
+        cached_response
+            .single_request()
+            .tool_by_name(NAMESPACE, "cwd")
+            .is_some(),
+        "the pending call was declared before startup changed its prompt visibility"
     );
     let output: FunctionCallOutputBody = serde_json::from_value(
         cached_done_response
@@ -1019,14 +1031,17 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
     )?;
     let output = output
         .to_text()
-        .expect("the current-catalog rejection should reach the model");
-    // Frozen declarations do not retain call authority after live startup changes
-    // a tool to app-only. Call preparation rechecks the current catalog.
-    let expected_error = format!("MCP tool `{SERVER_NAME}/cwd` is not available to the model");
+        .expect("the current MCP call should be reported");
+    // A visibility update hides future declarations without revoking the current
+    // catalog, enabled-tools filter, or server permission authority.
+    let output = output
+        .split_once("\nOutput:\n")
+        .map(|(_, body)| body)
+        .expect("the permitted prompt-hidden tool should return an output body");
     assert_eq!(
-        output.split_once("\nOutput:\n").map(|(_, body)| body),
-        Some(expected_error.as_str()),
-        "the previously advertised tool must be rejected by current model visibility: {output}"
+        serde_json::from_str::<Value>(output)?,
+        json!({"cwd": fixture.config.cwd}),
+        "the permitted prompt-hidden tool must execute against the live server"
     );
     let output: FunctionCallOutputBody = serde_json::from_value(
         cached_done_response
