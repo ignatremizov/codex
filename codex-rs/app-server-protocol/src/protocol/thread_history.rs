@@ -371,11 +371,13 @@ impl ThreadHistoryBuilder {
                 if let Some(completed) = self.pending_compaction_legacy_event.take()
                     && completed.summary == legacy.summary
                     && completed.message == legacy.message
+                    && completed.decode_error == legacy.decode_error
                     && completed.available_skills == legacy.available_skills
                 {
                     return;
                 }
             }
+            EventMsg::ContextCompactionStatus(_) => {}
             EventMsg::ItemStarted(payload)
                 if matches!(
                     payload.item,
@@ -669,6 +671,7 @@ impl ThreadHistoryBuilder {
             self.pending_compaction_legacy_event = Some(ContextCompactedEvent {
                 summary: item.summary.clone(),
                 message: item.message.clone(),
+                decode_error: item.decode_error.clone(),
                 available_skills: item.available_skills.clone(),
             });
             return;
@@ -1238,6 +1241,7 @@ impl ThreadHistoryBuilder {
             id,
             summary: payload.summary.clone(),
             message: payload.message.clone(),
+            decode_error: payload.decode_error.clone(),
             available_skills: payload.available_skills.clone(),
         });
     }
@@ -4714,6 +4718,7 @@ mod tests {
             RolloutItem::EventMsg(EventMsg::ContextCompacted(ContextCompactedEvent {
                 summary: Some("Compact summary".into()),
                 message: Some("Full compacted prompt".into()),
+                decode_error: None,
                 available_skills: vec!["test-tui".into()],
             })),
             RolloutItem::Compacted(Box::new(CompactedItem {
@@ -4749,6 +4754,7 @@ mod tests {
                 id: "item-1".into(),
                 summary: Some("Compact summary".into()),
                 message: Some("Full compacted prompt".into()),
+                decode_error: None,
                 available_skills: vec!["test-tui".into()],
             }]
         );
@@ -5732,6 +5738,7 @@ mod tests {
             id: "compact-1".to_string(),
             summary: Some("summary".to_string()),
             message: Some("complete compacted prompt".to_string()),
+            decode_error: Some("decoder failed".to_string()),
             available_skills: vec!["test-tui".to_string()],
         };
         builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
@@ -5749,10 +5756,17 @@ mod tests {
                 id: item.id.clone(),
                 summary: None,
                 message: None,
+                decode_error: None,
                 available_skills: Vec::new(),
             }),
             started_at_ms: 100,
         }));
+        builder.handle_event(&EventMsg::ContextCompactionStatus(
+            codex_protocol::protocol::ContextCompactionStatusEvent {
+                item_id: item.id.clone(),
+                message: "Decoding".to_string(),
+            },
+        ));
         assert!(builder.active_turn_snapshot().unwrap().items.is_empty());
         let changes =
             builder.handle_event_with_changes(&EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -5778,6 +5792,7 @@ mod tests {
         let legacy = EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: item.summary.clone(),
             message: item.message.clone(),
+            decode_error: item.decode_error.clone(),
             available_skills: item.available_skills.clone(),
         });
         builder.handle_event(&legacy);
@@ -5795,6 +5810,7 @@ mod tests {
                 id: items[1].id().to_string(),
                 summary: Some("summary".to_string()),
                 message: Some("complete compacted prompt".to_string()),
+                decode_error: Some("decoder failed".to_string()),
                 available_skills: vec!["test-tui".to_string()],
             }
         );
@@ -5815,6 +5831,7 @@ mod tests {
             id: "compact-1".to_string(),
             summary: Some("summary".to_string()),
             message: Some("prompt".to_string()),
+            decode_error: None,
             available_skills: vec!["test-tui".to_string()],
         };
         builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -5827,6 +5844,7 @@ mod tests {
         builder.handle_event(&EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: item.summary.clone(),
             message: item.message.clone(),
+            decode_error: None,
             available_skills: vec!["remote-tests".to_string()],
         }));
         let items = builder.finish().remove(0).items;
@@ -5838,7 +5856,55 @@ mod tests {
                     id: items[1].id().to_string(),
                     summary: Some("summary".to_string()),
                     message: Some("prompt".to_string()),
+                    decode_error: None,
                     available_skills: vec!["remote-tests".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compaction_legacy_with_different_decode_error_is_not_suppressed() {
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            root_turn_id: None,
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+        let item = ContextCompactionItem {
+            id: "compact-1".to_string(),
+            summary: Some("summary".to_string()),
+            message: Some("prompt".to_string()),
+            decode_error: None,
+            available_skills: vec!["test-tui".to_string()],
+        };
+        builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".to_string(),
+            item: CoreTurnItem::ContextCompaction(item.clone()),
+            started_at_ms: Some(100),
+            completed_at_ms: 123,
+        }));
+        builder.handle_event(&EventMsg::ContextCompacted(ContextCompactedEvent {
+            summary: item.summary.clone(),
+            message: item.message.clone(),
+            decode_error: Some("decoder failed".to_string()),
+            available_skills: item.available_skills.clone(),
+        }));
+        let items = builder.finish().remove(0).items;
+        assert_eq!(
+            items,
+            vec![
+                ThreadItem::from(CoreTurnItem::ContextCompaction(item.clone())),
+                ThreadItem::ContextCompaction {
+                    id: items[1].id().to_string(),
+                    summary: item.summary,
+                    message: item.message,
+                    decode_error: Some("decoder failed".to_string()),
+                    available_skills: item.available_skills,
                 },
             ]
         );

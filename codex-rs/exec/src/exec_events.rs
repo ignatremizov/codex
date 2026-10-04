@@ -102,6 +102,8 @@ pub struct ContextCompactedEvent {
     pub summary: Option<String>,
     pub message: Option<String>,
     #[serde(default)]
+    pub decode_error: Option<String>,
+    #[serde(default)]
     pub available_skills: Vec<String>,
 }
 

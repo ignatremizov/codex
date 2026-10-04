@@ -25,6 +25,7 @@ fn context_compaction_preserves_visible_summary_and_message() {
         EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: Some("compact summary".to_string()),
             message: Some("complete compacted prompt".to_string()),
+            decode_error: Some("decoder failed".to_string()),
             available_skills: vec!["test-tui".to_string()],
         }),
         (
@@ -32,6 +33,7 @@ fn context_compaction_preserves_visible_summary_and_message() {
                 id: "item-1".to_string(),
                 summary: Some("compact summary".to_string()),
                 message: Some("complete compacted prompt".to_string()),
+                decode_error: Some("decoder failed".to_string()),
                 available_skills: vec!["test-tui".to_string()],
             }),
             None,
@@ -52,6 +54,7 @@ fn historical_compaction_without_presentation_fields_remains_readable() {
                 id: "item-1".to_string(),
                 summary: None,
                 message: None,
+                decode_error: None,
                 available_skills: Vec::new(),
             }),
             None,
