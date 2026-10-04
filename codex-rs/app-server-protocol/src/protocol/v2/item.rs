@@ -429,6 +429,8 @@ pub enum ThreadItem {
     #[ts(rename_all = "camelCase")]
     ContextCompaction {
         id: String,
+        summary: Option<String>,
+        message: Option<String>,
     },
 }
 
@@ -1061,9 +1063,11 @@ impl From<CoreTurnItem> for ThreadItem {
                     duration_ms,
                 }
             }
-            CoreTurnItem::ContextCompaction(compaction) => {
-                ThreadItem::ContextCompaction { id: compaction.id }
-            }
+            CoreTurnItem::ContextCompaction(compaction) => ThreadItem::ContextCompaction {
+                id: compaction.id,
+                summary: compaction.summary,
+                message: compaction.message,
+            },
         }
     }
 }
