@@ -643,7 +643,7 @@ impl ChatWidget {
                     self.replace_reasoning_parts(summary, content);
                 }
             }
-            ThreadItemPayload::ContextCompaction { id }
+            ThreadItemPayload::ContextCompaction { id, .. }
                 if !matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages)) =>
             {
                 // Buffered starts reconstruct an in-flight compaction when switching tasks.

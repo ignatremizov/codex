@@ -7,6 +7,7 @@ export type {
   ItemStartedEvent,
   ItemUpdatedEvent,
   ItemCompletedEvent,
+  ContextCompactedEvent,
   ThreadError,
   ThreadErrorEvent,
   Usage,
