@@ -18,6 +18,7 @@ impl Session {
             guardian_history: history.guardian_history_checkpoint(),
             retained_context: Some(history.retained_context().clone()),
             mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
+            compaction_summary_tokens: None,
             window_number: Some(state.auto_compact_window_number()),
             first_window_id: Some(window_ids.first_window_id.to_string()),
             previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),

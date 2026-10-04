@@ -194,6 +194,7 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
             retained_context: None,
             guardian_history: None,
             mcp_resource_origins: None,
+            compaction_summary_tokens: None,
             window_number: Some(1),
             first_window_id: None,
             previous_window_id: None,
