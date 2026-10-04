@@ -70,6 +70,7 @@ fn restores_cumulative_item_and_compaction_checkpoints() {
             guardian_history: None,
             retained_context: None,
             mcp_resource_origins: None,
+            compaction_summary_tokens: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,

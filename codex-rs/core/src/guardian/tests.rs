@@ -2676,6 +2676,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
             /*world_state_baseline*/ None,
             crate::compact::CompactedHistoryMetadata {
                 message: String::new(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,

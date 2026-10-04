@@ -4198,6 +4198,7 @@ impl Session {
                 guardian_history: state.history.guardian_history_checkpoint(),
                 retained_context: Some(state.history.retained_context().clone()),
                 mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
+                compaction_summary_tokens: metadata.compaction_summary_tokens,
                 window_number: Some(metadata.window_number),
                 first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
                 previous_window_id: metadata
@@ -4671,6 +4672,7 @@ impl Session {
             Some(world_state),
             CompactedHistoryMetadata {
                 message: String::new(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,
