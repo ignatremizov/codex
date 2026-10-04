@@ -21,8 +21,7 @@ impl ChatWidget {
         if self.permission_shortcut_pending {
             return true;
         }
-        if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+        if self.reject_blocked_input() {
             return true;
         }
         let Some(thread_id) = self.thread_id else {

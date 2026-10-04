@@ -102,7 +102,7 @@ impl ChatWidget {
             }
             if expanded
                 && forward
-                && !self.blocks_direct_input
+                && !self.direct_input_is_blocked()
                 && let Some(composer) = self.pop_latest_queued_composer_state()
             {
                 if let Some(questions) = &mut self.bottom_pane.questions {
@@ -140,8 +140,7 @@ impl ChatWidget {
                     QuestionSubmission::Submit(text) => (text, false),
                     QuestionSubmission::Queue(text) => (text, true),
                 };
-                if self.blocks_direct_input {
-                    self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+                if self.reject_blocked_input() {
                     return true;
                 }
                 if self.has_misalignment_policy_violation() {

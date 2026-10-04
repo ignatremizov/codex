@@ -112,7 +112,8 @@ impl ChatWidget {
     }
 
     pub(crate) fn prepare_safety_recourse_rewrite(&mut self, prompt: &str) -> Option<AppCommand> {
-        if !self.is_session_configured()
+        if self.direct_input_is_blocked()
+            || !self.is_session_configured()
             || self.is_user_turn_pending_or_running()
             || self.pending_image_submission.is_some()
             || self.input_queue.rate_limit_recovery_pending
@@ -156,6 +157,9 @@ impl ChatWidget {
         source: UserMessageSource,
         prepared_images: Option<Vec<UserInput>>,
     ) -> (bool, Option<AppCommand>) {
+        if self.reject_blocked_input() {
+            return (false, None);
+        }
         self.bottom_pane.dismiss_composer_sparkle();
         if self.has_misalignment_policy_violation() {
             return (false, None);

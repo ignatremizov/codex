@@ -125,13 +125,31 @@ impl ChatWidget {
         self.provider_error.is_some()
     }
 
+    /// Child provenance does not restrict input; unavailable writers and providers do.
+    pub(crate) fn direct_input_is_blocked(&self) -> bool {
+        self.external_writer_view || self.has_provider_error()
+    }
+
+    /// Reject a local mutation with the reason for the current input quarantine.
+    pub(super) fn reject_blocked_input(&mut self) -> bool {
+        let message = if let Some(error) = &self.provider_error {
+            self.provider_error_message(error)
+        } else if self.external_writer_view {
+            "This thread is open elsewhere. Close it there and retry resume to continue."
+                .to_string()
+        } else {
+            return false;
+        };
+        self.add_error_message(message);
+        true
+    }
+
     pub(crate) fn show_provider_error(
         &mut self,
         error: ModelProviderError,
         rejected_message_id: Option<&str>,
     ) {
         self.provider_error = Some(error);
-        self.blocks_direct_input = true;
         self.input_queue.suppress_queue_autosend = true;
         self.input_queue.recovered_queue = true;
         if let Some(client_id) = rejected_message_id {
@@ -169,8 +187,7 @@ impl ChatWidget {
             }
             self.update_task_running_state();
         }
-        self.bottom_pane
-            .set_composer_input_enabled(/*enabled*/ false, /*placeholder*/ None);
+        self.bottom_pane.block_composer_input_until_replaced();
         self.refresh_pending_input_preview();
         self.request_redraw();
     }

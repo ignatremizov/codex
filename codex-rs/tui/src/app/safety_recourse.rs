@@ -24,6 +24,7 @@ pub(super) async fn continue_with_rewrite(
     prompt: String,
 ) {
     if !supports_server(app_server)
+        || app.chat_widget.direct_input_is_blocked()
         || app.active_thread_id != Some(thread_id)
         || app.primary_thread_id != Some(thread_id)
         || app.chat_widget.last_turn_id() != Some(turn_id.as_str())
@@ -76,8 +77,7 @@ pub(super) async fn continue_with_rewrite(
             .thread_turns_page(thread_id, /*cursor*/ None, /*limit*/ 1)
             .await?;
         ensure!(
-            !started.blocks_direct_input
-                && started.session.forked_from_id == Some(thread_id)
+            started.session.forked_from_id == Some(thread_id)
                 && latest.data.first().is_some_and(is_blocked_turn)
                 && (!fork_turns.data.is_empty() || fork_turns.next_cursor.is_none())
                 && fork_turns.data.first().map(|turn| &turn.id)

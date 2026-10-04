@@ -239,7 +239,7 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
         event, AppEvent::PersistDaybreakSelection { thread_id: id, enabled: true } if id == thread_id
     )));
 
-    chat.set_parent_owned_thread();
+    chat.show_external_writer_thread();
     handle_error(
         &mut chat,
         "server fallback message",
@@ -248,13 +248,72 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     let cells = drain_insert_history(&mut events);
     assert!(chat.bottom_pane.no_modal_or_popup_active());
     assert_chatwidget_snapshot!(
-        "daybreak_refusal_parent_owned",
-        normalize_snapshot_paths(format!(
-            "{}\n{}",
-            lines_to_single_string(cells.last().unwrap()),
-            render_bottom_popup(&chat, /*width*/ 80)
+        "daybreak_refusal_external_writer",
+        lines_to_single_string(cells.last().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn provider_error_suppresses_daybreak_and_safety_recourse() {
+    let (mut chat, mut events, mut ops) = make_chatwidget_manual_with_auth(
+        Some("gpt-5.6-sol"),
+        /*has_chatgpt_account*/ true,
+        /*has_codex_backend_auth*/ true,
+        FrameRequester::test_dummy(),
+    )
+    .await;
+    chat.set_feature_enabled(Feature::CliDaybreak, /*enabled*/ true);
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let mut model = crate::test_support::TEST_MODEL_PRESETS[0].clone();
+    model.model = "gpt-5.6-sol".into();
+    model.available_access_programs = Some(codex_protocol::openai_models::ModelAccessPrograms {
+        cyber: vec![codex_protocol::turn_input::CyberAccessProgram::DaybreakBlue],
+    });
+    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![model]));
+    assert_eq!(
+        chat.cyber_policy_notice(),
+        crate::daybreak::Notice::Disabled
+    );
+    chat.show_provider_error(
+        codex_app_server_protocol::ModelProviderError::ModelProviderNotConfigured {
+            model_provider: "old-provider".into(),
+        },
+        /*rejected_message_id*/ None,
+    );
+    assert!(!chat.is_external_writer_view());
+    handle_turn_started(&mut chat, "recourse");
+    safety_recourse::on_metadata(
+        &mut chat,
+        codex_app_server_protocol::TurnModerationMetadataNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "recourse".into(),
+            metadata: json!({"safety_recourse": {
+                "schema_version": 1, "domain": "cyber", "source": "user_request",
+                "source_message": {"id":"1", "kind":"ordinary_message", "role":"user"},
+                "topic": "unauthorized_account_or_system_access",
+                "suggestions": [
+                    {"label": "Overview", "prompt_text": "Explain access"},
+                    {"label": "Recovery", "prompt_text": "Explain account recovery"},
+                    {"label": "Prevention", "prompt_text": "Explain account protection"}
+                ]
+            }}),
+        },
+    );
+    assert!(chat.safety_recourse.is_none());
+    handle_error(
+        &mut chat,
+        "server fallback message",
+        Some(CodexErrorInfo::CyberPolicy),
+    );
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok()).all(|event| !matches!(
+            event,
+            AppEvent::PersistDaybreakSelection { .. } | AppEvent::ContinueSafetyRecourse { .. }
         ))
     );
+    assert_no_submit_op(&mut ops);
 }
 
 #[tokio::test]

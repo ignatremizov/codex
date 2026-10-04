@@ -205,7 +205,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_restricted_key(&mut self, key: KeyEvent, mode: RestrictedInputMode) {
-        if self.external_writer_view {
+        if self.direct_input_is_blocked() {
             return;
         }
         let startup_key_handled = self.input_queue.startup_submission.is_some()

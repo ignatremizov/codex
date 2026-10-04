@@ -299,6 +299,8 @@ pub(crate) struct BottomPane {
     /// Composer is retained even when a BottomPaneView is displayed so the
     /// input state is retained when the view is closed.
     composer: ChatComposer,
+    /// Runtime authority failures stay blocked until the owning widget is replaced.
+    composer_input_blocked: bool,
 
     /// Stack of views displayed instead of the composer (e.g. popups/modals).
     view_stack: Vec<Box<dyn BottomPaneView>>,
@@ -403,6 +405,7 @@ impl BottomPane {
         composer.set_skill_mentions(skills);
         Self {
             composer,
+            composer_input_blocked: false,
             view_stack: Vec::new(),
             key_chord_reset_requested: false,
             warnings_view: None,
@@ -682,11 +685,6 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    pub(crate) fn set_parent_owned_thread(&mut self) {
-        self.composer.set_parent_owned_thread();
-        self.request_redraw();
-    }
-
     pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
         self.composer.set_vim_enabled(enabled);
         if let Some(questions) = &mut self.questions {
@@ -849,11 +847,13 @@ impl BottomPane {
         key: KeyEvent,
         mode: RestrictedInputMode,
     ) -> InputResult {
+        if self.composer_input_blocked {
+            return InputResult::None;
+        }
         self.view_stack.clear();
         self.warnings_view = None;
         self.delayed_approval_requests.clear();
-        self.composer
-            .set_input_enabled(/*enabled*/ true, /*placeholder*/ None);
+        self.set_composer_input_enabled(/*enabled*/ true, /*placeholder*/ None);
         let result = self.composer.handle_restricted_key(key, mode);
         self.request_redraw();
         result
@@ -1204,8 +1204,14 @@ impl BottomPane {
         enabled: bool,
         placeholder: Option<String>,
     ) {
-        self.composer.set_input_enabled(enabled, placeholder);
+        self.composer
+            .set_input_enabled(enabled && !self.composer_input_blocked, placeholder);
         self.request_redraw();
+    }
+
+    pub(crate) fn block_composer_input_until_replaced(&mut self) {
+        self.composer_input_blocked = true;
+        self.set_composer_input_enabled(/*enabled*/ false, /*placeholder*/ None);
     }
 
     pub(crate) fn show_shutdown_in_progress(&mut self) {

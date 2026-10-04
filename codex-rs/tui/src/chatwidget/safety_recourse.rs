@@ -22,7 +22,7 @@ pub(super) fn on_metadata(chat: &mut ChatWidget, notification: TurnModerationMet
         || !matches_turn(chat, &notification.thread_id, &notification.turn_id)
         || chat.side_conversation_active()
         || chat.config_ref().ephemeral
-        || chat.blocks_direct_input
+        || chat.direct_input_is_blocked()
         || (chat.safety_recourse.is_some() && chat.has_queued_follow_up_messages())
     {
         return;

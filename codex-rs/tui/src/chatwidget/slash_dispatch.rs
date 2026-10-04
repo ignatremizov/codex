@@ -325,8 +325,7 @@ impl ChatWidget {
                 self.submit_user_message(INIT_PROMPT.to_string().into());
             }
             SlashCommand::Compact => {
-                if self.blocks_direct_input {
-                    self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+                if self.reject_blocked_input() {
                     return;
                 }
                 self.clear_token_usage();

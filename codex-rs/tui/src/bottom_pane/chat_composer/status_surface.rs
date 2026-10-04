@@ -30,7 +30,6 @@ impl ChatComposer {
         }
         let mut props = self.footer_props();
         let show_cycle_hint = !props.is_task_running
-            && !self.blocks_direct_input
             && self.draft.input_enabled
             && !self.popup_active()
             && matches!(

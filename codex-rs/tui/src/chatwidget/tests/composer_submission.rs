@@ -239,13 +239,20 @@ async fn hidden_shell_paste_queued_before_session_submits_literal_prompt() {
 }
 
 #[tokio::test]
-async fn parent_owned_thread_blocks_all_direct_input_entry_points() {
+async fn provider_error_blocks_all_direct_input_entry_points() {
     let (mut chat, mut rx, mut op_rx) =
         make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
     chat.thread_id = Some(ThreadId::new());
     drain_insert_history(&mut rx);
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
-    chat.set_parent_owned_thread();
+    chat.show_provider_error(
+        codex_app_server_protocol::ModelProviderError::ModelProviderNotConfigured {
+            model_provider: "old-provider".into(),
+        },
+        /*rejected_message_id*/ None,
+    );
+    assert!(chat.has_provider_error());
+    assert!(!chat.is_external_writer_view());
     chat.set_side_conversation_active(/*active*/ false);
     chat.bottom_pane
         .set_composer_text("keep this draft".to_string(), Vec::new(), Vec::new());
@@ -257,13 +264,6 @@ async fn parent_owned_thread_blocks_all_direct_input_entry_points() {
     after.last_composer_activity_at = before.last_composer_activity_at;
     assert_eq!(after, before);
     assert_no_submit_op(&mut op_rx);
-    let rendered = drain_insert_history(&mut rx)
-        .into_iter()
-        .flatten()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_chatwidget_snapshot!("parent_owned_thread_rejects_input", rendered);
 
     let collaboration_mode_before = chat.active_collaboration_mask.clone();
     let plan_mode = collaboration_modes::mask_for_kind(chat.model_catalog.as_ref(), ModeKind::Plan)
@@ -293,18 +293,33 @@ async fn parent_owned_thread_blocks_all_direct_input_entry_points() {
         assert_no_submit_op(&mut op_rx);
     }
 
+    assert!(!chat.submit_user_message_with_history_record(
+        UserMessage::from("reject direct submission"),
+        UserMessageHistoryRecord::UserMessageText,
+    ));
+    assert!(chat.input_queue.queued_user_messages.is_empty());
+    assert!(!chat.submit_op(AppCommand::review(ReviewTarget::Custom {
+        instructions: "review this thread".into(),
+    })));
     assert!(!chat.submit_op(AppCommand::compact()));
     assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
-async fn parent_owned_thread_blocks_settings_shortcuts() {
-    let (mut chat, mut rx, _op_rx) =
+async fn provider_error_blocks_settings_shortcuts() {
+    let (mut chat, mut rx, mut op_rx) =
         make_chatwidget_manual(/*model_override*/ Some("gpt-5.4")).await;
     chat.thread_id = Some(ThreadId::new());
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
     chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
-    chat.set_parent_owned_thread();
+    chat.show_provider_error(
+        codex_app_server_protocol::ModelProviderError::ModelProviderNotConfigured {
+            model_provider: "old-provider".into(),
+        },
+        /*rejected_message_id*/ None,
+    );
+    assert!(chat.has_provider_error());
+    assert!(!chat.is_external_writer_view());
     drain_insert_history(&mut rx);
 
     let collaboration_mode_before = chat.active_collaboration_mask.clone();
@@ -329,18 +344,7 @@ async fn parent_owned_thread_blocks_settings_shortcuts() {
             | AppEvent::UpdateReasoningEffort(_)
             | AppEvent::UpdatePlanModeReasoningEffort(_)
     )));
-
-    let rendered = events
-        .into_iter()
-        .filter_map(|event| match event {
-            AppEvent::InsertHistoryCell(cell) => Some(cell.display_lines(/*width*/ 80)),
-            _ => None,
-        })
-        .flatten()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_chatwidget_snapshot!("parent_owned_thread_rejects_settings_shortcuts", rendered);
+    assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
@@ -355,11 +359,11 @@ async fn disconnect_restores_initial_prompt_without_submitting_it() {
 }
 
 #[tokio::test]
-async fn parent_owned_thread_restores_pending_initial_prompt() {
+async fn external_writer_keeps_initial_prompt_and_caller_owned_startup_draft() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
     let pending_prompt = "keep this startup prompt".to_string();
     chat.initial_user_message = Some(pending_prompt.clone().into());
-    chat.set_parent_owned_thread();
+    chat.show_external_writer_thread();
 
     chat.submit_initial_user_message_if_pending();
 
@@ -373,19 +377,122 @@ async fn parent_owned_thread_restores_pending_initial_prompt() {
         Vec::new(),
         Vec::new(),
     );
-    let mut pending_draft = Some(startup_chat.bottom_pane.composer_draft_snapshot());
+    let startup_draft = startup_chat.bottom_pane.composer_draft_snapshot();
+    let mut pending_draft = Some(startup_draft.clone());
     chat.restore_startup_draft_when_ready(&mut pending_draft);
 
-    assert!(pending_draft.is_none());
-    assert_eq!(
-        chat.bottom_pane.composer_text(),
-        format!("{pending_prompt}\ntyped during startup")
-    );
+    assert_eq!(pending_draft, Some(startup_draft));
+    assert_eq!(chat.bottom_pane.composer_text(), pending_prompt);
     assert_no_submit_op(&mut op_rx);
 }
 
 #[tokio::test]
-async fn parent_owned_thread_preserves_queued_input_before_draining() {
+async fn provider_error_preserves_input_and_quarantine_across_restore() {
+    let (mut chat, _events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.initial_user_message = Some("keep this startup prompt".into());
+    let queued_message = QueuedUserMessage {
+        user_message: UserMessage::from("keep this queued prompt"),
+        prepared_images: None,
+        action: QueuedInputAction::Plain,
+        delivery: MessageDelivery::Unsent,
+        pending_pastes: vec![("[Image 1]".to_string(), "pasted contents".to_string())],
+        source: UserMessageSource::Prompt,
+    };
+    let history_record = UserMessageHistoryRecord::UserMessageText;
+    chat.input_queue
+        .queued_user_messages
+        .push_back(queued_message.clone());
+    chat.input_queue
+        .queued_user_message_history_records
+        .push_back(history_record.clone());
+    chat.show_provider_error(
+        codex_app_server_protocol::ModelProviderError::ModelProviderNotConfigured {
+            model_provider: "old-provider".into(),
+        },
+        /*rejected_message_id*/ None,
+    );
+
+    chat.submit_initial_user_message_if_pending();
+
+    assert_eq!(chat.bottom_pane.composer_text(), "keep this startup prompt");
+    assert!(chat.initial_user_message.is_none());
+    // Acknowledging recovered input cannot make an unavailable provider writable.
+    chat.input_queue.recovered_queue = false;
+    chat.input_queue.suppress_queue_autosend = false;
+    assert!(!chat.maybe_send_next_queued_input());
+    assert_eq!(
+        chat.input_queue.queued_user_messages,
+        VecDeque::from([queued_message.clone()])
+    );
+    assert_eq!(
+        chat.input_queue.queued_user_message_history_records,
+        VecDeque::from([history_record.clone()])
+    );
+    assert_no_submit_op(&mut ops);
+
+    chat.open_legacy_permissions_popup();
+    assert!(chat.has_active_view());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!chat.has_active_view());
+    assert!(!chat.bottom_pane.composer_input_enabled());
+    assert_eq!(chat.bottom_pane.composer_text(), "keep this startup prompt");
+
+    let state = chat
+        .capture_thread_input_state()
+        .expect("saved input state");
+    let (mut restored, _events, mut restored_ops) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    restored.thread_id = chat.thread_id;
+    restored.restore_thread_input_state(
+        Some(state),
+        ThreadInputStateRestoreMode {
+            preserve_in_flight_turn: false,
+        },
+    );
+    restored.set_queue_autosend_suppressed(/*suppressed*/ false);
+    assert!(restored.has_provider_error());
+    assert!(!restored.is_external_writer_view());
+    assert!(!restored.bottom_pane.composer_input_enabled());
+    assert!(restored.input_queue.suppress_queue_autosend);
+    let before = restored.bottom_pane.composer_draft_snapshot();
+    restored.chat_keymap.edit_queued_message = vec![crate::key_hint::alt(KeyCode::Up)];
+    for key in [
+        KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        restored.handle_restricted_key(key, RestrictedInputMode::Disconnected);
+    }
+    let mut after = restored.bottom_pane.composer_draft_snapshot();
+    after.last_composer_activity_at = before.last_composer_activity_at;
+    assert_eq!(after, before);
+    assert!(!restored.bottom_pane.composer_input_enabled());
+    assert_eq!(
+        restored.input_queue.queued_user_messages,
+        VecDeque::from([queued_message])
+    );
+    assert_eq!(
+        restored.input_queue.queued_user_message_history_records,
+        VecDeque::from([history_record])
+    );
+    assert!(!restored.maybe_send_next_queued_input());
+    assert_no_submit_op(&mut restored_ops);
+}
+
+#[tokio::test]
+async fn external_writer_blocks_compaction_but_preserves_interrupt_dispatch() {
+    let (mut chat, _events, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.show_external_writer_thread();
+
+    assert!(!chat.submit_op(AppCommand::compact()));
+    assert_no_submit_op(&mut ops);
+    assert!(chat.submit_op(AppCommand::interrupt()));
+    next_interrupt_op(&mut ops);
+    assert_no_submit_op(&mut ops);
+}
+
+#[tokio::test]
+async fn external_writer_thread_preserves_queued_input_before_draining() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
     let queued_message = QueuedUserMessage {
         user_message: UserMessage::from("keep this queued prompt"),
@@ -402,7 +509,7 @@ async fn parent_owned_thread_preserves_queued_input_before_draining() {
     chat.input_queue
         .queued_user_message_history_records
         .push_back(history_record.clone());
-    chat.set_parent_owned_thread();
+    chat.show_external_writer_thread();
 
     assert!(!chat.maybe_send_next_queued_input());
     assert_eq!(
@@ -2797,7 +2904,6 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
         "model_change",
         "disconnect",
         "interrupt",
-        "parent_owned",
         "external_writer",
         "escape",
         "ctrl_c",
@@ -2898,23 +3004,25 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
                         assert_eq!(chat.input_queue.queued_user_messages.len(), 2);
                     }
                     chat.on_images_prepared(id);
-                } else if scenario == "parent_owned" || scenario == "external_writer" {
+                } else if scenario == "external_writer" {
                     chat.codex_op_target = CodexOpTarget::AppEvent;
-                    if scenario == "parent_owned" {
-                        chat.set_parent_owned_thread();
-                    } else {
-                        chat.show_external_writer_thread();
-                    }
+                    chat.show_external_writer_thread();
                     assert_eq!(chat.bottom_pane.composer_text(), "describe");
                     chat.on_images_prepared(id);
                     assert!(drain_insert_history(&mut rx).is_empty());
                 } else if scenario == "interrupt" {
-                    chat.input_queue
-                        .pending_steers
-                        .push_back(pending_steer("earlier"));
+                    let earlier = pending_steer("earlier");
+                    chat.input_queue.pending_steers.push_back(earlier.clone());
                     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
-                    assert_eq!(chat.bottom_pane.composer_text(), "earlier\ndescribe\nx");
+                    // Already-submitted steers remain Core-owned; restoring them into the
+                    // draft would duplicate input. Only the unsubmitted image and queue merge.
+                    assert_eq!(chat.bottom_pane.composer_text(), "describe\nx");
+                    assert_eq!(
+                        chat.input_queue.pending_steers,
+                        VecDeque::from([earlier.clone()])
+                    );
                     chat.on_images_prepared(id);
+                    assert_eq!(chat.input_queue.pending_steers, VecDeque::from([earlier]));
                 } else if scenario == "disconnect" {
                     chat.pause_for_disconnect();
                     chat.reconnect_failed();

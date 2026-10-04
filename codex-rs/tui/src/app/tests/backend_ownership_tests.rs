@@ -308,7 +308,7 @@ async fn prepared_resume_cannot_activate_through_another_backend() -> Result<()>
         thread: AppServerStartedThread {
             session: test_thread_session(ThreadId::new(), app.config.cwd.to_path_buf()),
             turns: Vec::new(),
-            blocks_direct_input: false,
+            is_subagent: false,
             task_tools_available: true,
         },
         read_only: false,
