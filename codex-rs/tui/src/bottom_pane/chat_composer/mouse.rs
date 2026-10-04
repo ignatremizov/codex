@@ -28,7 +28,6 @@ impl ChatComposer {
         shortcut: Option<KeyCode>,
     ) -> Option<ClipboardPasteTarget> {
         let allowed = self.draft.input_enabled
-            && !self.blocks_direct_input
             && (shortcut.is_some()
                 || (self.history_search.is_none()
                     && self.draft.textarea.vim_query().is_none()
@@ -124,7 +123,6 @@ impl ChatComposer {
 
     pub(crate) fn prepare_mouse(&mut self, event: MouseEvent) -> bool {
         if !self.draft.input_enabled
-            || self.blocks_direct_input
             || self.history_search.is_some()
             || self.draft.textarea.vim_query().is_some()
         {

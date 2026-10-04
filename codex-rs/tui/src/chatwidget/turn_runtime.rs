@@ -428,7 +428,7 @@ impl ChatWidget {
         self.add_to_history(history_cell::new_cyber_policy_error_event(notice));
         if notice == crate::daybreak::Notice::Disabled
             && !self.thread_usage.replaying_turn_completion
-            && !self.blocks_direct_input
+            && !self.external_writer_view
             && let Some(thread_id) = self.thread_id
         {
             self.bottom_pane.show_selection_view(SelectionViewParams {

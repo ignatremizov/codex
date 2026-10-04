@@ -169,7 +169,7 @@ impl ChatWidget {
     }
 
     fn quick_dials_available(&mut self) -> bool {
-        if self.blocks_direct_input
+        if self.external_writer_view
             || self.active_side_conversation
             || !self.bottom_pane.composer_input_enabled()
         {
