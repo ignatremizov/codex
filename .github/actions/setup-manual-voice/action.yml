@@ -1,0 +1,30 @@
+name: setup-manual-voice
+description: Build the pinned native voice inputs for manual Cargo checks or development packages.
+inputs:
+  target:
+    description: Native GNU Linux or macOS target.
+    required: true
+  purpose:
+    description: cargo exports SDK/link settings; package also builds the stamped helper.
+    default: cargo
+outputs:
+  root:
+    description: Stable directory containing sdk, link, runtime, and optionally codex-voice-host.
+    value: ${{ steps.prepare.outputs.root }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      with:
+        python-version: "3.12"
+    - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+      with:
+        bazelisk-version: 1.28.1
+        output-base: ${{ env.BAZEL_OUTPUT_BASE }}
+    - name: Build and prepare matching native inputs
+      id: prepare
+      shell: bash
+      env:
+        VOICE_TARGET: ${{ inputs.target }}
+        VOICE_PURPOSE: ${{ inputs.purpose }}
+      run: bash "$GITHUB_WORKSPACE/.github/scripts/prepare-manual-voice.sh"
