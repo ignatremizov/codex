@@ -45,6 +45,7 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::GuardianScope;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -69,6 +70,9 @@ use crate::context::ContextualUserFragment;
 use crate::context::GuardianContextMode;
 use crate::context::GuardianFollowupReviewReminder;
 use crate::context::GuardianNodeReplPolicy;
+use crate::context::NodeReplReviewEvidence;
+use crate::context::NodeReplReviewEvidenceMode;
+use crate::context::node_repl_review_evidence_mode;
 use crate::context_manager::ContextManager;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::SessionIo;
@@ -89,6 +93,7 @@ use super::GuardianApprovalRequest;
 use super::GuardianReviewContext;
 use super::feedback::record_failed_review;
 use super::prompt::GUARDIAN_TRANSCRIPT_START;
+use super::prompt::GuardianNodeReplCursor;
 use super::prompt::GuardianPromptMode;
 #[cfg(test)]
 use super::prompt::GuardianTranscriptCursor;
@@ -468,14 +473,37 @@ async fn run_review_on_session(
             };
             analytics_result.had_prior_review_context =
                 Some(had_prior_review_context(&prompt_mode));
+            let mut node_repl_cursor = GuardianNodeReplCursor {
+                response_sequence: last_admitted_node_repl_response_sequence,
+                ..Default::default()
+            };
+            // Carry retained screenshots as candidates until first-step selection.
+            // Pre-turn compaction can remove an image after this history snapshot;
+            // deduplicating now would permanently lose it from the pending input.
+            if last_admitted_node_repl_response_sequence > 0
+                && node_repl_review_evidence_mode(params.parent_context.turn())
+                    == NodeReplReviewEvidenceMode::Multimodal
+                && let Some(evidence) = params
+                    .parent_session
+                    .services
+                    .thread_extension_data
+                    .get::<NodeReplReviewEvidence>()
+            {
+                for item in evidence.images() {
+                    if let ContentItem::InputImage {
+                        image: ImageReference::Inline { image_url },
+                        ..
+                    } = item
+                    {
+                        node_repl_cursor.replay_image_urls.insert(image_url);
+                    }
+                }
+            }
             let prompt_items = prompt_builder::build_guardian_prompt_items(
                 params,
-                review_session,
-                &model_info,
-                &reviewer_history,
                 history,
                 prompt_mode,
-                last_admitted_node_repl_response_sequence,
+                node_repl_cursor,
             )
             .await?;
 
