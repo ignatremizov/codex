@@ -21,8 +21,11 @@ impl ChatWidget {
         if self.permission_shortcut_pending {
             return true;
         }
-        if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+        if self.external_writer_view {
+            self.add_error_message(
+                "This thread is open elsewhere. Close it there and retry resume to continue."
+                    .to_string(),
+            );
             return true;
         }
         let Some(thread_id) = self.thread_id else {

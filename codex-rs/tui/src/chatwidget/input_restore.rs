@@ -177,13 +177,11 @@ impl ChatWidget {
             }
             return;
         }
-        if self.blocks_direct_input {
-            if let Some(user_message) = self.initial_user_message.take() {
-                self.restore_user_message_to_composer(user_message);
-            }
-            return;
-        }
         if let Some(user_message) = self.initial_user_message.take() {
+            if self.external_writer_view {
+                self.restore_user_message_to_composer(user_message);
+                return;
+            }
             // Command-line input bypasses the composer, which normally records local recall.
             let mut entry = HistoryEntry {
                 text: user_message.text.clone(),
