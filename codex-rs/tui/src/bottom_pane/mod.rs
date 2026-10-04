@@ -632,11 +632,6 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    pub(crate) fn set_parent_owned_thread(&mut self) {
-        self.composer.set_parent_owned_thread();
-        self.request_redraw();
-    }
-
     pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
         self.composer.set_vim_enabled(enabled);
         if let Some(questions) = &mut self.questions {

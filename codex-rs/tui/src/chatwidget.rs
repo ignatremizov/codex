@@ -180,8 +180,6 @@ const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
 const PET_SELECTION_LOADING_VIEW_ID: &str = "pet-selection-loading";
 const AMBIENT_PET_WRAP_GAP_COLUMNS: u16 = 2;
 const TUI_STUB_MESSAGE: &str = "Not available in TUI yet.";
-const PARENT_OWNED_INPUT_MESSAGE: &str =
-    "This sub-agent is controlled by its parent. Direct input is disabled.";
 
 fn normalize_thread_name(name: &str) -> Option<String> {
     let trimmed = name.trim();
@@ -664,7 +662,6 @@ pub(crate) struct ChatWidget {
     thread_name: Option<String>,
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
-    blocks_direct_input: bool,
     external_writer_view: bool,
     /// Covers both queued and executing forks so repeated shortcuts cannot queue another one.
     pub(crate) fork_in_progress: bool,
@@ -1786,7 +1783,6 @@ impl ChatWidget {
 
     pub(crate) fn show_external_writer_thread(&mut self) {
         self.cancel_image_submission();
-        self.blocks_direct_input = true;
         self.external_writer_view = true;
         self.pause_unavailable_thread();
         if let Some(cell) = self.transcript.active_cell.as_mut() {
@@ -1820,18 +1816,16 @@ impl ChatWidget {
         if self.rejects_misalignment_policy_op(&op) {
             return false;
         }
-        if self.blocks_direct_input
+        if self.external_writer_view
             && matches!(
                 &op,
                 AppCommand::UserTurn { .. } | AppCommand::Review { .. } | AppCommand::Compact
             )
         {
-            self.add_error_message(if self.external_writer_view {
+            self.add_error_message(
                 "This thread is open elsewhere. Close it there and retry resume to continue."
-                    .to_string()
-            } else {
-                PARENT_OWNED_INPUT_MESSAGE.to_string()
-            });
+                    .to_string(),
+            );
             return false;
         }
         self.prepare_local_op_submission(&op);
