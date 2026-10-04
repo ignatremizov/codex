@@ -30,6 +30,7 @@ const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
 pub(crate) enum CommandItem {
     Builtin(SlashCommand),
     ServiceTier(ServiceTierCommand),
+    Mcp(super::mcp_completion::McpCompletion),
 }
 
 pub(crate) struct CommandPopup {
@@ -38,6 +39,8 @@ pub(crate) struct CommandPopup {
     side_conversation_active: bool,
     state: ScrollState,
     daybreak_command_description: Option<&'static str>,
+    mcp_server_names: Vec<String>,
+    mcp_candidates: Option<Vec<super::mcp_completion::McpCompletion>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -74,6 +77,10 @@ impl From<CommandPopupFlags> for BuiltinCommandFlags {
 }
 
 impl CommandPopup {
+    pub(crate) fn set_mcp_server_names(&mut self, names: Vec<String>) {
+        self.mcp_server_names = names;
+    }
+
     pub(crate) fn new(
         flags: CommandPopupFlags,
         service_tier_commands: Vec<ServiceTierCommand>,
@@ -100,6 +107,8 @@ impl CommandPopup {
             side_conversation_active: flags.side_conversation_active,
             state: ScrollState::new(),
             daybreak_command_description: flags.daybreak_command_description,
+            mcp_server_names: Vec::new(),
+            mcp_candidates: None,
         }
     }
 
@@ -110,6 +119,8 @@ impl CommandPopup {
     pub(crate) fn on_composer_text_change(&mut self, text: String) {
         let first_line = text.lines().next().unwrap_or("");
         let previous_filter = self.command_filter.clone();
+        let previous_candidates = self.mcp_candidates.clone();
+        self.mcp_candidates = super::mcp_completion::candidates(first_line, &self.mcp_server_names);
 
         if let Some(stripped) = first_line.strip_prefix('/') {
             // Extract the *first* token (sequence of non-whitespace
@@ -128,7 +139,7 @@ impl CommandPopup {
             self.command_filter.clear();
         }
 
-        if self.command_filter != previous_filter {
+        if self.command_filter != previous_filter || self.mcp_candidates != previous_candidates {
             self.state.reset();
         }
 
@@ -157,6 +168,13 @@ impl CommandPopup {
     /// paired with optional highlight indices. Preserves the original
     /// presentation order for built-ins and prompts.
     fn filtered(&self) -> Vec<(CommandItem, Option<Vec<usize>>)> {
+        if let Some(candidates) = &self.mcp_candidates {
+            return candidates
+                .iter()
+                .cloned()
+                .map(|item| (CommandItem::Mcp(item), None))
+                .collect();
+        }
         let filter = self.command_filter.trim();
         let mut out: Vec<(CommandItem, Option<Vec<usize>>)> = Vec::new();
         if filter.is_empty() {
@@ -201,7 +219,7 @@ impl CommandPopup {
 
         for command in self.commands.iter() {
             let display = command.command();
-            push_match(command.clone(), display, None, 0);
+            push_match(command.clone(), &display, None, 0);
         }
 
         out.extend(exact);
@@ -292,16 +310,22 @@ impl CommandPopup {
         self.side_conversation_active
             && match item {
                 CommandItem::Builtin(cmd) => !cmd.available_in_side_conversation(),
-                CommandItem::ServiceTier(_) => true,
+                CommandItem::ServiceTier(_) | CommandItem::Mcp(_) => true,
             }
     }
 }
 
 impl CommandItem {
-    pub(crate) fn command(&self) -> &str {
+    pub(crate) fn command(&self) -> std::borrow::Cow<'_, str> {
         match self {
-            Self::Builtin(cmd) => cmd.command(),
-            Self::ServiceTier(command) => &command.name,
+            Self::Builtin(cmd) => cmd.command().into(),
+            Self::ServiceTier(command) => command.name.as_str().into(),
+            Self::Mcp(completion) => completion
+                .text()
+                .trim_start_matches('/')
+                .trim_end()
+                .to_string()
+                .into(),
         }
     }
 
@@ -309,6 +333,7 @@ impl CommandItem {
         match self {
             Self::Builtin(cmd) => cmd.description(),
             Self::ServiceTier(command) => &command.description,
+            Self::Mcp(completion) => completion.description(),
         }
     }
 }
@@ -403,7 +428,7 @@ mod tests {
         let matches = popup.filtered_items();
         let has_init = matches.iter().any(|item| match item {
             CommandItem::Builtin(cmd) => cmd.command() == "init",
-            CommandItem::ServiceTier(_) => false,
+            CommandItem::ServiceTier(_) | CommandItem::Mcp(_) => false,
         });
         assert!(
             has_init,
@@ -425,6 +450,7 @@ mod tests {
                 panic!("expected init command, got service tier {command:?}")
             }
             None => panic!("expected a selected command for exact match"),
+            Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
         }
     }
 
@@ -439,6 +465,7 @@ mod tests {
                 panic!("expected model command, got service tier {command:?}")
             }
             None => panic!("expected at least one match for '/mo'"),
+            Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
         }
     }
 
@@ -531,6 +558,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Mcp(command) => command.text(),
             })
             .collect();
         assert_eq!(
@@ -599,6 +627,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Mcp(command) => command.text(),
             })
             .collect();
         assert!(
@@ -674,6 +703,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Mcp(command) => command.text(),
             })
             .collect();
         assert!(
@@ -720,6 +750,7 @@ mod tests {
             .map(|item| match item {
                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
                 CommandItem::ServiceTier(command) => command.name,
+                CommandItem::Mcp(command) => command.text(),
             })
             .collect();
 

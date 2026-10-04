@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 696
 expression: "context_snapshot::format_context_snapshot(\"A new chat uses a cached MCP catalog for unrelated work, then calls echo. The live server updates the tool definitions and marks cwd as app-only.\",\n&entries,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: A new chat uses a cached MCP catalog for unrelated work, then calls echo. The live server updates the tool definitions and marks cwd as app-only.
@@ -7,23 +8,27 @@ Scenario: A new chat uses a cached MCP catalog for unrelated work, then calls ec
 ## Window 1
 Settings:
   include: ["reasoning.encrypted_content"]
-  model: "gpt-5.4"
+  model: "gpt-5.5"
   parallel_tool_calls: true
   prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
-  reasoning: {"summary":"auto"}
+  reasoning: {"effort":"medium"}
   store: false
   stream: true
+  text: {"verbosity":"low"}
   tool_choice: "auto"
-  tools (11; hash=4d4c5864372f536e):
-    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
-    - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
+  tools (13; hash=5d5ccd835f8c5981):
+    - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=841a4b17cc4e6a88
+    - function/write_stdin: Writes chars to or polls an exec session, returning recent output. Polls return immediately on pr...; args=[chars, max_output_tokens, session_id, wait_until_exit, yield_time_ms]; hash=47f6053a3c9aecc5
     - function/list_mcp_resources: Lists resources provided by MCP servers. Resources allow servers to share data that provides cont...; args=[cursor, server]; hash=6792edaff13561bd
     - function/list_mcp_resource_templates: Lists resource templates provided by MCP servers. Parameterized resource templates allow servers ...; args=[cursor, server]; hash=60f17c90ef7a4ebb
     - function/read_mcp_resource: Read a specific resource from an MCP server given the server name and resource URI.; args=[server, uri]; hash=24246896b39008ae
     - function/update_plan: Updates the task plan. Provide an optional explanation and a list of plan items, each with a step...; args=[explanation, plan]; hash=cbba5ed302a9c0eb
+    - function/compact: Request this thread's /compact operation and continue the current task automatically after the to...; args=[]; hash=b97f041c49d48367
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
-    - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[path]; hash=1908de9c0be7118a
-    - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=2327142bda177c50
+    - custom/apply_patch: Edit files via a FREEFORM patch; do not wrap it in JSON.; hash=b2e944cd9efc0f58
+    - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[detail, path]; hash=3b766d5bdec5d50e
+    - namespace/multi_agent_v1: Tools for communicating with, spawning, and managing sub-agents. Targets accept ref, nickname (Ma...; hash=915040b2cf2ae70c
+      - function/check_mail
       - function/close_agent
       - function/resume_agent
       - function/send_input
@@ -32,12 +37,16 @@ Settings:
     - namespace/mcp__cached_rmcp: Use the tools from cached-helper.; hash=504240b4b47f91f5
       - function/cwd
       - function/echo
-    - web_search; hash=8586237e354ee5ed
+    - web_search; hash=e214d4db1bc49e89
 -- request 1 (request) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <agent_self>
+        This is your identity for the current thread and replaces earlier self identities. Identity fields in agent messages identify their senders.
+        {"agent_id":"<UUID 1>","self_ref":"1"}
+        </agent_self>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -50,27 +59,7 @@ Settings:
     done
 07:message/user:
     call the echo and cwd tools
-
-## Window 2 (after request 3)
-Settings: relative to window 1
-  tools (11; hash=15895024604103e3):
-    ~ namespace/mcp__cached_rmcp: Use the tools from live-helper.; hash=36249b57679444b8
-      - function/echo
 -- request 4 (request) --
-00:message/developer:
-    <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
-03:message/user:
-    Do not call any MCP tools.
-04:function_call/update_plan:{"plan":[{"status":"in_progress","step":"Work without MCP tools"}]}
-05:function_call_output:Plan updated
-06:message/assistant:
-    done
-07:message/user:
-    call the echo and cwd tools
 08:function_call/mcp__cached_rmcp.echo:{"message":"hello"}
 09:function_call/mcp__cached_rmcp.cwd:{}
 10:function_call/update_plan:{"plan":[{"status":"in_progress","step":"Continue while MCP starts"}]}
@@ -78,5 +67,6 @@ Settings: relative to window 1
     Output:
     {"echo":"live-helper","env":null}
 12:function_call_output:Wall time: <DURATION> seconds
-    Output: | MCP tool `cached_rmcp/cwd` is not available to the model
+    Output:
+    {"cwd":"<WORKSPACE>"}
 13:function_call_output:Plan updated

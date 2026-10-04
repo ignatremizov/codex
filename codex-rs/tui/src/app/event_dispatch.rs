@@ -1971,8 +1971,9 @@ impl App {
                 result,
                 detail,
                 thread_id,
+                sequence,
             } => {
-                self.handle_mcp_inventory_result(result, detail, thread_id);
+                self.handle_mcp_inventory_result(result, detail, thread_id, sequence).await;
             }
             AppEvent::SideReplaySkillsLoaded { request_id, thread_id, cwd, result } => {
                 if app_server.pending_side_skills_refresh == Some(request_id) {

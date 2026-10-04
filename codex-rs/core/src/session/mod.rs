@@ -272,6 +272,8 @@ pub(crate) use submission::Submission;
 mod input_queue;
 mod mcp;
 mod mcp_prewarm;
+mod mcp_prompt;
+pub(crate) use mcp_prompt::is_mcp_use_input;
 mod mcp_refresh;
 mod mcp_runtime;
 mod model_catalog_settings;
@@ -4508,6 +4510,16 @@ impl Session {
             {
                 required_servers.push(codex_mcp::CODEX_APPS_MCP_SERVER_NAME.to_owned());
             }
+            required_servers.extend(
+                self.mcp_prompt
+                    .first_turn_servers
+                    .lock()
+                    .await
+                    .iter()
+                    .cloned(),
+            );
+            required_servers.sort();
+            required_servers.dedup();
             let (mcp, prepared_recommendations) = tokio::join!(
                 // MCP refresh can be large; keep it off the sampling request's stack.
                 Box::pin(self.mcp_runtime_for_step(
@@ -5497,8 +5509,11 @@ impl Session {
                     .annotated_items()
                     .iter()
                     .filter(|item| {
-                        (self.enabled(Feature::RetainClientToolOutputs)
-                            && crate::compact_retained_tool_outputs::is_retained_tool_output(item))
+                        crate::context::McpServerUseInstructions::matches_response_item(&item.item)
+                            || (self.enabled(Feature::RetainClientToolOutputs)
+                                && crate::compact_retained_tool_outputs::is_retained_tool_output(
+                                    item,
+                                ))
                             || (self.enabled(Feature::RetainClientDeveloperMessages)
                                 && crate::compact_remote_v2::is_client_authored_developer_message(
                                     item,

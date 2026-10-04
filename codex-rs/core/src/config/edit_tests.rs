@@ -1093,6 +1093,7 @@ fn blocking_replace_mcp_servers_round_trips() {
             supports_parallel_tool_calls: true,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: false,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -1128,6 +1129,7 @@ fn blocking_replace_mcp_servers_round_trips() {
             supports_parallel_tool_calls: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: Some(std::time::Duration::from_secs(5)),
             tool_timeout_sec: None,
@@ -1190,6 +1192,7 @@ command = \"cmd\"
 args = [\"--flag\"]
 env_vars = [\"FOO\"]
 supports_parallel_tool_calls = true
+allow_implicit_invocation = false
 enabled_tools = [\"one\", \"two\"]
 
 [mcp_servers.stdio.env]
@@ -1224,6 +1227,7 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides(output_token_
             supports_parallel_tool_calls: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -1302,6 +1306,7 @@ foo = { command = "cmd" }
             supports_parallel_tool_calls: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -1356,6 +1361,7 @@ foo = { command = "cmd" } # keep me
             supports_parallel_tool_calls: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -1409,6 +1415,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
             supports_parallel_tool_calls: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,
@@ -1463,6 +1470,7 @@ foo = { command = "cmd" }
             supports_parallel_tool_calls: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,

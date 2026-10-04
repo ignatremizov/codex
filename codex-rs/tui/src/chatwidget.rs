@@ -292,6 +292,7 @@ mod questions;
 mod startup_submission;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
+mod mcp_activation;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod misalignment_policy;
@@ -640,6 +641,7 @@ pub(crate) struct ChatWidget {
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
     /// Last diagnostic per server, so replayed terminal updates are only reported once.
     mcp_startup_last_diagnostics: HashMap<String, McpStartupStatus>,
+    mcp_activation: mcp_activation::McpActivation,
     connectors: ConnectorsState,
     ide_context: IdeContextState,
     plugins_cache: PluginsCacheState,

@@ -210,6 +210,7 @@ impl ChatWidget {
             pending_terminal_restore: None,
             mcp_startup_status: None,
             mcp_startup_last_diagnostics: HashMap::new(),
+            mcp_activation: mcp_activation::McpActivation::default(),
             connectors: ConnectorsState::default(),
             ide_context: IdeContextState::default(),
             plugins_cache: PluginsCacheState::default(),

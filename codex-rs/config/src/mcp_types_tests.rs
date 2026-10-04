@@ -51,6 +51,7 @@ fn deserialize_stdio_command_server_config() {
     );
     assert!(cfg.enabled);
     assert!(!cfg.required);
+    assert!(cfg.allow_implicit_invocation);
     assert_eq!(cfg.omit_tools_from, None);
     assert!(cfg.enabled_tools.is_none());
     assert!(cfg.disabled_tools.is_none());
@@ -555,6 +556,7 @@ fn deserialize_server_config_with_default_tool_approval_mode() {
     let cfg: McpServerConfig = toml::from_str(
         r#"
             command = "echo"
+            allow_implicit_invocation = false
             default_tools_approval_mode = "approve"
 
             [tools.search]
@@ -568,6 +570,7 @@ fn deserialize_server_config_with_default_tool_approval_mode() {
         cfg.default_tools_approval_mode,
         Some(AppToolApproval::Approve)
     );
+    assert!(!cfg.allow_implicit_invocation);
     assert_eq!(
         cfg.tools.get("search"),
         Some(&McpServerToolConfig {
@@ -644,6 +647,7 @@ fn deserialize_ignores_unknown_server_fields() {
             supports_parallel_tool_calls: false,
             tool_input_schema_max_bytes: None,
             omit_tools_from: None,
+            allow_implicit_invocation: true,
             disabled_reason: None,
             startup_timeout_sec: None,
             tool_timeout_sec: None,

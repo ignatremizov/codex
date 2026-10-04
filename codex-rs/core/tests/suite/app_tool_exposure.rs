@@ -80,6 +80,7 @@ async fn non_deferred_connector_exposure_and_dispatch(mode: ToolMode) -> anyhow:
 #[test_case::test_case("", &[], false, false; "unconfigured")]
 #[test_case::test_case("omit_tools_from = [\"deferred\"]", &["code_mode"], true, false; "server_excludes_exec")]
 #[test_case::test_case("omit_tools_from = [\"deferred\"]", &["direct"], false, true; "server_excludes_direct")]
+#[test_case::test_case("enabled = false\nomit_tools_from = [\"deferred\"]", &[], false, false; "disabled_connector_stays_hidden")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connector_omissions_respect_server_restrictions(
     app_config: &'static str,

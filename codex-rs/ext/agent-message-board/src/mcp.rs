@@ -123,6 +123,7 @@ impl<C: Sync> McpServerContributor<C> for McpBoards {
                     auth: Default::default(),
                     environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.into(),
                     enabled: true,
+                    allow_implicit_invocation: true,
                     required: true,
                     startup_readiness: Default::default(),
                     supports_parallel_tool_calls: false,

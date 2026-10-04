@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 382
+assertion_line: 955
 expression: "context_snapshot::format_context_snapshot(\"An MCP discovery call announces a new tool, which is called in the same turn.\",\n&entries,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: An MCP discovery call announces a new tool, which is called in the same turn.
@@ -45,13 +45,6 @@ Settings:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
     Discover the echo tool, then call it with hello.
-
-## Window 2 (after request 1)
-Settings: relative to window 1
-  tools (11; hash=8f2ae06e5a29e3e1):
-    ~ namespace/mcp__discovery: Use these tools to exercise the rmcp test server.; hash=66db79539eaf6be3
-      - function/echo
-      - function/search_tools
 -- request 2 (request) --
 04:function_call/mcp__discovery.search_tools:{"message":"find echo"}
 05:function_call_output:Wall time: <DURATION> seconds

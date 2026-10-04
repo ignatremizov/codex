@@ -692,6 +692,20 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
         .await?;
     let requests = mock.requests();
     assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| (
+                request
+                    .tool_by_name("mcp__enterprise", "calendar_list_events")
+                    .is_some(),
+                request
+                    .tool_by_name("mcp__ordinary", "calendar_list_events")
+                    .is_some(),
+            ))
+            .collect::<Vec<_>>(),
+        [(true, true), (true, true), (false, true), (false, true)]
+    );
     let calls = mcp
         .received_requests()
         .await

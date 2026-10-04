@@ -20,6 +20,7 @@ use crate::compact_pending_input::MAX_RETAINED_AGENT_MESSAGE_TOKENS;
 use crate::compact_pending_input::is_retained_pending_mail;
 use crate::compact_remote_history::HistoryItemGroup;
 use crate::compact_remote_history::history_item_groups;
+use crate::context::McpServerUseInstructions;
 use crate::context::world_state::WorldState;
 use crate::context_manager::estimate_item_token_count;
 use crate::context_manager::estimate_item_token_count_with_audio;
@@ -626,8 +627,9 @@ fn is_retained_for_remote_compaction_v2(
             Some(TurnItem::UserMessage(_) | TurnItem::HookPrompt(_))
         ),
         "developer" => {
-            features.enabled(Feature::RetainClientDeveloperMessages)
-                && is_client_authored_developer_message(envelope)
+            McpServerUseInstructions::matches_response_item(item)
+                || (features.enabled(Feature::RetainClientDeveloperMessages)
+                    && is_client_authored_developer_message(envelope))
         }
         _ => false,
     }
@@ -678,6 +680,15 @@ fn truncate_retained_messages(
         .into_iter()
         .rev()
     {
+        // Explicitly requested inventories are never truncated or charged against the generic
+        // retention budget. Keep them in this same pass so client-authored blocks appear once.
+        if McpServerUseInstructions::matches_response_item(&group.source.item) {
+            if let Some(notice) = group.attached_notice {
+                truncated_reversed.push(notice);
+            }
+            truncated_reversed.push(group.source);
+            continue;
+        }
         if remaining == 0 {
             continue;
         }
@@ -726,8 +737,8 @@ fn truncate_retained_messages(
             truncated_reversed.push(group.source);
             remaining = remaining.saturating_sub(token_count);
         } else if is_retained_tool_output(&group.source) {
-            // Keep outputs whole and stop before older items to preserve newest-first ordering.
-            break;
+            // Drop older budgeted items while still preserving explicit MCP inventories.
+            remaining = 0;
         } else if remaining > notice_tokens {
             let available_tokens = remaining - notice_tokens;
             let content_budget = if client_developer {
@@ -859,6 +870,10 @@ fn truncate_message_text_to_token_budget(
     }
     Some(envelope)
 }
+
+#[cfg(test)]
+#[path = "compact_remote_v2_mcp_tests.rs"]
+mod mcp_tests;
 
 #[cfg(test)]
 mod tests {

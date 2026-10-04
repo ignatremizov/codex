@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-struct PendingTask;
+pub(super) struct PendingTask;
 
 impl SessionTask for PendingTask {
     fn kind(&self) -> TaskKind {

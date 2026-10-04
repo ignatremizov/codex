@@ -89,7 +89,7 @@ fn assert_definition(
                 .iter()
                 .find(|tool| tool.get("name").and_then(Value::as_str) == Some(NAMESPACE))
         })
-        .expect("request should contain the MCP namespace");
+        .unwrap_or_else(|| panic!("{stage}: request should contain the MCP namespace"));
     assert_eq!(
         namespace.get("description").and_then(Value::as_str),
         Some(namespace_description),
@@ -619,7 +619,6 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     let command = remote_aware_stdio_server_bin()?;
     let environment_id = remote_aware_environment_id();
     let fixture = test_codex()
-        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             super::scenarios::configure_scenario_catalog(config);
             config.update_plan_enabled = true;
@@ -654,6 +653,7 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
                 .set(servers)
                 .expect("test MCP server configuration");
         })
+        .with_model_info_override("gpt-5.5", |model| model.supports_search_tool = false)
         .build_with_auto_env(&responses_server)
         .await?;
     let fs = fixture.fs();
@@ -671,10 +671,6 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
         ]),
     )
     .await;
-    fixture
-        .codex
-        .start_or_steer_turn(user_turn("use the echo tool"))
-        .await?;
     let first_pid = match wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await {
         Ok(pid) => pid,
         Err(error) => {
@@ -720,6 +716,11 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
         /*sandbox*/ None,
     )
     .await?;
+    wait_for_mcp_server(&fixture.codex, SERVER_NAME).await?;
+    fixture
+        .codex
+        .start_or_steer_turn(user_turn("use the echo tool"))
+        .await?;
     wait_for_event(&fixture.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -972,10 +973,22 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     .await?;
     assert_eq!(cached_turn.await??, second_process);
     assert_definition(
-        "child after deferred startup",
+        "child after deferred startup (frozen direct declarations)",
         &cached_done_response,
-        &format!("Use the tools from {second_process}."),
-        &format!("Echo from {second_process}."),
+        &format!("Use the tools from {cached_process}."),
+        &format!("Echo from {cached_process}."),
+    );
+    assert_eq!(
+        cached_done_response.single_request().body_json()["tools"],
+        cached_response.single_request().body_json()["tools"],
+        "refreshing the live client must not rewrite its frozen model declarations"
+    );
+    assert!(
+        cached_response
+            .single_request()
+            .tool_by_name(NAMESPACE, "cwd")
+            .is_some(),
+        "the pending call was declared before startup changed its prompt visibility"
     );
     let output: FunctionCallOutputBody = serde_json::from_value(
         cached_done_response
@@ -985,14 +998,17 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     )?;
     let output = output
         .to_text()
-        .expect("the current-catalog rejection should reach the model");
-    // Frozen declarations do not retain call authority after live startup changes
-    // a tool to app-only. Call preparation rechecks the current catalog.
-    let expected_error = format!("MCP tool `{SERVER_NAME}/cwd` is not available to the model");
+        .expect("the current MCP call should be reported");
+    // A visibility update hides future declarations without revoking the current
+    // catalog, enabled-tools filter, or server permission authority.
+    let output = output
+        .split_once("\nOutput:\n")
+        .map(|(_, body)| body)
+        .expect("the permitted prompt-hidden tool should return an output body");
     assert_eq!(
-        output.split_once("\nOutput:\n").map(|(_, body)| body),
-        Some(expected_error.as_str()),
-        "the previously advertised tool must be rejected by current model visibility: {output}"
+        serde_json::from_str::<Value>(output)?,
+        json!({"cwd": fixture.config.cwd}),
+        "the permitted prompt-hidden tool must execute against the live server"
     );
     let output: FunctionCallOutputBody = serde_json::from_value(
         cached_done_response
@@ -1197,6 +1213,8 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     interrupted_thread.shutdown_and_wait().await?;
     responses_server.verify().await;
     // Substitute stable names before the snapshot renderer hashes each tool definition.
+    // The cwd result is JSON text inside a response string, so escape both layers.
+    let cwd_output = serde_json::to_string(&json!({"cwd": fixture.config.cwd}).to_string())?;
     [
         unused_response,
         unused_done_response,
@@ -1210,7 +1228,11 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
             .body_json()
             .to_string()
             .replace(&cached_process, "cached-helper")
-            .replace(&second_process, "live-helper");
+            .replace(&second_process, "live-helper")
+            .replace(
+                &cwd_output[1..cwd_output.len() - 1],
+                r#"{\"cwd\":\"<WORKSPACE>\"}"#,
+            );
         Ok(serde_json::from_str(&body)?)
     })
     .collect()

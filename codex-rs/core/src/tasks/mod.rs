@@ -335,7 +335,9 @@ impl Session {
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
 
-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
+        let mut pending_items = self.input_queue.take_queued_turn_inputs().await;
+        let (mailbox_items, _) = self.input_queue.drain_mailbox_input_items().await;
+        pending_items.extend(mailbox_items);
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             if self.outcome_handoffs_closed() {
@@ -506,8 +508,8 @@ impl Session {
 
     /// Starts a regular turn when the session is idle and pending work is waiting.
     ///
-    /// Mail can request a new task with `trigger_turn`, wake durable sleep, or wake a root with
-    /// `wake_on_agent_messages` enabled.
+    /// Pending work includes real input deferred behind an MCP context boundary, mailbox mail
+    /// marked with `trigger_turn`, durable sleep, or configured root message wakes.
     ///
     /// This helper generates a fresh sub-id for the synthetic turn before delegating to the
     /// explicit-sub-id variant.
@@ -523,12 +525,15 @@ impl Session {
     /// Starts a regular turn with the provided sub-id when pending work should wake an idle
     /// session.
     ///
-    /// Starts an idle turn for explicit follow-ups, durable sleep, or enabled message wakes.
+    /// The turn is created only when the session is idle and deferred real input or mailbox
+    /// delivery requests work. Explicit MCP context alone never starts a turn.
     pub(crate) async fn maybe_start_turn_for_pending_work_with_sub_id(
         self: &Arc<Self>,
         sub_id: String,
     ) {
-        if !self.input_queue.has_pending_mailbox_items().await {
+        if !self.input_queue.has_queued_turn_trigger().await
+            && !self.input_queue.has_pending_mailbox_items().await
+        {
             return;
         }
 
@@ -655,6 +660,7 @@ impl Session {
         if let Some(active_turn) = active_turn_to_clear {
             // Let interrupted tasks observe cancellation before dropping pending approvals, or an
             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+            self.record_active_mcp_use_before_abort(&active_turn).await;
             self.input_queue.clear_pending(&active_turn).await;
         }
         if reason == TurnAbortReason::Interrupted && aborted_turn {
@@ -707,6 +713,7 @@ impl Session {
         }
         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+        self.record_active_mcp_use_before_abort(&active_turn).await;
         self.input_queue.clear_pending(&active_turn).await;
 
         if reason == TurnAbortReason::Interrupted {
@@ -747,7 +754,11 @@ impl Session {
             if can_continue {
                 let state = active_turn.turn_state.lock().await;
                 if state.accepts_mailbox_delivery_for_current_turn()
-                    && !state.pending_input.is_empty()
+                    && state
+                        .pending_input
+                        .as_slice()
+                        .first()
+                        .is_some_and(|input| !crate::session::is_mcp_use_input(input))
                 {
                     return regular_output.map(|output| output.mcp_startup_requirements);
                 }
@@ -786,6 +797,21 @@ impl Session {
                 std::mem::take(&mut ts.token_usage_by_model),
             )
         };
+        let mut next_turn_input = Vec::new();
+        if let Some(boundary) = pending_input
+            .iter()
+            .position(crate::session::is_mcp_use_input)
+            && let Some(end) =
+                pending_input
+                    .iter()
+                    .enumerate()
+                    .skip(boundary)
+                    .find_map(|(index, input)| {
+                        (!crate::session::is_mcp_use_input(input)).then_some(index)
+                    })
+        {
+            next_turn_input = pending_input.split_off(end);
+        }
         let model_info = turn_context.capture_current_model_info();
         let record_result = run_hooks_and_record_inputs(
             self,
@@ -800,6 +826,10 @@ impl Session {
             task.abort(Arc::clone(self), Arc::clone(&turn_context))
                 .await;
         }
+        // Publish work deferred behind the context boundary before completion
+        // releases the finishing reservation; the context itself never wakes a turn.
+        self.input_queue.queue_turn_inputs(next_turn_input).await;
+        let queued_follow_up = self.input_queue.has_queued_turn_trigger().await;
         drop(finish_recording);
         // A retry on the first error must start a new turn with the denied turn's input in history.
         for err in task_error.into_iter().chain(record_result.err()) {
@@ -999,7 +1029,7 @@ impl Session {
             self.send_event(turn_context.as_ref(), event).await;
         }
         drop(outcome_handoff);
-        if cleared_active_turn {
+        if cleared_active_turn && !queued_follow_up {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }
         // Private reviewers already flushed the terminal event before delivering it.
@@ -1058,6 +1088,9 @@ impl Session {
     ) {
         let sub_id = task.turn_context.sub_id.clone();
         if task.cancellation_token.is_cancelled() {
+            task.handle.abort();
+            self.record_mcp_use_items(task.turn_context.model_info(), Vec::new())
+                .await;
             self.emit_turn_abort_lifecycle(reason, task.turn_context.extension_data.as_ref())
                 .await;
             return;
@@ -1097,6 +1130,12 @@ impl Session {
         task.handle.abort();
         // Aborting schedules destruction; join before freezing the turn's timing.
         let _ = task.handle.await;
+
+        // A canceled first-turn MCP publication can own an in-flight store
+        // append. Finish it before abort callbacks or markers write to the
+        // same store, whose writer lock may be held by that retained future.
+        self.record_mcp_use_items(task.turn_context.model_info(), Vec::new())
+            .await;
 
         if let Err(error) = self
             .record_pending_initial_input(
@@ -1187,3 +1226,7 @@ impl Session {
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mcp_boundary_tests.rs"]
+mod mcp_boundary_tests;

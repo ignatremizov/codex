@@ -109,6 +109,9 @@ pub(crate) enum CloudSubmissionIntent {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) enum AppCommand {
+    ActivateMcpServer {
+        server_name: String,
+    },
     Interrupt,
     CleanBackgroundTerminals,
     RealtimeConversationStart {

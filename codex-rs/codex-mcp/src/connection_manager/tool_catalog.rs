@@ -614,8 +614,9 @@ impl McpConnectionSet {
             )
         }
         .pop()
-        .filter(tool_is_model_visible)
         .ok_or_else(unavailable)?;
+        // Prompt visibility is independent of the current server's call authority.
+        // Hidden declarations still use the live catalog, filter, and permission profile.
         tool_info = Self::with_server_metadata(tool_info, &view.metadata);
         // Preserve the globally normalized identity advertised to the model, while
         // taking schema, annotations, and approval metadata from the current catalog.
