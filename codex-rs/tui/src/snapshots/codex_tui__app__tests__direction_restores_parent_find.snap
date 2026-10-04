@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 5800
 expression: "frame.lines().find(|row| row.contains(\"Find:\")).unwrap()"
 ---
-  Find: parent-2x4                                             │  GPT-6.1-Sol default
+  Find: parent-2x4                                             │  gpt-6.1-sol default

@@ -42,7 +42,7 @@ async fn owned_startup_hides_tip_in_transcript() -> Result<()> {
     let mut tui = crate::tui::test_support::make_test_tui()?;
     tui.set_owned_screen(/*owned*/ true)?;
     app.chat_widget
-        .set_status_line(Some("GPT-5.6-Sol default · /tmp/project".into()));
+        .set_status_line(Some("gpt-5.6-sol default · /tmp/project".into()));
     let mut snapshots = Vec::new();
     for width in [80, 32] {
         let size = Size::new(width, /*height*/ 20);

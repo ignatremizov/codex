@@ -732,7 +732,7 @@ async fn fresh_startup_reads_destination_and_cleared_model_uses_catalog() -> Res
             insta::assert_snapshot!(rendered, @"
             › Ask Codex to do anything
 
-              GPT-6.1-Sol high · <PROJECT>
+              gpt-6.1-sol high · <PROJECT>
               ? for shortcuts
             ");
         }

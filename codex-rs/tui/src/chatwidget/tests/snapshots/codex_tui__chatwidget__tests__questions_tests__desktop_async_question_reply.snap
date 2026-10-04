@@ -13,7 +13,7 @@ expression: persisted
     Line::from_iter([
         Span::from("  "),
         Span::from("Answer from ").bg(Color::Rgb(57, 57, 57)),
-        Span::from("desktop").fg(Color::Rgb(243, 139, 168)).bg(Color::Rgb(57, 57, 57)).bold(),
+        Span::from("desktop").bg(Color::Rgb(57, 57, 57)).bold(),
     ]).bg(Color::Rgb(57, 57, 57)),
     Line::default().bg(Color::Rgb(57, 57, 57)),
 ]

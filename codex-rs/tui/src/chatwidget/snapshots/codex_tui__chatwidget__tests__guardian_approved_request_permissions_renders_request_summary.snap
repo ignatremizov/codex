@@ -13,5 +13,5 @@ expression: normalize_working_snapshot(term.backend().vt100().screen().contents(
 
 › Ask Codex to do anything
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project
   ? for shortcuts

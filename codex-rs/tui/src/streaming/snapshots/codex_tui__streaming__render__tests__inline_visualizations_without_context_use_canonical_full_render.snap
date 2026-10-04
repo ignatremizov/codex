@@ -1,5 +1,6 @@
 ---
 source: tui/src/streaming/render_tests.rs
+assertion_line: 336
 expression: render.lines
 ---
 [
@@ -12,7 +13,7 @@ expression: render.lines
         hyperlinks: [],
     },
     HyperlinkLine {
-        line: Line::from(Span::from("Visualization unavailable on this device.").fg(Color::Reset).italic()),
+        line: Line::from(Span::from("Visualization unavailable on this device.").italic()),
         hyperlinks: [],
     },
 ]

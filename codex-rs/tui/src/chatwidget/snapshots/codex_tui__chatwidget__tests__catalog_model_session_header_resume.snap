@@ -4,5 +4,5 @@ assertion_line: 99
 expression: rendered
 ---
 OpenAI Codex (v<VERSION>)
-model: GPT-5.6 Luna high
+model: us.openai.gpt-5.6-luna high
 directory: /tmp/thread-settings

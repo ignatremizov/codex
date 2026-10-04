@@ -1,10 +1,11 @@
 ---
 source: tui/src/chatwidget/tests/side.rs
-expression: terminal.backend()
+assertion_line: 332
+expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
 "                                                                                "
 "› Ask a follow-up question                                                      "
 "                                                                                "
-"  GPT-5.6-Sol default · /tmp/project                                            "
+"  gpt-5.6-sol default · /tmp/project                                            "
 "  Side from main thread · main needs input · ctrl+/ to switch · ctrl+c to close "

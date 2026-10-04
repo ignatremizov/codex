@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/tests.rs
+assertion_line: 5495
 expression: panel
 ---
 parent-24                                                      │ Side chat×                      +
@@ -18,4 +19,4 @@ parent-29                                                      │
                                                                │
 › parent draft                                                 │› child draft!
                                                                │
-  GPT-6.1-Sol default · Main [default]                         │  GPT-6.1-Sol default
+  gpt-6.1-sol default · Main [default]                         │  gpt-6.1-sol default

@@ -225,7 +225,6 @@ pub(crate) fn simulate_stream_markdown_for_tests(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::highlight::foreground_style_for_scopes;
     use pretty_assertions::assert_eq;
     use ratatui::style::Color;
 
@@ -249,23 +248,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_stream_blockquote_simple_follows_theme() {
+    async fn e2e_stream_blockquote_simple_uses_stable_accent() {
         let out = super::simulate_stream_markdown_for_tests(&["> Hello\n"], /*finalize*/ true);
         assert_eq!(out.len(), 1);
         let l = &out[0];
         assert_eq!(
             l.style.fg,
-            foreground_style_for_scopes(&["markup.quote"])
-                .unwrap()
-                .fg
-                .map(|color| crate::style::readable_color_on(color, /*background*/ None)),
-            "expected themed blockquote foreground, got {:?}",
+            Some(Color::Green),
+            "expected stable blockquote foreground, got {:?}",
             l.style.fg
         );
     }
 
     #[tokio::test]
-    async fn e2e_stream_blockquote_nested_follows_theme() {
+    async fn e2e_stream_blockquote_nested_uses_stable_accent() {
         let out = super::simulate_stream_markdown_for_tests(
             &["> Level 1\n>> Level 2\n"],
             /*finalize*/ true,
@@ -281,10 +277,7 @@ mod tests {
             })
             .collect();
         assert_eq!(non_blank.len(), 2);
-        let expected_color = foreground_style_for_scopes(&["markup.quote"])
-            .unwrap()
-            .fg
-            .map(|color| crate::style::readable_color_on(color, /*background*/ None));
+        let expected_color = Some(Color::Green);
         assert_eq!(
             [non_blank[0].style.fg, non_blank[1].style.fg],
             [expected_color; 2]
@@ -292,16 +285,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_stream_blockquote_with_list_items_follows_theme() {
+    async fn e2e_stream_blockquote_with_list_items_uses_stable_accent() {
         let out = super::simulate_stream_markdown_for_tests(
             &["> - item 1\n> - item 2\n"],
             /*finalize*/ true,
         );
         assert_eq!(out.len(), 2);
-        let expected_color = foreground_style_for_scopes(&["markup.quote"])
-            .unwrap()
-            .fg
-            .map(|color| crate::style::readable_color_on(color, /*background*/ None));
+        let expected_color = Some(Color::Green);
         assert_eq!([out[0].style.fg, out[1].style.fg], [expected_color; 2]);
     }
 
@@ -337,7 +327,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2e_stream_blockquote_wrap_preserves_theme_style() {
+    async fn e2e_stream_blockquote_wrap_preserves_stable_accent() {
         let long = "> This is a very long quoted line that should wrap across multiple columns to verify style preservation.";
         let out = super::simulate_stream_markdown_for_tests(&[long, "\n"], /*finalize*/ true);
         // Wrap to a narrow width to force multiple output lines.
@@ -354,10 +344,7 @@ mod tests {
             non_blank.len() >= 2,
             "expected wrapped blockquote to span multiple lines"
         );
-        let expected_color = foreground_style_for_scopes(&["markup.quote"])
-            .unwrap()
-            .fg
-            .map(|color| crate::style::readable_color_on(color, /*background*/ None));
+        let expected_color = Some(Color::Green);
         for (i, l) in non_blank.iter().enumerate() {
             assert_eq!(
                 l.spans[0].style.fg, expected_color,
