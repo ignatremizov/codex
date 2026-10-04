@@ -96,9 +96,11 @@ pub use pool::ReviewerRequest;
 pub use pool::ReviewerSession;
 pub use pool::ReviewerTasks;
 pub use pool::SessionDisposition;
+pub use prompt::DeferredPromptPreparation;
 pub use prompt::GUARDIAN_TRANSCRIPT_START;
 pub use prompt::GuardianPromptItems;
 pub use prompt::compose_guardian_prompt;
+pub use prompt::compose_guardian_prompt_for_pending_input;
 pub use prompt::compose_guardian_prompt_with_preparation;
 
 pub use review::ReviewHost;

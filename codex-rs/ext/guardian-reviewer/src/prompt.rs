@@ -17,6 +17,13 @@ pub struct GuardianPromptItems {
     pub node_repl_evidence_sequence: u64,
 }
 
+/// Captured text-policy facts for input whose image admission occurs after compaction.
+/// Final selection must recheck delivery against the history that reaches the model.
+pub struct DeferredPromptPreparation<'a> {
+    pub budgeting: codex_guardian_context::ContextBudgeting,
+    pub reviewer_history: &'a [codex_history::ResponseItemEnvelope],
+}
+
 pub fn compose_guardian_prompt(
     sections: CollectedContext,
     profile: &ContextProfile,
@@ -25,6 +32,31 @@ pub fn compose_guardian_prompt(
     session_id: &str,
     node_repl_evidence_sequence: u64,
 ) -> anyhow::Result<GuardianPromptItems> {
+    compose_guardian_prompt_for_pending_input(
+        sections,
+        profile,
+        mode,
+        history_version,
+        session_id,
+        node_repl_evidence_sequence,
+        DeferredPromptPreparation {
+            budgeting: codex_guardian_context::ContextBudgeting::Fixed,
+            reviewer_history: &[],
+        },
+    )
+}
+
+/// Selects and prepares captured text while preserving images for final input admission.
+/// The host owns post-compaction image deduplication, model capability, and aggregate limits.
+pub fn compose_guardian_prompt_for_pending_input(
+    sections: CollectedContext,
+    profile: &ContextProfile,
+    mode: GuardianPromptMode,
+    history_version: u64,
+    session_id: &str,
+    node_repl_evidence_sequence: u64,
+    preparation: DeferredPromptPreparation<'_>,
+) -> anyhow::Result<GuardianPromptItems> {
     let (offset, presentation, transcript_cursor) =
         select_transcript(&sections, mode, history_version, session_id);
     let context = codex_guardian_context::prepare_context(
@@ -32,8 +64,8 @@ pub fn compose_guardian_prompt(
         profile,
         offset,
         presentation,
-        codex_guardian_context::ContextBudgeting::Fixed,
-        &[],
+        preparation.budgeting,
+        preparation.reviewer_history,
     )?;
     Ok(GuardianPromptItems {
         context,

@@ -9,6 +9,9 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
+#[path = "review_session_images.rs"]
+mod images;
+
 use codex_features::Feature;
 use codex_guardian_context::ComposedContext;
 use codex_guardian_context::HistoryTruncation;
@@ -21,11 +24,15 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::InputModality;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::user_input::UserInput;
 
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianBudgetOmission;
 use crate::context_manager::estimate_item_token_count;
+use crate::image_preparation::ImagePreparationMode;
+use crate::image_preparation::unified_image_budget_enabled;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::TurnInput;
 use crate::session::session::Session;
@@ -177,23 +184,24 @@ pub(crate) async fn finalize(
             "Guardian expects one review input".to_owned(),
         ));
     };
-    let context = pending.context.clone();
+    let mut context = pending.context.clone();
     let model = &step.settings.model_info;
-    let history = session.clone_history().await;
+    let history_snapshot = session.clone_history().await;
     let recovery = session
         .services
         .thread_extension_data
         .get::<CheckpointRecovery>();
     if let Some(recovery) = &recovery
-        && history.history_version() != recovery.history_version
+        && history_snapshot.history_version() != recovery.history_version
     {
         recovery.requested.store(/*val*/ true, Ordering::Release);
         return Err(CodexErr::InvalidRequest(
             "Guardian history changed; restart from the parent checkpoint".to_owned(),
         ));
     }
-    let history_version = history.history_version();
-    let history = history
+    let history_version = history_snapshot.history_version();
+    let history = history_snapshot
+        .clone()
         .for_prompt_annotated(
             &model.input_modalities,
             session.services.image_store.as_ref(),
@@ -201,8 +209,70 @@ pub(crate) async fn finalize(
         .await;
     // Use the history that will actually reach the model. Recompute after every
     // compaction retry; evidence removed by compaction must be delivered again.
-    let context = PreparedReviewContext::prepare(context, pending.elastic.as_ref(), &history)
-        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+    let budgeting = if pending.elastic.is_some() {
+        codex_guardian_context::ContextBudgeting::Elastic
+    } else {
+        // Fixed image admission measures the already-delivered text/native messages only once.
+        codex_guardian_context::prepare_sync_delivery(&mut context, &history)
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        codex_guardian_context::ContextBudgeting::Fixed
+    };
+    // This is the history that survives pre-turn compaction, not the earlier
+    // snapshot used to compose the pending review. Keep text admission separate.
+    if !model.input_modalities.contains(&InputModality::Image) {
+        context.retain_images(|_, _| false);
+    } else if context
+        .section_costs()
+        .any(|(_, cost)| cost.image_count > 0)
+    {
+        let context_window = model
+            .resolved_context_window()
+            .map(|supported| {
+                step.turn
+                    .config
+                    .model_context_window
+                    .unwrap_or(supported)
+                    .min(supported)
+                    .saturating_mul(model.effective_context_window_percent.clamp(0, 100))
+                    / 100
+            })
+            .filter(|limit| {
+                *limit > 0
+                    && model.origin != ModelOrigin::Synthetic
+                    && model.input_modalities.contains(&InputModality::Image)
+            });
+        let mode = if unified_image_budget_enabled(&step.turn.config.features, model) {
+            ImagePreparationMode::UnifiedBudget
+        } else {
+            ImagePreparationMode::DetailBased
+        };
+        // Shared preparation measures native encrypted message boundaries without flattening
+        // them into UserInput, using only the history that survived pre-turn compaction.
+        codex_guardian_context::prepare_sync_images(
+            &mut context,
+            history.iter().map(|envelope| &envelope.item),
+            context_window,
+            |image, detail| images::prepare_review_image(image, detail, model, mode),
+            estimate_item_token_count,
+            || async {
+                history_snapshot
+                    .estimate_token_count_with_base_instructions(
+                        &session.get_base_instructions().await,
+                    )
+                    .unwrap_or(i64::MAX)
+                    .max(session.get_total_token_usage().await)
+            },
+            budgeting,
+        )
+        .await;
+    }
+    let context = if pending.elastic.is_some() {
+        // Elastic delivery checks remain after entry caps and before aggregate allocation.
+        PreparedReviewContext::prepare(context, pending.elastic.as_ref(), &history)
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?
+    } else {
+        PreparedReviewContext::Fixed(context)
+    };
     let prompt = build_prompt(
         history
             .into_iter()

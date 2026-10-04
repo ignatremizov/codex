@@ -4,13 +4,20 @@ use super::*;
 use codex_guardian_context::ContextBudgeting;
 use codex_guardian_context::ContextPresentation;
 use codex_guardian_context::ContextProfile;
+use codex_guardian_context::NodeReplContext;
+use codex_guardian_context::NodeReplResponse;
+use codex_guardian_context::NodeReplReviewEvidenceMode;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PlannedActionKind;
 use codex_guardian_context::TruncationObservation;
 use codex_otel::MetricsClient;
 use codex_otel::MetricsConfig;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnAbortReason;
+use codex_protocol::user_input::UserInput;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
 use opentelemetry_sdk::metrics::data::MetricData;
@@ -339,43 +346,25 @@ async fn compacted_review_restores_originals_once_and_persists_the_request_prefi
             permissions: Default::default(),
         },
         super::super::prompt::GuardianPromptMode::Full,
-        /*reviewed_node_repl_evidence_sequence*/ 0,
+        super::super::prompt::GuardianNodeReplCursor::default(),
     )
     .await
     .unwrap();
-    let context = codex_guardian_context::prepare_context(
-        std::borrow::Cow::Owned(collected.sections),
+    let context = codex_guardian_reviewer::compose_guardian_prompt_for_pending_input(
+        collected.sections,
         &collected.profile,
-        /*entry_number_offset*/ 0,
-        ContextPresentation::SyncFull {
-            session_id: &collected.session_id,
+        collected.mode,
+        collected.history_version,
+        &collected.session_id,
+        collected.node_repl_evidence_sequence,
+        codex_guardian_reviewer::DeferredPromptPreparation {
+            budgeting,
+            reviewer_history: &[],
         },
-        budgeting,
-        &[],
     )
-    .unwrap();
-    let elastic = (budgeting == ContextBudgeting::Elastic).then(|| {
-        let section = codex_guardian_context::ElasticSection::TrustedSkills;
-        let mut policy = codex_guardian_context::ElasticBudgetConfig::default();
-        policy.sections.insert(
-            section,
-            codex_guardian_context::ElasticSectionLimits::new(
-                /*min_total_section_tokens*/ 1, /*max_section_entry_tokens*/ 1,
-            )
-            .unwrap(),
-        );
-        let minimum = codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS
-            - usize::try_from(policy.total_minimum_tokens()).unwrap()
-            + 1;
-        policy.sections.insert(
-            section,
-            codex_guardian_context::ElasticSectionLimits::new(
-                minimum, /*max_section_entry_tokens*/ 1,
-            )
-            .unwrap(),
-        );
-        policy
-    });
+    .unwrap()
+    .context;
+    let elastic = (budgeting == ContextBudgeting::Elastic).then(elastic_policy_for_input_tests);
     step.turn.extension_data.insert(RetainedReviewContext {
         context: context.retained_instructions(),
         elastic,
@@ -426,4 +415,213 @@ async fn compacted_review_restores_originals_once_and_persists_the_request_prefi
         .await
         .unwrap();
     assert_eq!(prompt.input, persisted);
+}
+
+#[test_case(false, ContextBudgeting::Fixed, true; "text_fixed_images")]
+#[test_case(true, ContextBudgeting::Fixed, true; "native_fixed_images")]
+#[test_case(false, ContextBudgeting::Elastic, true; "text_elastic_images")]
+#[test_case(true, ContextBudgeting::Elastic, true; "native_elastic_images")]
+#[test_case(false, ContextBudgeting::Fixed, false; "text_fixed_no_images")]
+#[test_case(true, ContextBudgeting::Fixed, false; "native_fixed_no_images")]
+#[test_case(false, ContextBudgeting::Elastic, false; "text_elastic_no_images")]
+#[test_case(true, ContextBudgeting::Elastic, false; "native_elastic_no_images")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn image_selection_uses_post_compaction_history_without_replaying_text(
+    native_transcript: bool,
+    budgeting: ContextBudgeting,
+    supports_images: bool,
+) {
+    const IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let (session, mut turn) = crate::session::tests::make_session_and_context().await;
+    Arc::make_mut(&mut turn.config)
+        .features
+        .disable(Feature::UnifiedImageBudget)
+        .unwrap();
+    crate::session::tests::update_turn_settings_for_test(&mut turn, |settings| {
+        let model = Arc::make_mut(&mut settings.model_info);
+        model.origin = ModelOrigin::Provider;
+        model.context_window = Some(100_000);
+        model.max_context_window = Some(100_000);
+        model.input_modalities = vec![InputModality::Text];
+        if supports_images {
+            model.input_modalities.push(InputModality::Image);
+        }
+    });
+    let session = Arc::new(session);
+    let step = session
+        .capture_step_context(Arc::new(turn), &tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+    let screenshot = UserInput::Image {
+        image: ImageReference::Inline {
+            image_url: IMAGE.to_owned(),
+        },
+        detail: Some(ImageDetail::High),
+    };
+    let responses = [Arc::new(NodeReplResponse {
+        sequence: 7,
+        provenance: "tool=node_repl.js cell=1 call=screenshot".to_owned(),
+        items: vec![screenshot.clone()],
+    })];
+    let evidence = NodeReplContext {
+        responses: &responses,
+        omitted_responses: 0,
+        mode: NodeReplReviewEvidenceMode::Multimodal,
+        budgeting,
+    };
+    let parent_history = Vec::from_iter(native_transcript.then_some(ResponseItem::AgentMessage {
+        id: None,
+        author: "/root".into(),
+        recipient: "/root/worker".into(),
+        content: vec![AgentMessageInputContent::EncryptedContent {
+            encrypted_content: "opaque-parent-reply".to_owned(),
+        }],
+        internal_chat_message_metadata_passthrough: None,
+    }));
+    let profile = ContextProfile::synchronous();
+    let context = super::super::prompt::collect_guardian_context(
+        &parent_history,
+        &profile,
+        /*root_conversation_candidates*/ None,
+        &[],
+        /*planned_action*/ None,
+        /*permissions*/ None,
+        Some(&evidence),
+    )
+    .unwrap();
+    let context = codex_guardian_reviewer::compose_guardian_prompt_for_pending_input(
+        context,
+        &profile,
+        super::super::prompt::GuardianPromptMode::Full,
+        /*history_version*/ 0,
+        "test-parent",
+        /*node_repl_evidence_sequence*/ 7,
+        codex_guardian_reviewer::DeferredPromptPreparation {
+            budgeting,
+            reviewer_history: &[],
+        },
+    )
+    .unwrap()
+    .context;
+    let admitted_text = UserInput::Text {
+        text: "already-admitted REPL text".to_owned(),
+        text_elements: Vec::new(),
+    };
+    for history_contains_image in [true, false] {
+        session
+            .services
+            .thread_extension_data
+            .insert(PendingReviewContext {
+                context: context.clone(),
+                elastic: (budgeting == ContextBudgeting::Elastic)
+                    .then(elastic_policy_for_input_tests),
+            });
+        let mut retained = vec![admitted_text.clone()];
+        if history_contains_image {
+            retained.push(screenshot.clone());
+        }
+        session
+            .replace_history(
+                vec![session.response_item_from_user_input(retained)],
+                /*reference_context_item*/ None,
+            )
+            .await;
+        let content = match context.clone().into_user_inputs() {
+            Ok(content) => {
+                assert!(!native_transcript);
+                content
+            }
+            Err(codex_guardian_context::SectionError::UnsupportedDelivery {
+                section: "conversation_transcript",
+            }) => {
+                assert!(native_transcript);
+                vec![UserInput::Text {
+                    text: super::super::prompt::GUARDIAN_TRANSCRIPT_START.to_owned(),
+                    text_elements: Vec::new(),
+                }]
+            }
+            Err(error) => panic!("unexpected review conversion: {error}"),
+        };
+        let mut input = vec![TurnInput::UserInput {
+            metadata: Default::default(),
+            content,
+            client_id: None,
+        }];
+        finalize(&session, &step, &mut input, HistoryTruncation::Preserve)
+            .await
+            .unwrap();
+
+        let mut expected = context.clone();
+        let retains_screenshot = supports_images && !history_contains_image;
+        expected.retain_images(|_, _| retains_screenshot);
+        // Elastic admission reports when it omits the screenshot from this request.
+        let omission_notice = (budgeting == ContextBudgeting::Elastic && !retains_screenshot)
+            .then(|| GuardianBudgetOmission.render().into_text().unwrap());
+        if native_transcript {
+            let actual = input
+                .iter()
+                .map(|input| {
+                    let TurnInput::ResponseItem(envelope) = input else {
+                        panic!("native review context must retain its message boundaries");
+                    };
+                    let mut item = envelope.item.clone();
+                    if let ResponseItem::Message {
+                        internal_chat_message_metadata_passthrough,
+                        ..
+                    } = &mut item
+                    {
+                        // Session-owned user-content kinds are not part of the source context.
+                        // Native author, recipient, ciphertext, and message order remain exact.
+                        *internal_chat_message_metadata_passthrough = None;
+                    }
+                    item
+                })
+                .collect::<Vec<_>>();
+            let mut expected = expected.into_messages();
+            if let Some(text) = omission_notice {
+                let Some(ResponseItem::Message { content, .. }) = expected.last_mut() else {
+                    panic!("expected final reviewer message");
+                };
+                content.push(ContentItem::InputText { text });
+            }
+            assert_eq!(actual, expected);
+            assert!(actual.contains(&parent_history[0]));
+        } else {
+            let TurnInput::UserInput { content, .. } = &input[0] else {
+                panic!("expected finalized review input");
+            };
+            let mut expected = expected.into_user_inputs().unwrap();
+            if let Some(text) = omission_notice {
+                expected.push(UserInput::Text {
+                    text,
+                    text_elements: Vec::new(),
+                });
+            }
+            assert_eq!(*content, expected);
+            assert!(!content.contains(&admitted_text));
+        }
+    }
+}
+
+fn elastic_policy_for_input_tests() -> codex_guardian_context::ElasticBudgetConfig {
+    let section = codex_guardian_context::ElasticSection::TrustedSkills;
+    let mut policy = codex_guardian_context::ElasticBudgetConfig::default();
+    policy.sections.insert(
+        section,
+        codex_guardian_context::ElasticSectionLimits::new(
+            /*min_total_section_tokens*/ 1, /*max_section_entry_tokens*/ 1,
+        )
+        .unwrap(),
+    );
+    let minimum = codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS
+        - usize::try_from(policy.total_minimum_tokens()).unwrap()
+        + 1;
+    policy.sections.insert(
+        section,
+        codex_guardian_context::ElasticSectionLimits::new(
+            minimum, /*max_section_entry_tokens*/ 1,
+        )
+        .unwrap(),
+    );
+    policy
 }
