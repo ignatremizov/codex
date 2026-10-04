@@ -33,6 +33,7 @@ async fn cold_compaction_projection_respects_preference_and_preserves_detail() -
         id: "compact-1".into(),
         summary: Some("Short summary".into()),
         message: Some("Prompt line 1\n\nPrompt line 2".into()),
+        available_skills: vec!["test-tui".into()],
     };
     let mut rendered = Vec::new();
     // No config follows the effective default; explicit opt-out hides all details.
@@ -216,6 +217,7 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
             id: "compact-1".to_string(),
             summary: None,
             message: None,
+            available_skills: Vec::new(),
         },
     ];
     let rendered = items

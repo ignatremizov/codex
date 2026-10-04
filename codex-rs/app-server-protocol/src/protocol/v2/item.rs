@@ -427,6 +427,9 @@ pub enum ThreadItem {
         id: String,
         summary: Option<String>,
         message: Option<String>,
+        /// Skill names in the model-visible inventory installed after this compaction.
+        #[serde(default)]
+        available_skills: Vec<String>,
     },
 }
 
@@ -1061,6 +1064,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: compaction.id,
                 summary: compaction.summary,
                 message: compaction.message,
+                available_skills: compaction.available_skills,
             },
         }
     }

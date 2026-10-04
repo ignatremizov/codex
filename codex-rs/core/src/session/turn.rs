@@ -9,6 +9,7 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::compact::InitialContextInjection;
 use crate::compact::run_inline_auto_compact_task;
+use crate::compact_remote_v2::AutoCompactRun;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
@@ -168,6 +169,11 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    let is_compaction_decoder = sess
+        .services
+        .thread_extension_data
+        .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+        .is_some();
     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
         crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
     }
@@ -353,8 +359,11 @@ pub(crate) async fn run_turn(
             /*fallback_step_context*/ None,
             &mut client_session,
             InitialContextInjection::DoNotInject,
-            CompactionReason::ContextLimit,
-            CompactionPhase::PreTurn,
+            AutoCompactRun {
+                reason: CompactionReason::ContextLimit,
+                phase: CompactionPhase::PreTurn,
+                cancellation: &cancellation_token,
+            },
         )
         .await?;
         world_state = sess
@@ -455,12 +464,15 @@ pub(crate) async fn run_turn(
         // Input and turn-start injections are recorded before recovery can continue this turn.
         turn_context.extension_data.insert(RecordedTurnInput);
         let window_id = sess.current_window_id().await;
-        super::rollout_budget::maybe_record_reminder(
-            sess.as_ref(),
-            turn_context.as_ref(),
-            &window_id,
-        )
-        .await;
+        if !is_compaction_decoder {
+            // Suppress only prompt injection; sampling still accounts for shared budget usage.
+            super::rollout_budget::maybe_record_reminder(
+                sess.as_ref(),
+                turn_context.as_ref(),
+                &window_id,
+            )
+            .await;
+        }
 
         // Capture once so context, advertised tools, and tool calls share one request view.
         let step_context = match next_step_context.take() {
@@ -501,20 +513,24 @@ pub(crate) async fn run_turn(
             }
         };
         let sampling_request_result: CodexResult<_> = async {
-            super::time_reminder::maybe_record_current_time_reminder(
-                sess.as_ref(),
-                turn_context.as_ref(),
-                &window_id,
-            )
-            .await?;
+            if !is_compaction_decoder {
+                super::time_reminder::maybe_record_current_time_reminder(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    &window_id,
+                )
+                .await?;
+            }
 
             world_state = sess
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await?;
 
             // Keep the override after accepted input so history truncation removes them together.
-            sess.record_reasoning_effort_override(step_context.as_ref())
-                .await;
+            if !is_compaction_decoder {
+                sess.record_reasoning_effort_override(step_context.as_ref())
+                    .await;
+            }
 
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
@@ -624,8 +640,11 @@ pub(crate) async fn run_turn(
                             world_state: Arc::clone(&world_state),
                             step_context: Arc::clone(&step_context),
                         },
-                        CompactionReason::ContextLimit,
-                        CompactionPhase::MidTurn,
+                        AutoCompactRun {
+                            reason: CompactionReason::ContextLimit,
+                            phase: CompactionPhase::MidTurn,
+                            cancellation: &cancellation_token,
+                        },
                     )
                     .await
                     {
@@ -733,8 +752,11 @@ pub(crate) async fn run_turn(
                             /*fallback_step_context*/ None,
                             &mut client_session,
                             InitialContextInjection::DoNotInject,
-                            CompactionReason::ContextLimit,
-                            CompactionPhase::PostTurn,
+                            AutoCompactRun {
+                                reason: CompactionReason::ContextLimit,
+                                phase: CompactionPhase::PostTurn,
+                                cancellation: &cancellation_token,
+                            },
                         )
                         .await
                     {
@@ -787,8 +809,11 @@ pub(crate) async fn run_turn(
                         world_state: Arc::clone(&world_state),
                         step_context: Arc::clone(&step_context),
                     },
-                    CompactionReason::ContextLimit,
-                    CompactionPhase::MidTurn,
+                    AutoCompactRun {
+                        reason: CompactionReason::ContextLimit,
+                        phase: CompactionPhase::MidTurn,
+                        cancellation: &cancellation_token,
+                    },
                 )
                 .await?;
                 can_drain_pending_input = false;
@@ -1305,6 +1330,14 @@ async fn run_pre_sampling_compact(
     client_session: &mut ModelClientSession,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
+    if sess
+        .services
+        .thread_extension_data
+        .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+        .is_some()
+    {
+        return Ok(());
+    }
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
     let token_status =
@@ -1322,8 +1355,11 @@ async fn run_pre_sampling_compact(
             /*fallback_step_context*/ None,
             client_session,
             InitialContextInjection::DoNotInject,
-            CompactionReason::ContextLimit,
-            CompactionPhase::PreTurn,
+            AutoCompactRun {
+                reason: CompactionReason::ContextLimit,
+                phase: CompactionPhase::PreTurn,
+                cancellation: cancellation_token,
+            },
         )
         .await?;
     }
@@ -1411,8 +1447,11 @@ async fn maybe_run_previous_model_inline_compact(
             fallback_step_context,
             client_session,
             InitialContextInjection::DoNotInject,
-            CompactionReason::CompHashChanged,
-            CompactionPhase::PreTurn,
+            AutoCompactRun {
+                reason: CompactionReason::CompHashChanged,
+                phase: CompactionPhase::PreTurn,
+                cancellation: cancellation_token,
+            },
         )
         .await?;
         return Ok(());
@@ -1459,8 +1498,11 @@ async fn maybe_run_previous_model_inline_compact(
             fallback_step_context,
             client_session,
             InitialContextInjection::DoNotInject,
-            CompactionReason::ModelDownshift,
-            CompactionPhase::PreTurn,
+            AutoCompactRun {
+                reason: CompactionReason::ModelDownshift,
+                phase: CompactionPhase::PreTurn,
+                cancellation: cancellation_token,
+            },
         )
         .await?;
     }
@@ -1470,7 +1512,7 @@ async fn maybe_run_previous_model_inline_compact(
 #[instrument(
     level = "trace",
     skip_all,
-    fields(reason = ?reason, phase = ?phase)
+    fields(reason = ?run.reason, phase = ?run.phase)
 )]
 async fn run_auto_compact(
     sess: &Arc<Session>,
@@ -1478,9 +1520,19 @@ async fn run_auto_compact(
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
     initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    run: AutoCompactRun<'_>,
 ) -> CodexResult<()> {
+    if sess
+        .services
+        .thread_extension_data
+        .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+        .is_some()
+    {
+        // Never rewrite the decoder's seed, including on a mid-turn window-limit fallback.
+        return Err(CodexErr::InvalidRequest(
+            "Compaction decoders cannot compact their input".to_string(),
+        ));
+    }
     let turn_context = &step_context.turn;
     let _profile_guard = turn_context.turn_timing_state.begin_compaction();
     if turn_context.config.features.enabled(Feature::TokenBudget) {
@@ -1517,8 +1569,7 @@ async fn run_auto_compact(
                 fallback_step_context,
                 client_session,
                 initial_context_injection,
-                reason,
-                phase,
+                run,
             )
             .await?;
         }
@@ -1532,8 +1583,8 @@ async fn run_auto_compact(
                 Arc::clone(sess),
                 Arc::clone(turn_context),
                 initial_context_injection,
-                reason,
-                phase,
+                run.reason,
+                run.phase,
             )
             .await?;
         }
