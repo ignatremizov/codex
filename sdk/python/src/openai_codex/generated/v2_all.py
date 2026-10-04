@@ -1143,6 +1143,8 @@ class ContextCompactedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    message: str | None = None
+    summary: str | None = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
 
@@ -4999,17 +5001,6 @@ class SubagentMigration(BaseModel):
     name: str
 
 
-class TerminalInteractionNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    item_id: Annotated[str, Field(alias="itemId")]
-    process_id: Annotated[str, Field(alias="processId")]
-    stdin: str
-    thread_id: Annotated[str, Field(alias="threadId")]
-    turn_id: Annotated[str, Field(alias="turnId")]
-
-
 class TextElement(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5453,6 +5444,8 @@ class ContextCompactionThreadItem(BaseModel):
         populate_by_name=True,
     )
     id: str
+    message: str | None = None
+    summary: str | None = None
     type: Annotated[Literal["contextCompaction"], Field(title="ContextCompactionThreadItemType")]
 
 
@@ -6040,26 +6033,6 @@ class ThreadSetNameResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-
-
-class ThreadShellCommandParams(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    command: Annotated[
-        str,
-        Field(
-            description="Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy."
-        ),
-    ]
-    thread_id: Annotated[str, Field(alias="threadId")]
-    timeout_ms: Annotated[
-        int | None,
-        Field(
-            alias="timeoutMs",
-            description="Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
-        ),
-    ] = None
 
 
 class ThreadShellCommandResponse(BaseModel):
@@ -6902,17 +6875,6 @@ class ThreadCompactStartRequest(BaseModel):
         Literal["thread/compact/start"], Field(title="Thread/compact/startRequestMethod")
     ]
     params: ThreadCompactStartParams
-
-
-class ThreadShellCommandRequest(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    id: RequestId
-    method: Annotated[
-        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
-    ]
-    params: ThreadShellCommandParams
 
 
 class ThreadApproveGuardianDeniedActionRequest(BaseModel):
@@ -9300,24 +9262,6 @@ class ProcessOutputDeltaServerNotification(BaseModel):
     params: ProcessOutputDeltaNotification
 
 
-class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    emitted_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="emittedAtMs",
-            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
-        ),
-    ] = None
-    method: Annotated[
-        Literal["item/commandExecution/terminalInteraction"],
-        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
-    ]
-    params: TerminalInteractionNotification
-
-
 class ServerRequestResolvedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9790,19 +9734,6 @@ class UserMessageThreadItem(BaseModel):
     type: Annotated[Literal["userMessage"], Field(title="UserMessageThreadItemType")]
 
 
-class AgentMessageThreadItem(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    delivery: AgentMessageDelivery | None = None
-    id: str
-    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
-    phase: MessagePhase | None = None
-    questions: list[AsyncUserInputQuestion] | None = None
-    text: str
-    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
-
-
 class CommandExecutionThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9859,6 +9790,7 @@ class CommandExecutionThreadItem(BaseModel):
     type: Annotated[Literal["commandExecution"], Field(title="CommandExecutionThreadItemType")]
 
 
+
 class FileChangeThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9867,54 +9799,6 @@ class FileChangeThreadItem(BaseModel):
     id: str
     status: PatchApplyStatus
     type: Annotated[Literal["fileChange"], Field(title="FileChangeThreadItemType")]
-
-
-class CollabAgentToolCallThreadItem(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    agents_states: Annotated[
-        dict[str, CollabAgentState],
-        Field(
-            alias="agentsStates",
-            description="Last known status of the target agents, when available.",
-        ),
-    ]
-    id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
-    model: Annotated[
-        str | None, Field(description="Model requested for the spawned agent, when applicable.")
-    ] = None
-    prompt: Annotated[
-        str | None,
-        Field(description="Prompt text sent as part of the collab tool call, when available."),
-    ] = None
-    reasoning_effort: Annotated[
-        ReasoningEffort | None,
-        Field(
-            alias="reasoningEffort",
-            description="Reasoning effort requested for the spawned agent, when applicable.",
-        ),
-    ] = None
-    receiver_thread_ids: Annotated[
-        list[str],
-        Field(
-            alias="receiverThreadIds",
-            description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
-        ),
-    ]
-    sender_thread_id: Annotated[
-        str,
-        Field(
-            alias="senderThreadId", description="Thread ID of the agent issuing the collab request."
-        ),
-    ]
-    status: Annotated[
-        CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
-    ]
-    tool: Annotated[CollabAgentTool, Field(description="Name of the collab tool that was invoked.")]
-    type: Annotated[
-        Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
-    ]
 
 
 class WebSearchThreadItem(BaseModel):
@@ -10177,6 +10061,26 @@ class ThreadSettingsUpdatedNotification(BaseModel):
     )
     thread_id: Annotated[str, Field(alias="threadId")]
     thread_settings: Annotated[ThreadSettings, Field(alias="threadSettings")]
+
+
+class ThreadShellCommandParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    command: Annotated[
+        str,
+        Field(
+            description="Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy."
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+    timeout_ms: Annotated[
+        int | None,
+        Field(
+            alias="timeoutMs",
+            description="Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
+        ),
+    ] = None
 
 
 class ThreadStartParams(BaseModel):
@@ -10457,6 +10361,17 @@ class ThreadGoalSetRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/goal/set"], Field(title="Thread/goal/setRequestMethod")]
     params: ThreadGoalSetParams
+
+
+class ThreadShellCommandRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/shellCommand"], Field(title="Thread/shellCommandRequestMethod")
+    ]
+    params: ThreadShellCommandParams
 
 
 class ThreadListRequest(BaseModel):
@@ -11309,6 +11224,31 @@ class SessionSource(RootModel[SessionSourceValue | CustomSessionSource | SubAgen
     root: SessionSourceValue | CustomSessionSource | SubAgentSessionSource
 
 
+class TerminalInteractionNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    item_id: Annotated[str, Field(alias="itemId")]
+    process_id: Annotated[str, Field(alias="processId")]
+    stdin: str
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+
+
+
+class AgentMessageThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    delivery: AgentMessageDelivery | None = None
+    id: str
+    memory_citation: Annotated[MemoryCitation | None, Field(alias="memoryCitation")] = None
+    phase: MessagePhase | None = None
+    questions: list[AsyncUserInputQuestion] | None = None
+    text: str
+    type: Annotated[Literal["agentMessage"], Field(title="AgentMessageThreadItemType")]
+
+
 class FunctionCallOutputThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11320,52 +11260,63 @@ class FunctionCallOutputThreadItem(BaseModel):
     type: Annotated[Literal["functionCallOutput"], Field(title="FunctionCallOutputThreadItemType")]
 
 
-class ThreadItem(
-    RootModel[
-        UserMessageThreadItem
-        | HookPromptThreadItem
-        | AgentMessageThreadItem
-        | FunctionCallOutputThreadItem
-        | PlanThreadItem
-        | ReasoningThreadItem
-        | CommandExecutionThreadItem
-        | FileChangeThreadItem
-        | McpToolCallThreadItem
-        | DynamicToolCallThreadItem
-        | CollabAgentToolCallThreadItem
-        | SubAgentActivityThreadItem
-        | WebSearchThreadItem
-        | ImageViewThreadItem
-        | SleepThreadItem
-        | ImageGenerationThreadItem
-        | EnteredReviewModeThreadItem
-        | ExitedReviewModeThreadItem
-        | ContextCompactionThreadItem
+class CollabAgentToolCallThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agents_states: Annotated[
+        dict[str, CollabAgentState],
+        Field(
+            alias="agentsStates",
+            description="Last known status of the target agents, when available.",
+        ),
     ]
+    id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
+    model: Annotated[
+        str | None, Field(description="Model requested for the spawned agent, when applicable.")
+    ] = None
+    prompt: Annotated[
+        str | None,
+        Field(description="Prompt text sent as part of the collab tool call, when available."),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Reasoning effort requested for the spawned agent, when applicable.",
+        ),
+    ] = None
+    receiver_thread_ids: Annotated[
+        list[str],
+        Field(
+            alias="receiverThreadIds",
+            description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
+        ),
+    ]
+    sender_thread_id: Annotated[
+        str,
+        Field(
+            alias="senderThreadId", description="Thread ID of the agent issuing the collab request."
+        ),
+    ]
+    status: Annotated[
+        CollabAgentToolCallStatus, Field(description="Current status of the collab tool call.")
+    ]
+    tool: Annotated[CollabAgentTool, Field(description="Name of the collab tool that was invoked.")]
+    type: Annotated[
+        Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
+    ]
+
+
+
+class ThreadItem(
+    RootModel[UserMessageThreadItem | HookPromptThreadItem | AgentMessageThreadItem | FunctionCallOutputThreadItem | PlanThreadItem | ReasoningThreadItem | CommandExecutionThreadItem | FileChangeThreadItem | McpToolCallThreadItem | DynamicToolCallThreadItem | CollabAgentToolCallThreadItem | SubAgentActivityThreadItem | WebSearchThreadItem | ImageViewThreadItem | SleepThreadItem | ImageGenerationThreadItem | EnteredReviewModeThreadItem | ExitedReviewModeThreadItem | ContextCompactionThreadItem]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
     root: (
-        UserMessageThreadItem
-        | HookPromptThreadItem
-        | AgentMessageThreadItem
-        | FunctionCallOutputThreadItem
-        | PlanThreadItem
-        | ReasoningThreadItem
-        | CommandExecutionThreadItem
-        | FileChangeThreadItem
-        | McpToolCallThreadItem
-        | DynamicToolCallThreadItem
-        | CollabAgentToolCallThreadItem
-        | SubAgentActivityThreadItem
-        | WebSearchThreadItem
-        | ImageViewThreadItem
-        | SleepThreadItem
-        | ImageGenerationThreadItem
-        | EnteredReviewModeThreadItem
-        | ExitedReviewModeThreadItem
-        | ContextCompactionThreadItem
+        UserMessageThreadItem | HookPromptThreadItem | AgentMessageThreadItem | FunctionCallOutputThreadItem | PlanThreadItem | ReasoningThreadItem | CommandExecutionThreadItem | FileChangeThreadItem | McpToolCallThreadItem | DynamicToolCallThreadItem | CollabAgentToolCallThreadItem | SubAgentActivityThreadItem | WebSearchThreadItem | ImageViewThreadItem | SleepThreadItem | ImageGenerationThreadItem | EnteredReviewModeThreadItem | ExitedReviewModeThreadItem | ContextCompactionThreadItem
     )
 
 
@@ -11917,6 +11868,24 @@ class ItemCompletedServerNotification(BaseModel):
     params: ItemCompletedNotification
 
 
+class ItemCommandExecutionTerminalInteractionServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/commandExecution/terminalInteraction"],
+        Field(title="Item/commandExecution/terminalInteractionNotificationMethod"),
+    ]
+    params: TerminalInteractionNotification
+
+
 class Thread(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12441,223 +12410,12 @@ class ExternalAgentConfigImportRecordHistoryRequest(BaseModel):
 
 
 class ClientRequest(
-    RootModel[
-        InitializeRequest
-        | ThreadStartRequest
-        | ThreadResumeRequest
-        | ThreadForkRequest
-        | ThreadArchiveRequest
-        | ThreadDeleteRequest
-        | ThreadUnsubscribeRequest
-        | ThreadNameSetRequest
-        | ThreadGoalSetRequest
-        | ThreadGoalGetRequest
-        | ThreadGoalClearRequest
-        | ThreadMetadataUpdateRequest
-        | ThreadAttachmentAddRequest
-        | ThreadAttachmentListRequest
-        | ThreadAttachmentRemoveRequest
-        | ThreadSectionMoveRequest
-        | ThreadUnarchiveRequest
-        | ThreadCompactStartRequest
-        | ThreadShellCommandRequest
-        | ThreadApproveGuardianDeniedActionRequest
-        | ThreadRevertRequest
-        | ThreadListRequest
-        | ThreadSectionListRequest
-        | ThreadSectionCreateRequest
-        | ThreadSectionUpdateRequest
-        | ThreadSectionDeleteRequest
-        | ThreadLoadedListRequest
-        | ThreadReadRequest
-        | ThreadTurnsListRequest
-        | ThreadItemsListRequest
-        | ThreadInjectItemsRequest
-        | SkillsListRequest
-        | SkillsExtraRootsSetRequest
-        | HooksListRequest
-        | MarketplaceAddRequest
-        | MarketplaceRemoveRequest
-        | MarketplaceUpgradeRequest
-        | PluginListRequest
-        | PluginInstalledRequest
-        | PluginReconcileRequest
-        | PluginReadRequest
-        | PluginSkillReadRequest
-        | PluginShareSaveRequest
-        | PluginShareUpdateTargetsRequest
-        | PluginShareListRequest
-        | PluginShareCheckoutRequest
-        | PluginShareDeleteRequest
-        | AppReadRequest
-        | AppListRequest
-        | AppInstalledRequest
-        | FsReadFileRequest
-        | FsWriteFileRequest
-        | FsCreateDirectoryRequest
-        | FsGetMetadataRequest
-        | FsReadDirectoryRequest
-        | FsRemoveRequest
-        | FsCopyRequest
-        | FsWatchRequest
-        | FsUnwatchRequest
-        | SkillsConfigWriteRequest
-        | PluginInstallRequest
-        | PluginUninstallRequest
-        | TurnStartRequest
-        | TurnSteerRequest
-        | TurnInterruptRequest
-        | ReviewStartRequest
-        | ModelListRequest
-        | AccountGatewayOAuthReadRequest
-        | AccountGatewayOAuthLoginRequest
-        | AccountGatewayOAuthCancelRequest
-        | ModelProviderCapabilitiesReadRequest
-        | ExperimentalFeatureListRequest
-        | PermissionProfileListRequest
-        | ExperimentalFeatureEnablementSetRequest
-        | McpServerOauthLoginRequest
-        | ConfigMcpServerReloadRequest
-        | McpServerStatusListRequest
-        | McpServerResourceReadRequest
-        | McpServerToolCallRequest
-        | WindowsSandboxSetupStartRequest
-        | WindowsSandboxReadinessRequest
-        | AccountLoginStartRequest
-        | AccountLoginCancelRequest
-        | AccountLogoutRequest
-        | AccountRateLimitsReadRequest
-        | AccountRateLimitResetCreditConsumeRequest
-        | AccountUsageReadRequest
-        | AccountWorkspaceMessagesReadRequest
-        | AccountSendAddCreditsNudgeEmailRequest
-        | FeedbackUploadRequest
-        | CommandExecRequest
-        | CommandExecWriteRequest
-        | CommandExecTerminateRequest
-        | CommandExecResizeRequest
-        | ConfigReadRequest
-        | ExternalAgentConfigDetectRequest
-        | ExternalAgentConfigImportRequest
-        | ExternalAgentConfigImportRecordHistoryRequest
-        | ExternalAgentConfigImportReadHistoriesRequest
-        | ConfigValueWriteRequest
-        | ConfigBatchWriteRequest
-        | ConfigRequirementsReadRequest
-        | AccountReadRequest
-        | FuzzyFileSearchRequest
-    ]
+    RootModel[InitializeRequest | ThreadStartRequest | ThreadResumeRequest | ThreadForkRequest | ThreadArchiveRequest | ThreadDeleteRequest | ThreadUnsubscribeRequest | ThreadNameSetRequest | ThreadGoalSetRequest | ThreadGoalGetRequest | ThreadGoalClearRequest | ThreadMetadataUpdateRequest | ThreadAttachmentAddRequest | ThreadAttachmentListRequest | ThreadAttachmentRemoveRequest | ThreadSectionMoveRequest | ThreadUnarchiveRequest | ThreadCompactStartRequest | ThreadShellCommandRequest | ThreadApproveGuardianDeniedActionRequest | ThreadRevertRequest | ThreadListRequest | ThreadSectionListRequest | ThreadSectionCreateRequest | ThreadSectionUpdateRequest | ThreadSectionDeleteRequest | ThreadLoadedListRequest | ThreadReadRequest | ThreadTurnsListRequest | ThreadItemsListRequest | ThreadInjectItemsRequest | SkillsListRequest | SkillsExtraRootsSetRequest | HooksListRequest | MarketplaceAddRequest | MarketplaceRemoveRequest | MarketplaceUpgradeRequest | PluginListRequest | PluginInstalledRequest | PluginReconcileRequest | PluginReadRequest | PluginSkillReadRequest | PluginShareSaveRequest | PluginShareUpdateTargetsRequest | PluginShareListRequest | PluginShareCheckoutRequest | PluginShareDeleteRequest | AppReadRequest | AppListRequest | AppInstalledRequest | FsReadFileRequest | FsWriteFileRequest | FsCreateDirectoryRequest | FsGetMetadataRequest | FsReadDirectoryRequest | FsRemoveRequest | FsCopyRequest | FsWatchRequest | FsUnwatchRequest | SkillsConfigWriteRequest | PluginInstallRequest | PluginUninstallRequest | TurnStartRequest | TurnSteerRequest | TurnInterruptRequest | ReviewStartRequest | ModelListRequest | AccountGatewayOAuthReadRequest | AccountGatewayOAuthLoginRequest | AccountGatewayOAuthCancelRequest | ModelProviderCapabilitiesReadRequest | ExperimentalFeatureListRequest | PermissionProfileListRequest | ExperimentalFeatureEnablementSetRequest | McpServerOauthLoginRequest | ConfigMcpServerReloadRequest | McpServerStatusListRequest | McpServerResourceReadRequest | McpServerToolCallRequest | WindowsSandboxSetupStartRequest | WindowsSandboxReadinessRequest | AccountLoginStartRequest | AccountLoginCancelRequest | AccountLogoutRequest | AccountRateLimitsReadRequest | AccountRateLimitResetCreditConsumeRequest | AccountUsageReadRequest | AccountWorkspaceMessagesReadRequest | AccountSendAddCreditsNudgeEmailRequest | FeedbackUploadRequest | CommandExecRequest | CommandExecWriteRequest | CommandExecTerminateRequest | CommandExecResizeRequest | ConfigReadRequest | ExternalAgentConfigDetectRequest | ExternalAgentConfigImportRequest | ExternalAgentConfigImportRecordHistoryRequest | ExternalAgentConfigImportReadHistoriesRequest | ConfigValueWriteRequest | ConfigBatchWriteRequest | ConfigRequirementsReadRequest | AccountReadRequest | FuzzyFileSearchRequest]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[
-        InitializeRequest
-        | ThreadStartRequest
-        | ThreadResumeRequest
-        | ThreadForkRequest
-        | ThreadArchiveRequest
-        | ThreadDeleteRequest
-        | ThreadUnsubscribeRequest
-        | ThreadNameSetRequest
-        | ThreadGoalSetRequest
-        | ThreadGoalGetRequest
-        | ThreadGoalClearRequest
-        | ThreadMetadataUpdateRequest
-        | ThreadAttachmentAddRequest
-        | ThreadAttachmentListRequest
-        | ThreadAttachmentRemoveRequest
-        | ThreadSectionMoveRequest
-        | ThreadUnarchiveRequest
-        | ThreadCompactStartRequest
-        | ThreadShellCommandRequest
-        | ThreadApproveGuardianDeniedActionRequest
-        | ThreadRevertRequest
-        | ThreadListRequest
-        | ThreadSectionListRequest
-        | ThreadSectionCreateRequest
-        | ThreadSectionUpdateRequest
-        | ThreadSectionDeleteRequest
-        | ThreadLoadedListRequest
-        | ThreadReadRequest
-        | ThreadTurnsListRequest
-        | ThreadItemsListRequest
-        | ThreadInjectItemsRequest
-        | SkillsListRequest
-        | SkillsExtraRootsSetRequest
-        | HooksListRequest
-        | MarketplaceAddRequest
-        | MarketplaceRemoveRequest
-        | MarketplaceUpgradeRequest
-        | PluginListRequest
-        | PluginInstalledRequest
-        | PluginReconcileRequest
-        | PluginReadRequest
-        | PluginSkillReadRequest
-        | PluginShareSaveRequest
-        | PluginShareUpdateTargetsRequest
-        | PluginShareListRequest
-        | PluginShareCheckoutRequest
-        | PluginShareDeleteRequest
-        | AppReadRequest
-        | AppListRequest
-        | AppInstalledRequest
-        | FsReadFileRequest
-        | FsWriteFileRequest
-        | FsCreateDirectoryRequest
-        | FsGetMetadataRequest
-        | FsReadDirectoryRequest
-        | FsRemoveRequest
-        | FsCopyRequest
-        | FsWatchRequest
-        | FsUnwatchRequest
-        | SkillsConfigWriteRequest
-        | PluginInstallRequest
-        | PluginUninstallRequest
-        | TurnStartRequest
-        | TurnSteerRequest
-        | TurnInterruptRequest
-        | ReviewStartRequest
-        | ModelListRequest
-        | AccountGatewayOAuthReadRequest
-        | AccountGatewayOAuthLoginRequest
-        | AccountGatewayOAuthCancelRequest
-        | ModelProviderCapabilitiesReadRequest
-        | ExperimentalFeatureListRequest
-        | PermissionProfileListRequest
-        | ExperimentalFeatureEnablementSetRequest
-        | McpServerOauthLoginRequest
-        | ConfigMcpServerReloadRequest
-        | McpServerStatusListRequest
-        | McpServerResourceReadRequest
-        | McpServerToolCallRequest
-        | WindowsSandboxSetupStartRequest
-        | WindowsSandboxReadinessRequest
-        | AccountLoginStartRequest
-        | AccountLoginCancelRequest
-        | AccountLogoutRequest
-        | AccountRateLimitsReadRequest
-        | AccountRateLimitResetCreditConsumeRequest
-        | AccountUsageReadRequest
-        | AccountWorkspaceMessagesReadRequest
-        | AccountSendAddCreditsNudgeEmailRequest
-        | FeedbackUploadRequest
-        | CommandExecRequest
-        | CommandExecWriteRequest
-        | CommandExecTerminateRequest
-        | CommandExecResizeRequest
-        | ConfigReadRequest
-        | ExternalAgentConfigDetectRequest
-        | ExternalAgentConfigImportRequest
-        | ExternalAgentConfigImportRecordHistoryRequest
-        | ExternalAgentConfigImportReadHistoriesRequest
-        | ConfigValueWriteRequest
-        | ConfigBatchWriteRequest
-        | ConfigRequirementsReadRequest
-        | AccountReadRequest
-        | FuzzyFileSearchRequest,
-        Field(description="Request from the client to the server.", title="ClientRequest"),
-    ]
+    root: Annotated[InitializeRequest | ThreadStartRequest | ThreadResumeRequest | ThreadForkRequest | ThreadArchiveRequest | ThreadDeleteRequest | ThreadUnsubscribeRequest | ThreadNameSetRequest | ThreadGoalSetRequest | ThreadGoalGetRequest | ThreadGoalClearRequest | ThreadMetadataUpdateRequest | ThreadAttachmentAddRequest | ThreadAttachmentListRequest | ThreadAttachmentRemoveRequest | ThreadSectionMoveRequest | ThreadUnarchiveRequest | ThreadCompactStartRequest | ThreadShellCommandRequest | ThreadApproveGuardianDeniedActionRequest | ThreadRevertRequest | ThreadListRequest | ThreadSectionListRequest | ThreadSectionCreateRequest | ThreadSectionUpdateRequest | ThreadSectionDeleteRequest | ThreadLoadedListRequest | ThreadReadRequest | ThreadTurnsListRequest | ThreadItemsListRequest | ThreadInjectItemsRequest | SkillsListRequest | SkillsExtraRootsSetRequest | HooksListRequest | MarketplaceAddRequest | MarketplaceRemoveRequest | MarketplaceUpgradeRequest | PluginListRequest | PluginInstalledRequest | PluginReconcileRequest | PluginReadRequest | PluginSkillReadRequest | PluginShareSaveRequest | PluginShareUpdateTargetsRequest | PluginShareListRequest | PluginShareCheckoutRequest | PluginShareDeleteRequest | AppReadRequest | AppListRequest | AppInstalledRequest | FsReadFileRequest | FsWriteFileRequest | FsCreateDirectoryRequest | FsGetMetadataRequest | FsReadDirectoryRequest | FsRemoveRequest | FsCopyRequest | FsWatchRequest | FsUnwatchRequest | SkillsConfigWriteRequest | PluginInstallRequest | PluginUninstallRequest | TurnStartRequest | TurnSteerRequest | TurnInterruptRequest | ReviewStartRequest | ModelListRequest | AccountGatewayOAuthReadRequest | AccountGatewayOAuthLoginRequest | AccountGatewayOAuthCancelRequest | ModelProviderCapabilitiesReadRequest | ExperimentalFeatureListRequest | PermissionProfileListRequest | ExperimentalFeatureEnablementSetRequest | McpServerOauthLoginRequest | ConfigMcpServerReloadRequest | McpServerStatusListRequest | McpServerResourceReadRequest | McpServerToolCallRequest | WindowsSandboxSetupStartRequest | WindowsSandboxReadinessRequest | AccountLoginStartRequest | AccountLoginCancelRequest | AccountLogoutRequest | AccountRateLimitsReadRequest | AccountRateLimitResetCreditConsumeRequest | AccountUsageReadRequest | AccountWorkspaceMessagesReadRequest | AccountSendAddCreditsNudgeEmailRequest | FeedbackUploadRequest | CommandExecRequest | CommandExecWriteRequest | CommandExecTerminateRequest | CommandExecResizeRequest | ConfigReadRequest | ExternalAgentConfigDetectRequest | ExternalAgentConfigImportRequest | ExternalAgentConfigImportRecordHistoryRequest | ExternalAgentConfigImportReadHistoriesRequest | ConfigValueWriteRequest | ConfigBatchWriteRequest | ConfigRequirementsReadRequest | AccountReadRequest | FuzzyFileSearchRequest, Field(description='Request from the client to the server.', title='ClientRequest')]
 
 
 class RequestPermissionsGuardianApprovalReviewAction(BaseModel):
@@ -12832,181 +12590,9 @@ class ItemAutoApprovalReviewCompletedServerNotification(BaseModel):
 
 
 class ServerNotification(
-    RootModel[
-        ErrorServerNotification
-        | ThreadStartedServerNotification
-        | ThreadStatusChangedServerNotification
-        | ThreadArchivedServerNotification
-        | ThreadDeletedServerNotification
-        | ThreadUnarchivedServerNotification
-        | ThreadClosedServerNotification
-        | ThreadRevertedServerNotification
-        | SkillsChangedServerNotification
-        | ThreadNameUpdatedServerNotification
-        | ThreadAttachmentUpdatedServerNotification
-        | ThreadGoalUpdatedServerNotification
-        | ThreadGoalClearedServerNotification
-        | ThreadQueueChangedServerNotification
-        | ProjectChangedServerNotification
-        | ThreadProjectUpdatedServerNotification
-        | ThreadEnvironmentConnectedServerNotification
-        | ThreadEnvironmentDisconnectedServerNotification
-        | ThreadSettingsUpdatedServerNotification
-        | ThreadTokenUsageUpdatedServerNotification
-        | TurnStartedServerNotification
-        | HookStartedServerNotification
-        | TurnCompletedServerNotification
-        | HookCompletedServerNotification
-        | TurnDiffUpdatedServerNotification
-        | TurnPlanUpdatedServerNotification
-        | ItemStartedServerNotification
-        | ItemAutoApprovalReviewStartedServerNotification
-        | ItemAutoApprovalReviewCompletedServerNotification
-        | AutoApprovalReviewStrictReviewRequiredServerNotification
-        | ItemCompletedServerNotification
-        | ItemAgentMessageDeltaServerNotification
-        | ItemPlanDeltaServerNotification
-        | CommandExecOutputDeltaServerNotification
-        | ProcessOutputDeltaServerNotification
-        | ProcessExitedServerNotification
-        | ItemCommandExecutionOutputDeltaServerNotification
-        | ItemCommandExecutionTerminalInteractionServerNotification
-        | ItemFileChangeOutputDeltaServerNotification
-        | ItemFileChangePatchUpdatedServerNotification
-        | ServerRequestResolvedServerNotification
-        | ItemMcpToolCallProgressServerNotification
-        | McpServerOauthLoginCompletedServerNotification
-        | McpServerStartupStatusUpdatedServerNotification
-        | McpServerEventStreamNotificationServerNotification
-        | AccountUpdatedServerNotification
-        | AccountGatewayOAuthChangedServerNotification
-        | AccountRateLimitsUpdatedServerNotification
-        | AppListUpdatedServerNotification
-        | RemoteControlStatusChangedServerNotification
-        | ExternalAgentConfigImportProgressServerNotification
-        | ExternalAgentConfigImportCompletedServerNotification
-        | FsChangedServerNotification
-        | ItemReasoningSummaryTextDeltaServerNotification
-        | ItemReasoningSummaryPartAddedServerNotification
-        | ItemReasoningTextDeltaServerNotification
-        | ThreadCompactedServerNotification
-        | ModelReroutedServerNotification
-        | ModelVerificationServerNotification
-        | ModelProviderAuthRecoveryStartedServerNotification
-        | ModelProviderAuthRecoveryCompletedServerNotification
-        | TurnModerationMetadataServerNotification
-        | ModelSafetyBufferingUpdatedServerNotification
-        | WarningServerNotification
-        | GuardianWarningServerNotification
-        | DeprecationNoticeServerNotification
-        | ConfigWarningServerNotification
-        | FuzzyFileSearchSessionUpdatedServerNotification
-        | FuzzyFileSearchSessionCompletedServerNotification
-        | ThreadRealtimeStartedServerNotification
-        | ThreadRealtimeItemAddedServerNotification
-        | ThreadRealtimeItemStartedServerNotification
-        | ThreadRealtimeItemTranscriptDeltaServerNotification
-        | ThreadRealtimeItemCompletedServerNotification
-        | ThreadRealtimeTranscriptDeltaServerNotification
-        | ThreadRealtimeTranscriptDoneServerNotification
-        | ThreadRealtimeOutputAudioDeltaServerNotification
-        | ThreadRealtimeSdpServerNotification
-        | ThreadRealtimeErrorServerNotification
-        | ThreadRealtimeClosedServerNotification
-        | WindowsWorldWritableWarningServerNotification
-        | WindowsSandboxSetupCompletedServerNotification
-        | AccountLoginCompletedServerNotification
-    ]
+    RootModel[ErrorServerNotification | ThreadStartedServerNotification | ThreadStatusChangedServerNotification | ThreadArchivedServerNotification | ThreadDeletedServerNotification | ThreadUnarchivedServerNotification | ThreadClosedServerNotification | ThreadRevertedServerNotification | SkillsChangedServerNotification | ThreadNameUpdatedServerNotification | ThreadAttachmentUpdatedServerNotification | ThreadGoalUpdatedServerNotification | ThreadGoalClearedServerNotification | ThreadQueueChangedServerNotification | ProjectChangedServerNotification | ThreadProjectUpdatedServerNotification | ThreadEnvironmentConnectedServerNotification | ThreadEnvironmentDisconnectedServerNotification | ThreadSettingsUpdatedServerNotification | ThreadTokenUsageUpdatedServerNotification | TurnStartedServerNotification | HookStartedServerNotification | TurnCompletedServerNotification | HookCompletedServerNotification | TurnDiffUpdatedServerNotification | TurnPlanUpdatedServerNotification | ItemStartedServerNotification | ItemAutoApprovalReviewStartedServerNotification | ItemAutoApprovalReviewCompletedServerNotification | AutoApprovalReviewStrictReviewRequiredServerNotification | ItemCompletedServerNotification | ItemAgentMessageDeltaServerNotification | ItemPlanDeltaServerNotification | CommandExecOutputDeltaServerNotification | ProcessOutputDeltaServerNotification | ProcessExitedServerNotification | ItemCommandExecutionOutputDeltaServerNotification | ItemCommandExecutionTerminalInteractionServerNotification | ItemFileChangeOutputDeltaServerNotification | ItemFileChangePatchUpdatedServerNotification | ServerRequestResolvedServerNotification | ItemMcpToolCallProgressServerNotification | McpServerOauthLoginCompletedServerNotification | McpServerStartupStatusUpdatedServerNotification | McpServerEventStreamNotificationServerNotification | AccountUpdatedServerNotification | AccountGatewayOAuthChangedServerNotification | AccountRateLimitsUpdatedServerNotification | AppListUpdatedServerNotification | RemoteControlStatusChangedServerNotification | ExternalAgentConfigImportProgressServerNotification | ExternalAgentConfigImportCompletedServerNotification | FsChangedServerNotification | ItemReasoningSummaryTextDeltaServerNotification | ItemReasoningSummaryPartAddedServerNotification | ItemReasoningTextDeltaServerNotification | ThreadCompactedServerNotification | ModelReroutedServerNotification | ModelVerificationServerNotification | ModelProviderAuthRecoveryStartedServerNotification | ModelProviderAuthRecoveryCompletedServerNotification | TurnModerationMetadataServerNotification | ModelSafetyBufferingUpdatedServerNotification | WarningServerNotification | GuardianWarningServerNotification | DeprecationNoticeServerNotification | ConfigWarningServerNotification | FuzzyFileSearchSessionUpdatedServerNotification | FuzzyFileSearchSessionCompletedServerNotification | ThreadRealtimeStartedServerNotification | ThreadRealtimeItemAddedServerNotification | ThreadRealtimeItemStartedServerNotification | ThreadRealtimeItemTranscriptDeltaServerNotification | ThreadRealtimeItemCompletedServerNotification | ThreadRealtimeTranscriptDeltaServerNotification | ThreadRealtimeTranscriptDoneServerNotification | ThreadRealtimeOutputAudioDeltaServerNotification | ThreadRealtimeSdpServerNotification | ThreadRealtimeErrorServerNotification | ThreadRealtimeClosedServerNotification | WindowsWorldWritableWarningServerNotification | WindowsSandboxSetupCompletedServerNotification | AccountLoginCompletedServerNotification]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[
-        ErrorServerNotification
-        | ThreadStartedServerNotification
-        | ThreadStatusChangedServerNotification
-        | ThreadArchivedServerNotification
-        | ThreadDeletedServerNotification
-        | ThreadUnarchivedServerNotification
-        | ThreadClosedServerNotification
-        | ThreadRevertedServerNotification
-        | SkillsChangedServerNotification
-        | ThreadNameUpdatedServerNotification
-        | ThreadAttachmentUpdatedServerNotification
-        | ThreadGoalUpdatedServerNotification
-        | ThreadGoalClearedServerNotification
-        | ThreadQueueChangedServerNotification
-        | ProjectChangedServerNotification
-        | ThreadProjectUpdatedServerNotification
-        | ThreadEnvironmentConnectedServerNotification
-        | ThreadEnvironmentDisconnectedServerNotification
-        | ThreadSettingsUpdatedServerNotification
-        | ThreadTokenUsageUpdatedServerNotification
-        | TurnStartedServerNotification
-        | HookStartedServerNotification
-        | TurnCompletedServerNotification
-        | HookCompletedServerNotification
-        | TurnDiffUpdatedServerNotification
-        | TurnPlanUpdatedServerNotification
-        | ItemStartedServerNotification
-        | ItemAutoApprovalReviewStartedServerNotification
-        | ItemAutoApprovalReviewCompletedServerNotification
-        | AutoApprovalReviewStrictReviewRequiredServerNotification
-        | ItemCompletedServerNotification
-        | ItemAgentMessageDeltaServerNotification
-        | ItemPlanDeltaServerNotification
-        | CommandExecOutputDeltaServerNotification
-        | ProcessOutputDeltaServerNotification
-        | ProcessExitedServerNotification
-        | ItemCommandExecutionOutputDeltaServerNotification
-        | ItemCommandExecutionTerminalInteractionServerNotification
-        | ItemFileChangeOutputDeltaServerNotification
-        | ItemFileChangePatchUpdatedServerNotification
-        | ServerRequestResolvedServerNotification
-        | ItemMcpToolCallProgressServerNotification
-        | McpServerOauthLoginCompletedServerNotification
-        | McpServerStartupStatusUpdatedServerNotification
-        | McpServerEventStreamNotificationServerNotification
-        | AccountUpdatedServerNotification
-        | AccountGatewayOAuthChangedServerNotification
-        | AccountRateLimitsUpdatedServerNotification
-        | AppListUpdatedServerNotification
-        | RemoteControlStatusChangedServerNotification
-        | ExternalAgentConfigImportProgressServerNotification
-        | ExternalAgentConfigImportCompletedServerNotification
-        | FsChangedServerNotification
-        | ItemReasoningSummaryTextDeltaServerNotification
-        | ItemReasoningSummaryPartAddedServerNotification
-        | ItemReasoningTextDeltaServerNotification
-        | ThreadCompactedServerNotification
-        | ModelReroutedServerNotification
-        | ModelVerificationServerNotification
-        | ModelProviderAuthRecoveryStartedServerNotification
-        | ModelProviderAuthRecoveryCompletedServerNotification
-        | TurnModerationMetadataServerNotification
-        | ModelSafetyBufferingUpdatedServerNotification
-        | WarningServerNotification
-        | GuardianWarningServerNotification
-        | DeprecationNoticeServerNotification
-        | ConfigWarningServerNotification
-        | FuzzyFileSearchSessionUpdatedServerNotification
-        | FuzzyFileSearchSessionCompletedServerNotification
-        | ThreadRealtimeStartedServerNotification
-        | ThreadRealtimeItemAddedServerNotification
-        | ThreadRealtimeItemStartedServerNotification
-        | ThreadRealtimeItemTranscriptDeltaServerNotification
-        | ThreadRealtimeItemCompletedServerNotification
-        | ThreadRealtimeTranscriptDeltaServerNotification
-        | ThreadRealtimeTranscriptDoneServerNotification
-        | ThreadRealtimeOutputAudioDeltaServerNotification
-        | ThreadRealtimeSdpServerNotification
-        | ThreadRealtimeErrorServerNotification
-        | ThreadRealtimeClosedServerNotification
-        | WindowsWorldWritableWarningServerNotification
-        | WindowsSandboxSetupCompletedServerNotification
-        | AccountLoginCompletedServerNotification,
-        Field(
-            description="Notification sent from the server to the client.",
-            title="ServerNotification",
-        ),
-    ]
+    root: Annotated[ErrorServerNotification | ThreadStartedServerNotification | ThreadStatusChangedServerNotification | ThreadArchivedServerNotification | ThreadDeletedServerNotification | ThreadUnarchivedServerNotification | ThreadClosedServerNotification | ThreadRevertedServerNotification | SkillsChangedServerNotification | ThreadNameUpdatedServerNotification | ThreadAttachmentUpdatedServerNotification | ThreadGoalUpdatedServerNotification | ThreadGoalClearedServerNotification | ThreadQueueChangedServerNotification | ProjectChangedServerNotification | ThreadProjectUpdatedServerNotification | ThreadEnvironmentConnectedServerNotification | ThreadEnvironmentDisconnectedServerNotification | ThreadSettingsUpdatedServerNotification | ThreadTokenUsageUpdatedServerNotification | TurnStartedServerNotification | HookStartedServerNotification | TurnCompletedServerNotification | HookCompletedServerNotification | TurnDiffUpdatedServerNotification | TurnPlanUpdatedServerNotification | ItemStartedServerNotification | ItemAutoApprovalReviewStartedServerNotification | ItemAutoApprovalReviewCompletedServerNotification | AutoApprovalReviewStrictReviewRequiredServerNotification | ItemCompletedServerNotification | ItemAgentMessageDeltaServerNotification | ItemPlanDeltaServerNotification | CommandExecOutputDeltaServerNotification | ProcessOutputDeltaServerNotification | ProcessExitedServerNotification | ItemCommandExecutionOutputDeltaServerNotification | ItemCommandExecutionTerminalInteractionServerNotification | ItemFileChangeOutputDeltaServerNotification | ItemFileChangePatchUpdatedServerNotification | ServerRequestResolvedServerNotification | ItemMcpToolCallProgressServerNotification | McpServerOauthLoginCompletedServerNotification | McpServerStartupStatusUpdatedServerNotification | McpServerEventStreamNotificationServerNotification | AccountUpdatedServerNotification | AccountGatewayOAuthChangedServerNotification | AccountRateLimitsUpdatedServerNotification | AppListUpdatedServerNotification | RemoteControlStatusChangedServerNotification | ExternalAgentConfigImportProgressServerNotification | ExternalAgentConfigImportCompletedServerNotification | FsChangedServerNotification | ItemReasoningSummaryTextDeltaServerNotification | ItemReasoningSummaryPartAddedServerNotification | ItemReasoningTextDeltaServerNotification | ThreadCompactedServerNotification | ModelReroutedServerNotification | ModelVerificationServerNotification | ModelProviderAuthRecoveryStartedServerNotification | ModelProviderAuthRecoveryCompletedServerNotification | TurnModerationMetadataServerNotification | ModelSafetyBufferingUpdatedServerNotification | WarningServerNotification | GuardianWarningServerNotification | DeprecationNoticeServerNotification | ConfigWarningServerNotification | FuzzyFileSearchSessionUpdatedServerNotification | FuzzyFileSearchSessionCompletedServerNotification | ThreadRealtimeStartedServerNotification | ThreadRealtimeItemAddedServerNotification | ThreadRealtimeItemStartedServerNotification | ThreadRealtimeItemTranscriptDeltaServerNotification | ThreadRealtimeItemCompletedServerNotification | ThreadRealtimeTranscriptDeltaServerNotification | ThreadRealtimeTranscriptDoneServerNotification | ThreadRealtimeOutputAudioDeltaServerNotification | ThreadRealtimeSdpServerNotification | ThreadRealtimeErrorServerNotification | ThreadRealtimeClosedServerNotification | WindowsWorldWritableWarningServerNotification | WindowsSandboxSetupCompletedServerNotification | AccountLoginCompletedServerNotification, Field(description='Notification sent from the server to the client.', title='ServerNotification')]

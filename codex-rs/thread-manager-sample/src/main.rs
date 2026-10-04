@@ -299,6 +299,7 @@ async fn new_config(
         tui_raw_output_mode: false,
         tui_pet: None,
         tui_pet_anchor: TuiPetAnchor::Composer,
+        show_compact_summary: true,
         terminal_resize_reflow: TerminalResizeReflowConfig::default(),
         tui_keymap: TuiKeymap::default(),
         tui_session_picker_view: SessionPickerViewMode::Dense,

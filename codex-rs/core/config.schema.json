@@ -1023,6 +1023,9 @@
             "recommended_plugins": {
               "type": "boolean"
             },
+            "remote_compaction": {
+              "type": "boolean"
+            },
             "remote_compaction_v2": {
               "type": "boolean"
             },
@@ -4724,6 +4727,11 @@
           "default": null,
           "description": "Preferred layout for resume/fork session picker results."
         },
+        "show_compact_summary": {
+          "default": true,
+          "description": "Show the compacted prompt (or summary when no prompt is available) in the TUI after `/compact`. Defaults to `true`.",
+          "type": "boolean"
+        },
         "show_server_version_notice": {
           "default": true,
           "description": "Show informational notices about connected app server version differences. Defaults to `true`; this does not control compatibility errors or version status.",
@@ -7057,6 +7065,9 @@
           "type": "boolean"
         },
         "recommended_plugins": {
+          "type": "boolean"
+        },
+        "remote_compaction": {
           "type": "boolean"
         },
         "remote_compaction_v2": {

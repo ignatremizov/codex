@@ -19,6 +19,52 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[tokio::test]
+async fn cold_compaction_projection_respects_preference_and_preserves_detail() -> anyhow::Result<()>
+{
+    let home = tempfile::tempdir()?;
+    let mut config = crate::legacy_core::config::ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(codex_config::LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await?;
+    let cwd = test_path_buf("/workspace").abs();
+    let item = ThreadItem::ContextCompaction {
+        id: "compact-1".into(),
+        summary: Some("Short summary".into()),
+        message: Some("Prompt line 1\n\nPrompt line 2".into()),
+    };
+    let mut rendered = Vec::new();
+    // No config follows the effective default; explicit opt-out hides all details.
+    config.show_compact_summary = false;
+    for preference in [None, Some(&config)] {
+        let projected = crate::thread_transcript::thread_items_to_transcript_cells(
+            /*thread_id*/ None,
+            &cwd,
+            [item.clone()],
+            crate::thread_transcript::RawReasoningVisibility::Hidden,
+            preference,
+        );
+        rendered.push(
+            projected
+                .into_iter()
+                .flat_map(|cell| cell.display_lines(/*width*/ 80))
+                .map(|line| line.to_string().trim_end().to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    insta::assert_snapshot!(rendered.join("\n---\n"), @"
+    • Context compacted
+      Prompt line 1
+
+      Prompt line 2
+    ---
+    • Context compacted
+    ");
+    Ok(())
+}
+
 #[test]
 fn completed_patch_restores_rich_diff_and_styles() {
     let cwd = test_path_buf("/workspace").abs();
@@ -73,6 +119,7 @@ fn completed_patch_restores_rich_diff_and_styles() {
             status: PatchApplyStatus::Completed,
         },
         &cwd,
+        /*show_compact_summary*/ true,
     );
 
     assert_eq!(actual.len(), 1);
@@ -103,6 +150,7 @@ fn unfinished_and_rejected_patches_keep_their_outcome() {
                 status,
             },
             &cwd,
+            /*show_compact_summary*/ true,
         )
     })
     .flat_map(|cell| cell.display_lines(/*width*/ 80))
@@ -166,11 +214,13 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
         },
         ThreadItem::ContextCompaction {
             id: "compact-1".to_string(),
+            summary: None,
+            message: None,
         },
     ];
     let rendered = items
         .into_iter()
-        .flat_map(|item| cells(item, &cwd))
+        .flat_map(|item| cells(item, &cwd, /*show_compact_summary*/ true))
         .flat_map(|cell| cell.display_lines(/*width*/ 80))
         .map(|line| line.to_string())
         .collect::<Vec<_>>()

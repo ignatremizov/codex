@@ -32,6 +32,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     yellow: Style,
     show_agent_reasoning: bool,
     show_raw_agent_reasoning: bool,
+    show_compact_summary: bool,
     last_message_path: Option<PathBuf>,
     final_message: Option<String>,
     final_message_rendered: bool,
@@ -57,6 +58,7 @@ impl EventProcessorWithHumanOutput {
             yellow: style(Style::new().yellow(), Style::new()),
             show_agent_reasoning: !config.hide_agent_reasoning,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            show_compact_summary: config.show_compact_summary,
             last_message_path,
             final_message: None,
             final_message_rendered: false,
@@ -200,11 +202,34 @@ impl EventProcessorWithHumanOutput {
             ThreadItem::WebSearch(item) => {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
-            ThreadItem::ContextCompaction { .. } => {
-                eprintln!("{}", "context compacted".style(self.dimmed));
+            ThreadItem::ContextCompaction {
+                summary, message, ..
+            } => {
+                if !self.show_compact_summary {
+                    eprintln!("{}", "context compacted".style(self.dimmed));
+                } else if let Some(message) =
+                    message.as_deref().filter(|text| !text.trim().is_empty())
+                {
+                    eprintln!("{}", self.compaction_section("Compacted prompt", message));
+                } else if let Some(summary) =
+                    summary.as_deref().filter(|text| !text.trim().is_empty())
+                {
+                    eprintln!("{}", self.compaction_section("Compacted summary", summary));
+                } else {
+                    eprintln!("{}", "context compacted".style(self.dimmed));
+                }
             }
             _ => {}
         }
+    }
+
+    fn compaction_section(&self, title: &str, content: &str) -> String {
+        let mut section = title.style(self.bold).to_string();
+        for line in content.split('\n') {
+            section.push_str("\n  ");
+            section.push_str(line);
+        }
+        section
     }
 }
 
@@ -369,6 +394,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 CodexStatus::Running
             }
+            ServerNotification::ContextCompacted(_) => CodexStatus::Running,
             ServerNotification::TurnStarted(_) => CodexStatus::Running,
             _ => CodexStatus::Running,
         }

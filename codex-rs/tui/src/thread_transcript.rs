@@ -131,6 +131,7 @@ pub(crate) fn thread_items_to_transcript_cells(
     let inline_visualization_context = config.and_then(|config| {
         thread_id.and_then(|thread_id| InlineVisualizationContext::from_config(config, thread_id))
     });
+    let show_compact_summary = config.is_none_or(|config| config.show_compact_summary);
     let mut cells: TranscriptCells = Vec::new();
     let mut pending = None;
     for item in items {
@@ -142,6 +143,7 @@ pub(crate) fn thread_items_to_transcript_cells(
                 cwd,
                 raw_reasoning_visibility,
                 inline_visualization_context.clone(),
+                show_compact_summary,
             ) {
                 match group {
                     PendingActivity::Computer(group) => group.group.push_detail(cell),
@@ -206,6 +208,7 @@ pub(crate) fn thread_items_to_transcript_cells(
                     cwd,
                     raw_reasoning_visibility,
                     inline_visualization_context.clone(),
+                    show_compact_summary,
                 );
                 if !projected.is_empty() {
                     PendingActivity::flush(&mut pending, &mut cells);
@@ -224,6 +227,7 @@ fn item_to_cells(
     cwd: &AbsolutePathBuf,
     raw_reasoning_visibility: RawReasoningVisibility,
     inline_visualization_context: Option<InlineVisualizationContext>,
+    show_compact_summary: bool,
 ) -> TranscriptCells {
     let mut cells: TranscriptCells = Vec::new();
     match item {
@@ -334,7 +338,7 @@ fn item_to_cells(
                 cells.push(Arc::new(command.into_cell()));
             }
         }
-        other => cells.extend(other_items::cells(other, cwd)),
+        other => cells.extend(other_items::cells(other, cwd, show_compact_summary)),
     }
     cells
 }

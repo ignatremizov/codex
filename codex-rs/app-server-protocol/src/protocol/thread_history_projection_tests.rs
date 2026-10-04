@@ -1,6 +1,7 @@
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::protocol::ErrorEvent;
@@ -21,6 +22,27 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::TurnError;
+
+#[test]
+fn projects_completed_compaction_payload_and_timestamps() {
+    let item = TurnItem::ContextCompaction(ContextCompactionItem {
+        id: "compaction-1".to_string(),
+        summary: Some("summary".to_string()),
+        message: Some("full compacted prompt".to_string()),
+    });
+    assert_eq!(
+        project(item_completed(ThreadId::new(), "turn-1", item.clone())),
+        ThreadHistoryChangeSet {
+            changed_items: vec![ThreadHistoryItemChange {
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::from(item),
+                started_at_ms: Some(100),
+                completed_at_ms: Some(123),
+            }],
+            ..Default::default()
+        }
+    );
+}
 
 #[test]
 fn projects_turn_lifecycle_without_prior_builder_state() {

@@ -13,6 +13,34 @@ pub(super) struct ActiveCompaction {
 }
 
 impl ChatWidget {
+    pub(super) fn on_context_compaction_completed(
+        &mut self,
+        id: &str,
+        from_replay: bool,
+        summary: Option<String>,
+        message: Option<String>,
+    ) {
+        let mut header = "Context compacted".to_string();
+        if let Some(active) = self.status_state.compaction.as_ref()
+            && active.id == id
+        {
+            if !from_replay {
+                let elapsed = crate::status_indicator_widget::fmt_elapsed_compact(
+                    active.started_at.elapsed().as_secs(),
+                );
+                header = format!("Context compacted · {elapsed}");
+            }
+            self.clear_context_compaction();
+        }
+        self.add_to_history(history_cell::new_compaction(
+            header,
+            summary,
+            message,
+            self.local_settings.tui.show_compact_summary,
+        ));
+        self.request_redraw();
+    }
+
     pub(super) fn on_context_compaction_started(&mut self, id: String, elapsed: Duration) {
         if self
             .status_state
@@ -37,21 +65,5 @@ impl ChatWidget {
                 .set_status_timer_origin(/*started_at*/ None);
             self.set_status_header("Working".to_string());
         }
-    }
-
-    pub(super) fn on_context_compaction_completed(&mut self, id: &str, from_replay: bool) {
-        let mut message = "Context compacted".to_string();
-        if let Some(active) = self.status_state.compaction.as_ref()
-            && active.id == id
-        {
-            if !from_replay {
-                let elapsed = crate::status_indicator_widget::fmt_elapsed_compact(
-                    active.started_at.elapsed().as_secs(),
-                );
-                message = format!("Context compacted · {elapsed}");
-            }
-            self.clear_context_compaction();
-        }
-        self.add_info_message(message, /*hint*/ None);
     }
 }
