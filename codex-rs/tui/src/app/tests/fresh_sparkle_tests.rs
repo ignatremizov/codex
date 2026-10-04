@@ -14,7 +14,7 @@ fn started(model: &str) -> AppServerStartedThread {
     AppServerStartedThread {
         session,
         turns: Vec::new(),
-        blocks_direct_input: false,
+        is_subagent: false,
         task_tools_available: false,
     }
 }
@@ -92,7 +92,7 @@ async fn only_a_confirmed_empty_new_task_shows_the_sparkle() -> Result<()> {
         "fork",
         "replay",
         "initial_prompt",
-        "parent_owned",
+        "subagent",
     ] {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         app.local_settings.tui.animations = true;
@@ -112,8 +112,8 @@ async fn only_a_confirmed_empty_new_task_shows_the_sparkle() -> Result<()> {
                 .turns
                 .push(test_turn("existing", TurnStatus::Completed, Vec::new()));
         }
-        if scenario == "parent_owned" {
-            thread.blocks_direct_input = true;
+        if scenario == "subagent" {
+            thread.is_subagent = true;
         }
         let initial_message = (scenario == "initial_prompt")
             .then(|| create_initial_user_message(Some("hello".into()), Vec::new(), Vec::new()))
@@ -588,13 +588,15 @@ fn astra_picker_xhigh_applies_on_a_bounded_stack() -> Result<()> {
                 .thread_stack_size(SERVER_STACK_SIZE)
                 .enable_all()
                 .build()?;
-            runtime.block_on(Box::pin(async {
-                let (mut app, mut events, _ops) = Box::pin(make_test_app_with_channels()).await;
+            runtime.block_on(crate::boxed_future!(async {
+                let (mut app, mut events, _ops) =
+                    crate::boxed_future!(make_test_app_with_channels()).await;
                 app.config.model = Some("gpt-5.5".into());
-                let mut server = Box::pin(start_config_write_test_app_server(&app)).await?;
+                let mut server =
+                    crate::boxed_future!(start_config_write_test_app_server(&app)).await?;
                 let mut tui = crate::tui::test_support::make_test_tui()?;
-                let thread = server.start_thread(&app.config).await?;
-                Box::pin(app.replace_chat_widget_with_app_server_thread(
+                let thread = crate::boxed_future!(server.start_thread(&app.config)).await?;
+                crate::boxed_future!(app.replace_chat_widget_with_app_server_thread(
                     &mut tui,
                     thread,
                     ThreadAttachPresentation::Fresh,
@@ -627,7 +629,8 @@ fn astra_picker_xhigh_applies_on_a_bounded_stack() -> Result<()> {
                             | AppEvent::UpdateReasoningEffort(_)
                             | AppEvent::PersistModelSelection { .. }
                     ) {
-                        Box::pin(app.handle_event(&mut tui, &mut server, event)).await?;
+                        crate::boxed_future!(app.handle_event(&mut tui, &mut server, event))
+                            .await?;
                     }
                 }
                 assert!(confirmed);

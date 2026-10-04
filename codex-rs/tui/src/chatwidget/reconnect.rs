@@ -205,7 +205,7 @@ impl ChatWidget {
         key: KeyEvent,
         mode: RestrictedInputMode,
     ) -> KeyEventAction {
-        if self.external_writer_view {
+        if self.direct_input_is_blocked() {
             return KeyEventAction::None;
         }
         if mode == RestrictedInputMode::DraftHandoff {
@@ -219,7 +219,7 @@ impl ChatWidget {
                 return KeyEventAction::None;
             }
             if !self.startup_submission_has_protected_input()
-                && !self.blocks_direct_input
+                && !self.direct_input_is_blocked()
                 && self.bottom_pane.composer_input_enabled()
                 && let Some(action) =
                     self.image_paste_key_action(key, ClipboardPasteContext::DraftHandoff)

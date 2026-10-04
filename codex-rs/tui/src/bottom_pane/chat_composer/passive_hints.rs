@@ -260,7 +260,7 @@ impl ChatComposer {
         hints.add(Shell, self.shell_mode_footer_line());
         hints.add(Vim, self.vim_mode_indicator_span().map(Line::from));
         let can_navigate = self.has_focus && self.draft.input_enabled && !self.popup_active();
-        let can_type = can_navigate && !self.blocks_direct_input;
+        let can_type = can_navigate;
         let show_cycle = can_type && !self.is_task_running;
         if let Some(plan) = self.footer.collaboration_mode_indicator {
             hints.add(

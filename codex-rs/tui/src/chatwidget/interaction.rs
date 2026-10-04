@@ -68,7 +68,7 @@ impl ChatWidget {
         &self,
         shortcut: Option<KeyCode>,
     ) -> Option<crate::bottom_pane::ClipboardPasteTarget> {
-        if self.blocks_direct_input {
+        if self.direct_input_is_blocked() {
             return None;
         }
         self.bottom_pane.clipboard_paste_target(shortcut)
@@ -130,7 +130,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn can_choose_new_backend(&self) -> bool {
-        !self.blocks_direct_input
+        !self.direct_input_is_blocked()
             && !self.is_user_turn_pending_or_running()
             && self.last_turn_id().is_none()
             && !self.input_queue.has_queued_follow_up_messages()
@@ -340,9 +340,7 @@ impl ChatWidget {
                 && !self.bottom_pane.is_task_running()
                 && self.bottom_pane.no_modal_or_popup_active() =>
             {
-                if self.blocks_direct_input {
-                    self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
-                } else {
+                if !self.reject_blocked_input() {
                     self.cycle_collaboration_mode();
                 }
             }
@@ -353,10 +351,7 @@ impl ChatWidget {
                 let input_result = self
                     .bottom_pane
                     .handle_key_event_with_activation_key(key_event, activation_key);
-                if matches!(
-                    input_result,
-                    InputResult::None | InputResult::ParentOwnedInputBlocked
-                ) {
+                if matches!(input_result, InputResult::None) {
                     self.refresh_startup_recovery();
                 }
                 crate::startup_recovery::submitted(&input_result);
@@ -471,7 +466,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn can_launch_external_editor(&self) -> bool {
-        !self.external_writer_view && self.bottom_pane.can_launch_external_editor()
+        !self.direct_input_is_blocked() && self.bottom_pane.can_launch_external_editor()
     }
 
     pub(crate) fn can_run_ctrl_l_clear_now(&mut self) -> bool {
@@ -596,9 +591,7 @@ impl ChatWidget {
 
     pub(crate) fn handle_paste(&mut self, text: String) {
         self.cancel_quick_dial_menu();
-        if (self.external_writer_view || self.has_provider_error())
-            && !self.bottom_pane.has_active_view()
-        {
+        if self.direct_input_is_blocked() && !self.bottom_pane.has_active_view() {
             return;
         }
         if !self.startup_submission_has_protected_input() {

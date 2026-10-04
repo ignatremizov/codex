@@ -748,12 +748,8 @@ fn fullscreen_plan_indicator_keeps_the_cycle_hint_when_it_fits() {
         "{read_only}"
     );
     composer.set_input_enabled(/*enabled*/ true, /*placeholder*/ None);
-    composer.set_parent_owned_thread();
-    let (parent_owned, _) = render(&composer, /*width*/ 100, /*footer*/ None);
-    assert!(
-        parent_owned.lines().last().unwrap().contains("Plan mode"),
-        "{parent_owned}"
-    );
+    let (restored, _) = render(&composer, /*width*/ 100, /*footer*/ None);
+    assert!(restored.contains("Plan mode (⇧tab to cycle)"), "{restored}");
 }
 
 #[test]

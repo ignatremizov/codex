@@ -735,7 +735,7 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
         AppServerStartedThread {
             session: test_thread_session(ThreadId::new(), app.config.cwd.to_path_buf()),
             turns: Vec::new(),
-            blocks_direct_input: false,
+            is_subagent: false,
             task_tools_available: false,
         },
         session_lifecycle::ThreadAttachPresentation::SessionLineage,
@@ -2623,7 +2623,6 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
             agent_path: "/root/child".to_string(),
             is_running_hint: true,
         });
-    assert!(!app.agent_navigation.is_parent_owned(thread_id));
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
 
@@ -2870,7 +2869,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 }
 
 #[test]
-fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -> Result<()> {
+fn selected_and_resumed_v1_and_v2_children_accept_direct_input() -> Result<()> {
     const WORKER_THREADS: usize = 1;
     const TEST_STACK_SIZE_BYTES: usize = 12 * 1024 * 1024;
 
@@ -3004,8 +3003,8 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 .await?;
             assert_eq!(app.active_thread_id, Some(child_thread_id));
             assert_eq!(
-                app.agent_navigation.is_parent_owned(child_thread_id),
-                multi_agent_version == MultiAgentVersion::V2
+                app.agent_navigation.is_subagent(child_thread_id),
+                true
             );
             assert_app_snapshot!(
                 format!("selected_unloaded_subagent_{multi_agent_version:?}"),
@@ -3164,11 +3163,12 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 is_closed: false,
             })
         );
-        assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
-        assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
+        assert!(app.agent_navigation.is_subagent(child_thread_ids[0]));
+        assert!(app.agent_navigation.is_subagent(child_thread_ids[1]));
 
         app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[0])
             .await?;
+        assert_eq!(app.chat_widget.thread_id(), Some(child_thread_ids[0]));
         while app_event_rx.try_recv().is_ok() {}
         app.chat_widget
             .restore_user_message_to_composer("v1 remains writable".into());
@@ -3181,16 +3181,15 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
 
         app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[1])
             .await?;
+        assert_eq!(app.chat_widget.thread_id(), Some(child_thread_ids[1]));
         while app_event_rx.try_recv().is_ok() {}
         app.chat_widget
-            .restore_user_message_to_composer("v2 stays view-only".into());
-        let draft = app.chat_widget.composer_text_with_pending();
+            .restore_user_message_to_composer("v2 remains writable".into());
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
         assert!(
-            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            std::iter::from_fn(|| app_event_rx.try_recv().ok())
                 .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
         );
 
@@ -3201,7 +3200,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             app.resume_model_settings(),
         ))
         .await?;
-        assert!(resumed.blocks_direct_input);
+        assert!(resumed.is_subagent);
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
             resumed,
@@ -3209,16 +3208,15 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             /*initial_user_message*/ None,
         )
         .await?;
+        assert_eq!(app.chat_widget.thread_id(), Some(child_thread_ids[1]));
         while app_event_rx.try_recv().is_ok() {}
         app.chat_widget
-            .restore_user_message_to_composer("direct resume stays view-only".into());
-        let draft = app.chat_widget.composer_text_with_pending();
+            .restore_user_message_to_composer("direct resume remains writable".into());
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
         assert!(
-            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            std::iter::from_fn(|| app_event_rx.try_recv().ok())
                 .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
         );
         Ok(())
@@ -8299,7 +8297,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
         AppServerStartedThread {
             session: test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
             turns: Vec::new(),
-            blocks_direct_input: false,
+            is_subagent: true,
             task_tools_available: false,
         },
         &mut child_snapshot,
@@ -9674,7 +9672,7 @@ async fn app_server_thread_replacement_clears_previous_transcript_before_replay(
                     }],
                 }],
             )],
-            blocks_direct_input: false,
+            is_subagent: false,
             task_tools_available: false,
         },
         session_lifecycle::ThreadAttachPresentation::SessionLineage,
@@ -12211,14 +12209,13 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
         AppServerStartedThread {
             session: resumed_session.clone(),
             turns: resumed_turns.clone(),
-            blocks_direct_input: true,
+            is_subagent: true,
             task_tools_available: false,
         },
         &mut snapshot,
     )
     .await;
 
-    assert!(app.agent_navigation.is_parent_owned(thread_id));
     assert_eq!(snapshot.session, Some(resumed_session.clone()));
     assert_eq!(snapshot.turns, resumed_turns);
 

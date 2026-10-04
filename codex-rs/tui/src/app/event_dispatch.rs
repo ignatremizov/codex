@@ -2401,16 +2401,15 @@ impl App {
                 if app_server.thread_params_mode().settings_owner()
                     == ThreadSettingsOwner::Server
                 {
-                    self.select_session_model(
+                    crate::boxed_future!(self.select_session_model(
                         app_server,
                         model,
                         effort,
                         /*service_tier*/ None,
-                    )
+                    ))
                     .await;
                 } else {
-                    self.apply_default_model_selection(app_server, model, effort)
-                        .await;
+                    crate::boxed_future!(self.apply_default_model_selection(app_server, model, effort)).await;
                 }
             }
             AppEvent::ScopedModelPicker { .. } | AppEvent::AstraSelectedFromModelPicker { .. } => unreachable!("picker event unwrapped"),
@@ -2600,12 +2599,12 @@ impl App {
                 if app_server.thread_params_mode().settings_owner()
                     == ThreadSettingsOwner::Server
                 {
-                    self.select_session_model(
+                    crate::boxed_future!(self.select_session_model(
                         app_server,
                         model,
                         Some(effort),
                         /*service_tier*/ None,
-                    )
+                    ))
                     .await;
                     if let Some(model) = sparkle_model.as_ref() {
                         self.chat_widget
@@ -2665,8 +2664,7 @@ impl App {
             }
             AppEvent::OpenPlanReasoningScopePrompt { model, effort } => {
                 if app_server.thread_params_mode() == crate::ThreadParamsMode::Cloud {
-                    self.select_session_model(app_server, model, effort, /*service_tier*/ None)
-                        .await;
+                    crate::boxed_future!(self.select_session_model(app_server, model, effort, /*service_tier*/ None)).await;
                 } else {
                     self.chat_widget
                         .open_plan_reasoning_scope_prompt(model, effort);
@@ -2898,7 +2896,7 @@ impl App {
             }
             AppEvent::SelectSessionModel { model, effort, service_tier } => {
                 self.app_event_tx.send(AppEvent::FollowTranscript);
-                self.select_session_model(app_server, model, effort, service_tier).await;
+                crate::boxed_future!(self.select_session_model(app_server, model, effort, service_tier)).await;
             }
             AppEvent::OpenQuickDialEditor { target, dial } => {
                 self.chat_widget.open_quick_dial_editor(target, dial);

@@ -17,7 +17,6 @@ use crate::app_server_session::SessionAccount;
 use crate::app_server_session::SideChatStorage;
 use crate::app_server_session::is_server_shutting_down_error;
 use crate::app_server_session::source_agent_path;
-use crate::app_server_session::thread_blocks_direct_input;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::streaming::commit_tick::CommitTickScope;
 use codex_app_server_protocol::ThreadPrepareApprovedPlanParams;
@@ -279,12 +278,6 @@ impl App {
         }
     }
 
-    /// Persists the app-server's authoritative ownership flag and updates the active composer.
-    pub(super) fn mark_primary_thread_parent_owned(&mut self, thread_id: ThreadId) {
-        self.agent_navigation.mark_parent_owned(thread_id);
-        self.chat_widget.set_parent_owned_thread();
-    }
-
     /// Marks a cached picker thread closed and recomputes the contextual footer label.
     ///
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
@@ -306,8 +299,12 @@ impl App {
             .await
         {
             Ok(thread) => {
-                let is_parent_owned = thread_blocks_direct_input(&thread);
-                let agent_path = source_agent_path(&thread.source);
+                if matches!(
+                    thread.source,
+                    codex_app_server_protocol::SessionSource::SubAgent(_)
+                ) {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 let is_running = matches!(
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::Active { .. }
@@ -316,6 +313,7 @@ impl App {
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::NotLoaded
                 );
+                let agent_path = source_agent_path(&thread.source);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -330,9 +328,6 @@ impl App {
                     }),
                     is_closed,
                 );
-                if is_parent_owned {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
                 self.agent_navigation.set_agent_path(thread_id, agent_path);
                 self.sync_agent_picker_thread(thread_id);
                 if is_running {
@@ -432,6 +427,9 @@ impl App {
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ExternalWriter);
         let (mut session, turns, live_attached) = match prepared {
             PreparedAttachment::Live(started) => {
+                if started.is_subagent {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 if let Some(entry) = self.agent_navigation.get(&thread_id).cloned() {
                     self.upsert_agent_picker_thread(
                         thread_id,
@@ -441,12 +439,15 @@ impl App {
                     );
                     self.sync_agent_picker_thread(thread_id);
                 }
-                if started.blocks_direct_input {
-                    self.agent_navigation.mark_parent_owned(thread_id);
-                }
                 (started.session, started.turns, true)
             }
             PreparedAttachment::ReplayOnly(thread) => {
+                if matches!(
+                    &thread.source,
+                    codex_app_server_protocol::SessionSource::SubAgent(_)
+                ) {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 let mut session = self.session_state_for_thread_read(thread_id, &thread).await;
                 // Reads have no settings. Keep this cached thread's permissions rather than
                 // inferring them from the conversation that is currently displayed.
@@ -914,9 +915,6 @@ impl App {
         if external_writer {
             self.chat_widget.show_external_writer_thread();
         }
-        if self.agent_navigation.is_parent_owned(thread_id) {
-            self.chat_widget.set_parent_owned_thread();
-        }
         if retain_side_view {
             // Even a superseding selection must leave queued history its original cells and view.
             tui.clear_pending_history_lines();
@@ -1103,6 +1101,9 @@ impl App {
                     app_server.remember_task_tool_thread(thread_id);
                     self.chat_widget.set_task_mentions_enabled(/*enabled*/ true);
                 }
+                if started.is_subagent {
+                    self.agent_navigation.mark_subagent(thread_id);
+                }
                 self.pending_primary_events.retain(|event| match event {
                     ThreadBufferedEvent::Notification(notification) => matches!(
                         server_notification_thread_target(notification),
@@ -1132,9 +1133,6 @@ impl App {
                                 .note_buffered_request(&request);
                         }
                     }
-                }
-                if started.blocks_direct_input {
-                    self.mark_primary_thread_parent_owned(thread_id);
                 }
                 // Lifecycle notifications may arrive before the thread/start response.
                 if !self.config.ephemeral
@@ -1505,6 +1503,10 @@ impl App {
             },
         );
         self.reset_thread_event_state().await;
+        if started.is_subagent {
+            self.agent_navigation
+                .mark_subagent(started.session.thread_id);
+        }
         let mut init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
             self.config.clone(),
@@ -1537,9 +1539,6 @@ impl App {
             .set_task_mentions_enabled(started.task_tools_available);
         self.chat_widget
             .note_rendered_width(tui.terminal.last_known_screen_size.width);
-        if started.blocks_direct_input {
-            self.mark_primary_thread_parent_owned(started.session.thread_id);
-        }
         self.enqueue_primary_thread_session_with_presentation(
             started.session,
             started.turns,
@@ -1608,15 +1607,13 @@ impl App {
 
         let mut refreshed_thread_ids = HashSet::new();
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
+            self.agent_navigation.mark_subagent(thread.thread_id);
             let agent_path = thread.agent_path;
             let has_live_channel = self
                 .thread_event_channels
                 .get(&thread.thread_id)
                 .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
             let is_closed = !has_live_channel && thread.is_closed;
-            if thread.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(thread.thread_id);
-            }
             self.upsert_agent_picker_thread(
                 thread.thread_id,
                 thread.agent_nickname,
