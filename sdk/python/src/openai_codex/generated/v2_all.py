@@ -5618,6 +5618,27 @@ class ThreadLoadedListResponse(BaseModel):
     ] = None
 
 
+class ThreadMcpServerActivateOutcome(Enum):
+    activated = "activated"
+    already_activated = "alreadyActivated"
+    already_implicitly_available = "alreadyImplicitlyAvailable"
+
+
+class ThreadMcpServerActivateParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    server_name: Annotated[str, Field(alias="serverName")]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadMcpServerActivateResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    outcome: ThreadMcpServerActivateOutcome
+
+
 class ThreadMemoryMode(Enum):
     enabled = "enabled"
     disabled = "disabled"
@@ -6956,6 +6977,17 @@ class ThreadNameSetRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/name/set"], Field(title="Thread/name/setRequestMethod")]
     params: ThreadSetNameParams
+
+
+class ThreadMcpServerActivateRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/mcpServer/activate"], Field(title="Thread/mcpServer/activateRequestMethod")
+    ]
+    params: ThreadMcpServerActivateParams
 
 
 class ThreadGoalGetRequest(BaseModel):
@@ -8720,6 +8752,7 @@ class McpServerStatus(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    allow_implicit_invocation: Annotated[bool | None, Field(alias="allowImplicitInvocation")] = True
     auth_status: Annotated[McpAuthStatus, Field(alias="authStatus")]
     http_origin: Annotated[
         str | None,
@@ -12751,6 +12784,7 @@ class ClientRequest(
         | ThreadUnsubscribeRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
+        | ThreadMcpServerActivateRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
         | ThreadMetadataUpdateRequest
@@ -12860,6 +12894,7 @@ class ClientRequest(
         | ThreadUnsubscribeRequest
         | ThreadNameSetRequest
         | ThreadGoalSetRequest
+        | ThreadMcpServerActivateRequest
         | ThreadGoalGetRequest
         | ThreadGoalClearRequest
         | ThreadMetadataUpdateRequest

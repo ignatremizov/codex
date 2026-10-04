@@ -263,6 +263,8 @@ pub(crate) use submission::Submission;
 mod input_queue;
 mod mcp;
 mod mcp_prewarm;
+mod mcp_prompt;
+pub(crate) use mcp_prompt::is_mcp_use_input;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
@@ -4114,12 +4116,23 @@ impl Session {
             if let Some(messages) = model_messages.notes() {
                 extension_data.insert(messages.clone());
             }
+            let mut required_servers = required_servers.to_vec();
+            required_servers.extend(
+                self.mcp_prompt
+                    .first_turn_servers
+                    .lock()
+                    .await
+                    .iter()
+                    .cloned(),
+            );
+            required_servers.sort();
+            required_servers.dedup();
             let (mcp, prepared_recommendations) = tokio::join!(
                 // MCP refresh can be large; keep it off the sampling request's stack.
                 Box::pin(self.mcp_runtime_for_step(
                     turn_context.as_ref(),
                     &selected_capability_roots,
-                    required_servers,
+                    &required_servers,
                     required_plugins,
                 )),
                 turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
@@ -5010,8 +5023,11 @@ impl Session {
                     .annotated_items()
                     .iter()
                     .filter(|item| {
-                        (self.enabled(Feature::RetainClientToolOutputs)
-                            && crate::compact_retained_tool_outputs::is_retained_tool_output(item))
+                        crate::context::McpServerUseInstructions::matches_response_item(&item.item)
+                            || (self.enabled(Feature::RetainClientToolOutputs)
+                                && crate::compact_retained_tool_outputs::is_retained_tool_output(
+                                    item,
+                                ))
                             || (self.enabled(Feature::RetainClientDeveloperMessages)
                                 && crate::compact_remote_v2::is_client_authored_developer_message(
                                     item,

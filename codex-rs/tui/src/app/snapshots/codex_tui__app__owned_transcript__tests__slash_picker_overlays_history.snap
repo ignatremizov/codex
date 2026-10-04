@@ -10,7 +10,7 @@ Transcript row 34: content behind the menu
 › /model     choose what model and reasoning effort to use
   /memories  configure memory use and generation
   /mention   mention a file
-  /mcp       list MCP tools; use /mcp verbose or /mcp login <name>
+  /mcp       list MCP tools; /mcp use <server>, verbose, login <name>
 
 › /m
 

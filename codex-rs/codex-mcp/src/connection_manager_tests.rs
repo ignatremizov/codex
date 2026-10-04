@@ -2472,9 +2472,13 @@ async fn capture_binding_preserves_ready_client_catalog_and_shares_prepared_meta
             .and_then(|tool| tool.connector_id.as_deref()),
         Some("z-hidden")
     );
-    assert!(
+    assert_eq!(
         step.prepare_call(CODEX_APPS_MCP_SERVER_NAME, "collision")
-            .is_none()
+            .expect("permitted app-only tool should remain callable")
+            .tool_info()
+            .connector_id
+            .as_deref(),
+        Some("z-hidden")
     );
     assert!(
         step.prepare_call(CODEX_APPS_MCP_SERVER_NAME, "shared_cached_tool")
@@ -4924,6 +4928,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 supports_parallel_tool_calls: false,
                 tool_input_schema_max_bytes: None,
                 omit_tools_from: None,
+                allow_implicit_invocation: true,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -4954,6 +4959,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
                 supports_parallel_tool_calls: false,
                 tool_input_schema_max_bytes: None,
                 omit_tools_from: None,
+                allow_implicit_invocation: true,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -5070,6 +5076,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
         supports_parallel_tool_calls: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -5235,6 +5242,7 @@ fn mcp_init_error_display_reports_generic_errors() {
         supports_parallel_tool_calls: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
@@ -5316,6 +5324,7 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
         supports_parallel_tool_calls: false,
         tool_input_schema_max_bytes: None,
         omit_tools_from: None,
+        allow_implicit_invocation: true,
         disabled_reason: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
