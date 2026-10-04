@@ -60,6 +60,8 @@ mod patch_approval_tests;
 mod permission_selection_tests;
 #[path = "tests/projectless_tests.rs"]
 mod projectless_tests;
+#[path = "tests/prompt_edit_tests.rs"]
+mod prompt_edit_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
 mod unavailable_commands;
 
