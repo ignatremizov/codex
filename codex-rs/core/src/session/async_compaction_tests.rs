@@ -12,6 +12,7 @@ use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
+use codex_rollout::RolloutRecorder;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 
@@ -32,7 +33,7 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(
     provider.base_url = Some(format!("{}/v1", server.uri()));
     provider.supports_websockets = false;
     let server_uri = server.uri();
-    let (sess, mut turn, events) =
+    let (mut sess, mut turn, events) =
         crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
             CodexAuth::create_dummy_chatgpt_auth_for_testing(),
             Vec::new(),
@@ -49,6 +50,10 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(
             },
         )
         .await;
+    let rollout_path = crate::session::tests::attach_thread_persistence(
+        Arc::get_mut(&mut sess).expect("unique session"),
+    )
+    .await;
     crate::session::tests::update_turn_settings_for_test(
         Arc::get_mut(&mut turn).expect("unshared turn context"),
         |settings| {
@@ -65,7 +70,17 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(
             serde_json::json!({"type":"response.output_item.done", "item": {
                 "type":"compaction", "encrypted_content":"prepared-summary"
             }}),
-            responses::ev_completed("prepared"),
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "prepared",
+                    "usage": {
+                        "input_tokens": 123,
+                        "output_tokens": 777,
+                        "total_tokens": 900
+                    }
+                }
+            }),
         ])),
     ];
     if decode_handoff {
@@ -250,6 +265,24 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(
         completion.message,
         decode_handoff.then(|| "Prepared handoff".to_string()),
     );
+    sess.flush_rollout()
+        .await
+        .expect("flush prepared checkpoint");
+    let (items, _, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("load prepared checkpoint");
+    assert_eq!(parse_errors, 0);
+    let checkpoints = items
+        .iter()
+        .filter_map(|item| match item {
+            codex_history::RolloutItem::Compacted(item) => Some((
+                item.compaction_response_id.as_deref(),
+                item.compaction_summary_tokens,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(checkpoints, vec![(Some("prepared"), Some(777))]);
     shutdown(&sess).await;
 }
 

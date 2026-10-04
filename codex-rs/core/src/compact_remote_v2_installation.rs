@@ -185,6 +185,7 @@ async fn build_and_install_compaction(
         token_usage,
         owned_client_session: _owned_client_session,
     } = attempt;
+    let compaction_summary_tokens = token_usage.as_ref().map(|usage| usage.output_tokens);
     if prefix.is_none()
         && let Some(token_usage) = token_usage.as_ref()
     {
@@ -229,6 +230,7 @@ async fn build_and_install_compaction(
                     .collect(),
                 model_info: &model_info,
                 compaction_response_id,
+                compaction_summary_tokens,
                 reviewer_compaction_hash,
                 turn_context,
                 started_item: needs_start.then_some(&compaction_item),
@@ -247,6 +249,7 @@ async fn build_and_install_compaction(
         let installation = CompactedHistoryMetadata {
             input_goal_ids,
             message: String::new(),
+            compaction_summary_tokens,
             window_number,
             window_ids,
             compaction_response_id: Some(compaction_response_id),

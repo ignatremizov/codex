@@ -552,6 +552,7 @@ fn compacted_replacement_history_stores_metadata_in_an_aligned_sidecar() -> Resu
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: None,
         first_window_id: None,
         previous_window_id: None,
@@ -612,6 +613,7 @@ fn compacted_resume_metadata_presence_round_trips_empty_values() -> Result<()> {
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: None,
         first_window_id: None,
         previous_window_id: None,
@@ -705,6 +707,7 @@ fn compacted_metadata_remains_compatible_with_legacy_response_item_readers() -> 
         retained_context: None,
         guardian_history: Some(checkpoint.clone()),
         mcp_resource_origins: Some(McpResourceOriginCheckpoint::default()),
+        compaction_summary_tokens: None,
         window_number: None,
         first_window_id: None,
         previous_window_id: None,
@@ -767,6 +770,7 @@ fn uploaded_audio_round_trips_in_canonical_message_content() -> Result<()> {
         previous_window_id: None,
         window_id: None,
         compaction_response_id: None,
+        compaction_summary_tokens: None,
         latest_token_usage_record: None,
         resume_metadata: None,
     }));
@@ -1047,6 +1051,7 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: Some(1234),
         window_number: Some(3),
         first_window_id: ContextWindowId::parse("019b3f6e-0000-7000-8000-000000000001"),
         previous_window_id: ContextWindowId::parse("019b3f6e-0000-7000-8000-000000000002"),
@@ -1056,10 +1061,12 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
         resume_metadata: None,
     };
 
+    let serialized = serde_json::to_value(&item)?;
     assert_eq!(
-        serde_json::to_value(item)?,
+        serialized,
         json!({
             "message": "summary",
+            "compaction_summary_tokens": 1234,
             "window_number": 3,
             "first_window_id": "019b3f6e-0000-7000-8000-000000000001",
             "previous_window_id": "019b3f6e-0000-7000-8000-000000000002",
@@ -1068,6 +1075,7 @@ fn compacted_item_serializes_window_number_and_id() -> Result<()> {
             "latest_token_usage_record": null,
         })
     );
+    assert_eq!(serde_json::from_value::<CompactedItem>(serialized)?, item);
     Ok(())
 }
 
@@ -1087,6 +1095,7 @@ fn compacted_item_migrates_legacy_numeric_window_id() -> Result<()> {
             retained_context: None,
             guardian_history: None,
             mcp_resource_origins: None,
+            compaction_summary_tokens: None,
             window_number: Some(3),
             first_window_id: None,
             previous_window_id: None,

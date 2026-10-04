@@ -69,6 +69,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: Some(42),
         first_window_id: Some(first_window_id.clone()),
         previous_window_id: Some(previous_window_id.clone()),
