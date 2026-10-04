@@ -1028,6 +1028,9 @@
             "fast_mode": {
               "type": "boolean"
             },
+            "fork_prompt_edits": {
+              "type": "boolean"
+            },
             "gateway_setup_wizard": {
               "type": "boolean"
             },
@@ -8104,6 +8107,9 @@
           "type": "boolean"
         },
         "fast_mode": {
+          "type": "boolean"
+        },
+        "fork_prompt_edits": {
           "type": "boolean"
         },
         "gateway_setup_wizard": {

@@ -257,6 +257,7 @@ mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod prompt_edit;
 pub(crate) mod provider;
 mod rate_limit_refresh;
 mod realtime_delivery;
