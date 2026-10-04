@@ -80,7 +80,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
     }))
     .unwrap();
     let (window_number, window_ids) = parent.advance_auto_compact_window().await;
-    parent
+    let _ = parent
         .replace_compacted_history(
             vec![checkpoint.into()],
             turn.to_turn_context_item(),

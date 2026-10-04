@@ -41,6 +41,7 @@ async fn prepared_prefix_rejection_respects_caller_intent(
                 config.model = Some("gpt-5.2".to_string());
                 config.model_provider = provider;
                 config.chatgpt_base_url = server_uri;
+                config.remote_compaction_handoff_enabled = false;
                 let _ = config.features.disable(Feature::TokenBudget);
             },
         )
@@ -127,12 +128,15 @@ async fn prepared_prefix_rejection_respects_caller_intent(
         &step,
         /*client_session*/ None,
         &WorldState::default(),
-        CompactionTurnMetadata::new(
-            CompactionTrigger::Auto,
-            CompactionReason::ContextLimit,
-            CompactionImplementation::ResponsesCompactionV2,
-            CompactionPhase::PreTurn,
-        ),
+        RemoteCompactRun {
+            metadata: CompactionTurnMetadata::new(
+                CompactionTrigger::Auto,
+                CompactionReason::ContextLimit,
+                CompactionImplementation::ResponsesCompactionV2,
+                CompactionPhase::PreTurn,
+            ),
+            cancellation: &CancellationToken::new(),
+        },
         &mut analytics,
         /*started_item*/ None,
         Some(candidate),

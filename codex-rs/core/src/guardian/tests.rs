@@ -2707,7 +2707,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
         "follow-up reminder should be persisted for guardian forks"
     );
     let (window_number, window_ids) = session.advance_auto_compact_window().await;
-    session
+    let _ = session
         .replace_compacted_history(
             vec![
                 ResponseItem::Compaction {

@@ -6011,7 +6011,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
     assert_ne!(committed, restored);
     drop(refresh_guard);
     update.await.expect("accepted settings update");
-    checkpoint.await;
+    let _ = checkpoint.await;
     settings_checkpoint
         .await
         .expect("checkpoint current settings");
@@ -6103,7 +6103,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
     );
 
     let (window_number, window_ids) = session.advance_auto_compact_window().await;
-    session
+    let _ = session
         .replace_compacted_history(
             vec![ResponseItemEnvelope::new(user_message("compacted history"))],
             turn_context.to_turn_context_item(),
@@ -6284,7 +6284,7 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
         .cloned()
         .expect("accepted goal");
     let (window_number, window_ids) = session.advance_auto_compact_window().await;
-    session
+    let installed_history = session
         .replace_compacted_history(
             vec![ResponseItemEnvelope::new(user_message("compacted context"))],
             turn_context_baseline.clone(),
@@ -6299,8 +6299,10 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
                 reviewer_compaction_hash: None,
             },
         )
-        .await;
+        .await
+        .expect("complete compaction installation");
     let live_history = session.clone_history().await.annotated_items().to_vec();
+    assert_eq!(installed_history, live_history);
     assert_eq!(&live_history[1..], &[accepted_goal]);
 
     session.flush_rollout().await.expect("flush checkpoints");
@@ -11987,6 +11989,7 @@ async fn make_remote_compaction_session(
             config.model = Some("gpt-5.2".to_string());
             config.model_provider = provider;
             config.chatgpt_base_url = server_uri.to_string();
+            config.remote_compaction_handoff_enabled = false;
             let _ = config.features.disable(Feature::TokenBudget);
         },
     )
@@ -12072,8 +12075,11 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
                 .await
                 .unwrap(),
         ),
-        CompactionReason::ModelDownshift,
-        CompactionPhase::PreTurn,
+        crate::compact_remote_v2::AutoCompactRun {
+            reason: CompactionReason::ModelDownshift,
+            phase: CompactionPhase::PreTurn,
+            cancellation: &CancellationToken::new(),
+        },
         /*candidate*/ None,
         crate::compact_remote_v2::CompactionFallback::Foreground,
     )

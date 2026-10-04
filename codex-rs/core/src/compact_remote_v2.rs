@@ -84,7 +84,7 @@ enum RetainedImageBudget {
     Enabled,
 }
 
-pub(crate) const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+pub(crate) const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 128_000;
 const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 // Compact attempts can run much longer than normal turns, so keep the per-transport
 // retry budget smaller than the general Responses stream retry budget.
@@ -108,6 +108,19 @@ pub(crate) enum CompactionFallback {
     Skip,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct AutoCompactRun<'a> {
+    pub(crate) reason: CompactionReason,
+    pub(crate) phase: CompactionPhase,
+    pub(crate) cancellation: &'a CancellationToken,
+}
+
+#[derive(Clone, Copy)]
+struct RemoteCompactRun<'a> {
+    metadata: CompactionTurnMetadata,
+    cancellation: &'a CancellationToken,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -115,16 +128,15 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     replacement_step_context: Arc<StepContext>,
     client_session: &mut ModelClientSession,
     world_state: Arc<WorldState>,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    run: AutoCompactRun<'_>,
     candidate: Option<Box<BackgroundCompactionCandidate>>,
     fallback: CompactionFallback,
 ) -> CodexResult<bool> {
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Auto,
-        reason,
+        run.reason,
         CompactionImplementation::ResponsesCompactionV2,
-        phase,
+        run.phase,
     );
     run_remote_compact_task_inner(
         &sess,
@@ -132,7 +144,10 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         &replacement_step_context,
         Some(client_session),
         world_state,
-        compaction_metadata,
+        RemoteCompactRun {
+            metadata: compaction_metadata,
+            cancellation: run.cancellation,
+        },
         candidate,
         fallback,
     )
@@ -143,6 +158,7 @@ pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
+    cancellation: &CancellationToken,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Manual,
@@ -156,7 +172,10 @@ pub(crate) async fn run_remote_compact_task(
         &step_context,
         /*client_session*/ None,
         world_state,
-        compaction_metadata,
+        RemoteCompactRun {
+            metadata: compaction_metadata,
+            cancellation,
+        },
         /*candidate*/ None,
         CompactionFallback::Foreground,
     )
@@ -171,10 +190,11 @@ async fn run_remote_compact_task_inner(
     replacement_step_context: &Arc<StepContext>,
     client_session: Option<&mut ModelClientSession>,
     world_state: Arc<WorldState>,
-    compaction_metadata: CompactionTurnMetadata,
+    run: RemoteCompactRun<'_>,
     candidate: Option<Box<BackgroundCompactionCandidate>>,
     fallback: CompactionFallback,
 ) -> CodexResult<bool> {
+    let compaction_metadata = run.metadata;
     let turn_context = &step_context.turn;
     let trigger = compaction_metadata.trigger();
     let reason = compaction_metadata.reason();
@@ -228,7 +248,7 @@ async fn run_remote_compact_task_inner(
         replacement_step_context,
         client_session,
         &world_state,
-        compaction_metadata,
+        run,
         &mut analytics_details,
         started_item.as_ref(),
         candidate.map(|candidate| *candidate),

@@ -3757,6 +3757,14 @@ impl Session {
         &self,
         step_context: &step_context::StepContext,
     ) -> CodexResult<Arc<WorldState>> {
+        if self
+            .services
+            .thread_extension_data
+            .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+            .is_some()
+        {
+            return Ok(Arc::new(WorldState::default()));
+        }
         let turn_context = step_context.turn.as_ref();
         // Render model-visible state from the same step used to build and run tools.
         let world_state = self
@@ -4165,7 +4173,7 @@ impl Session {
         reference_context_item: TurnContextItem,
         mut world_state_baseline: WorldStateSnapshot,
         installation: impl Into<CompactedHistoryInstallation<'a>>,
-    ) -> bool {
+    ) -> Option<Vec<ResponseItemEnvelope>> {
         let installation = installation.into();
         let compaction_model_hash = match &installation {
             CompactedHistoryInstallation::Complete(metadata) => &metadata.compaction_model_hash,
@@ -4195,7 +4203,7 @@ impl Session {
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
-        let (compacted_item, started_item) = {
+        let (compacted_item, started_item, installed_history) = {
             let mut state = self.state.lock().await;
             let complete_replacement =
                 matches!(&installation, CompactedHistoryInstallation::Complete(_));
@@ -4217,7 +4225,7 @@ impl Session {
                         || self.services.model_client.auth_owner_generation()
                             != prefix.auth_owner_generation
                     {
-                        return false;
+                        return None;
                     }
                     let current = state.history.annotated_items();
                     let suffix = &current[prefix.len..];
@@ -4282,7 +4290,8 @@ impl Session {
                         .cloned(),
                 );
             }
-            let replacement_history = items.clone();
+            // Capture after prefix validation and concurrent goal edits, under the writer lock.
+            let installed_history = items.clone();
             state.replace_annotated_history(
                 items,
                 Some(reference_context_item.clone()),
@@ -4296,7 +4305,7 @@ impl Session {
                 .set_world_state_baseline(world_state_baseline.clone());
             let compacted_item = CompactedItem {
                 message: metadata.message,
-                replacement_history: Some(replacement_history),
+                replacement_history: Some(installed_history.clone()),
                 guardian_history: state.history.guardian_history_checkpoint(),
                 retained_context: Some(state.history.retained_context().clone()),
                 mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
@@ -4316,7 +4325,7 @@ impl Session {
                     previous_turn_settings: state.previous_turn_settings(),
                 }),
             };
-            (compacted_item, started_item)
+            (compacted_item, started_item, installed_history)
         };
 
         if let Some((turn_context, item)) = started_item {
@@ -4342,7 +4351,7 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
-        true
+        Some(installed_history)
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {
@@ -4813,21 +4822,22 @@ impl Session {
                 .chain(retained_client_items)
                 .collect();
         let turn_context_item = step_context.to_turn_context_item();
-        self.replace_compacted_history(
-            context_items,
-            turn_context_item,
-            world_state_snapshot,
-            CompactedHistoryMetadata {
-                input_goal_ids,
-                message: String::new(),
-                window_number,
-                window_ids,
-                compaction_response_id: None,
-                compaction_model_hash: None,
-                reviewer_compaction_hash: None,
-            },
-        )
-        .await;
+        let _ = self
+            .replace_compacted_history(
+                context_items,
+                turn_context_item,
+                world_state_snapshot,
+                CompactedHistoryMetadata {
+                    input_goal_ids,
+                    message: String::new(),
+                    window_number,
+                    window_ids,
+                    compaction_response_id: None,
+                    compaction_model_hash: None,
+                    reviewer_compaction_hash: None,
+                },
+            )
+            .await;
         self.recompute_token_usage(turn_context).await;
     }
 
@@ -4854,6 +4864,16 @@ impl Session {
         &self,
         step_context: &StepContext,
     ) -> CodexResult<Arc<WorldState>> {
+        if self
+            .services
+            .thread_extension_data
+            .get::<crate::codex_delegate::compaction::CompactionDecoder>()
+            .is_some()
+        {
+            // A decoder consumes an already-installed snapshot. Do not rediscover or append
+            // current instructions, skills, or world state after its trailing decoder prompt.
+            return Ok(Arc::new(WorldState::default()));
+        }
         let turn_context = step_context.turn.as_ref();
         let reference_context_item = {
             let state = self.state.lock().await;
