@@ -5239,8 +5239,8 @@
           "type": "boolean"
         },
         "auto_recap": {
-          "default": true,
-          "description": "Generate automatic conversation recaps when the terminal is unfocused. Defaults to `true`. Disabling this leaves `/recap` available on demand.",
+          "default": false,
+          "description": "Generate automatic conversation recaps when the terminal is unfocused. Defaults to `false`. `/recap` remains available on demand.",
           "type": "boolean"
         },
         "collapse_turn_details": {
@@ -7556,7 +7556,7 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "default": false,
+          "default": true,
           "type": "boolean"
         }
       },
