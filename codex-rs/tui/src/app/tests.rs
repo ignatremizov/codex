@@ -68,6 +68,8 @@ mod patch_approval_tests;
 mod permission_selection_tests;
 #[path = "tests/projectless_tests.rs"]
 mod projectless_tests;
+#[path = "tests/prompt_edit_tests.rs"]
+mod prompt_edit_tests;
 #[path = "tests/quick_dials_tests.rs"]
 mod quick_dials_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
