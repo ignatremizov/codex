@@ -16,6 +16,13 @@ does not enable managed-hooks-only mode.
 
 ## Connecting to MCP servers
 
+Ranked tool discovery is enabled by default in this fork's JavaScript Code Mode
+when the model supports tool search and deferred tools are available.
+`features.code_mode_tool_search = false` selects catalog discovery instead.
+Tool exclusions, direct-only namespaces, and invocation policy still apply.
+Nested search returns `{ tools: [{ name, description }] }`; use the returned name
+with `tools[name](arguments)`. Native tool search keeps its Responses wire format.
+
 Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:
 
 - https://developers.openai.com/codex/config-reference
