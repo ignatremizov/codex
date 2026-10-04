@@ -54,8 +54,13 @@ fn runtime_auth_config_accepts_modes_without_implicitly_enabling_the_feature() {
 #[test]
 fn under_development_features_are_disabled_by_default() {
     for spec in crate::FEATURES {
-        // Instant interrupts are enabled by default while retaining their development stage.
-        if matches!(spec.stage, Stage::UnderDevelopment) && spec.id != Feature::InstantInterrupt {
+        // Fork defaults can retain their upstream development stage.
+        if matches!(spec.stage, Stage::UnderDevelopment)
+            && !matches!(
+                spec.id,
+                Feature::InstantInterrupt | Feature::CodeModeToolSearch
+            )
+        {
             assert_eq!(
                 spec.default_enabled, false,
                 "feature `{}` is under development and must be disabled by default",
@@ -144,8 +149,13 @@ fn codex_apps_mcp_protocol_can_be_enabled_independently_of_generic_mcp() {
 #[test]
 fn default_enabled_features_are_stable() {
     for spec in crate::FEATURES {
-        // Instant interrupts are enabled by default while retaining their development stage.
-        if spec.default_enabled && spec.id != Feature::InstantInterrupt {
+        // Fork defaults can retain their upstream development stage.
+        if spec.default_enabled
+            && !matches!(
+                spec.id,
+                Feature::InstantInterrupt | Feature::CodeModeToolSearch
+            )
+        {
             assert!(
                 matches!(spec.stage, Stage::Stable | Stage::Removed),
                 "feature `{}` is enabled by default but is not stable/removed ({:?})",
