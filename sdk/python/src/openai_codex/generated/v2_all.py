@@ -1144,8 +1144,19 @@ class ContextCompactedNotification(BaseModel):
         populate_by_name=True,
     )
     available_skills: Annotated[list[str] | None, Field(alias="availableSkills")] = []
+    decode_error: Annotated[str | None, Field(alias="decodeError")] = None
     message: str | None = None
     summary: str | None = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+
+
+class ContextCompactionStatusNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    item_id: Annotated[str, Field(alias="itemId")]
+    message: str
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
 
@@ -4369,6 +4380,24 @@ class ThreadEnvironmentDisconnectedServerNotification(BaseModel):
     params: EnvironmentConnectionNotification
 
 
+class ItemContextCompactionStatusServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/contextCompaction/status"],
+        Field(title="Item/contextCompaction/statusNotificationMethod"),
+    ]
+    params: ContextCompactionStatusNotification
+
+
 class ItemAgentMessageDeltaServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5451,6 +5480,7 @@ class ContextCompactionThreadItem(BaseModel):
             description="Skill names in the model-visible inventory installed after this compaction.",
         ),
     ] = []
+    decode_error: Annotated[str | None, Field(alias="decodeError")] = None
     id: str
     message: str | None = None
     summary: str | None = None
@@ -12598,9 +12628,183 @@ class ItemAutoApprovalReviewCompletedServerNotification(BaseModel):
 
 
 class ServerNotification(
-    RootModel[ErrorServerNotification | ThreadStartedServerNotification | ThreadStatusChangedServerNotification | ThreadArchivedServerNotification | ThreadDeletedServerNotification | ThreadUnarchivedServerNotification | ThreadClosedServerNotification | ThreadRevertedServerNotification | SkillsChangedServerNotification | ThreadNameUpdatedServerNotification | ThreadAttachmentUpdatedServerNotification | ThreadGoalUpdatedServerNotification | ThreadGoalClearedServerNotification | ThreadQueueChangedServerNotification | ProjectChangedServerNotification | ThreadProjectUpdatedServerNotification | ThreadEnvironmentConnectedServerNotification | ThreadEnvironmentDisconnectedServerNotification | ThreadSettingsUpdatedServerNotification | ThreadTokenUsageUpdatedServerNotification | TurnStartedServerNotification | HookStartedServerNotification | TurnCompletedServerNotification | HookCompletedServerNotification | TurnDiffUpdatedServerNotification | TurnPlanUpdatedServerNotification | ItemStartedServerNotification | ItemAutoApprovalReviewStartedServerNotification | ItemAutoApprovalReviewCompletedServerNotification | AutoApprovalReviewStrictReviewRequiredServerNotification | ItemCompletedServerNotification | ItemAgentMessageDeltaServerNotification | ItemPlanDeltaServerNotification | CommandExecOutputDeltaServerNotification | ProcessOutputDeltaServerNotification | ProcessExitedServerNotification | ItemCommandExecutionOutputDeltaServerNotification | ItemCommandExecutionTerminalInteractionServerNotification | ItemFileChangeOutputDeltaServerNotification | ItemFileChangePatchUpdatedServerNotification | ServerRequestResolvedServerNotification | ItemMcpToolCallProgressServerNotification | McpServerOauthLoginCompletedServerNotification | McpServerStartupStatusUpdatedServerNotification | McpServerEventStreamNotificationServerNotification | AccountUpdatedServerNotification | AccountGatewayOAuthChangedServerNotification | AccountRateLimitsUpdatedServerNotification | AppListUpdatedServerNotification | RemoteControlStatusChangedServerNotification | ExternalAgentConfigImportProgressServerNotification | ExternalAgentConfigImportCompletedServerNotification | FsChangedServerNotification | ItemReasoningSummaryTextDeltaServerNotification | ItemReasoningSummaryPartAddedServerNotification | ItemReasoningTextDeltaServerNotification | ThreadCompactedServerNotification | ModelReroutedServerNotification | ModelVerificationServerNotification | ModelProviderAuthRecoveryStartedServerNotification | ModelProviderAuthRecoveryCompletedServerNotification | TurnModerationMetadataServerNotification | ModelSafetyBufferingUpdatedServerNotification | WarningServerNotification | GuardianWarningServerNotification | DeprecationNoticeServerNotification | ConfigWarningServerNotification | FuzzyFileSearchSessionUpdatedServerNotification | FuzzyFileSearchSessionCompletedServerNotification | ThreadRealtimeStartedServerNotification | ThreadRealtimeItemAddedServerNotification | ThreadRealtimeItemStartedServerNotification | ThreadRealtimeItemTranscriptDeltaServerNotification | ThreadRealtimeItemCompletedServerNotification | ThreadRealtimeTranscriptDeltaServerNotification | ThreadRealtimeTranscriptDoneServerNotification | ThreadRealtimeOutputAudioDeltaServerNotification | ThreadRealtimeSdpServerNotification | ThreadRealtimeErrorServerNotification | ThreadRealtimeClosedServerNotification | WindowsWorldWritableWarningServerNotification | WindowsSandboxSetupCompletedServerNotification | AccountLoginCompletedServerNotification]
+    RootModel[
+        ErrorServerNotification
+        | ThreadStartedServerNotification
+        | ThreadStatusChangedServerNotification
+        | ThreadArchivedServerNotification
+        | ThreadDeletedServerNotification
+        | ThreadUnarchivedServerNotification
+        | ThreadClosedServerNotification
+        | ThreadRevertedServerNotification
+        | SkillsChangedServerNotification
+        | ThreadNameUpdatedServerNotification
+        | ThreadAttachmentUpdatedServerNotification
+        | ThreadGoalUpdatedServerNotification
+        | ThreadGoalClearedServerNotification
+        | ThreadQueueChangedServerNotification
+        | ProjectChangedServerNotification
+        | ThreadProjectUpdatedServerNotification
+        | ThreadEnvironmentConnectedServerNotification
+        | ThreadEnvironmentDisconnectedServerNotification
+        | ThreadSettingsUpdatedServerNotification
+        | ThreadTokenUsageUpdatedServerNotification
+        | TurnStartedServerNotification
+        | HookStartedServerNotification
+        | TurnCompletedServerNotification
+        | HookCompletedServerNotification
+        | TurnDiffUpdatedServerNotification
+        | TurnPlanUpdatedServerNotification
+        | ItemStartedServerNotification
+        | ItemAutoApprovalReviewStartedServerNotification
+        | ItemAutoApprovalReviewCompletedServerNotification
+        | AutoApprovalReviewStrictReviewRequiredServerNotification
+        | ItemCompletedServerNotification
+        | ItemContextCompactionStatusServerNotification
+        | ItemAgentMessageDeltaServerNotification
+        | ItemPlanDeltaServerNotification
+        | CommandExecOutputDeltaServerNotification
+        | ProcessOutputDeltaServerNotification
+        | ProcessExitedServerNotification
+        | ItemCommandExecutionOutputDeltaServerNotification
+        | ItemCommandExecutionTerminalInteractionServerNotification
+        | ItemFileChangeOutputDeltaServerNotification
+        | ItemFileChangePatchUpdatedServerNotification
+        | ServerRequestResolvedServerNotification
+        | ItemMcpToolCallProgressServerNotification
+        | McpServerOauthLoginCompletedServerNotification
+        | McpServerStartupStatusUpdatedServerNotification
+        | McpServerEventStreamNotificationServerNotification
+        | AccountUpdatedServerNotification
+        | AccountGatewayOAuthChangedServerNotification
+        | AccountRateLimitsUpdatedServerNotification
+        | AppListUpdatedServerNotification
+        | RemoteControlStatusChangedServerNotification
+        | ExternalAgentConfigImportProgressServerNotification
+        | ExternalAgentConfigImportCompletedServerNotification
+        | FsChangedServerNotification
+        | ItemReasoningSummaryTextDeltaServerNotification
+        | ItemReasoningSummaryPartAddedServerNotification
+        | ItemReasoningTextDeltaServerNotification
+        | ThreadCompactedServerNotification
+        | ModelReroutedServerNotification
+        | ModelVerificationServerNotification
+        | ModelProviderAuthRecoveryStartedServerNotification
+        | ModelProviderAuthRecoveryCompletedServerNotification
+        | TurnModerationMetadataServerNotification
+        | ModelSafetyBufferingUpdatedServerNotification
+        | WarningServerNotification
+        | GuardianWarningServerNotification
+        | DeprecationNoticeServerNotification
+        | ConfigWarningServerNotification
+        | FuzzyFileSearchSessionUpdatedServerNotification
+        | FuzzyFileSearchSessionCompletedServerNotification
+        | ThreadRealtimeStartedServerNotification
+        | ThreadRealtimeItemAddedServerNotification
+        | ThreadRealtimeItemStartedServerNotification
+        | ThreadRealtimeItemTranscriptDeltaServerNotification
+        | ThreadRealtimeItemCompletedServerNotification
+        | ThreadRealtimeTranscriptDeltaServerNotification
+        | ThreadRealtimeTranscriptDoneServerNotification
+        | ThreadRealtimeOutputAudioDeltaServerNotification
+        | ThreadRealtimeSdpServerNotification
+        | ThreadRealtimeErrorServerNotification
+        | ThreadRealtimeClosedServerNotification
+        | WindowsWorldWritableWarningServerNotification
+        | WindowsSandboxSetupCompletedServerNotification
+        | AccountLoginCompletedServerNotification
+    ]
 ):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    root: Annotated[ErrorServerNotification | ThreadStartedServerNotification | ThreadStatusChangedServerNotification | ThreadArchivedServerNotification | ThreadDeletedServerNotification | ThreadUnarchivedServerNotification | ThreadClosedServerNotification | ThreadRevertedServerNotification | SkillsChangedServerNotification | ThreadNameUpdatedServerNotification | ThreadAttachmentUpdatedServerNotification | ThreadGoalUpdatedServerNotification | ThreadGoalClearedServerNotification | ThreadQueueChangedServerNotification | ProjectChangedServerNotification | ThreadProjectUpdatedServerNotification | ThreadEnvironmentConnectedServerNotification | ThreadEnvironmentDisconnectedServerNotification | ThreadSettingsUpdatedServerNotification | ThreadTokenUsageUpdatedServerNotification | TurnStartedServerNotification | HookStartedServerNotification | TurnCompletedServerNotification | HookCompletedServerNotification | TurnDiffUpdatedServerNotification | TurnPlanUpdatedServerNotification | ItemStartedServerNotification | ItemAutoApprovalReviewStartedServerNotification | ItemAutoApprovalReviewCompletedServerNotification | AutoApprovalReviewStrictReviewRequiredServerNotification | ItemCompletedServerNotification | ItemAgentMessageDeltaServerNotification | ItemPlanDeltaServerNotification | CommandExecOutputDeltaServerNotification | ProcessOutputDeltaServerNotification | ProcessExitedServerNotification | ItemCommandExecutionOutputDeltaServerNotification | ItemCommandExecutionTerminalInteractionServerNotification | ItemFileChangeOutputDeltaServerNotification | ItemFileChangePatchUpdatedServerNotification | ServerRequestResolvedServerNotification | ItemMcpToolCallProgressServerNotification | McpServerOauthLoginCompletedServerNotification | McpServerStartupStatusUpdatedServerNotification | McpServerEventStreamNotificationServerNotification | AccountUpdatedServerNotification | AccountGatewayOAuthChangedServerNotification | AccountRateLimitsUpdatedServerNotification | AppListUpdatedServerNotification | RemoteControlStatusChangedServerNotification | ExternalAgentConfigImportProgressServerNotification | ExternalAgentConfigImportCompletedServerNotification | FsChangedServerNotification | ItemReasoningSummaryTextDeltaServerNotification | ItemReasoningSummaryPartAddedServerNotification | ItemReasoningTextDeltaServerNotification | ThreadCompactedServerNotification | ModelReroutedServerNotification | ModelVerificationServerNotification | ModelProviderAuthRecoveryStartedServerNotification | ModelProviderAuthRecoveryCompletedServerNotification | TurnModerationMetadataServerNotification | ModelSafetyBufferingUpdatedServerNotification | WarningServerNotification | GuardianWarningServerNotification | DeprecationNoticeServerNotification | ConfigWarningServerNotification | FuzzyFileSearchSessionUpdatedServerNotification | FuzzyFileSearchSessionCompletedServerNotification | ThreadRealtimeStartedServerNotification | ThreadRealtimeItemAddedServerNotification | ThreadRealtimeItemStartedServerNotification | ThreadRealtimeItemTranscriptDeltaServerNotification | ThreadRealtimeItemCompletedServerNotification | ThreadRealtimeTranscriptDeltaServerNotification | ThreadRealtimeTranscriptDoneServerNotification | ThreadRealtimeOutputAudioDeltaServerNotification | ThreadRealtimeSdpServerNotification | ThreadRealtimeErrorServerNotification | ThreadRealtimeClosedServerNotification | WindowsWorldWritableWarningServerNotification | WindowsSandboxSetupCompletedServerNotification | AccountLoginCompletedServerNotification, Field(description='Notification sent from the server to the client.', title='ServerNotification')]
+    root: Annotated[
+        ErrorServerNotification
+        | ThreadStartedServerNotification
+        | ThreadStatusChangedServerNotification
+        | ThreadArchivedServerNotification
+        | ThreadDeletedServerNotification
+        | ThreadUnarchivedServerNotification
+        | ThreadClosedServerNotification
+        | ThreadRevertedServerNotification
+        | SkillsChangedServerNotification
+        | ThreadNameUpdatedServerNotification
+        | ThreadAttachmentUpdatedServerNotification
+        | ThreadGoalUpdatedServerNotification
+        | ThreadGoalClearedServerNotification
+        | ThreadQueueChangedServerNotification
+        | ProjectChangedServerNotification
+        | ThreadProjectUpdatedServerNotification
+        | ThreadEnvironmentConnectedServerNotification
+        | ThreadEnvironmentDisconnectedServerNotification
+        | ThreadSettingsUpdatedServerNotification
+        | ThreadTokenUsageUpdatedServerNotification
+        | TurnStartedServerNotification
+        | HookStartedServerNotification
+        | TurnCompletedServerNotification
+        | HookCompletedServerNotification
+        | TurnDiffUpdatedServerNotification
+        | TurnPlanUpdatedServerNotification
+        | ItemStartedServerNotification
+        | ItemAutoApprovalReviewStartedServerNotification
+        | ItemAutoApprovalReviewCompletedServerNotification
+        | AutoApprovalReviewStrictReviewRequiredServerNotification
+        | ItemCompletedServerNotification
+        | ItemContextCompactionStatusServerNotification
+        | ItemAgentMessageDeltaServerNotification
+        | ItemPlanDeltaServerNotification
+        | CommandExecOutputDeltaServerNotification
+        | ProcessOutputDeltaServerNotification
+        | ProcessExitedServerNotification
+        | ItemCommandExecutionOutputDeltaServerNotification
+        | ItemCommandExecutionTerminalInteractionServerNotification
+        | ItemFileChangeOutputDeltaServerNotification
+        | ItemFileChangePatchUpdatedServerNotification
+        | ServerRequestResolvedServerNotification
+        | ItemMcpToolCallProgressServerNotification
+        | McpServerOauthLoginCompletedServerNotification
+        | McpServerStartupStatusUpdatedServerNotification
+        | McpServerEventStreamNotificationServerNotification
+        | AccountUpdatedServerNotification
+        | AccountGatewayOAuthChangedServerNotification
+        | AccountRateLimitsUpdatedServerNotification
+        | AppListUpdatedServerNotification
+        | RemoteControlStatusChangedServerNotification
+        | ExternalAgentConfigImportProgressServerNotification
+        | ExternalAgentConfigImportCompletedServerNotification
+        | FsChangedServerNotification
+        | ItemReasoningSummaryTextDeltaServerNotification
+        | ItemReasoningSummaryPartAddedServerNotification
+        | ItemReasoningTextDeltaServerNotification
+        | ThreadCompactedServerNotification
+        | ModelReroutedServerNotification
+        | ModelVerificationServerNotification
+        | ModelProviderAuthRecoveryStartedServerNotification
+        | ModelProviderAuthRecoveryCompletedServerNotification
+        | TurnModerationMetadataServerNotification
+        | ModelSafetyBufferingUpdatedServerNotification
+        | WarningServerNotification
+        | GuardianWarningServerNotification
+        | DeprecationNoticeServerNotification
+        | ConfigWarningServerNotification
+        | FuzzyFileSearchSessionUpdatedServerNotification
+        | FuzzyFileSearchSessionCompletedServerNotification
+        | ThreadRealtimeStartedServerNotification
+        | ThreadRealtimeItemAddedServerNotification
+        | ThreadRealtimeItemStartedServerNotification
+        | ThreadRealtimeItemTranscriptDeltaServerNotification
+        | ThreadRealtimeItemCompletedServerNotification
+        | ThreadRealtimeTranscriptDeltaServerNotification
+        | ThreadRealtimeTranscriptDoneServerNotification
+        | ThreadRealtimeOutputAudioDeltaServerNotification
+        | ThreadRealtimeSdpServerNotification
+        | ThreadRealtimeErrorServerNotification
+        | ThreadRealtimeClosedServerNotification
+        | WindowsWorldWritableWarningServerNotification
+        | WindowsSandboxSetupCompletedServerNotification
+        | AccountLoginCompletedServerNotification,
+        Field(
+            description="Notification sent from the server to the client.",
+            title="ServerNotification",
+        ),
+    ]

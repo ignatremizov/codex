@@ -203,24 +203,49 @@ impl EventProcessorWithHumanOutput {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
             ThreadItem::ContextCompaction {
-                summary, message, ..
+                summary,
+                message,
+                decode_error,
+                ..
             } => {
-                if !self.show_compact_summary {
-                    eprintln!("{}", "context compacted".style(self.dimmed));
-                } else if let Some(message) =
-                    message.as_deref().filter(|text| !text.trim().is_empty())
-                {
-                    eprintln!("{}", self.compaction_section("Compacted prompt", message));
-                } else if let Some(summary) =
-                    summary.as_deref().filter(|text| !text.trim().is_empty())
-                {
-                    eprintln!("{}", self.compaction_section("Compacted summary", summary));
-                } else {
-                    eprintln!("{}", "context compacted".style(self.dimmed));
-                }
+                eprintln!(
+                    "{}",
+                    self.compaction_output(
+                        summary.as_deref(),
+                        message.as_deref(),
+                        decode_error.as_deref(),
+                    )
+                );
             }
             _ => {}
         }
+    }
+
+    fn compaction_output(
+        &self,
+        summary: Option<&str>,
+        message: Option<&str>,
+        decode_error: Option<&str>,
+    ) -> String {
+        let mut sections = Vec::new();
+        if let Some(error) = decode_error.filter(|text| !text.trim().is_empty()) {
+            sections.push(
+                format!("compacted prompt decoding failed: {error}")
+                    .style(self.red)
+                    .to_string(),
+            );
+        }
+        if self.show_compact_summary {
+            if let Some(message) = message.filter(|text| !text.trim().is_empty()) {
+                sections.push(self.compaction_section("Compacted prompt", message));
+            } else if let Some(summary) = summary.filter(|text| !text.trim().is_empty()) {
+                sections.push(self.compaction_section("Compacted summary", summary));
+            }
+        }
+        if sections.is_empty() {
+            sections.push("context compacted".style(self.dimmed).to_string());
+        }
+        sections.join("\n")
     }
 
     fn compaction_section(&self, title: &str, content: &str) -> String {
@@ -394,7 +419,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 CodexStatus::Running
             }
-            ServerNotification::ContextCompacted(_) => CodexStatus::Running,
+            ServerNotification::ContextCompacted(_)
+            | ServerNotification::ContextCompactionStatus(_) => CodexStatus::Running,
             ServerNotification::TurnStarted(_) => CodexStatus::Running,
             _ => CodexStatus::Running,
         }
