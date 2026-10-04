@@ -1,6 +1,5 @@
 use super::account_processor::EnterpriseLoginCompletion;
 use super::account_processor::EnterpriseLoginTarget;
-use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_config::types::McpServerAuth;
 use codex_mcp::McpServerSource;
@@ -684,7 +683,6 @@ impl McpRequestProcessor {
         let outgoing = Arc::clone(&self.outgoing);
         let thread_id = params.thread_id.clone();
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         let meta = with_mcp_tool_call_thread_id_meta(params.meta, &thread_id);
         let request_id = request_id.clone();
 
