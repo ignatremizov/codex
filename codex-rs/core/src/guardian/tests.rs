@@ -10,6 +10,7 @@ use crate::config::test_config;
 use crate::context::ContextualUserFragment;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::guardian::approval_request::guardian_request_target_item_id;
+use crate::guardian::prompt::GuardianNodeReplCursor;
 use crate::guardian::review::guardian_review_session_config;
 use crate::session::session::Session;
 use crate::session::tests::update_turn_settings_for_test;
@@ -428,7 +429,7 @@ async fn build_guardian_prompt_prefers_retry_reason_over_approval_reason() -> an
             tty: false,
         },
         GuardianPromptMode::Full,
-        /*reviewed_node_repl_evidence_sequence*/ 0,
+        GuardianNodeReplCursor::default(),
     )
     .await?;
 
@@ -470,7 +471,7 @@ async fn build_guardian_prompt_truncates_oversized_approval_reason() -> anyhow::
             tty: false,
         },
         GuardianPromptMode::Full,
-        /*reviewed_node_repl_evidence_sequence*/ 0,
+        GuardianNodeReplCursor::default(),
     )
     .await?;
 
@@ -565,7 +566,7 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
             tty: false,
         },
         GuardianPromptMode::Full,
-        /*reviewed_node_repl_evidence_sequence*/ 0,
+        GuardianNodeReplCursor::default(),
     )
     .await?;
 
@@ -681,7 +682,7 @@ async fn approval_permissions_use_the_owning_environment() -> anyhow::Result<()>
             ApprovalRequestReasons::default(),
             request,
             GuardianPromptMode::Full,
-            /*reviewed_node_repl_evidence_sequence*/ 0,
+            GuardianNodeReplCursor::default(),
         )
         .await?;
         let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
@@ -767,7 +768,7 @@ async fn guardian_mcp_uses_thread_permissions_for_an_unavailable_captured_enviro
         ApprovalRequestReasons::default(),
         guardian_mcp_request("server", "tool"),
         GuardianPromptMode::Full,
-        /*reviewed_node_repl_evidence_sequence*/ 0,
+        GuardianNodeReplCursor::default(),
     )
     .await?;
     let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
@@ -1335,7 +1336,7 @@ async fn build_guardian_prompt_items_keeps_required_node_repl_reviews_generic() 
         },
         guardian_mcp_request("node_repl", "js"),
         GuardianPromptMode::Full,
-        /*reviewed_node_repl_evidence_sequence*/ 0,
+        GuardianNodeReplCursor::default(),
     )
     .await?;
 
@@ -1373,7 +1374,7 @@ async fn build_guardian_prompt_items_keeps_other_requests_generic() -> anyhow::R
             ApprovalRequestReasons::default(),
             request,
             GuardianPromptMode::Full,
-            /*reviewed_node_repl_evidence_sequence*/ 0,
+            GuardianNodeReplCursor::default(),
         )
         .await?;
 
