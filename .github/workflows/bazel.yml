@@ -19,6 +19,7 @@ jobs:
     # pushes to main also run the native Windows test job for broader Windows
     # signal without putting PR latency back on the critical path.
     timeout-minutes: 30
+    if: ${{ github.repository == 'openai/codex' }}
     strategy:
       fail-fast: false
       matrix:
@@ -133,6 +134,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows-shard:
+    if: ${{ github.repository == 'openai/codex' }}
     # Build and test Windows shards on separate Windows runners.
     timeout-minutes: 30
     strategy:
@@ -240,7 +242,7 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: always()
+    if: ${{ always() && github.repository == 'openai/codex' }}
     needs: test-windows-shard
     runs-on: ubuntu-24.04
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
@@ -258,7 +260,7 @@ jobs:
     # Native Windows Bazel tests are slower and frequently approach the
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout. Also allow manual runs for native toolchain changes.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: github.repository == 'openai/codex' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     timeout-minutes: 40
     runs-on:
       group: ${{ github.event.repository.name }}-runners
@@ -341,6 +343,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
+    if: ${{ github.repository == 'openai/codex' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -446,6 +449,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
+    if: ${{ github.repository == 'openai/codex' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
