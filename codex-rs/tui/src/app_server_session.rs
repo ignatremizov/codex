@@ -6,6 +6,7 @@
 mod external_agent_config;
 pub(crate) mod fs;
 mod history;
+mod mcp;
 mod models;
 pub(crate) mod provider_selection;
 #[cfg(test)]

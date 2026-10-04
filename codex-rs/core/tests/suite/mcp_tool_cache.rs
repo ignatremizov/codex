@@ -948,17 +948,28 @@ async fn cached_mcp_startup_is_eager_for_root_and_lazy_for_subagents() -> anyhow
         /*sandbox*/ None,
     )
     .await?;
-    let expected_error = format!("MCP tool `{SERVER_NAME}/cwd` is not available to the model");
     assert_eq!(cached_turn.await??, second_process);
     assert!(
         binding_captures.load(Ordering::SeqCst) > 1,
         "starting the cached server must invalidate the dormant binding"
     );
     assert_definition(
-        "child after deferred startup",
+        "child after deferred startup (frozen direct declarations)",
         &cached_done_response,
-        &format!("Use the tools from {second_process}."),
-        &format!("Echo from {second_process}."),
+        &format!("Use the tools from {cached_process}."),
+        &format!("Echo from {cached_process}."),
+    );
+    assert_eq!(
+        cached_done_response.single_request().body_json()["tools"],
+        cached_response.single_request().body_json()["tools"],
+        "refreshing the live client must not rewrite its frozen model declarations"
+    );
+    assert!(
+        cached_response
+            .single_request()
+            .tool_by_name(NAMESPACE, "cwd")
+            .is_some(),
+        "the pending call was declared before startup changed its prompt visibility"
     );
     let output: FunctionCallOutputBody = serde_json::from_value(
         cached_done_response

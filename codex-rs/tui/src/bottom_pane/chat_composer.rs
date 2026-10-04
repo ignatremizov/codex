@@ -39,6 +39,10 @@
 //!
 //! # Completion and Popup Dismissal
 //!
+//! MCP argument completion is offered at the end of a single-line draft. Tab inserts the full
+//! server name, including spaces; Enter on `use` opens server completion, while Enter on a
+//! server or `verbose` submits the completed command through normal validation.
+//!
 //! All completion suggestions render above the composer and preserve its footer.
 //! Owned transcript frames overlay suggestions with blank rows above and below, without reserving
 //! layout space. Those rows show scroll arrows when suggestions extend beyond the visible menu.
@@ -575,6 +579,7 @@ pub(crate) struct ChatComposer {
     token_activity_command_enabled: bool,
     service_tier_commands_enabled: bool,
     service_tier_commands: Vec<ServiceTierCommand>,
+    mcp_server_names: Vec<String>,
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
     voice_command_enabled: bool,
@@ -746,6 +751,7 @@ impl ChatComposer {
             token_activity_command_enabled: false,
             service_tier_commands_enabled: false,
             service_tier_commands: Vec::new(),
+            mcp_server_names: Vec::new(),
             mentions_v2_enabled: false,
             goal_command_enabled: false,
             voice_command_enabled: false,
@@ -948,6 +954,13 @@ impl ChatComposer {
 
     pub fn set_service_tier_commands(&mut self, commands: Vec<ServiceTierCommand>) {
         self.service_tier_commands = commands;
+        self.sync_popups();
+    }
+
+    pub fn set_mcp_server_names(&mut self, mut server_names: Vec<String>) {
+        server_names.sort();
+        server_names.dedup();
+        self.mcp_server_names = server_names;
         self.sync_popups();
     }
 
@@ -3973,10 +3986,14 @@ impl ChatComposer {
         let cursor = self.draft.textarea.cursor();
         let caret_on_first_line = cursor <= first_line_end;
 
-        let is_editing_slash_command_name = caret_on_first_line
-            && self
-                .slash_input()
-                .is_editing_command_name(first_line, cursor);
+        let is_editing_mcp_args = cursor == text.len()
+            && !text.contains('\n')
+            && super::mcp_completion::candidates(first_line, &self.mcp_server_names).is_some();
+        let is_editing_slash_command_name = is_editing_mcp_args
+            || (caret_on_first_line
+                && self
+                    .slash_input()
+                    .is_editing_command_name(first_line, cursor));
         let command_filter_text = caret_on_first_line
             .then(|| slash_input::command_popup_filter_text(first_line, cursor))
             .flatten();
@@ -3994,6 +4011,7 @@ impl ChatComposer {
             ActivePopup::Command(popup) => {
                 if is_editing_slash_command_name {
                     if let Some(command_filter_text) = command_filter_text.as_deref() {
+                        popup.set_mcp_server_names(self.mcp_server_names.clone());
                         popup.on_composer_text_change(command_filter_text.to_string());
                     }
                 } else {
@@ -4004,7 +4022,9 @@ impl ChatComposer {
                 if is_editing_slash_command_name
                     && let Some(command_filter_text) = command_filter_text.as_deref()
                 {
-                    let command_popup = self.slash_input().command_popup(command_filter_text);
+                    let mut command_popup = self.slash_input().command_popup(command_filter_text);
+                    command_popup.set_mcp_server_names(self.mcp_server_names.clone());
+                    command_popup.on_composer_text_change(command_filter_text.to_string());
                     self.popups.active = ActivePopup::Command(command_popup);
                 }
             }
@@ -9345,6 +9365,7 @@ mod tests {
                     panic!("expected model command, got service tier {command:?}")
                 }
                 None => panic!("no selected command for '/mo'"),
+                Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
             },
             _ => panic!("slash popup not active after typing '/mo'"),
         }
@@ -9427,6 +9448,7 @@ mod tests {
                     panic!("expected resume command, got service tier {command:?}")
                 }
                 None => panic!("no selected command for '/res'"),
+                Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
             },
             _ => panic!("slash popup not active after typing '/res'"),
         }
@@ -9481,6 +9503,7 @@ mod tests {
                     panic!("expected pets command, got service tier {command:?}")
                 }
                 None => panic!("no selected command for '/pet'"),
+                Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
             },
             _ => panic!("slash popup not active after typing '/pet'"),
         }
@@ -9535,6 +9558,7 @@ mod tests {
                     panic!("expected btw command, got service tier {command:?}")
                 }
                 None => panic!("no selected command for '/bt'"),
+                Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
             },
             _ => panic!("slash popup not active after typing '/bt'"),
         }
@@ -9589,6 +9613,7 @@ mod tests {
                     panic!("expected side command, got service tier {command:?}")
                 }
                 None => panic!("no selected command for '/si'"),
+                Some(CommandItem::Mcp(command)) => panic!("unexpected MCP completion {command:?}"),
             },
             _ => panic!("slash popup not active after typing '/si'"),
         }

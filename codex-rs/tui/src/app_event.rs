@@ -1084,6 +1084,7 @@ pub(crate) enum AppEvent {
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        sequence: u64,
     },
 
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
