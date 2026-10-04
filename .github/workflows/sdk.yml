@@ -5,6 +5,7 @@ on:
 
 jobs:
   python-sdk-installation:
+    if: ${{ github.repository == 'openai/codex' }}
     runs-on:
       group: ${{ github.event.repository.name }}-runners
       labels: ${{ github.event.repository.name }}-linux-x64
@@ -36,6 +37,7 @@ jobs:
             '
 
   sdks:
+    if: ${{ github.repository == 'openai/codex' }}
     # This job builds its CLI with Bazel. Keep it advisory while the BuildBuddy
     # key is revoked; restore blocking behavior once it can run without BuildBuddy.
     continue-on-error: true
