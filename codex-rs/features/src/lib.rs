@@ -189,6 +189,8 @@ pub enum Feature {
     /// Use the legacy Landlock Linux sandbox fallback instead of the default
     /// bubblewrap pipeline.
     UseLegacyLandlock,
+    /// Remote compaction enabled for OpenAI providers.
+    RemoteCompaction,
     /// Experimental shell snapshotting.
     ShellSnapshot,
     /// Restore bundled tools to PATH after Codex's login shell starts.
@@ -1453,6 +1455,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "prefer_mxc",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RemoteCompaction,
+        key: "remote_compaction",
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::RemoteModels,
