@@ -467,6 +467,7 @@ pub(crate) enum CompactedHistoryInstallation<'a> {
         initial_context: Vec<ResponseItemEnvelope>,
         model_info: &'a ModelInfo,
         compaction_response_id: String,
+        compaction_summary_tokens: Option<i64>,
         reviewer_compaction_hash: Option<String>,
         turn_context: &'a TurnContext,
         started_item: Option<&'a TurnItem>,
@@ -4233,6 +4234,7 @@ impl Session {
                     initial_context,
                     model_info,
                     compaction_response_id,
+                    compaction_summary_tokens,
                     reviewer_compaction_hash,
                     turn_context,
                     started_item,
@@ -4274,6 +4276,7 @@ impl Session {
                         CompactedHistoryMetadata {
                             input_goal_ids,
                             message: String::new(),
+                            compaction_summary_tokens,
                             window_number,
                             window_ids,
                             compaction_response_id: Some(compaction_response_id),
@@ -4327,6 +4330,7 @@ impl Session {
                 guardian_history: state.history.guardian_history_checkpoint(),
                 retained_context: Some(state.history.retained_context().clone()),
                 mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
+                compaction_summary_tokens: metadata.compaction_summary_tokens,
                 window_number: Some(metadata.window_number),
                 first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
                 previous_window_id: metadata
@@ -4848,6 +4852,7 @@ impl Session {
                 CompactedHistoryMetadata {
                     input_goal_ids,
                     message: String::new(),
+                    compaction_summary_tokens: None,
                     window_number,
                     window_ids,
                     compaction_response_id: None,

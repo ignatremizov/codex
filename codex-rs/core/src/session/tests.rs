@@ -2499,6 +2499,7 @@ async fn reconstruct_history_uses_replacement_history_verbatim() {
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: Some(42),
         first_window_id: Some(first_window_id.to_string()),
         previous_window_id: Some(previous_window_id.to_string()),
@@ -3455,6 +3456,7 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
             retained_context: None,
             guardian_history: None,
             mcp_resource_origins: None,
+            compaction_summary_tokens: None,
             window_number: None,
             first_window_id: None,
             previous_window_id: None,
@@ -4975,7 +4977,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
         .expect("thread should have rollout path")
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+pub(super) async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     let rollout_path = open_thread_persistence(session).await;
     session
         .ensure_rollout_materialized(PersistContext::Standard)
@@ -5977,6 +5979,7 @@ async fn settings_checkpoint_waits_for_accepted_settings_persistence() {
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
                 message: "summary".to_string(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,
@@ -6111,6 +6114,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
             CompactedHistoryMetadata {
                 input_goal_ids: Default::default(),
                 message: "summary".to_string(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,
@@ -6292,6 +6296,7 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
             CompactedHistoryMetadata {
                 input_goal_ids,
                 message: String::new(),
+                compaction_summary_tokens: None,
                 window_number,
                 window_ids,
                 compaction_response_id: None,
@@ -13284,6 +13289,7 @@ async fn sample_rollout(
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: Some(window_number),
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
@@ -13319,6 +13325,7 @@ async fn sample_rollout(
         retained_context: None,
         guardian_history: None,
         mcp_resource_origins: None,
+        compaction_summary_tokens: None,
         window_number: Some(window_number),
         first_window_id: Some(window_ids.first_window_id.to_string()),
         previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
