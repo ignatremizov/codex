@@ -1112,6 +1112,13 @@
     "ContextCompactedNotification": {
       "description": "Deprecated: Use `ContextCompaction` item type instead.",
       "properties": {
+        "availableSkills": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "message": {
           "type": [
             "string",
@@ -5539,6 +5546,14 @@
         },
         {
           "properties": {
+            "availableSkills": {
+              "default": [],
+              "description": "Skill names in the model-visible inventory installed after this compaction.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "id": {
               "type": "string"
             },

@@ -25,12 +25,14 @@ fn context_compaction_preserves_visible_summary_and_message() {
         EventMsg::ContextCompacted(ContextCompactedEvent {
             summary: Some("compact summary".to_string()),
             message: Some("complete compacted prompt".to_string()),
+            available_skills: vec!["test-tui".to_string()],
         }),
         (
             TurnItem::ContextCompaction(ContextCompactionItem {
                 id: "item-1".to_string(),
                 summary: Some("compact summary".to_string()),
                 message: Some("complete compacted prompt".to_string()),
+                available_skills: vec!["test-tui".to_string()],
             }),
             None,
         ),
@@ -50,6 +52,7 @@ fn historical_compaction_without_presentation_fields_remains_readable() {
                 id: "item-1".to_string(),
                 summary: None,
                 message: None,
+                available_skills: Vec::new(),
             }),
             None,
         ),
@@ -58,6 +61,7 @@ fn historical_compaction_without_presentation_fields_remains_readable() {
         "id": "old-item"
     }))
     .expect("historical canonical item");
+    assert_eq!(item.available_skills, Vec::<String>::new());
     assert_eq!(
         serde_json::to_value(item).expect("serialize canonical item"),
         serde_json::json!({"id": "old-item"})
