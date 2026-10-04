@@ -11,7 +11,7 @@ Conversation
 
 › Ask Codex to do anything
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project
   ? for shortcuts                                      ⚠ 1 warning · f2 to view
 
 80 columns, 12 rows, running=true, queued=false
@@ -25,7 +25,7 @@ Conversation
 
 › draft stays
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project
   tab to queue message
 
 32 columns, 10 rows, running=true, queued=false
@@ -37,7 +37,7 @@ Conversation
 
 › draft stays
 
-  GPT-5.6-Sol default · /tmp/pr…
+  gpt-5.6-sol default · /tmp/pr…
   tab to queue message
 
 18 columns, 10 rows, running=true, queued=false
@@ -49,7 +49,7 @@ Conversation
 
 › draft stays
 
-  GPT-5.6-Sol def…
+  gpt-5.6-sol def…
   tab to queue mes
 
 80 columns, 18 rows, running=true, queued=true
@@ -69,7 +69,7 @@ Conversation row 19
 › draft stays
   second line
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project
   tab to queue message
 
 80 columns, 11 rows, running=true, queued=true
@@ -82,7 +82,7 @@ Conversation row 19
 › draft stays
   second line
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project
   tab to queue message
 
 80 columns, 6 rows, running=true, queued=false
@@ -90,5 +90,5 @@ Conversation row 19
 
 › draft stays
 
-  GPT-5.6-Sol default · /tmp/project
+  gpt-5.6-sol default · /tmp/project
   tab to queue message

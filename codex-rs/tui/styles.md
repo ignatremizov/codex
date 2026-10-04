@@ -21,6 +21,12 @@
 - **Success and additions:** Use ANSI `green`.
 - **Errors, failures and deletions:** Use ANSI `red`.
 - **Codex:** Use ANSI `magenta`.
+- **Model indicators:** Show the canonical model slug in headers and footers. Model
+  pickers may use catalog display names; the existing Luna Reserve label is retained.
+- **Markdown:** Use ANSI `cyan` for inline code, local file links, and web links.
+  Web links are also underlined.
+- **Thread status:** Use stable `light_cyan` for explicit thread names and `light_green` for thread
+  titles in the configurable footer.
 
 # Avoid
 

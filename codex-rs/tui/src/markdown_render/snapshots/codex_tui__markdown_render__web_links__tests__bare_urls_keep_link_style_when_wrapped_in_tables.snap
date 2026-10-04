@@ -1,6 +1,6 @@
 ---
 source: tui/src/markdown_render/web_links_tests.rs
-assertion_line: 63
+assertion_line: 66
 expression: text
 ---
 Text::from_iter([
@@ -11,10 +11,10 @@ Text::from_iter([
     Line::from(Span::from("━━━━━━━━━━━━━━━━━━━━").dim()),
     Line::from_iter([
         Span::from(" "),
-        Span::from("https://").fg(Color::Reset).underlined(),
+        Span::from("https://").cyan().underlined(),
     ]),
     Line::from_iter([
         Span::from(" "),
-        Span::from("example.com/docs").fg(Color::Reset).underlined(),
+        Span::from("example.com/docs").cyan().underlined(),
     ]),
 ])

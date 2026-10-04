@@ -1,9 +1,10 @@
 ---
 source: tui/src/chatwidget/tests/side.rs
+assertion_line: 461
 expression: terminal.backend()
 ---
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  GPT-5.6-Sol                                                  ctrl+/ for side  "
+"  gpt-5.6-sol                                                  ctrl+/ for side  "

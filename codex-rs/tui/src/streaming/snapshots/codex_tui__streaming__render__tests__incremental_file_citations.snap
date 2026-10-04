@@ -1,5 +1,6 @@
 ---
 source: tui/src/streaming/render_tests.rs
+assertion_line: 141
 expression: rendered_cases
 ---
 [
@@ -18,7 +19,7 @@ expression: rendered_cases
         HyperlinkLine {
             line: Line::from_iter([
                 Span::from("• "),
-                Span::from("Quarterly Report.xlsx").fg(Color::Rgb(166, 227, 161)),
+                Span::from("Quarterly Report.xlsx").cyan(),
             ]),
             hyperlinks: [],
         },
@@ -46,7 +47,7 @@ expression: rendered_cases
         HyperlinkLine {
             line: Line::from_iter([
                 Span::from("• "),
-                Span::from("Résumé *final* ✨.xlsx").fg(Color::Rgb(166, 227, 161)),
+                Span::from("Résumé *final* ✨.xlsx").cyan(),
             ]),
             hyperlinks: [],
         },
