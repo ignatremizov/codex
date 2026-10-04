@@ -336,7 +336,7 @@ impl MessageProcessor {
                             .await
                             .map_err(|err| ThreadStoreError::Internal {
                                 message: format!(
-                                    "failed to delete Guardian evidence boards: {err}"
+                                    "Guardian evidence cleanup blocked thread deletion: {err}"
                                 ),
                             })?;
                     }

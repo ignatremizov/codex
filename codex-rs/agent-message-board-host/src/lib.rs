@@ -3,8 +3,10 @@
 //! The extension owns backend construction, storage and tool registration. This adapter
 //! selects configuration and supplies host capabilities. It never starts or restores
 //! recipients during lookup. Notifications use ordinary agent-message scheduling.
-//! Permanent board deletion uses the thread store's existing host cleanup callback.
+//! Thread deletion preflights shared evidence through the store's host cleanup callback.
 
+// Match Core's structural Send/Sync proof budget for retained ThreadManager services.
+#![recursion_limit = "256"]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use chrono::DateTime;
@@ -106,8 +108,9 @@ pub fn install_agent_message_board(
     );
 }
 
-/// Removes persisted agent-board data through the thread store's deletion callback.
-/// Cleanup also applies when the board feature is currently disabled.
+/// Preflights shared agent-board evidence through the thread store's deletion callback.
+/// Populated boards block deletion; missing or empty boards are left unchanged.
+/// This check also applies when the board feature is currently disabled.
 pub async fn delete_agent_message_boards(
     sqlite: &SqliteConfig,
     thread_ids: &[ThreadId],
@@ -117,11 +120,15 @@ pub async fn delete_agent_message_boards(
         .copied()
         .map(Into::into)
         .collect::<Vec<_>>();
-    LocalAgentMessageBoard::delete_boards(sqlite, &local_board_options(), &boards)
-        .await
-        .map_err(|err| ThreadStoreError::Internal {
-            message: format!("failed to delete agent message boards: {err}"),
-        })
+    LocalAgentMessageBoard::ensure_thread_deletion_preserves_boards(
+        sqlite,
+        &local_board_options(),
+        &boards,
+    )
+    .await
+    .map_err(|err| ThreadStoreError::Internal {
+        message: format!("agent message-board cleanup blocked thread deletion: {err}"),
+    })
 }
 
 #[derive(Clone)]

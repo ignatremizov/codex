@@ -1,7 +1,7 @@
 //! Guardian's durable evidence storage, owned by the main thread.
 //! Reviewer tools search a fixed board view and deliver the originals routed by the housekeeper.
 //! The host owns review scheduling and the lifetime of each view.
-//! Hosts invoke permanent-deletion cleanup only when Guardian V3 is enabled.
+//! Hosts invoke non-destructive deletion preflight only when Guardian V3 is enabled.
 
 use codex_message_board::LocalBoard;
 use codex_message_board::LocalBoardOptions;
@@ -47,13 +47,14 @@ pub fn local_board(sqlite: SqliteConfig, root: SessionId) -> LocalBoard {
     LocalBoard::new(sqlite, root).with_options(local_board_options())
 }
 
-/// Permanently deletes evidence boards owned by these main threads.
+/// Preflights shared evidence before deleting these main threads.
+/// Populated boards block deletion rather than discarding evidence.
 /// Hosts invoke this only when Guardian V3 is enabled.
 pub async fn delete_local_boards(
     sqlite: &SqliteConfig,
     roots: &[SessionId],
 ) -> codex_protocol::error::Result<()> {
-    codex_message_board::LocalAgentMessageBoard::delete_boards(
+    codex_message_board::LocalAgentMessageBoard::ensure_thread_deletion_preserves_boards(
         sqlite,
         &local_board_options(),
         roots,
