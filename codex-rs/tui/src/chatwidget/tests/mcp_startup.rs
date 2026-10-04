@@ -270,8 +270,9 @@ async fn inline_review_submits_during_mcp_startup() {
 
 #[tokio::test]
 async fn review_during_mcp_startup_preserves_draft_when_foreground_work_is_pending() {
+    let mut blocked_drafts = Vec::new();
     for activity in ["turn", "review", "pending", "queued", "images"] {
-        for draft in ["/review", "/review check regressions"] {
+        for draft in ["/rev", "/review", "/review check regressions"] {
             let (mut chat, mut rx, mut op_rx) =
                 make_chatwidget_manual(/*model_override*/ None).await;
             chat.set_mcp_startup_expected_servers(["slow".to_string()]);
@@ -298,7 +299,11 @@ async fn review_during_mcp_startup_preserves_draft_when_foreground_work_is_pendi
 
             chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-            assert_eq!(chat.bottom_pane.composer_text(), draft);
+            assert_eq!(
+                chat.bottom_pane.composer_text(),
+                draft,
+                "{activity}: {draft}"
+            );
             assert_eq!(
                 chat.bottom_pane.remote_image_urls(),
                 vec!["https://example.com/image.png".to_string()]
@@ -315,8 +320,18 @@ async fn review_during_mcp_startup_preserves_draft_when_foreground_work_is_pendi
                 !std::iter::from_fn(|| op_rx.try_recv().ok())
                     .any(|op| matches!(op, Op::Review { .. } | Op::UserTurn { .. }))
             );
+            if activity == "turn" {
+                blocked_drafts.push(format!(
+                    "{draft}:\n{}",
+                    render_bottom_popup(&chat, /*width*/ 80)
+                ));
+            }
         }
     }
+    assert_chatwidget_snapshot!(
+        "busy_review_preserves_draft_and_attachments",
+        blocked_drafts.join("\n\n")
+    );
 }
 
 #[tokio::test]

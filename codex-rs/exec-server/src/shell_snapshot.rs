@@ -4,6 +4,7 @@
 //! File replay admits larger shell state while environment replay keeps its launch budget.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::os::fd::AsRawFd;
@@ -84,6 +85,7 @@ struct ShellSnapshot {
     state: String,
     file_source: bool,
     environment: HashMap<String, String>,
+    unset_environment: Vec<String>,
 }
 
 // Keep a bounded metric label alongside the original RPC error.
@@ -320,6 +322,21 @@ impl ShellSnapshotCache {
             .env
             .retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
 
+        // Startup can reintroduce filtered exports, including through .zshenv.
+        // Clear them before either transport restores captured functions; keep
+        // explicit per-launch overrides already present in the prepared env.
+        let variables_to_unset = snapshot
+            .unset_environment
+            .iter()
+            .filter(|name| !prepared.env.contains_key(*name))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let unset_environment = if variables_to_unset.is_empty() {
+            String::new()
+        } else {
+            format!("command unset {variables_to_unset}\n")
+        };
         let restore = if let Some(reader) = &reader {
             format!(". /dev/fd/{}", reader.as_raw_fd())
         } else {
@@ -347,29 +364,35 @@ impl ShellSnapshotCache {
                 })
                 .collect::<String>();
             let state_variables = state_variables.join(" ");
-            format!("eval \"unset {state_variables}\n{state_expansion}\"")
+            format!("eval \"command unset {state_variables}\n{state_expansion}\"")
         };
         let shell_start = prepared.command.len() - params.argv.len();
         // Automatic startup files run before the restoration script and could
         // reintroduce environment variables that the snapshot already filtered.
-        let (shell_flag, startup) = match shell_type {
-            ShellType::Bash => ("-pc", "set +o privileged\n"),
-            ShellType::Zsh => ("-fc", "setopt RCS\n"),
-            ShellType::Sh => ("-c", ""),
+        let (shell_flags, startup): (&[&str], &str) = match shell_type {
+            // Privileged mode suppresses BASH_ENV, while the explicit startup
+            // flags also suppress the remote-shell .bashrc behavior observed
+            // through the Linux sandbox wrapper.
+            ShellType::Bash => (
+                &["--noprofile", "--norc", "-p", "-c"],
+                "set +o privileged\n",
+            ),
+            ShellType::Zsh => (&["-fc"], "setopt RCS\n"),
+            ShellType::Sh => (&["-c"], ""),
             ShellType::PowerShell | ShellType::Cmd => unreachable!(),
         };
-        prepared.command[shell_start + 1] = shell_flag.to_string();
-        prepared.command[shell_start + 2] = if protected {
+        let script = if protected {
             format!(
-                "{startup}if ! {restore} >/dev/null 2>&1; then printf 'failed to restore shell snapshot\\n' >&2; exit 1; fi\n{}",
+                "{startup}{unset_environment}if ! {restore} >/dev/null 2>&1; then printf 'failed to restore shell snapshot\\n' >&2; exit 1; fi\n{}",
                 params.argv[2]
             )
         } else {
             format!(
-                "{startup}if ! {restore} >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
+                "{startup}{unset_environment}if ! {restore} >/dev/null; then printf 'failed to restore shell snapshot\\n' >&2; fi\n{}",
                 params.argv[2]
             )
         };
+        replace_shell_invocation(&mut prepared.command, shell_start, shell_flags, script);
 
         telemetry.shell_snapshot_command(wait, availability, "used");
         Ok(reader)
@@ -440,7 +463,19 @@ done
     };
     let shell_start = prepared.command.len() - params.argv.len();
     let mut argv = prepared.command.clone();
-    argv[shell_start + 2] = script;
+    if shell_type == ShellType::Bash {
+        // Capture profiles exactly once. In particular, --norc prevents Bash
+        // from implicitly reading .bashrc when the sandbox wrapper resembles
+        // a remote shell; the capture script sources the intended profile.
+        replace_shell_invocation(
+            &mut argv,
+            shell_start,
+            &["--noprofile", "--norc", "-c"],
+            script,
+        );
+    } else {
+        argv[shell_start + 2] = script;
+    }
     let (program, args) = argv.split_first().ok_or_else(|| {
         (
             "missing_command",
@@ -569,6 +604,22 @@ done
     Ok(snapshot)
 }
 
+fn replace_shell_invocation(
+    argv: &mut Vec<String>,
+    shell_start: usize,
+    flags: &[&str],
+    script: String,
+) {
+    argv.splice(
+        shell_start + 1..shell_start + 3,
+        flags
+            .iter()
+            .copied()
+            .map(str::to_owned)
+            .chain(std::iter::once(script)),
+    );
+}
+
 fn parse_snapshot(
     shell_type: ShellType,
     output: &[u8],
@@ -601,15 +652,23 @@ fn parse_snapshot(
         ));
     }
 
-    let mut environment = captured
+    let mut environment = HashMap::new();
+    let mut captured_environment_names = HashSet::new();
+    for entry in captured
         .environment
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
-        .filter_map(|entry| {
-            let (name, value) = std::str::from_utf8(entry).ok()?.split_once('=')?;
-            Some((name.to_string(), value.to_string()))
-        })
-        .collect::<HashMap<_, _>>();
+    {
+        let Ok(entry) = std::str::from_utf8(entry) else {
+            continue;
+        };
+        let Some((name, value)) = entry.split_once('=') else {
+            continue;
+        };
+        let name = name.to_string();
+        captured_environment_names.insert(name.clone());
+        environment.insert(name, value.to_string());
+    }
     if environment.contains_key(PROXY_ACTIVE_ENV_KEY) {
         strip_managed_proxy_env(&mut environment);
     }
@@ -626,12 +685,26 @@ fn parse_snapshot(
     environment.remove("PWD");
     environment.remove("OLDPWD");
     environment.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
+    let mut unset_environment = captured_environment_names
+        .into_iter()
+        .filter(|name| !environment.contains_key(name))
+        .filter(|name| !matches!(name.as_str(), "PWD" | "OLDPWD"))
+        .filter(|name| {
+            let mut bytes = name.bytes();
+            bytes
+                .next()
+                .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+                && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+        })
+        .collect::<Vec<_>>();
+    unset_environment.sort_unstable();
 
     Ok(ShellSnapshot {
         prewarmed: false,
         state,
         file_source: matches!(replay, SnapshotReplay::File),
         environment,
+        unset_environment,
     })
 }
 
