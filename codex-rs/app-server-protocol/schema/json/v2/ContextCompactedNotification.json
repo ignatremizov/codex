@@ -9,6 +9,12 @@
       },
       "type": "array"
     },
+    "decodeError": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "message": {
       "type": [
         "string",

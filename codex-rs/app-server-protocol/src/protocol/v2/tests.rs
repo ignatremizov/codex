@@ -78,6 +78,7 @@ fn historical_compaction_defaults_missing_inventory() {
             id: "old-item".into(),
             summary: Some("summary".into()),
             message: None,
+            decode_error: None,
             available_skills: Vec::new(),
         })
     );
@@ -88,6 +89,7 @@ fn historical_compaction_defaults_missing_inventory() {
             "id": "old-item",
             "summary": "summary",
             "message": null,
+            "decodeError": null,
             "availableSkills": [],
             "startedAtMs": null,
             "completedAtMs": null,
@@ -107,6 +109,7 @@ fn historical_compaction_defaults_missing_inventory() {
             turn_id: "turn-1".into(),
             summary: None,
             message: None,
+            decode_error: None,
             available_skills: Vec::new(),
         }
     );
@@ -117,6 +120,7 @@ fn historical_compaction_defaults_missing_inventory() {
             "turnId": "turn-1",
             "summary": null,
             "message": null,
+            "decodeError": null,
             "availableSkills": [],
         })
     );
@@ -526,6 +530,7 @@ fn thread_items_list_round_trips() {
                         id: "item_1".to_string(),
                         summary: Some("compact summary".to_string()),
                         message: Some("full compacted prompt".to_string()),
+                        decode_error: None,
                         available_skills: vec!["test-tui".to_string()],
                     },
                     started_at_ms,
@@ -547,6 +552,7 @@ fn thread_items_list_round_trips() {
                         "type": "contextCompaction", "id": "item_1",
                         "summary": "compact summary", "message": "full compacted prompt",
                         "startedAtMs": started_at_ms, "completedAtMs": completed_at_ms,
+                        "decodeError": null,
                         "availableSkills": ["test-tui"],
                     },
                     "startedAtMs": started_at_ms,

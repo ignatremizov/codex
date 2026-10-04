@@ -1022,6 +1022,55 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
 }
 
 #[tokio::test]
+async fn live_compaction_decode_error_is_visible_once_even_with_content_hidden() {
+    let mut rendered = Vec::new();
+    for show_compact_summary in [true, false] {
+        let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.local_settings.tui.show_compact_summary = show_compact_summary;
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+                "thread-1".into(),
+                "turn-1".into(),
+                AppServerThreadItemPayload::ContextCompaction {
+                    id: "compact-1".into(),
+                    summary: Some("summary".into()),
+                    message: Some("full prompt".into()),
+                    available_skills: vec!["test-tui".into()],
+                    decode_error: Some("Decoder unavailable.".into()),
+                },
+                /*started_at_ms*/ None,
+                /*completed_at_ms*/ 0,
+            )),
+            /*replay_kind*/ None,
+        );
+        chat.handle_server_notification(
+            ServerNotification::ContextCompacted(
+                codex_app_server_protocol::ContextCompactedNotification {
+                    thread_id: "thread-1".into(),
+                    turn_id: "turn-1".into(),
+                    summary: Some("summary".into()),
+                    message: Some("full prompt".into()),
+                    available_skills: vec!["test-tui".into()],
+                    decode_error: Some("Decoder unavailable.".into()),
+                },
+            ),
+            /*replay_kind*/ None,
+        );
+        let cells = drain_insert_history(&mut rx);
+        assert_eq!(cells.len(), 1);
+        rendered.push(lines_to_single_string(&cells[0]).trim_end().to_string());
+    }
+    insta::assert_snapshot!(rendered.join("\n---\n"), @"
+    • Context compacted
+      Compacted prompt decoding failed: Decoder unavailable.
+      full prompt
+    ---
+    • Context compacted
+      Compacted prompt decoding failed: Decoder unavailable.
+    ");
+}
+
+#[tokio::test]
 async fn context_compacted_summary_respects_tui_toggle() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.local_settings.tui.show_compact_summary = false;
@@ -1035,6 +1084,7 @@ async fn context_compacted_summary_respects_tui_toggle() {
                 summary: Some("Trimmed summary text.".into()),
                 message: Some("Full compacted prompt.".into()),
                 available_skills: vec!["test-tui".into()],
+                decode_error: None,
             },
             /*started_at_ms*/ None,
             /*completed_at_ms*/ 0,
@@ -1060,6 +1110,7 @@ async fn live_app_server_context_compaction_item_completed_prefers_prompt_over_s
                 summary: Some("Short summary".to_string()),
                 message: Some("Prompt line 1\nPrompt line 2".to_string()),
                 available_skills: vec!["test-tui".into()],
+                decode_error: None,
             },
             /*started_at_ms*/ None,
             /*completed_at_ms*/ 0,
@@ -1090,6 +1141,7 @@ async fn live_app_server_context_compacted_fanout_renders_once() {
                 summary: Some("Short summary".to_string()),
                 message: Some("Prompt line 1\nPrompt line 2".to_string()),
                 available_skills: vec!["test-tui".into()],
+                decode_error: None,
             },
             /*started_at_ms*/ None,
             /*completed_at_ms*/ 0,
@@ -1104,6 +1156,7 @@ async fn live_app_server_context_compacted_fanout_renders_once() {
                 summary: Some("Short summary".to_string()),
                 message: Some("Prompt line 1\nPrompt line 2".to_string()),
                 available_skills: vec!["test-tui".into()],
+                decode_error: None,
             },
         ),
         /*replay_kind*/ None,
@@ -1134,6 +1187,7 @@ async fn live_app_server_context_compaction_item_renders_summary() {
                 summary: Some("Remote compact summary".to_string()),
                 message: None,
                 available_skills: Vec::new(),
+                decode_error: None,
             },
             /*started_at_ms*/ None,
             /*completed_at_ms*/ 0,

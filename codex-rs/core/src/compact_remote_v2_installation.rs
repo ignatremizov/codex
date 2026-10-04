@@ -278,13 +278,34 @@ async fn build_and_install_compaction(
     if let TurnItem::ContextCompaction(item) = &mut compaction_item {
         item.available_skills =
             crate::compact_skills_inventory::available_skill_names(&installed_history);
-        item.message = crate::compact_handoff_summary::summarize_remote_compaction_handoff(
+        if !run.cancellation.is_cancelled()
+            && crate::compact_handoff_summary::should_decode_remote_compaction_handoff(
+                &compaction_turn_context.config,
+            )
+        {
+            sess.emit_transient_context_compaction_status(
+                compaction_turn_context,
+                item.id.clone(),
+                codex_protocol::protocol::CONTEXT_COMPACTION_DECODING_MESSAGE.to_string(),
+            )
+            .await;
+        }
+        match crate::compact_handoff_summary::summarize_remote_compaction_handoff(
             sess,
             compaction_turn_context,
             &installed_history,
             run.cancellation,
         )
-        .await;
+        .await
+        {
+            crate::compact_handoff_summary::RemoteCompactionHandoff::Skipped => {}
+            crate::compact_handoff_summary::RemoteCompactionHandoff::Decoded(message) => {
+                item.message = Some(message);
+            }
+            crate::compact_handoff_summary::RemoteCompactionHandoff::Failed(error) => {
+                item.decode_error = Some(error);
+            }
+        }
     }
     sess.emit_turn_item_completed(compaction_turn_context, compaction_item)
         .await;

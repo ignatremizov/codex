@@ -180,6 +180,7 @@ fn context_compaction_item_emits_context_compacted_event() {
                 id: "compact-1".to_string(),
                 summary: Some("short summary".to_string()),
                 message: Some("compacted prompt".to_string()),
+                decode_error: Some("decoder failed".to_string()),
                 available_skills: vec!["test-tui".to_string()],
             },
             /*started_at_ms*/ None,
@@ -193,6 +194,7 @@ fn context_compaction_item_emits_context_compacted_event() {
             events: vec![ThreadEvent::ContextCompacted(ExecContextCompactedEvent {
                 summary: Some("short summary".to_string()),
                 message: Some("compacted prompt".to_string()),
+                decode_error: Some("decoder failed".to_string()),
                 available_skills: vec!["test-tui".to_string()],
             })],
             status: CodexStatus::Running,
@@ -207,6 +209,7 @@ fn context_compaction_item_emits_context_compacted_event() {
             turn_id: "turn-1".to_string(),
             summary: Some("short summary".to_string()),
             message: Some("compacted prompt".to_string()),
+            decode_error: Some("decoder failed".to_string()),
             available_skills: vec!["test-tui".to_string()],
         },
     ));
@@ -263,6 +266,7 @@ fn historical_context_compacted_jsonl_defaults_missing_inventory() {
         ExecContextCompactedEvent {
             summary: Some("summary".into()),
             message: Some("prompt".into()),
+            decode_error: None,
             available_skills: Vec::new(),
         }
     );
@@ -271,6 +275,7 @@ fn historical_context_compacted_jsonl_defaults_missing_inventory() {
         serde_json::json!({
             "summary": "summary",
             "message": "prompt",
+            "decode_error": null,
             "available_skills": [],
         })
     );
