@@ -13,6 +13,7 @@ use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
 use codex_prompts::ResolvedModelMessages;
+use codex_protocol::models::SearchToolCallParams;
 use codex_tools::IndirectNamespacePrefixes;
 use codex_tools::LoadableToolSpec;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
@@ -202,6 +203,13 @@ impl ToolSearchHandler {
 
         let args = match payload {
             ToolPayload::ToolSearch { arguments } => arguments,
+            ToolPayload::Function { arguments } => {
+                serde_json::from_str::<SearchToolCallParams>(&arguments).map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to parse tool_search arguments: {err}"
+                    ))
+                })?
+            }
             _ => {
                 return Err(FunctionCallError::Fatal(format!(
                     "{TOOL_SEARCH_TOOL_NAME} handler received unsupported payload"

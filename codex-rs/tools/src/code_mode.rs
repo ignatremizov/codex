@@ -1,4 +1,5 @@
 use crate::ResponsesApiNamespaceTool;
+use crate::TOOL_SEARCH_TOOL_NAME;
 use crate::ToolName;
 use crate::ToolOutputSchema;
 use crate::ToolSpec;
@@ -223,7 +224,23 @@ fn code_mode_tool_definitions_for_spec(
                 }
             })
             .collect(),
-        ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => Vec::new(),
+        ToolSpec::ToolSearch {
+            description,
+            parameters,
+            ..
+        } => vec![CodeModeToolDefinition {
+            tool_name: ToolName::plain(TOOL_SEARCH_TOOL_NAME),
+            name: TOOL_SEARCH_TOOL_NAME.to_string(),
+            description: description.clone(),
+            kind: CodeModeToolKind::Function,
+            input_schema: serde_json::to_value(parameters).ok(),
+            input_schema_max_bytes: Some(effective_input_schema_max_bytes(
+                parameters.mcp_input_schema_max_bytes,
+                code_mode_input_schema_max_bytes,
+            )),
+            output_schema: None,
+        }],
+        ToolSpec::WebSearch { .. } => Vec::new(),
     }
 }
 
