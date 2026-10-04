@@ -22,6 +22,7 @@ use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::ThreadUnsubscribeStatus;
+use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
@@ -476,34 +477,54 @@ async fn compacted_full_history_fork_replaces_parent_developer_instructions() ->
     Ok(())
 }
 
-/// Child attachment and owner-mediated cold resume preserve recorded instructions and parent authority.
+#[derive(Clone, Copy)]
+enum WorkerResumeMode {
+    ParentFollowup,
+    Direct,
+}
+
+/// Live attachment protects subscribers; parent followups and direct cold resumes use distinct config owners.
 #[test_case(
     None,
     None,
     PARENT_INSTRUCTIONS,
-    ThreadHistoryMode::Legacy;
+    ThreadHistoryMode::Legacy,
+    WorkerResumeMode::ParentFollowup;
     "inherits parent developer instructions without an override"
 )]
 #[test_case(
     Some(CHILD_INSTRUCTIONS),
     None,
     CHILD_INSTRUCTIONS,
-    ThreadHistoryMode::Legacy;
+    ThreadHistoryMode::Legacy,
+    WorkerResumeMode::ParentFollowup;
     "reapplies configured subagent developer instructions"
 )]
 #[test_case(
     Some(CHILD_INSTRUCTIONS),
     Some("custom"),
     ROLE_INSTRUCTIONS,
-    ThreadHistoryMode::Paginated;
-    "reapplies updated configured role settings and restores paginated usage"
+    ThreadHistoryMode::Paginated,
+    WorkerResumeMode::ParentFollowup;
+    "reapplies updated configured role settings"
 )]
 #[test_case(
     Some(CHILD_INSTRUCTIONS),
     Some("default"),
     ROLE_INSTRUCTIONS,
-    ThreadHistoryMode::Legacy;
+    ThreadHistoryMode::Legacy,
+    WorkerResumeMode::ParentFollowup;
     "reapplies an implicitly selected configured default role"
+)]
+#[test_case(
+    Some(CHILD_INSTRUCTIONS), Some("custom"), ROLE_INSTRUCTIONS,
+    ThreadHistoryMode::Legacy, WorkerResumeMode::Direct;
+    "direct legacy cold resume applies caller overrides"
+)]
+#[test_case(
+    Some(CHILD_INSTRUCTIONS), Some("custom"), ROLE_INSTRUCTIONS,
+    ThreadHistoryMode::Paginated, WorkerResumeMode::Direct;
+    "direct paginated cold resume applies caller overrides and restores usage"
 )]
 #[tokio::test]
 async fn cold_resume_preserves_effective_developer_instructions_for_worker(
@@ -511,6 +532,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
     agent_type: Option<&str>,
     expected_developer_instructions: &str,
     history_mode: ThreadHistoryMode,
+    resume_mode: WorkerResumeMode,
 ) -> Result<()> {
     const INITIAL_PROMPT: &str = "spawn a durable instruction worker";
     const INITIAL_TASK: &str = "perform the initial durable instruction task";
@@ -519,8 +541,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
     const SPAWN_CALL_ID: &str = "spawn-durable-instruction-worker";
     const WAIT_CALL_ID: &str = "wait-for-durable-instruction-worker";
     const FOLLOWUP_CALL_ID: &str = "followup-durable-instruction-worker";
-    const DIRECT_RESUME_INSTRUCTIONS: &str = "direct resume must not replace worker instructions";
-    const COLD_RESUME_ERROR: &str = "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it";
+    const DIRECT_RESUME_INSTRUCTIONS: &str = "user-selected cold resume developer instructions";
 
     let instruction_markers = [
         PARENT_INSTRUCTIONS,
@@ -696,21 +717,13 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
             .await?;
         assert_eq!(baseline.thread.id, child_thread_id);
         assert_eq!(baseline.thread.status, ThreadStatus::Idle);
-        assert_eq!(baseline.thread.can_accept_direct_input, Some(false));
+        assert_eq!(baseline.thread.can_accept_direct_input, Some(true));
         assert_eq!(baseline.thread.agent_role.as_deref(), agent_type);
         assert_eq!(baseline.model_provider, "mock_provider");
         assert!(matches!(&baseline.sandbox, SandboxPolicy::ReadOnly { .. }));
         assert_eq!(baseline.reasoning_effort, Some(ReasoningEffort::Low));
 
-        let unsubscribed: ThreadUnsubscribeResponse = app_server
-            .request(|request_id| ClientRequest::ThreadUnsubscribe {
-                request_id,
-                params: ThreadUnsubscribeParams {
-                    thread_id: child_thread_id.clone(),
-                },
-            })
-            .await?;
-        assert_eq!(unsubscribed.status, ThreadUnsubscribeStatus::Unsubscribed);
+        // A subscribed live child must not be rebuilt underneath its attached client.
         let loaded: ThreadLoadedListResponse = app_server
             .request(|request_id| ClientRequest::ThreadLoadedList {
                 request_id,
@@ -818,18 +831,6 @@ features.shell_tool = false
         path: Some(baseline.thread.path.clone().expect("worker rollout path")),
         ..child_resume_params.clone()
     };
-    for params in [child_resume_params.clone(), child_by_path.clone()] {
-        let request_id = app_server.send_thread_resume_request(params).await?;
-        let error = timeout(
-            READ_TIMEOUT,
-            app_server.read_stream_until_error_message(RequestId::Integer(request_id)),
-        )
-        .await??;
-        assert_eq!(
-            serde_json::to_value(error.error)?,
-            json!({"code": -32600, "message": COLD_RESUME_ERROR})
-        );
-    }
     let stored_child: ThreadReadResponse = app_server
         .request(|request_id| ClientRequest::ThreadRead {
             request_id,
@@ -844,26 +845,6 @@ features.shell_tool = false
     assert_eq!(stored_child.thread.agent_role.as_deref(), agent_type);
     assert!(!stored_child.thread.turns.is_empty());
 
-    let resumed_parent: ThreadResumeResponse = app_server
-        .request(|request_id| ClientRequest::ThreadResume {
-            request_id,
-            params: ThreadResumeParams {
-                thread_id: thread_id.clone(),
-                ..Default::default()
-            },
-        })
-        .await?;
-    assert_eq!(resumed_parent.reasoning_effort, Some(ReasoningEffort::High));
-    let loaded: ThreadLoadedListResponse = app_server
-        .request(|request_id| ClientRequest::ThreadLoadedList {
-            request_id,
-            params: ThreadLoadedListParams::default(),
-        })
-        .await?;
-    assert!(loaded.data.contains(&thread_id));
-    assert!(!loaded.data.contains(&child_thread_id));
-
-    let expected = baseline;
     if history_mode == ThreadHistoryMode::Paginated {
         let state_db = StateRuntime::init(
             codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
@@ -888,91 +869,174 @@ features.shell_tool = false
         state_db.upsert_thread(&metadata).await?;
     }
 
-    let is_child_usage = |notification: &JSONRPCNotification| {
-        notification.method == "thread/tokenUsage/updated"
-            && notification
-                .params
-                .as_ref()
-                .is_some_and(|params| params["threadId"].as_str() == Some(child_thread_id.as_str()))
-    };
-    let resume_id = app_server.send_thread_resume_request(child_by_path).await?;
-    let resumed: ThreadResumeResponse = timeout(READ_TIMEOUT, async {
-        loop {
-            match app_server.read_next_message().await? {
-                JSONRPCMessage::Response(response)
-                    if response.id == RequestId::Integer(resume_id) =>
-                {
-                    break app_test_support::to_response(response);
+    if matches!(resume_mode, WorkerResumeMode::Direct) {
+        let is_child_usage = |notification: &JSONRPCNotification| {
+            notification.method == "thread/tokenUsage/updated"
+                && notification.params.as_ref().is_some_and(|params| {
+                    params["threadId"].as_str() == Some(child_thread_id.as_str())
+                })
+        };
+        let cold_params = match history_mode {
+            ThreadHistoryMode::Legacy => child_resume_params.clone(),
+            ThreadHistoryMode::Paginated => child_by_path.clone(),
+        };
+        let resume_id = app_server.send_thread_resume_request(cold_params).await?;
+        let resumed: ThreadResumeResponse = timeout(READ_TIMEOUT, async {
+            loop {
+                match app_server.read_next_message().await? {
+                    JSONRPCMessage::Response(response)
+                        if response.id == RequestId::Integer(resume_id) =>
+                    {
+                        break app_test_support::to_response(response);
+                    }
+                    JSONRPCMessage::Notification(notification) => assert!(
+                        !is_child_usage(&notification),
+                        "child usage replay must follow the resume response"
+                    ),
+                    JSONRPCMessage::Error(error) => anyhow::bail!("unexpected error: {error:?}"),
+                    JSONRPCMessage::Request(_) | JSONRPCMessage::Response(_) => {}
                 }
-                JSONRPCMessage::Notification(notification) => assert!(
-                    !is_child_usage(&notification),
-                    "child usage replay must follow the resume response"
-                ),
-                JSONRPCMessage::Error(error) => anyhow::bail!("unexpected error: {error:?}"),
-                JSONRPCMessage::Request(_) | JSONRPCMessage::Response(_) => {}
             }
-        }
-    })
-    .await??;
-    if history_mode == ThreadHistoryMode::Paginated {
-        assert_eq!(resumed.thread.history_mode, history_mode);
-        assert!(resumed.thread.turns.is_empty());
-        let replay = timeout(
-            READ_TIMEOUT,
-            app_server
-                .read_stream_until_matching_notification("child usage replay", &is_child_usage),
-        )
+        })
         .await??;
-        let replay: ThreadTokenUsageUpdatedNotification =
-            serde_json::from_value(replay.params.expect("usage parameters"))?;
-        let saved_turn = stored_child.thread.turns.last().expect("saved child turn");
-        assert_eq!(saved_turn.status, TurnStatus::Completed);
-        assert_eq!(
-            (replay.turn_id, replay.token_usage.total.total_tokens),
-            (saved_turn.id.clone(), 150),
-        );
-        let warm: ThreadResumeResponse = app_server
-            .request(|request_id| ClientRequest::ThreadResume {
-                request_id,
-                params: child_resume_params,
-            })
-            .await?;
-        assert!(warm.thread.turns.is_empty());
-        assert!(
-            timeout(
-                Duration::from_millis(100),
+        if history_mode == ThreadHistoryMode::Paginated {
+            assert_eq!(resumed.thread.history_mode, history_mode);
+            assert!(resumed.thread.turns.is_empty());
+            let replay = timeout(
+                READ_TIMEOUT,
                 app_server
                     .read_stream_until_matching_notification("child usage replay", &is_child_usage),
             )
-            .await
-            .is_err(),
-            "warm metadata-only child resume should not replay token usage"
+            .await??;
+            let replay: ThreadTokenUsageUpdatedNotification =
+                serde_json::from_value(replay.params.expect("usage parameters"))?;
+            let saved_turn = stored_child.thread.turns.last().expect("saved child turn");
+            assert_eq!(saved_turn.status, TurnStatus::Completed);
+            assert_eq!(
+                (replay.turn_id, replay.token_usage.total.total_tokens),
+                (saved_turn.id.clone(), 150),
+            );
+            let warm: ThreadResumeResponse = app_server
+                .request(|request_id| ClientRequest::ThreadResume {
+                    request_id,
+                    params: child_resume_params.clone(),
+                })
+                .await?;
+            assert!(warm.thread.turns.is_empty());
+            assert!(
+                timeout(
+                    Duration::from_millis(100),
+                    app_server.read_stream_until_matching_notification(
+                        "child usage replay",
+                        &is_child_usage
+                    ),
+                )
+                .await
+                .is_err(),
+                "warm metadata-only child resume should not replay token usage"
+            );
+        }
+        assert_eq!(
+            (
+                resumed.thread.id,
+                resumed.thread.parent_thread_id,
+                resumed.thread.source
+            ),
+            (
+                child_thread_id.clone(),
+                baseline.thread.parent_thread_id,
+                baseline.thread.source
+            )
         );
+        assert_eq!(resumed.sandbox, SandboxPolicy::DangerFullAccess);
+        assert_eq!(resumed.thread.can_accept_direct_input, Some(true));
+        let loaded: ThreadLoadedListResponse = app_server
+            .request(|request_id| ClientRequest::ThreadLoadedList {
+                request_id,
+                params: ThreadLoadedListParams::default(),
+            })
+            .await?;
+        assert_eq!(loaded.data, vec![child_thread_id.clone()]);
+        let direct_request = responses::mount_sse_once(
+            &redirect_server,
+            responses::sse(vec![
+                responses::ev_response_created("direct-child"),
+                responses::ev_assistant_message("direct-message", "direct done"),
+                responses::ev_completed("direct-child"),
+            ]),
+        )
+        .await;
+        timeout(
+            READ_TIMEOUT,
+            app_server.start_turn_and_wait_for_completion(TurnStartParams {
+                thread_id: child_thread_id.clone(),
+                input: vec![UserInput::Text {
+                    text: "continue the child directly".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            }),
+        )
+        .await??;
+        let request = direct_request.single_request();
+        assert_eq!(request.header("thread-id"), Some(child_thread_id.clone()));
+        assert_eq!(
+            request
+                .message_input_texts("developer")
+                .into_iter()
+                .filter(|text| instruction_markers.contains(&text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![DIRECT_RESUME_INSTRUCTIONS.to_string()]
+        );
+        // Once idle and unsubscribed, the child can be replaced using a new caller configuration.
+        let unsubscribed: ThreadUnsubscribeResponse = app_server
+            .request(|request_id| ClientRequest::ThreadUnsubscribe {
+                request_id,
+                params: ThreadUnsubscribeParams {
+                    thread_id: child_thread_id.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(unsubscribed.status, ThreadUnsubscribeStatus::Unsubscribed);
+        let replacement: ThreadResumeResponse = app_server
+            .request(|request_id| ClientRequest::ThreadResume {
+                request_id,
+                params: ThreadResumeParams {
+                    sandbox: Some(SandboxMode::ReadOnly),
+                    ..child_by_path
+                },
+            })
+            .await?;
+        assert_eq!(replacement.thread.id, child_thread_id);
+        assert!(matches!(
+            replacement.sandbox,
+            SandboxPolicy::ReadOnly { .. }
+        ));
+        return Ok(());
     }
+
+    let resumed_parent: ThreadResumeResponse = app_server
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(resumed_parent.reasoning_effort, Some(ReasoningEffort::High));
+    let loaded: ThreadLoadedListResponse = app_server
+        .request(|request_id| ClientRequest::ThreadLoadedList {
+            request_id,
+            params: ThreadLoadedListParams::default(),
+        })
+        .await?;
+    assert_eq!(loaded.data, vec![thread_id.clone()]);
     let expected_reasoning_effort = if agent_type.is_some() {
         ReasoningEffort::High
     } else {
         ReasoningEffort::Low
     };
-    assert_eq!(
-        resumed.reasoning_effort,
-        Some(expected_reasoning_effort.clone())
-    );
-    let authority = |response: ThreadResumeResponse| {
-        (
-            response.thread.id,
-            response.thread.parent_thread_id,
-            response.thread.source,
-            response.thread.status,
-            response.thread.can_accept_direct_input,
-            response.model_provider,
-            response.sandbox,
-            response.approval_policy,
-            response.approvals_reviewer,
-            response.active_permission_profile,
-        )
-    };
-    assert_eq!(authority(resumed), authority(expected));
     let _: TurnStartResponse = app_server
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
@@ -1011,6 +1075,43 @@ features.shell_tool = false
         assert!(!has_shell_tool(&resumed_child_request));
     }
     assert_developer_instructions(&resumed_child_request, "resumed");
+    timeout(READ_TIMEOUT, async {
+        loop {
+            let event: TurnCompletedNotification =
+                app_server.read_notification("turn/completed").await?;
+            if event.thread_id == child_thread_id {
+                assert_eq!(event.turn.status, TurnStatus::Completed);
+                break Ok::<_, anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+    let attached: ThreadResumeResponse = app_server
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: child_thread_id,
+                exclude_turns: true,
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(attached.reasoning_effort, Some(expected_reasoning_effort));
+    let authority = |response: ThreadResumeResponse| {
+        (
+            response.thread.id,
+            response.thread.parent_thread_id,
+            response.thread.source,
+            response.thread.status,
+            response.thread.can_accept_direct_input,
+            response.model_provider,
+            response.sandbox,
+            response.approval_policy,
+            response.approvals_reviewer,
+            response.active_permission_profile,
+        )
+    };
+    assert_eq!(authority(attached), authority(baseline));
     assert!(
         redirect_server
             .received_requests()
