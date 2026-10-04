@@ -12,9 +12,7 @@ pub(crate) use setup::run_guardian_review_session;
 mod context_policy;
 use context_policy::ReviewContextPolicy;
 
-use std::borrow::Cow;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
@@ -36,11 +34,9 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::GuardianScope;
-use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::Event;
@@ -64,11 +60,11 @@ use crate::context::ContextualUserFragment;
 use crate::context::GuardianContextMode;
 use crate::context::GuardianFollowupReviewReminder;
 use crate::context::GuardianNodeReplPolicy;
+use crate::context::NodeReplReviewEvidence;
+use crate::context::NodeReplReviewEvidenceMode;
+use crate::context::node_repl_review_evidence_mode;
 use crate::context_manager::ContextManager;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::image_preparation::ImagePreparationMode;
-use crate::image_preparation::resize_image;
-use crate::image_preparation::unified_image_budget_enabled;
 use crate::session::SessionIo;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -79,7 +75,6 @@ use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_thread_store::PersistContext;
-use codex_tools::normalize_output_image_detail;
 use codex_utils_path_uri::PathUri;
 
 use super::ApprovalRequestReasons;
@@ -88,6 +83,7 @@ use super::GuardianApprovalRequest;
 use super::GuardianReviewContext;
 use super::feedback::record_failed_review;
 use super::prompt::GUARDIAN_TRANSCRIPT_START;
+use super::prompt::GuardianNodeReplCursor;
 use super::prompt::GuardianPromptMode;
 #[cfg(test)]
 use super::prompt::GuardianTranscriptCursor;
@@ -97,7 +93,6 @@ pub(crate) use super::reviewer_config::build_guardian_review_session_config;
 use codex_guardian_reviewer::run_before_review_deadline;
 use codex_guardian_reviewer::wait_for_guardian_review;
 
-const GUARDIAN_MAX_IMAGE_ITEM_TOKENS: i64 = 10_000;
 pub(crate) use codex_guardian_reviewer::GuardianReviewSessionOutcome;
 
 pub(crate) struct GuardianReviewSessionParams {
@@ -496,110 +491,42 @@ async fn run_review_on_session(
             } else {
                 params.parent_session.conversation_history_snapshot().await
             };
-            let mut prompt_items = build_guardian_prompt_items_with_parent_turn(
+            let mut node_repl_cursor = GuardianNodeReplCursor {
+                response_sequence: last_admitted_node_repl_response_sequence,
+                ..Default::default()
+            };
+            // Carry retained screenshots as candidates until first-step selection.
+            // Pre-turn compaction can remove an image after this history snapshot;
+            // deduplicating now would permanently lose it from the pending input.
+            if last_admitted_node_repl_response_sequence > 0
+                && node_repl_review_evidence_mode(params.parent_context.turn())
+                    == NodeReplReviewEvidenceMode::Multimodal
+                && let Some(evidence) = params
+                    .parent_session
+                    .services
+                    .thread_extension_data
+                    .get::<NodeReplReviewEvidence>()
+            {
+                for item in evidence.images() {
+                    if let ContentItem::InputImage {
+                        image: ImageReference::Inline { image_url },
+                        ..
+                    } = item
+                    {
+                        node_repl_cursor.replay_image_urls.insert(image_url);
+                    }
+                }
+            }
+            let prompt_items = build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
                 history.as_ref(),
                 Some(&params.parent_context),
                 params.reasons.clone(),
                 params.request.clone(),
                 prompt_mode,
-                last_admitted_node_repl_response_sequence,
+                node_repl_cursor,
             )
             .await?;
-
-            if prompt_items
-                .context
-                .section_costs()
-                .any(|(_, cost)| cost.image_count > 0)
-            {
-                let reviewer_history = review_session.session.clone_history().await;
-                let mut reviewer_image_urls = HashSet::new();
-                let mut reviewer_file_ids = HashSet::new();
-                for item in reviewer_history.raw_items() {
-                    let ResponseItem::Message { content, .. } = item else {
-                        continue;
-                    };
-                    for item in content {
-                        let ContentItem::InputImage { image, .. } = item else {
-                            continue;
-                        };
-                        match image {
-                            ImageReference::Inline { image_url } => {
-                                reviewer_image_urls.insert(image_url.as_str());
-                            }
-                            ImageReference::File { file_id } => {
-                                reviewer_file_ids.insert(file_id.as_str());
-                            }
-                        }
-                    }
-                }
-                let context_window = model_info.resolved_context_window().map(|supported| {
-                    params
-                        .spawn_config
-                        .model_context_window
-                        .unwrap_or(supported)
-                        .min(supported)
-                        .saturating_mul(model_info.effective_context_window_percent.clamp(0, 100))
-                        / 100
-                });
-                let admit_images = if let Some(context_window) = context_window.filter(|limit| {
-                    *limit > 0
-                        && !model_info.used_fallback_model_metadata
-                        && model_info.input_modalities.contains(&InputModality::Image)
-                }) {
-                    let features = &params.spawn_config.features;
-                    let mode = if unified_image_budget_enabled(features, &model_info) {
-                        ImagePreparationMode::UnifiedBudget
-                    } else {
-                        ImagePreparationMode::DetailBased
-                    };
-                    prompt_items.context.retain_images(|image, detail| {
-                        *detail = match normalize_output_image_detail(&model_info, *detail) {
-                            _ if mode == ImagePreparationMode::UnifiedBudget => {
-                                Some(ImageDetail::Original)
-                            }
-                            Some(ImageDetail::Low) => Some(ImageDetail::High),
-                            detail => detail,
-                        };
-                        match image {
-                            ImageReference::Inline { image_url } => {
-                                let prepared_image_url = match resize_image(image_url, detail, mode)
-                                {
-                                    Ok(Some(prepared)) => Cow::Owned(prepared.into_data_url()),
-                                    Ok(None) => Cow::Borrowed(image_url),
-                                    Err(error) => {
-                                        warn!(%error, "failed to prepare guardian review image");
-                                        return false;
-                                    }
-                                };
-                                !reviewer_image_urls.contains(prepared_image_url.as_str())
-                            }
-                            ImageReference::File { file_id } => {
-                                !reviewer_file_ids.contains(file_id.as_str())
-                            }
-                        }
-                    });
-                    let prompt_tokens = prompt_items
-                        .context
-                        .clone()
-                        .into_messages()
-                        .iter()
-                        .map(crate::context_manager::estimate_item_token_count)
-                        .fold(0i64, i64::saturating_add);
-                    let base_instructions = review_session.session.get_base_instructions().await;
-                    let history_tokens = reviewer_history
-                        .estimate_token_count_with_base_instructions(&base_instructions)
-                        .unwrap_or(i64::MAX)
-                        .max(review_session.session.get_total_token_usage().await);
-                    prompt_tokens <= GUARDIAN_MAX_IMAGE_ITEM_TOKENS
-                        && prompt_tokens.saturating_add(history_tokens) <= context_window
-                } else {
-                    false
-                };
-                if !admit_images {
-                    prompt_items.context.retain_images(|_, _| false);
-                }
-            }
 
             let items = match prompt_items.context.clone().into_user_inputs() {
                 Ok(items) => items,

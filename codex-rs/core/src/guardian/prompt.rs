@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_guardian_context::Budgeted;
 use codex_guardian_context::CollectedContext;
@@ -49,6 +51,13 @@ pub(crate) struct GuardianPromptItems {
     pub(crate) node_repl_evidence_sequence: u64,
 }
 
+/// Text admission and retained screenshots have independent lifetimes in a reviewer.
+#[derive(Default)]
+pub(crate) struct GuardianNodeReplCursor {
+    pub(crate) response_sequence: u64,
+    pub(crate) replay_image_urls: HashSet<String>,
+}
+
 /// Builds the guardian user content items from:
 /// - a compact transcript for authorization and local context
 /// - the exact action JSON being proposed for approval
@@ -74,7 +83,7 @@ pub(crate) async fn build_guardian_prompt_items(
         },
         request,
         mode,
-        /*reviewed_node_repl_evidence_sequence*/ 0,
+        GuardianNodeReplCursor::default(),
     )
     .await
 }
@@ -86,7 +95,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     reasons: ApprovalRequestReasons,
     request: GuardianApprovalRequest,
     mode: GuardianPromptMode,
-    reviewed_node_repl_evidence_sequence: u64,
+    mut node_repl_cursor: GuardianNodeReplCursor,
 ) -> anyhow::Result<GuardianPromptItems> {
     if request
         .target_environment_id()
@@ -156,12 +165,20 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             super::permissions::for_environment(context, request.target_environment_id())
         })
         .transpose()?;
+    if evidence_mode != NodeReplReviewEvidenceMode::Multimodal {
+        node_repl_cursor.replay_image_urls.clear();
+    }
     let node_repl_snapshot = if node_repl_transcripts_enabled {
         session
             .services
             .thread_extension_data
             .get::<NodeReplReviewEvidence>()
-            .and_then(|evidence| evidence.snapshot_since(reviewed_node_repl_evidence_sequence))
+            .and_then(|evidence| {
+                evidence.snapshot_since(
+                    node_repl_cursor.response_sequence,
+                    &node_repl_cursor.replay_image_urls,
+                )
+            })
     } else {
         None
     };
@@ -170,7 +187,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         .map(|snapshot| snapshot.context(evidence_mode));
     let node_repl_evidence_sequence = node_repl_snapshot
         .as_ref()
-        .map_or(reviewed_node_repl_evidence_sequence, |snapshot| {
+        .map_or(node_repl_cursor.response_sequence, |snapshot| {
             snapshot.sequence
         });
     let sections = collect_guardian_context(
