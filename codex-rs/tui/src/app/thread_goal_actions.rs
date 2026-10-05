@@ -136,6 +136,9 @@ impl App {
         draft: goal_files::GoalDraft,
         mode: ThreadGoalSetMode,
     ) {
+        if self.history_recovery_required.contains(&thread_id) {
+            return;
+        }
         let codex_home = app_server.codex_home_path(&self.config.codex_home);
         let mode = if matches!(mode, ThreadGoalSetMode::ConfirmIfExists) {
             let result = app_server.thread_goal_get(thread_id).await;
@@ -236,6 +239,9 @@ impl App {
         thread_id: ThreadId,
         status: ThreadGoalStatus,
     ) {
+        if self.history_recovery_required.contains(&thread_id) {
+            return;
+        }
         let result = app_server
             .thread_goal_set(
                 thread_id,
@@ -264,6 +270,9 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) {
+        if self.history_recovery_required.contains(&thread_id) {
+            return;
+        }
         let result = app_server.thread_goal_clear(thread_id).await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;

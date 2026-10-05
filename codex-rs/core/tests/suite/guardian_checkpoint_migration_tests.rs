@@ -154,6 +154,8 @@ async fn independent_history_resume_filters_rolled_back_sources(compaction: &str
     let mut history = saved_history(&test, &thread).await?;
     let rollback = RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
         num_turns: 1,
+        materialized_turns: None,
+        rollback_start_index: None,
     }));
     thread
         .append_rollout_items(std::slice::from_ref(&rollback))

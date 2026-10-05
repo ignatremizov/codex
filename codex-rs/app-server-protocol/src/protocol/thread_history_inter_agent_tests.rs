@@ -2,6 +2,8 @@ use super::ThreadHistoryBuilder;
 use super::ThreadHistoryChangeSet;
 use super::ThreadHistoryItemChange;
 use super::ThreadHistoryTurnMetadata;
+use super::build_turns_from_rollout_items;
+use super::materialized_rollback_start;
 use crate::protocol::v2::InterAgentMessageSource;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::Turn;
@@ -269,6 +271,177 @@ fn idless_legacy_fallback_is_stable_and_terminal_placeholder_is_not_revived() {
     restarted.status = TurnStatus::InProgress;
     restarted.started_at = Some(42);
     assert_eq!(builder.finish(), vec![completed, restarted]);
+}
+
+#[test]
+fn materialized_boundary_preserves_duplicate_turn_occurrences() {
+    let items = vec![
+        RolloutItem::EventMsg(start("duplicate")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "duplicate".into(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+        RolloutItem::EventMsg(start("duplicate")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "duplicate".into(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+    ];
+    assert_eq!(
+        materialized_rollback_start(&items, 1),
+        Some(super::MaterializedRollbackStart {
+            rollout_index: 2,
+            turn_id: "duplicate".into(),
+            turn_count: 2,
+        })
+    );
+}
+
+#[test]
+fn streaming_exact_boundary_does_not_pop_an_earlier_turn() {
+    let mut builder = ThreadHistoryBuilder::new();
+    builder.handle_rollout_item(&RolloutItem::EventMsg(start("retained")));
+    let before = builder.turn_snapshot("retained");
+    // The exact boundary wins even if the legacy count would remove this turn.
+    builder.handle_rollout_item(&RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        codex_protocol::protocol::ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: Some(1),
+        },
+    )));
+    assert_eq!(builder.turn_snapshot("retained"), before);
+}
+
+#[test]
+fn materialized_count_applies_without_a_user_instruction_count() {
+    let mut builder = ThreadHistoryBuilder::new();
+    builder.handle_rollout_item(&RolloutItem::EventMsg(start("retained")));
+    builder.handle_rollout_item(&RolloutItem::EventMsg(EventMsg::TurnComplete(
+        TurnCompleteEvent {
+            turn_id: "retained".into(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        },
+    )));
+    let before = builder.turn_snapshot("retained").unwrap();
+    builder.handle_rollout_item(&RolloutItem::EventMsg(start("context-only")));
+    builder.handle_rollout_item(&RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+        codex_protocol::protocol::ThreadRolledBackEvent {
+            num_turns: 0,
+            materialized_turns: Some(1),
+            rollback_start_index: None,
+        },
+    )));
+    assert_eq!(builder.finish(), vec![before]);
+}
+
+#[test]
+fn materialized_boundary_keeps_original_positions_after_exact_removal() {
+    let items = vec![
+        RolloutItem::EventMsg(start("removed")),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 0,
+                materialized_turns: Some(1),
+                rollback_start_index: Some(0),
+            },
+        )),
+        RolloutItem::EventMsg(start("retained")),
+    ];
+    assert_eq!(
+        materialized_rollback_start(&items, 1),
+        Some(super::MaterializedRollbackStart {
+            rollout_index: 2,
+            turn_id: "retained".into(),
+            turn_count: 1,
+        })
+    );
+}
+
+#[test]
+fn exact_marker_filters_raw_suffix_before_building_turns_even_with_zero_count() {
+    let items = vec![
+        RolloutItem::EventMsg(start("turn-1")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".into(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+        RolloutItem::EventMsg(start("turn-2")),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 0,
+                materialized_turns: Some(1),
+                rollback_start_index: Some(2),
+            },
+        )),
+    ];
+    assert_eq!(
+        build_turns_from_rollout_items(&items)
+            .into_iter()
+            .map(|turn| turn.id)
+            .collect::<Vec<_>>(),
+        vec!["turn-1".to_string()]
+    );
+}
+
+#[test]
+fn count_only_marker_keeps_legacy_count_semantics() {
+    let items = vec![
+        RolloutItem::EventMsg(start("turn-1")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".into(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+        RolloutItem::EventMsg(start("turn-2")),
+        RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-2".into(),
+            last_agent_message: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        })),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            codex_protocol::protocol::ThreadRolledBackEvent {
+                num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
+            },
+        )),
+    ];
+    assert_eq!(
+        build_turns_from_rollout_items(&items)
+            .into_iter()
+            .map(|turn| turn.id)
+            .collect::<Vec<_>>(),
+        vec!["turn-1".to_string()]
+    );
 }
 
 #[test]

@@ -159,11 +159,12 @@ impl App {
     }
 
     pub(super) fn thread_unavailable(&self, id: ThreadId) -> bool {
-        !matches!(self.app_server_target, AppServerTarget::Embedded)
-            && self
-                .thread_event_channels
-                .get(&id)
-                .is_some_and(|channel| channel.attachment() != ThreadEventAttachment::Live)
+        self.history_recovery_required.contains(&id)
+            || !matches!(self.app_server_target, AppServerTarget::Embedded)
+                && self
+                    .thread_event_channels
+                    .get(&id)
+                    .is_some_and(|channel| channel.attachment() != ThreadEventAttachment::Live)
     }
 
     pub(super) fn recover_transport_error(&mut self, error: &color_eyre::Report) -> bool {

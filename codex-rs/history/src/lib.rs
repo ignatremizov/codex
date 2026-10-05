@@ -267,7 +267,10 @@ pub use retained_context::RetainedSourceRole;
 pub use retained_context::RetainedUserMessage;
 pub use retained_context::VerifiedAnswer;
 pub use retained_context::VerifiedQuestionAnswer;
+mod rollout;
 mod rollout_payload;
+pub use rollout::exact_rollback_removed_items;
+pub use rollout::rollout_without_exact_rollback_ranges;
 
 pub use guardian_history::GuardianHistoryCheckpoint;
 

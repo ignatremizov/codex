@@ -989,6 +989,7 @@ impl MessageProcessor {
             | ClientRequest::ThreadFork { .. }
             | ClientRequest::ThreadResume { .. }
             | ClientRequest::ThreadRevert { .. }
+            | ClientRequest::ThreadRollback { .. }
             | ClientRequest::ThreadSettingsUpdate { .. }
             | ClientRequest::TurnSettingsUpdate { .. }
             | ClientRequest::ThreadDelete { .. }
@@ -1452,6 +1453,15 @@ impl MessageProcessor {
             ClientRequest::ThreadBackgroundTerminalsTerminate { params, .. } => {
                 self.thread_processor
                     .thread_background_terminals_terminate(params)
+                    .await
+            }
+            ClientRequest::ThreadRollback { params, .. } => {
+                self.thread_processor
+                    .thread_rollback(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.as_deref(),
+                    )
                     .await
             }
             ClientRequest::ThreadRevert { params, .. } => {

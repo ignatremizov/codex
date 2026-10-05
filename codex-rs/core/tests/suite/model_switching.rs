@@ -34,6 +34,7 @@ use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
@@ -63,6 +64,82 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use test_case::test_case;
 use wiremock::MockServer;
+
+#[tokio::test]
+async fn thread_rollback_after_generated_image_drops_entire_image_turn_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let image_model_slug = "test-image-model";
+    mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![test_model_info(
+                image_model_slug,
+                "Test Image Model",
+                "supports image input",
+                default_input_modalities(),
+            )],
+        },
+    )
+    .await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_image_generation_call("ig_rollback", "completed", "lobster", "Zm9v"),
+                ev_completed_with_tokens("resp-1", /*total_tokens*/ 10),
+            ]),
+            sse_completed("resp-2"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_history_mode(ThreadHistoryMode::Legacy)
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| {
+            config.model = Some(image_model_slug.to_string());
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let models_manager = test.thread_manager.get_models_manager();
+    let _ = models_manager
+        .list_models(
+            RefreshStrategy::OnlineIfUncached,
+            codex_core::test_support::default_http_client_factory(),
+        )
+        .await;
+    test.submit_turn_with_permission_profile("generate a lobster", PermissionProfile::read_only())
+        .await?;
+
+    test.codex
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_))
+    })
+    .await;
+    test.submit_turn_with_permission_profile("after rollback", PermissionProfile::read_only())
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let second_request = requests.last().expect("second request");
+    assert!(
+        !second_request
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text == "generate a lobster")
+    );
+    assert!(
+        second_request
+            .inputs_of_type("image_generation_call")
+            .is_empty()
+    );
+    Ok(())
+}
 
 fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -> TurnInputRequest {
     let (sandbox_policy, permission_profile) =

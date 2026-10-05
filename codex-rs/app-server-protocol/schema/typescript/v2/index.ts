@@ -559,6 +559,8 @@ export type { ThreadResumeResponse } from "./ThreadResumeResponse";
 export type { ThreadRevertParams } from "./ThreadRevertParams";
 export type { ThreadRevertResponse } from "./ThreadRevertResponse";
 export type { ThreadRevertedNotification } from "./ThreadRevertedNotification";
+export type { ThreadRollbackParams } from "./ThreadRollbackParams";
+export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
 export type { ThreadSearchResult } from "./ThreadSearchResult";
 export type { ThreadSearchSortKey } from "./ThreadSearchSortKey";
 export type { ThreadSection } from "./ThreadSection";
