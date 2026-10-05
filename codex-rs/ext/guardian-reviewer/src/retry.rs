@@ -203,6 +203,7 @@ fn should_retry_guardian_review(outcome: &GuardianReviewOutcome) -> bool {
             | CodexErrorInfo::SandboxError
             | CodexErrorInfo::ActiveTurnNotSteerable { .. }
             | CodexErrorInfo::ThreadRollbackFailed
+            | CodexErrorInfo::ThreadRollbackCommitUnknown
             | CodexErrorInfo::Other => false,
         },
         GuardianReviewOutcome::CachedApproval

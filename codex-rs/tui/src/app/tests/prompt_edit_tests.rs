@@ -16,6 +16,9 @@ use pretty_assertions::assert_eq;
 
 const SELECTED: &str = "use $skill @sample $google-calendar";
 
+#[path = "legacy_prompt_edit_tests.rs"]
+mod legacy;
+
 #[derive(Clone, Copy)]
 enum PromptImages {
     Remote,
@@ -84,7 +87,7 @@ async fn prompt_source(
     PathBuf,
 )> {
     let (mut app, events, _) = make_test_app_with_channels().await;
-    app.config.features.enable(Feature::ForkPromptEdits)?;
+    app.config.features.enable(Feature::ForkPromptEdits);
     let timestamp = "2026-01-05T12-00-00";
     let create = match mode {
         ThreadHistoryMode::Legacy => app_test_support::create_fake_rollout,

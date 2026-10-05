@@ -23,7 +23,7 @@ impl App {
                     ServerNotification::AccountUpdated(_)
                         | ServerNotification::AccountRateLimitsUpdated(_)
                 ),
-                AppServerEvent::ServerRequest(_) => false,
+                AppServerEvent::ServerRequest(_) | AppServerEvent::RequestCompleted { .. } => false,
             }
         {
             tracing::debug!(

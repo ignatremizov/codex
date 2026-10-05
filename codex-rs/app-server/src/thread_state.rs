@@ -123,6 +123,8 @@ pub(crate) struct TurnSummary {
 #[derive(Default)]
 pub(crate) struct ThreadState {
     goal_resume_lock: Arc<Mutex<()>>,
+    pub(crate) pending_rollback:
+        Option<crate::request_processors::thread_rollback::PendingRollback>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
@@ -140,6 +142,12 @@ pub(crate) struct ThreadState {
 }
 
 impl ThreadState {
+    pub(crate) fn reset_after_rollback(&mut self) {
+        self.current_turn_history.reset();
+        self.turn_summary = TurnSummary::default();
+        self.last_terminal_turn_id = None;
+    }
+
     pub(crate) fn listener_matches(&self, conversation: &Arc<CodexThread>) -> bool {
         self.listener_thread
             .as_ref()

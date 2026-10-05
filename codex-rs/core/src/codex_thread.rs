@@ -259,6 +259,14 @@ impl CodexThread {
         self.io.submit(op).await
     }
 
+    /// Submits without waiting for admission or queue capacity, preserving the current trace.
+    ///
+    /// Every error means the operation was not accepted. A successful ID identifies work
+    /// owned by the session loop, just like `submit`; it is not a completion receipt.
+    pub fn try_submit(&self, op: Op) -> CodexResult<String> {
+        self.io.try_submit(op)
+    }
+
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.session.services.session_telemetry.clone()
@@ -568,8 +576,7 @@ impl CodexThread {
         // cancellation, persistence, or writer shutdown halfway through a handoff.
         let (reply, result) = oneshot::channel();
         self.io
-            .tx_sub
-            .send(Submission {
+            .submit_with_id(Submission {
                 id: new_submission_id(),
                 op: Op::SuspendTurnAndShutdown { reply },
                 turn_extension_init: None,
@@ -883,6 +890,10 @@ impl CodexThread {
     /// The caller must submit the associated user input while retaining its
     /// thread-operation lock. The subsequent turn persistence includes both
     /// these items and the user input, without an independent rollout flush.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "rollback admission must precede initial context publication and input acceptance"
+    )]
     pub async fn inject_response_items_for_turn(
         &self,
         items: Vec<ResponseItem>,
@@ -893,6 +904,7 @@ impl CodexThread {
             ));
         }
 
+        let admission = self.session.submission_admission.admit_injection().await?;
         let had_reference_context = self.session.reference_context_item().await.is_some();
         let mut turn_context = if had_reference_context {
             self.session.new_inject_items_context().await
@@ -915,7 +927,7 @@ impl CodexThread {
                 .await?;
         }
         self.session
-            .inject_client_response_items(items, turn_context.as_ref())
+            .inject_client_response_items_with_admission(items, turn_context.as_ref(), admission)
             .await
     }
 
@@ -980,6 +992,12 @@ impl CodexThread {
         live_thread
             .read_thread(include_archived, include_history)
             .await
+    }
+
+    /// Whether a quarantined rollback runtime has acknowledged closure of its writer.
+    /// Callers must also wait for termination before replacing the exact runtime.
+    pub fn rollback_reload_ready(&self) -> bool {
+        self.session.submission_admission.can_reload()
     }
 
     pub async fn update_thread_metadata(
