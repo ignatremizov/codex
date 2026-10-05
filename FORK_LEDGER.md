@@ -70,6 +70,24 @@ state under retained lineage reservations, without changing upstream migration v
 bytes. TUI, CLI, exports, structured replies, and voice consumers distinguish these transcripts
 from final assistant output. Generated-schema and executable qualification remain outstanding.
 
+### Exact Legacy rollback and prompt identity
+
+Ownership anchor: `fix(rollback): preserve exact durable Legacy thread boundaries`.
+The Legacy `thread/rollback` compatibility route uses guarded canonical decoded-record boundaries,
+single-attempt marker publication, shared submission admission, and exact-runtime quarantine when
+commit or installation is uncertain. Paginated mutation remains `thread/revert`; neither rewrites
+the user's working files. Retained terminal evidence, explicit checkpoint resume metadata,
+count-only compatibility, and source-segment coordinates survive replay, forks, and migration.
+Entry points are `core/src/session/rollback.rs`, `core/src/session/submission_admission.rs`,
+`history/src/rollout.rs`, `rollout/src/recorder_barrier.rs`, and
+`app-server/src/request_processors/thread_rollback.rs`. Derived projection versions are fork-owned
+cache state, not amendments to released upstream migrations.
+`tui/src/app/legacy_prompt_edit.rs` and `tui/src/app_backtrack/prompt_target.rs` bind edits to
+canonical prompt identity, preserve drafts, order the canonical reset after transport events,
+and keep an uncertain conversation read-only without disabling unrelated navigation or threads.
+Recorder acknowledgement retains the file-flush contract, not a new fsync guarantee. Generated
+protocol output and executable qualification remain pending for the completed rebase.
+
 ## Maintenance Cadence
 
 - Reconcile the inventory after each local release promotion and upstream rebase.

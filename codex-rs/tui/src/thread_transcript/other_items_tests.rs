@@ -62,8 +62,10 @@ async fn cold_compaction_projection_respects_preference_and_preserves_detail() -
       Prompt line 1
 
       Prompt line 2
+    • Available skills after compaction: test-tui
     ---
     • Context compacted
+    • Available skills after compaction: test-tui
     ");
     Ok(())
 }
@@ -85,11 +87,11 @@ fn cold_compaction_decode_error_is_visible_with_content_hidden() {
             show_compact_summary,
             AgentPreviewLineLimits::default(),
         );
-        assert_eq!(projected.len(), 1);
+        assert_eq!(projected.len(), 2);
         rendered.push(
-            projected[0]
-                .display_lines(/*width*/ 80)
-                .into_iter()
+            projected
+                .iter()
+                .flat_map(|cell| cell.display_lines(/*width*/ 80))
                 .map(|line| line.to_string())
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -99,9 +101,11 @@ fn cold_compaction_decode_error_is_visible_with_content_hidden() {
     • Context compacted
       Compacted prompt decoding failed: Decoder unavailable.
       full prompt
+    • Available skills after compaction: test-tui
     ---
     • Context compacted
       Compacted prompt decoding failed: Decoder unavailable.
+    • Available skills after compaction: test-tui
     ");
 }
 

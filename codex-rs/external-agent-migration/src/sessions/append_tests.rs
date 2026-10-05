@@ -85,7 +85,11 @@ fn requires_a_strict_nonempty_model_prefix() {
             decode_error: None,
             available_skills: Vec::new(),
         }),
-        EventMsg::ThreadRolledBack(ThreadRolledBackEvent { num_turns: 1 }),
+        EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
+        }),
     ] {
         let mut rewritten = history.clone();
         rewritten.push(RolloutItem::EventMsg(event));

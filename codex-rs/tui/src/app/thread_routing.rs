@@ -662,6 +662,9 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
+        if self.history_recovery_required.contains(&thread_id) {
+            return Ok(true);
+        }
         match op {
             AppCommand::Interrupt => {
                 let mut turn_id = self
@@ -1162,6 +1165,9 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if self.history_recovery_required.contains(&thread_id) {
+            return Ok(());
+        }
         self.deliver_background_voice_notification(thread_id, &notification);
         if self.abandoned_side_threads.contains(&thread_id) {
             return Ok(());
@@ -1454,6 +1460,9 @@ impl App {
         thread_id: ThreadId,
         request: ServerRequest,
     ) -> Result<()> {
+        if self.history_recovery_required.contains(&thread_id) {
+            return Ok(());
+        }
         let inactive_interactive_request = if self.active_thread_id != Some(thread_id) {
             self.interactive_request_for_thread_request(thread_id, &request)
                 .await?
@@ -1887,6 +1896,20 @@ impl App {
         resume_restored_queue: bool,
         replay_kind: ReplayKind,
     ) {
+        let recovery_required = self
+            .current_displayed_thread_id()
+            .is_some_and(|id| self.history_recovery_required.contains(&id));
+        if recovery_required {
+            snapshot.events.clear();
+        }
+        let active_turn = thread_replay_processes::active_snapshot_turn(&snapshot);
+        let replay_kind = if recovery_required
+            || replay_kind == ReplayKind::ThreadSnapshot && active_turn.is_none()
+        {
+            ReplayKind::ReplayOnlyThreadSnapshot
+        } else {
+            replay_kind
+        };
         let mut reasoning_replay = reasoning_replay::ReasoningReplay::new(&mut snapshot);
         let replayed_final_items = realtime_delivery::completed_agent_items(&snapshot);
         let replayed_voice_texts = realtime_delivery::replayed_voice_texts(&snapshot);
@@ -1994,7 +2017,14 @@ impl App {
                 (ThreadBufferedEvent::Request(request), Some(changes)) => {
                     self.handle_file_change_request(*request, changes)
                 }
-                (event, _) => self.handle_thread_event_replay(event, replay_kind),
+                (event, _) => {
+                    let kind = thread_replay_processes::item_replay_kind(
+                        &event,
+                        active_turn.as_deref(),
+                        replay_kind,
+                    );
+                    self.handle_thread_event_replay(event, kind);
+                }
             }
         }
         reasoning_replay.restore(&mut self.chat_widget);
@@ -2024,11 +2054,13 @@ impl App {
         );
         self.restore_voice_owner_after_replay();
         self.chat_widget
-            .set_queue_autosend_suppressed(/*suppressed*/ false);
+            .set_queue_autosend_suppressed(recovery_required);
         self.chat_widget
-            .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
-        self.chat_widget.submit_initial_user_message_if_pending();
-        if resume_restored_queue {
+            .set_initial_user_message_submit_suppressed(recovery_required);
+        if !recovery_required {
+            self.chat_widget.submit_initial_user_message_if_pending();
+        }
+        if resume_restored_queue && !recovery_required {
             self.chat_widget.maybe_send_next_queued_input();
         }
         self.refresh_status_line();
@@ -2113,6 +2145,12 @@ impl App {
     }
 
     pub(super) fn handle_thread_event_now(&mut self, event: ThreadBufferedEvent) {
+        if self
+            .current_displayed_thread_id()
+            .is_some_and(|id| self.history_recovery_required.contains(&id))
+        {
+            return;
+        }
         let needs_refresh = matches!(
             &event,
             ThreadBufferedEvent::Notification(notification)
@@ -2169,6 +2207,12 @@ impl App {
         replay_kind: ReplayKind,
     ) {
         self.turn_tips.dismiss();
+        if self
+            .current_displayed_thread_id()
+            .is_some_and(|id| self.history_recovery_required.contains(&id))
+        {
+            return;
+        }
         match event {
             ThreadBufferedEvent::Notification(notification) => self
                 .chat_widget
@@ -2206,6 +2250,12 @@ impl App {
         app_server: &mut AppServerSession,
         event: ThreadBufferedEvent,
     ) -> Result<()> {
+        if self
+            .active_thread_id
+            .is_some_and(|id| self.history_recovery_required.contains(&id))
+        {
+            return Ok(());
+        }
         // Capture this before any potential thread switch: we only want to clear
         // the exit marker when the currently active thread acknowledges shutdown.
         let pending_shutdown_exit_completed = matches!(

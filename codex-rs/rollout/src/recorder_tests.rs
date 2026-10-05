@@ -585,7 +585,7 @@ async fn load_rollout_items_filters_legacy_ghost_snapshots_from_compaction_histo
 
 #[test]
 fn strip_legacy_ghost_snapshot_keeps_checkpoint_metadata_aligned() {
-    let mut value = serde_json::json!({
+    let original = serde_json::json!({
         "type": "compacted",
         "payload": {
             "message": "summary",
@@ -602,21 +602,36 @@ fn strip_legacy_ghost_snapshot_keeps_checkpoint_metadata_aligned() {
         }
     });
 
-    assert!(!strip_legacy_ghost_snapshot_rollout_line(&mut value));
-    assert_eq!(
-        value["payload"]["replacement_history"],
-        serde_json::json!([
+    for (prefix, retained_prefix) in [
+        (None, None),
+        (Some(0), Some(0)),
+        (Some(1), Some(1)),
+        (Some(2), Some(1)),
+        (Some(3), Some(2)),
+        (Some(4), Some(4)),
+    ] {
+        let mut value = original.clone();
+        if let Some(prefix) = prefix {
+            value["payload"]["replacement_history_media_sanitized_prefix_len"] =
+                serde_json::json!(prefix);
+        }
+        let mut expected = value.clone();
+        expected["payload"]["replacement_history"] = serde_json::json!([
             {"type": "message", "role": "assistant", "content": []},
             {"type": "message", "role": "user", "content": []}
-        ])
-    );
-    assert_eq!(
-        value["payload"]["replacement_history_metadata"],
-        serde_json::json!([
+        ]);
+        expected["payload"]["replacement_history_metadata"] = serde_json::json!([
             {"slot": "assistant"},
             {"slot": "user"}
-        ])
-    );
+        ]);
+        if let Some(prefix) = retained_prefix {
+            expected["payload"]["replacement_history_media_sanitized_prefix_len"] =
+                serde_json::json!(prefix);
+        }
+
+        assert!(!crate::canonical_line::strip_legacy_ghost_snapshot_rollout_line(&mut value));
+        assert_eq!(value, expected);
+    }
 }
 
 #[tokio::test]
@@ -949,6 +964,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
     File::create(&rollout_path)?;
     let read_only_file = std::fs::OpenOptions::new().read(true).open(&rollout_path)?;
     let mut state = RolloutWriterState {
+        writer_lock: None,
         writer: Some(JsonlWriter {
             file: tokio::fs::File::from_std(read_only_file),
         }),
@@ -1884,3 +1900,6 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
     );
     Ok(())
 }
+
+#[path = "recorder_barrier_tests.rs"]
+mod barrier_tests;

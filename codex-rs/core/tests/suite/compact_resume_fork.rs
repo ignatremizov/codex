@@ -16,15 +16,22 @@ use codex_core::TurnInputRequest;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use codex_exec_server::CreateDirectoryOptions;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::RolloutItem;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use core_test_support::ThreadIdle;
@@ -35,6 +42,8 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
+use core_test_support::submit_thread_settings;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -656,6 +665,191 @@ async fn start_test_conversation(
         .await
         .expect("create conversation");
     (test.home, test.config, test.thread_manager, test.codex)
+}
+
+async fn start_legacy_test_conversation(
+    server: &MockServer,
+    model: Option<&str>,
+) -> Result<TestCodex> {
+    let base_url = format!("{}/v1", server.uri());
+    let model = model.map(str::to_string);
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
+    let mut builder = test_codex()
+        .with_history_mode(ThreadHistoryMode::Legacy)
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(move |config| {
+            config.update_plan_enabled = true;
+            config.model_provider.name = "Non-OpenAI Model provider".to_string();
+            config.model_provider.base_url = Some(base_url);
+            let _ = config.features.disable(Feature::RemoteCompaction);
+            config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
+            if let Some(model) = model {
+                config.model = Some(model);
+            }
+        });
+    Box::pin(builder.build_with_auto_env(server)).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Result<()> {
+    if network_disabled() {
+        return Ok(());
+    }
+    let server = MockServer::start().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", FIRST_REPLY),
+                ev_completed("r1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", SUMMARY_TEXT),
+                ev_completed("r2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m3", "SECOND_REPLY"),
+                ev_completed("r3"),
+            ]),
+            sse(vec![ev_completed("r4")]),
+        ],
+    )
+    .await;
+    let test = start_legacy_test_conversation(&server, /*model*/ None).await?;
+    let conversation = &test.codex;
+
+    user_turn(conversation, "hello world").await;
+    compact_conversation(conversation).await;
+    user_turn(conversation, "EDITED_AFTER_COMPACT").await;
+    conversation
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event(conversation, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_))
+    })
+    .await;
+    user_turn(conversation, "AFTER_ROLLBACK").await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[1].body_contains_text(SUMMARIZATION_PROMPT));
+    assert!(requests[2].body_contains_text(SUMMARY_TEXT));
+    assert!(requests[2].body_contains_text("EDITED_AFTER_COMPACT"));
+    assert!(requests[3].body_contains_text("hello world"));
+    assert!(requests[3].body_contains_text(SUMMARY_TEXT));
+    assert!(!requests[3].body_contains_text("EDITED_AFTER_COMPACT"));
+    assert_eq!(
+        requests[3]
+            .message_input_texts("user")
+            .last()
+            .map(String::as_str),
+        Some("AFTER_ROLLBACK")
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
+    if network_disabled() {
+        return Ok(());
+    }
+    let server = MockServer::start().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m1", "turn 1 assistant"),
+                ev_completed("r1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", "turn 2 assistant"),
+                ev_completed("r2"),
+            ]),
+            sse(vec![ev_completed("r3")]),
+        ],
+    )
+    .await;
+    let test = start_legacy_test_conversation(&server, Some("gpt-5.4")).await?;
+    let conversation = &test.codex;
+
+    user_turn(conversation, "turn 1 user").await;
+    const OVERRIDE_DIRECTORY: &str = "PRETURN_CONTEXT_DIFF_CWD";
+    const DEVELOPER_INSTRUCTIONS: &str = "rollback-only developer instructions";
+    let mut environment = test.executor_environment().selection().clone();
+    environment.cwd = test.workspace_path_uri(OVERRIDE_DIRECTORY)?;
+    environment.workspace_roots = vec![environment.cwd.clone()];
+    test.fs()
+        .create_directory(
+            &environment.cwd,
+            CreateDirectoryOptions {
+                recursive: false,
+                follow_symlinks: true,
+            },
+            /*sandbox*/ None,
+        )
+        .await?;
+    submit_thread_settings(
+        conversation,
+        ThreadSettingsOverrides {
+            environments: Some(TurnEnvironmentSelections::new(
+                test.config.cwd.join(OVERRIDE_DIRECTORY),
+                vec![environment],
+            )),
+            collaboration_mode: Some(CollaborationMode {
+                mode: ModeKind::Default,
+                settings: Settings {
+                    model: "gpt-5.4".to_string(),
+                    reasoning_effort: None,
+                    developer_instructions: Some(DEVELOPER_INSTRUCTIONS.to_string()),
+                },
+            }),
+            ..Default::default()
+        },
+    )
+    .await?;
+    user_turn(conversation, "turn 2 user").await;
+    conversation
+        .submit(Op::ThreadRollback { num_turns: 1 })
+        .await?;
+    wait_for_event(conversation, |event| {
+        matches!(event, EventMsg::ThreadRolledBack(_))
+    })
+    .await;
+    user_turn(conversation, "follow-up user").await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let follow_up = requests.last().expect("follow-up request");
+    assert_eq!(
+        follow_up
+            .message_input_texts("user")
+            .last()
+            .map(String::as_str),
+        Some("follow-up user")
+    );
+    assert!(!follow_up.body_contains_text("turn 2 user"));
+    // Rollback removes old context records, not the user's current settings. The next
+    // request must introduce those still-selected settings once, without duplicate old diffs.
+    for request in [&requests[1], follow_up] {
+        assert_eq!(
+            request
+                .message_input_texts("developer")
+                .iter()
+                .filter(|text| text.contains(DEVELOPER_INSTRUCTIONS))
+                .count(),
+            1
+        );
+        assert_eq!(
+            request
+                .message_input_texts("user")
+                .iter()
+                .filter(|text| text.contains(OVERRIDE_DIRECTORY))
+                .count(),
+            1
+        );
+    }
+    Ok(())
 }
 
 async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {

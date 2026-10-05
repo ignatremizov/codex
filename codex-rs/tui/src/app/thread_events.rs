@@ -64,6 +64,7 @@ pub(super) enum ThreadEventAttachment {
 pub(super) struct ThreadEventStore {
     pub(super) session: Option<ThreadSessionState>,
     pub(super) turns: Vec<Turn>,
+    pub(super) turn_history_complete: bool,
     pub(super) buffer: VecDeque<ThreadBufferedEvent>,
     pub(super) pending_interactive_replay: PendingInteractiveReplayState,
     pub(super) active_turn_id: Option<String>,
@@ -113,6 +114,7 @@ impl ThreadEventStore {
         Self {
             session: None,
             turns: Vec::new(),
+            turn_history_complete: false,
             buffer: VecDeque::new(),
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             active_turn_id: None,
@@ -151,6 +153,9 @@ impl ThreadEventStore {
     }
 
     pub(super) fn set_turns(&mut self, turns: Vec<Turn>) {
+        // Callers also install partial Paginated windows. Only an explicit canonical
+        // Legacy read can certify a complete prompt-edit snapshot.
+        self.turn_history_complete = false;
         if self.active_reasoning_item.as_ref().is_some_and(|started| {
             turns.iter().any(|turn| {
                 (turn.id == started.turn_id && turn.status != TurnStatus::InProgress)

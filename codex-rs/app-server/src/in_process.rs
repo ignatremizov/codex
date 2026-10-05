@@ -101,6 +101,8 @@ use tracing::warn;
 
 #[path = "in_process_bootstrap.rs"]
 mod bootstrap;
+mod request_completion;
+use request_completion::PendingClientResponse;
 
 const IN_PROCESS_CONNECTION_ID: ConnectionId = ConnectionId(0);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -183,6 +185,10 @@ pub enum InProcessServerEvent {
     ServerNotification(Box<ServerNotification>),
     /// Indicates one or more events were dropped due to backpressure.
     Lagged { skipped: usize },
+    /// Ordered transport boundary for a `thread/rollback` response, including error responses.
+    ///
+    /// This is not a wire notification or evidence that the mutation committed.
+    RequestCompleted { request_id: RequestId },
 }
 
 /// Internal message sent from [`InProcessClientHandle`] methods to the runtime task.
@@ -598,8 +604,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
             processor.drain_background_tasks().await;
             processor.shutdown_threads().await;
         });
-        let mut pending_request_responses =
-            HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
+        let mut pending_request_responses = HashMap::<RequestId, PendingClientResponse>::new();
         let mut shutdown_ack = None;
 
         loop {
@@ -611,7 +616,11 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                             let request_id = request.id().clone();
                             match pending_request_responses.entry(request_id.clone()) {
                                 Entry::Vacant(entry) => {
-                                    entry.insert(response_tx);
+                                    entry.insert(PendingClientResponse {
+                                        response_tx,
+                                        ordered_boundary: matches!(&request, ClientRequest::ThreadRollback { .. })
+                                            .then(|| request_id.clone()),
+                                    });
                                 }
                                 Entry::Occupied(_) => {
                                     let _ = response_tx.send(Err(invalid_request(format!(
@@ -624,10 +633,10 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                             match processor_tx.try_send(ProcessorCommand::Request(Box::new(request), cancellation)) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(_)) => {
-                                    if let Some(response_tx) =
+                                    if let Some(pending) =
                                         pending_request_responses.remove(&request_id)
                                     {
-                                        let _ = response_tx.send(Err(JSONRPCErrorError {
+                                        let _ = pending.response_tx.send(Err(JSONRPCErrorError {
                                             code: OVERLOADED_ERROR_CODE,
                                             message: "in-process app-server request queue is full"
                                                 .to_string(),
@@ -636,10 +645,10 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                                     }
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    if let Some(response_tx) =
+                                    if let Some(pending) =
                                         pending_request_responses.remove(&request_id)
                                     {
-                                        let _ = response_tx.send(Err(internal_error(
+                                        let _ = pending.response_tx.send(Err(internal_error(
                                             "in-process app-server request processor is closed",
                                         )));
                                     }
@@ -684,11 +693,13 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                     let outgoing_message = queued_message.message;
                     match outgoing_message {
                         OutgoingMessage::Response(response) => {
-                            if let Some(response_tx) = pending_request_responses.remove(&response.id) {
+                            if let Some(pending) = pending_request_responses.remove(&response.id) {
                                 let result = serde_json::to_value(response.result).map_err(|err| {
                                     internal_error(format!("failed to serialize response: {err}"))
                                 });
-                                let _ = response_tx.send(result);
+                                if pending.respond(result, &event_tx).await.is_err() {
+                                    break;
+                                }
                             } else {
                                 warn!(
                                     request_id = ?response.id,
@@ -697,8 +708,10 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                             }
                         }
                         OutgoingMessage::Error(error) => {
-                            if let Some(response_tx) = pending_request_responses.remove(&error.id) {
-                                let _ = response_tx.send(Err(error.error));
+                            if let Some(pending) = pending_request_responses.remove(&error.id) {
+                                if pending.respond(Err(error.error), &event_tx).await.is_err() {
+                                    break;
+                                }
                             } else {
                                 warn!(
                                     request_id = ?error.id,
@@ -784,8 +797,8 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         // Detached processor work can retain outgoing senders, so channel
         // closure alone cannot be used to shut down the outbound router.
         drop(outgoing_message_sender);
-        for (_, response_tx) in pending_request_responses {
-            let _ = response_tx.send(Err(internal_error(
+        for (_, pending) in pending_request_responses {
+            let _ = pending.response_tx.send(Err(internal_error(
                 "in-process app-server runtime is shutting down",
             )));
         }

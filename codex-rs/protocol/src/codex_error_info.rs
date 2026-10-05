@@ -48,6 +48,7 @@ enum CodexErrorInfoWire {
         turn_kind: NonSteerableTurnKind,
     },
     ThreadRollbackFailed,
+    ThreadRollbackCommitUnknown,
     #[serde(other)]
     Other,
 }

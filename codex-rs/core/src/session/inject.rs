@@ -80,6 +80,7 @@ impl Session {
         items: Vec<ResponseItem>,
         turn_context: &TurnContext,
     ) -> CodexResult<()> {
+        let _admission = self.submission_admission.admit_injection().await?;
         self.check_history_publication()?;
         let items = items
             .into_iter()

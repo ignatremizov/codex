@@ -125,8 +125,15 @@ pub enum RolloutRecorderParams {
     },
 }
 
+#[path = "recorder_barrier.rs"]
+mod barrier;
+
 enum RolloutCmd {
     AddItems(Vec<RolloutItem>),
+    AddItemAndFlush {
+        item: Box<RolloutItem>,
+        ack: oneshot::Sender<std::io::Result<()>>,
+    },
     Persist {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
@@ -968,6 +975,7 @@ impl RolloutRecorder {
                 };
 
                 RolloutWriterState {
+                    writer_lock: writer_lock.clone(),
                     writer: None,
                     deferred_creation: true,
                     pending_items: Vec::new(),
@@ -982,6 +990,7 @@ impl RolloutRecorder {
                 let (path, file, ordinal_state) =
                     open_rollout_for_append(path.as_path(), writer_lock.clone()).await?;
                 RolloutWriterState {
+                    writer_lock: writer_lock.clone(),
                     writer: Some(JsonlWriter { file }),
                     deferred_creation: false,
                     pending_items: Vec::new(),
@@ -1102,7 +1111,7 @@ impl RolloutRecorder {
                 continue;
             }
             saw_non_empty_line = true;
-            let mut value: Value = match serde_json::from_str(&line) {
+            let value: Value = match serde_json::from_str(&line) {
                 Ok(value) => value,
                 Err(e) => {
                     warn!("failed to parse line as JSON: {line:?}, error: {e}");
@@ -1110,10 +1119,6 @@ impl RolloutRecorder {
                     continue;
                 }
             };
-            if strip_legacy_ghost_snapshot_rollout_line(&mut value) {
-                trace!("skipping legacy ghost_snapshot rollout line");
-                continue;
-            }
             if thread_id.is_none() {
                 // The first SessionMeta belongs to this rollout. Later SessionMeta lines
                 // can be copied from fork history, so only validate unknown history modes
@@ -1121,8 +1126,9 @@ impl RolloutRecorder {
                 reject_unknown_thread_history_mode(&value)?;
             }
 
-            let rollout_line = match crate::decode_rollout_line(value) {
-                Ok(rollout_line) => rollout_line,
+            let rollout_line = match crate::decode_canonical_rollout_line(value) {
+                Ok(Some(rollout_line)) => rollout_line,
+                Ok(None) => continue,
                 Err(e) => {
                     trace!("failed to parse rollout line: {e}");
                     parse_errors = parse_errors.saturating_add(1);
@@ -1233,69 +1239,6 @@ pub(crate) fn reject_unknown_thread_history_mode(value: &Value) -> std::io::Resu
     serde_json::from_value::<ThreadHistoryMode>(history_mode.clone())
         .map(|_| ())
         .map_err(|err| IoError::other(format!("invalid session metadata history_mode: {err}")))
-}
-
-fn strip_legacy_ghost_snapshot_rollout_line(value: &mut Value) -> bool {
-    match value.get("type").and_then(Value::as_str) {
-        Some("response_item") => value
-            .get("payload")
-            .is_some_and(is_legacy_ghost_snapshot_response_item),
-        Some("compacted") => {
-            let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) else {
-                return false;
-            };
-            let Some(replacement_history) =
-                payload.get("replacement_history").and_then(Value::as_array)
-            else {
-                return false;
-            };
-            let remove = replacement_history
-                .iter()
-                .map(is_legacy_ghost_snapshot_response_item)
-                .collect::<Vec<_>>();
-            if !remove.contains(&true) {
-                return false;
-            }
-
-            // Legacy checkpoints have no sidecar. If a sidecar is present, only filter a
-            // full-length array; malformed shapes should remain intact for typed deserialization
-            // to reject instead of silently shifting metadata onto a different history item.
-            match payload.get("replacement_history_metadata") {
-                None => {}
-                Some(Value::Array(metadata)) if metadata.len() == remove.len() => {}
-                Some(_) => return false,
-            }
-
-            let Some(replacement_history) = payload
-                .get_mut("replacement_history")
-                .and_then(Value::as_array_mut)
-            else {
-                return false;
-            };
-            retain_entries_not_marked(replacement_history, &remove);
-            if let Some(metadata) = payload
-                .get_mut("replacement_history_metadata")
-                .and_then(Value::as_array_mut)
-            {
-                retain_entries_not_marked(metadata, &remove);
-            }
-            false
-        }
-        _ => false,
-    }
-}
-
-fn retain_entries_not_marked(entries: &mut Vec<Value>, remove: &[bool]) {
-    let mut index = 0;
-    entries.retain(|_| {
-        let retain = !remove[index];
-        index += 1;
-        retain
-    });
-}
-
-fn is_legacy_ghost_snapshot_response_item(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("ghost_snapshot")
 }
 
 fn truncate_fs_page(
@@ -1771,6 +1714,7 @@ fn open_log_file(path: &Path) -> std::io::Result<File> {
 /// queue only after it is written successfully. I/O failures drop the file handle but keep the
 /// unwritten suffix so the next barrier can reopen the file and retry.
 struct RolloutWriterState {
+    writer_lock: Option<Arc<crate::WriterLockGuard>>,
     writer: Option<JsonlWriter>,
     /// True until a newly created rollout is first materialized.
     deferred_creation: bool,
@@ -1860,19 +1804,6 @@ impl RolloutWriterState {
         self.writer = None;
     }
 
-    async fn ensure_writer_open(&mut self) -> std::io::Result<()> {
-        if self.writer.is_some() {
-            return Ok(());
-        }
-
-        let file = open_log_file(self.rollout_path.as_path())?;
-        self.writer = Some(JsonlWriter {
-            file: tokio::fs::File::from_std(file),
-        });
-        self.deferred_creation = false;
-        Ok(())
-    }
-
     async fn write_session_meta_if_needed(&mut self) -> std::io::Result<()> {
         let Some(session_meta) = self.meta.as_ref().cloned() else {
             return Ok(());
@@ -1942,6 +1873,9 @@ async fn rollout_writer(
             RolloutCmd::AddItems(items) => {
                 state.add_items(items);
                 state.flush_if_materialized().await;
+            }
+            RolloutCmd::AddItemAndFlush { item, ack } => {
+                let _ = ack.send(state.add_item_and_flush(*item).await);
             }
             RolloutCmd::Persist { ack } => {
                 let _ = ack.send(state.persist().await);
@@ -2073,6 +2007,16 @@ impl JsonlWriter {
         rollout_item: &RolloutItem,
         ordinal: Option<u64>,
     ) -> std::io::Result<()> {
+        self.write_rollout_item_buffered(rollout_item, ordinal)
+            .await?;
+        self.file.flush().await
+    }
+
+    async fn write_rollout_item_buffered(
+        &mut self,
+        rollout_item: &RolloutItem,
+        ordinal: Option<u64>,
+    ) -> std::io::Result<()> {
         let timestamp_format: &[FormatItem] = format_description!(
             "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
         );
@@ -2085,14 +2029,13 @@ impl JsonlWriter {
             ordinal,
             item: rollout_item,
         };
-        self.write_line(&line).await
+        self.write_line_buffered(&line).await
     }
-    async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
+
+    async fn write_line_buffered(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
-        self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
-        Ok(())
+        self.file.write_all(json.as_bytes()).await
     }
 }
 

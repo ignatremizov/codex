@@ -20,6 +20,9 @@ use crate::ThreadStoreResult;
 const SQLITE_PROJECTION_METRIC: &str = "codex.thread_history.sqlite_projection";
 const SQLITE_PROJECTION_ANOMALY_METRIC: &str = "codex.thread_history.sqlite_projection.anomaly";
 
+#[path = "thread_history_rollback.rs"]
+mod rollback;
+
 pub(super) async fn materialize_to_sqlite(
     store: &LocalThreadStore,
     thread_id: ThreadId,
@@ -101,7 +104,7 @@ async fn materialize_to_sqlite_with_state_db(
     let expected_ordinal = projection_state
         .as_ref()
         .map_or(initial_ordinal, |state| state.next_ordinal);
-    let (projections, next_offset) = read_projection_steps(
+    let (projections, next_offset, contains_exact_marker) = read_projection_steps(
         rollout_path,
         start_offset,
         expected_ordinal,
@@ -109,6 +112,9 @@ async fn materialize_to_sqlite_with_state_db(
         subagent_history_start_ordinal,
     )
     .await?;
+    if start_offset != 0 && contains_exact_marker {
+        return rebuild_to_sqlite(store, thread_id, rollout_path).await;
+    }
     // Empty valid records can still consume bytes through blank complete lines.
     if projections.is_empty() && start_offset == next_offset {
         return Ok(());
@@ -142,7 +148,7 @@ pub(super) async fn rebuild_to_sqlite(
         .map_or(0, |base| base.end_ordinal_exclusive);
     // Read the replacement before opening the transaction. A failed read or projection must
     // leave the previous derived view available, and replacement rows publish atomically.
-    let (projections, next_offset) = read_projection_steps(
+    let (projections, next_offset, _) = read_projection_steps(
         rollout_path,
         /*start_offset*/ 0,
         initial_ordinal,
@@ -168,7 +174,7 @@ async fn read_projection_steps(
     expected_ordinal: u64,
     thread_id: ThreadId,
     subagent_history_start_ordinal: Option<u64>,
-) -> ThreadStoreResult<(Vec<RolloutProjectionStep>, u64)> {
+) -> ThreadStoreResult<(Vec<RolloutProjectionStep>, u64, bool)> {
     let path = rollout_path.to_path_buf();
     let file =
         tokio::task::spawn_blocking(move || codex_rollout::open_rollout_seekable_reader(&path))
@@ -203,6 +209,8 @@ async fn read_projection_steps(
         .iter()
         .rposition(|byte| *byte == b'\n')
         .map_or(0, |index| index + 1);
+    let exact =
+        rollback::ExactRollbackProjection::read(&bytes[..complete_byte_count], start_offset);
     let mut projections = Vec::new();
     let mut next_ordinal = expected_ordinal;
     let mut next_offset = start_offset;
@@ -241,8 +249,13 @@ async fn read_projection_steps(
             }
         };
         let raw_ordinal = value.get("ordinal").and_then(serde_json::Value::as_u64);
-        let line = match codex_rollout::decode_rollout_line(value) {
-            Ok(line) => line,
+        let line = match codex_rollout::decode_canonical_rollout_line(value) {
+            Ok(Some(line)) => line,
+            Ok(None) => {
+                next_offset = line_end_offset;
+                line_start_offset = line_end_offset;
+                continue;
+            }
             Err(err) => {
                 warn!(
                     thread_id = %thread_id,
@@ -297,7 +310,9 @@ async fn read_projection_steps(
         }
         let is_inherited_subagent_history =
             subagent_history_start_ordinal.is_some_and(|start| ordinal < start);
-        let changes = if is_inherited_subagent_history {
+        let omit_projection =
+            is_inherited_subagent_history || exact.removed_offsets.contains(&line_start_offset);
+        let changes = if omit_projection {
             ThreadHistoryChangeSet::default()
         } else {
             project_rollout_line(&line)
@@ -306,8 +321,7 @@ async fn read_projection_steps(
             .changed_items
             .iter()
             .any(|item| item.started_at_ms.is_none())
-            || (!is_inherited_subagent_history
-                && matches!(&line.item, RolloutItem::RealtimeItem(_)))
+            || (!omit_projection && matches!(&line.item, RolloutItem::RealtimeItem(_)))
         {
             match DateTime::parse_from_rfc3339(line.timestamp.as_str()) {
                 Ok(timestamp) => Some(timestamp.timestamp_millis()),
@@ -374,7 +388,7 @@ async fn read_projection_steps(
                 fallback_created_at_ms,
                 changes,
                 realtime_item: match line.item {
-                    RolloutItem::RealtimeItem(item) if !is_inherited_subagent_history => Some(item),
+                    RolloutItem::RealtimeItem(item) if !omit_projection => Some(item),
                     _ => None,
                 },
             },
@@ -383,7 +397,7 @@ async fn read_projection_steps(
         next_offset = line_end_offset;
         line_start_offset = line_end_offset;
     }
-    Ok((projections, next_offset))
+    Ok((projections, next_offset, exact.contains_exact_marker))
 }
 
 #[derive(Clone, Copy)]
