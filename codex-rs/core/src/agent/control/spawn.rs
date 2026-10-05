@@ -37,6 +37,7 @@ use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_features::Feature;
 use codex_history::ResponseItemEnvelope;
+use codex_history::rollout_without_exact_rollback_ranges;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::error::AgentErrorContext;
 use codex_protocol::intersect_effective_permission_profiles;
@@ -1097,7 +1098,7 @@ impl LocalAgentControl {
 
         let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
             .then_some(ThreadHistoryMode::Paginated);
-        let mut forked_rollout_items =
+        let forked_rollout_items =
             load_agent_model_context(state, parent_thread_id, parent_history_mode)
                 .await?
                 .ok_or_else(|| {
@@ -1106,6 +1107,7 @@ impl LocalAgentControl {
                     ))
                 })?
                 .items;
+        let mut forked_rollout_items = rollout_without_exact_rollback_ranges(&forked_rollout_items);
 
         if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
             forked_rollout_items =

@@ -103,6 +103,18 @@ impl ModelReplayPlanner {
                     }
                 }
                 ReplayRecord::Rollback(num_turns) => {
+                    if *num_turns == 0 {
+                        continue;
+                    }
+                    // Close newer context before applying an older rollback.
+                    // Standalone post-rollback checkpoints must not be emptied.
+                    if let Some(segment) = active_segment.take() {
+                        finalize_segment(
+                            segment,
+                            &mut selected_compaction,
+                            &mut pending_rollback_turns,
+                        );
+                    }
                     pending_rollback_turns = pending_rollback_turns
                         .saturating_add(usize::try_from(*num_turns).unwrap_or(usize::MAX));
                 }

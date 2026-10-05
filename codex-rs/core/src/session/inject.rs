@@ -71,14 +71,25 @@ impl Session {
 
     /// Assigns host identity to new public agent input and preserves client provenance.
     /// Supplied agent names remain display provenance, not authorization.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
     pub(crate) async fn inject_client_response_items(
         &self,
         items: Vec<ResponseItem>,
         turn_context: &TurnContext,
+    ) -> CodexResult<()> {
+        let admission = self.submission_admission.admit_injection().await?;
+        self.inject_client_response_items_with_admission(items, turn_context, admission)
+            .await
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "rollback admission and active turn checks cover input acceptance"
+    )]
+    pub(crate) async fn inject_client_response_items_with_admission(
+        &self,
+        items: Vec<ResponseItem>,
+        turn_context: &TurnContext,
+        _admission: tokio::sync::MutexGuard<'_, ()>,
     ) -> CodexResult<()> {
         self.check_history_publication()?;
         let items = items

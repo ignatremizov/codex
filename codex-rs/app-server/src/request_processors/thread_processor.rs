@@ -39,6 +39,7 @@ use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_rollout::rollout_without_exact_rollback_ranges;
 use codex_thread_store::PersistContext;
 use std::ops::ControlFlow;
 
@@ -866,7 +867,7 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
-    async fn send_deprecation_notice(&self, connection_id: ConnectionId, summary: &str) {
+    pub(super) async fn send_deprecation_notice(&self, connection_id: ConnectionId, summary: &str) {
         self.outgoing
             .send_server_notification_to_connections(
                 &[connection_id],
@@ -1157,7 +1158,7 @@ impl ThreadRequestProcessor {
         }
     }
 
-    async fn ensure_conversation_listener(
+    pub(super) async fn ensure_conversation_listener(
         &self,
         conversation_id: ThreadId,
         connection_id: ConnectionId,
@@ -5433,6 +5434,9 @@ impl ThreadRequestProcessor {
                     })?,
             )
         };
+        let source_history_items = Arc::new(rollout_without_exact_rollback_ranges(
+            source_history_items.as_ref(),
+        ));
         let history_cwd = Some(source_thread.cwd.clone());
 
         // Persist Windows sandbox mode.
