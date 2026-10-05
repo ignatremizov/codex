@@ -269,11 +269,13 @@ ON CONFLICT(thread_id) DO UPDATE SET
 INSERT INTO fork_thread_history_projection_state (
     thread_id,
     next_rollout_byte_offset,
-    next_rollout_ordinal
-) VALUES (?, ?, ?)
+    next_rollout_ordinal,
+    projection_version
+) VALUES (?, ?, ?, 1)
 ON CONFLICT(thread_id) DO UPDATE SET
     next_rollout_byte_offset = excluded.next_rollout_byte_offset,
-    next_rollout_ordinal = excluded.next_rollout_ordinal
+    next_rollout_ordinal = excluded.next_rollout_ordinal,
+    projection_version = excluded.projection_version
         "#,
     )
     .bind(thread_id.as_str())

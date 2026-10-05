@@ -61,6 +61,7 @@ use codex_history::HistoryInitialization;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
+use codex_history::rollout_without_exact_rollback_ranges;
 use codex_install_context::InstallContext;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -2750,6 +2751,17 @@ pub(crate) fn fork_history_from_snapshot(
     history: InitialHistory,
     interrupted_marker: InterruptedTurnHistoryMarker,
 ) -> InitialHistory {
+    let history = match history {
+        InitialHistory::New => InitialHistory::New,
+        InitialHistory::Cleared => InitialHistory::Cleared,
+        InitialHistory::Forked(items) => {
+            InitialHistory::Forked(rollout_without_exact_rollback_ranges(&items))
+        }
+        InitialHistory::Resumed(resumed) => InitialHistory::Resumed(ResumedHistory {
+            history: Arc::new(rollout_without_exact_rollback_ranges(&resumed.history)),
+            ..resumed
+        }),
+    };
     let snapshot_state = snapshot_turn_state(&history);
     match snapshot {
         ForkSnapshot::TruncateBeforeNthUserMessage(nth_user_message) => {

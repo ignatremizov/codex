@@ -101,6 +101,8 @@ async fn migrated_child_keeps_audit_sentinels_outside_bounded_cold_resume_reques
             })),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
         ])
         .await?;

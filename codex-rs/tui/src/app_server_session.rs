@@ -14,6 +14,7 @@ pub(crate) mod provider_selection;
 #[path = "app_server_session/provider_selection_tests.rs"]
 mod provider_selection_tests;
 mod realtime;
+mod rollback;
 mod rollout_history;
 mod startup_launch;
 mod thread_list;
@@ -28,6 +29,7 @@ pub(crate) use history::HISTORY_ITEM_SCAN_LIMIT;
 pub(crate) use history::HistoryHydrationScope;
 pub(crate) use history::INITIAL_HISTORY_TURN_LIMIT;
 pub(crate) use history::thread_items_page_params;
+pub(crate) use rollback::LegacyRollbackOutcome;
 pub(crate) use startup_launch::StartupLaunchChoices;
 
 use crate::app_event::PermissionProfileSelection;

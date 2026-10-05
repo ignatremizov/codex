@@ -100,6 +100,7 @@ pub(crate) struct Session {
     pub(super) fork_persistence: ForkPersistence,
     pub(super) history_initialization: HistoryInitialization,
     pub(super) forked_from_ordinal_exclusive: Option<u64>,
+    pub(crate) submission_admission: Arc<SubmissionAdmission>,
     pub(super) next_internal_sub_id: AtomicU64,
 }
 
@@ -1865,6 +1866,7 @@ impl Session {
                 fork_persistence,
                 history_initialization,
                 forked_from_ordinal_exclusive,
+                submission_admission: Arc::new(SubmissionAdmission::default()),
                 next_internal_sub_id: AtomicU64::new(0),
             });
             if let Some(startup) = &startup {

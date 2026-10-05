@@ -536,6 +536,7 @@ class CodexErrorInfoValue(str, Enum):
     unauthorized = "unauthorized"
     bad_request = "badRequest"
     thread_rollback_failed = "threadRollbackFailed"
+    thread_rollback_commit_unknown = "threadRollbackCommitUnknown"
     sandbox_error = "sandboxError"
     other = "other"
 
@@ -6165,6 +6166,36 @@ class ThreadRevertedNotification(BaseModel):
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
+class ThreadRollbackParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    expected_start_turn_id: Annotated[
+        str | None,
+        Field(
+            alias="expectedStartTurnId",
+            description="Optional first turn expected in the selected rollback suffix.",
+        ),
+    ] = None
+    expected_turn_count: Annotated[
+        int | None,
+        Field(
+            alias="expectedTurnCount",
+            description="Optional materialized turn count observed when the rollback target was selected.",
+            ge=0,
+        ),
+    ] = None
+    num_turns: Annotated[
+        int,
+        Field(
+            alias="numTurns",
+            description="The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
+            ge=0,
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ThreadSearchSortKey(Enum):
     created_at = "created_at"
     updated_at = "updated_at"
@@ -7228,6 +7259,15 @@ class ThreadApproveGuardianDeniedActionRequest(BaseModel):
         Field(title="Thread/approveGuardianDeniedActionRequestMethod"),
     ]
     params: ThreadApproveGuardianDeniedActionParams
+
+
+class ThreadRollbackRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/rollback"], Field(title="Thread/rollbackRequestMethod")]
+    params: ThreadRollbackParams
 
 
 class ThreadRevertRequest(BaseModel):
@@ -12666,6 +12706,18 @@ class ThreadRevertResponse(BaseModel):
     ] = None
 
 
+class ThreadRollbackResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread: Annotated[
+        Thread,
+        Field(
+            description="The updated Legacy thread after applying the rollback, with canonical turns populated."
+        ),
+    ]
+
+
 class ThreadSearchResult(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12907,6 +12959,7 @@ class ClientRequest(
         | ThreadCompactStartRequest
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
+        | ThreadRollbackRequest
         | ThreadRevertRequest
         | ThreadListRequest
         | ThreadSectionListRequest
@@ -13019,6 +13072,7 @@ class ClientRequest(
         | ThreadCompactStartRequest
         | ThreadShellCommandRequest
         | ThreadApproveGuardianDeniedActionRequest
+        | ThreadRollbackRequest
         | ThreadRevertRequest
         | ThreadListRequest
         | ThreadSectionListRequest

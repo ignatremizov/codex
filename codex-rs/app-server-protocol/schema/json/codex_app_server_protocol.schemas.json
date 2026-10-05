@@ -739,6 +739,30 @@
             },
             "method": {
               "enum": [
+                "thread/rollback"
+              ],
+              "title": "Thread/rollbackRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadRollbackParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/rollbackRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/revert"
               ],
               "title": "Thread/revertRequestMethod",
@@ -8553,6 +8577,7 @@
               "unauthorized",
               "badRequest",
               "threadRollbackFailed",
+              "threadRollbackCommitUnknown",
               "sandboxError",
               "other"
             ],
@@ -24654,6 +24679,61 @@
           "threadId"
         ],
         "title": "ThreadRevertedNotification",
+        "type": "object"
+      },
+      "ThreadRollbackParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Legacy-history rollback request. This route applies only to Legacy history mode; Paginated history uses `thread/revert`.",
+        "properties": {
+          "expectedStartTurnId": {
+            "description": "Optional first turn expected in the selected rollback suffix.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectedTurnCount": {
+            "description": "Optional materialized turn count observed when the rollback target was selected.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "numTurns": {
+            "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "numTurns",
+          "threadId"
+        ],
+        "title": "ThreadRollbackParams",
+        "type": "object"
+      },
+      "ThreadRollbackResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "thread": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/Thread"
+              }
+            ],
+            "description": "The updated Legacy thread after applying the rollback, with canonical turns populated."
+          }
+        },
+        "required": [
+          "thread"
+        ],
+        "title": "ThreadRollbackResponse",
         "type": "object"
       },
       "ThreadSearchResult": {
