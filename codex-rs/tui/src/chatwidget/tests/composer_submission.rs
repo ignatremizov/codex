@@ -13,6 +13,9 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 use std::collections::VecDeque;
 
+#[path = "composer_submission_receipt_tests.rs"]
+mod receipt_identity_tests;
+
 #[tokio::test]
 async fn composer_submission_sends_once_and_requests_latest() {
     let (mut chat, mut events, mut operations) =
@@ -2853,6 +2856,7 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
                         Some(id),
                         /*from_replay*/ false,
                         "turn-1",
+                        id,
                     );
                 }
             } else {
@@ -2993,6 +2997,7 @@ async fn image_submission_is_portable_for_new_turns_and_steers() {
                     echo_client_id.then_some(client_user_message_id.as_str()),
                     /*from_replay*/ false,
                     "turn",
+                    client_user_message_id.as_str(),
                 );
             }
             rendered.extend(drain_insert_history(&mut rx));
@@ -3007,6 +3012,7 @@ async fn image_submission_is_portable_for_new_turns_and_steers() {
                 Some(&client_user_message_id),
                 /*from_replay*/ true,
                 "turn",
+                client_user_message_id.as_str(),
             );
             let replayed = drain_insert_history(&mut rx);
             assert_eq!(replayed, rendered);
@@ -3119,6 +3125,7 @@ async fn image_preparation_failure_restores_full_input_without_submitting() {
                 Some(&pending_steers[0].client_id),
                 /*from_replay*/ false,
                 "turn",
+                &pending_steers[0].client_id,
             );
             chat.input_queue.suppress_queue_autosend = false;
             handle_turn_completed(&mut chat, "turn", /*duration_ms*/ None);

@@ -869,6 +869,7 @@ async fn run_onboarding_screen_inner(
                         }
                         AppServerEvent::ThreadStreamDisconnected(_)
                         | AppServerEvent::Lagged { .. }
+                        | AppServerEvent::RequestCompleted { .. }
                         | AppServerEvent::ServerRequest(_) => {}
                     }
                 }

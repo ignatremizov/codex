@@ -37,6 +37,15 @@ struct ProjectionRollout {
     reads: AncestorReads,
 }
 
+#[path = "thread_history_rollback.rs"]
+mod rollback;
+
+#[derive(Debug)]
+pub(super) enum ProjectionReadOutcome {
+    Complete,
+    RequiresRebuild,
+}
+
 pub(super) async fn materialize_to_sqlite(
     store: &LocalThreadStore,
     thread_id: ThreadId,
@@ -230,7 +239,7 @@ fn read_projection_batches(
     subagent_history_start_ordinal: Option<u64>,
     is_cancelled: impl Fn() -> bool,
     mut emit: impl FnMut(Vec<RolloutProjectionStep>, u64) -> ThreadStoreResult<()>,
-) -> ThreadStoreResult<()> {
+) -> ThreadStoreResult<ProjectionReadOutcome> {
     let rollout_path = &rollout.path;
     let mut file = match rollout.reads.open(rollout_path, &is_cancelled) {
         Ok(file) => file,
@@ -239,7 +248,7 @@ fn read_projection_batches(
                 && start_offset == 0
                 && !rollout.reads.tracks(rollout_path) =>
         {
-            return Ok(());
+            return Ok(ProjectionReadOutcome::Complete);
         }
         Err(err) => return Err(thread_store_io_error(err)),
     };
@@ -256,6 +265,22 @@ fn read_projection_batches(
             ),
         }
     })?;
+    file.seek(SeekFrom::Start(start_offset))
+        .map_err(thread_store_io_error)?;
+    let exact = rollback::ExactRollbackProjection::read(
+        &mut BufReader::new((&mut file).take(byte_count)),
+        start_offset,
+        &is_cancelled,
+    )
+    .map_err(|error| {
+        if !is_cancelled() {
+            rollout.reads.record_failure(rollout_path);
+        }
+        thread_store_io_error(error)
+    })?;
+    if start_offset != 0 && exact.contains_exact_marker {
+        return Ok(ProjectionReadOutcome::RequiresRebuild);
+    }
     file.seek(SeekFrom::Start(start_offset))
         .map_err(thread_store_io_error)?;
     // Freeze this pass at the captured end, without retaining the entire durable suffix.
@@ -324,8 +349,13 @@ fn read_projection_batches(
             }
         };
         let raw_ordinal = value.get("ordinal").and_then(serde_json::Value::as_u64);
-        let line = match codex_rollout::decode_rollout_line(value) {
-            Ok(line) => line,
+        let line = match codex_rollout::decode_canonical_rollout_line(value) {
+            Ok(Some(line)) => line,
+            Ok(None) => {
+                next_offset = line_end_offset;
+                line_start_offset = line_end_offset;
+                continue;
+            }
             Err(err) => {
                 warn!(
                     thread_id = %thread_id,
@@ -380,7 +410,9 @@ fn read_projection_batches(
         }
         let is_inherited_subagent_history =
             subagent_history_start_ordinal.is_some_and(|start| ordinal < start);
-        let changes = if is_inherited_subagent_history {
+        let omit_projection =
+            is_inherited_subagent_history || exact.removed_offsets.contains(&line_start_offset);
+        let changes = if omit_projection {
             ThreadHistoryChangeSet::default()
         } else {
             project_rollout_line(&line)
@@ -389,8 +421,7 @@ fn read_projection_batches(
             .changed_items
             .iter()
             .any(|change| change.item.started_at_ms.is_none())
-            || (!is_inherited_subagent_history
-                && matches!(&line.item, RolloutItem::RealtimeItem(_)))
+            || (!omit_projection && matches!(&line.item, RolloutItem::RealtimeItem(_)))
         {
             match DateTime::parse_from_rfc3339(line.timestamp.as_str()) {
                 Ok(timestamp) => Some(timestamp.timestamp_millis()),
@@ -457,7 +488,7 @@ fn read_projection_batches(
                 fallback_created_at_ms,
                 changes,
                 realtime_item: match line.item {
-                    RolloutItem::RealtimeItem(item) if !is_inherited_subagent_history => Some(item),
+                    RolloutItem::RealtimeItem(item) if !omit_projection => Some(item),
                     _ => None,
                 },
             },
@@ -475,7 +506,7 @@ fn read_projection_batches(
     if next_offset != batch_start_offset {
         emit(batch, next_offset)?;
     }
-    Ok(())
+    Ok(ProjectionReadOutcome::Complete)
 }
 
 #[derive(Clone, Copy)]

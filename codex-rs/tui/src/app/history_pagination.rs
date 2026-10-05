@@ -267,7 +267,7 @@ impl App {
         for (range, turn_end) in completion::group_turn_items(&items, turns) {
             // Internal prompts stay invisible, but still separate adjacent tool groups.
             for visible in items[range].split(|item| hidden_item_ids.contains(item.id())) {
-                cells.extend(thread_items_to_transcript_cells_with_preview_line_limits(
+                let projected = thread_items_to_transcript_cells_with_preview_line_limits(
                     Some(thread_id),
                     cwd,
                     visible.iter().cloned(),
@@ -275,7 +275,20 @@ impl App {
                     Some(&self.config),
                     output_preview_line_limits,
                     (&self.local_settings.tui).into(),
-                ));
+                );
+                crate::thread_transcript::attach_projected_user_identities(
+                    &projected,
+                    visible.iter().map(|item| {
+                        let mut owners = turns.iter().filter(|turn| {
+                            turn.items
+                                .iter()
+                                .any(|candidate| candidate.id() == item.id())
+                        });
+                        let owner = owners.next().map(|turn| turn.id.as_str());
+                        (owner.filter(|_| owners.next().is_none()), item)
+                    }),
+                );
+                cells.extend(projected);
             }
             let Some(turn) = turn_end else { continue };
             if turn.status == TurnStatus::Interrupted && !self.side_threads.contains_key(&thread_id)

@@ -499,6 +499,32 @@ impl RolloutBounds {
 }
 
 impl RolloutLineage {
+    /// Construct deliberately synthetic ranges for source-coordinate reader tests.
+    #[cfg(test)]
+    pub(super) fn for_test(segments: Vec<RolloutLineageSegment>) -> Self {
+        let requested_thread_id = segments
+            .last()
+            .map(|segment| segment.thread_id)
+            .unwrap_or_default();
+        let reads = AncestorReads::new(
+            segments
+                .iter()
+                .filter_map(|segment| {
+                    segment
+                        .end
+                        .map(|end| (segment.rollout_path.clone(), (end, segment.thread_id)))
+                })
+                .collect(),
+        );
+        Self {
+            segments,
+            reads,
+            requested_thread_id,
+            mode: LineageResolutionMode::Existing,
+            excluded_ancestors: HashMap::new(),
+        }
+    }
+
     /// Use the projected paths for named turn lookup, hiding history inherited by an attached child.
     pub(super) async fn for_history_page(&self) -> ThreadStoreResult<Cow<'_, Self>> {
         let Some(first) = self
@@ -589,6 +615,24 @@ impl RolloutLineage {
 }
 
 impl RolloutLineageSegment {
+    #[cfg(test)]
+    pub(super) fn for_test(
+        thread_id: ThreadId,
+        rollout_id: ThreadId,
+        rollout_path: PathBuf,
+        start_ordinal: u64,
+        end: Option<HistoryPosition>,
+    ) -> Self {
+        Self {
+            thread_id,
+            rollout_id,
+            rollout_path,
+            start_ordinal,
+            end,
+            hides_parent: false,
+        }
+    }
+
     pub(super) fn rollout_id(&self) -> ThreadId {
         self.rollout_id
     }

@@ -3,6 +3,7 @@
 use std::io;
 use std::path::Path;
 
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::ModelContextScan;
@@ -23,6 +24,9 @@ use crate::ThreadStoreResult;
 #[cfg(test)]
 #[path = "model_context_tests.rs"]
 mod tests;
+
+#[path = "model_context_rollback.rs"]
+mod rollback;
 
 /// Loads rollout items needed to reconstruct the latest model-visible context.
 ///
@@ -133,6 +137,27 @@ pub(super) async fn load_for_fork(
                     let ScanOutcome::Parsed(line) = outcome else {
                         continue;
                     };
+                    if matches!(
+                        &line.item,
+                        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(event))
+                            if event.rollback_start_index.is_some()
+                    ) {
+                        for item in rollback::read_segment(segment, &source_lineage.reads, || {
+                            stop.is_closed()
+                        })?
+                        .into_iter()
+                        .rev()
+                        {
+                            if matches!(&item, RolloutItem::SessionMeta(_)) {
+                                break;
+                            }
+                            if let Some(version) = codex_rollout::resume_multi_agent_version(&item)
+                            {
+                                return Ok(Some(version));
+                            }
+                        }
+                        break;
+                    }
                     if let Some(version) = codex_rollout::resume_multi_agent_version(&line.item) {
                         return Ok(Some(version));
                     }
@@ -199,6 +224,13 @@ fn scan_model_context_from_lineage_blocking(
             let ScanOutcome::Parsed(line) = outcome else {
                 continue;
             };
+            if matches!(
+                &line.item,
+                RolloutItem::EventMsg(EventMsg::ThreadRolledBack(event))
+                    if event.rollback_start_index.is_some()
+            ) {
+                return rollback::read_full_lineage(lineage, &is_cancelled);
+            }
             // Each rollout segment contributes only its local delta. Its session metadata is
             // replaced with the requested thread's canonical SessionMeta after replay.
             if matches!(&line.item, RolloutItem::SessionMeta(_)) {

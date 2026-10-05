@@ -62,6 +62,9 @@ impl ThreadEventStore {
             if let Some(prefix) = &mut self.attachment_prefix {
                 *prefix = prefix.saturating_sub(1);
             }
+            if super::thread_turn_materialization::event_changes_materialized_turns(&removed) {
+                self.turn_history_complete = false;
+            }
             match removed {
                 ThreadBufferedEvent::Notification(notification) => {
                     if let ServerNotification::AgentMessageDelta(delta) = notification.as_ref() {

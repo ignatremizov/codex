@@ -63,7 +63,7 @@ async fn complete_projection_rows(
     let mut rows = projection_rows(pool, thread_id).await;
     rows.push(
         sqlx::query_scalar(
-            "SELECT json_array(thread_id, next_rollout_byte_offset, next_rollout_ordinal) \
+            "SELECT json_array(thread_id, next_rollout_byte_offset, next_rollout_ordinal, projection_version) \
              FROM fork_thread_history_projection_state WHERE thread_id = ?",
         )
         .bind(thread_id.to_string())

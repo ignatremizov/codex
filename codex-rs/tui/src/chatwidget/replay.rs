@@ -143,6 +143,12 @@ impl ChatWidget {
                 duration_ms,
                 ..
             } = turn;
+            let turn_replay_kind =
+                if replay_kind.preserves_live_processes() && status != TurnStatus::InProgress {
+                    ReplayKind::ReplayOnlyThreadSnapshot
+                } else {
+                    replay_kind
+                };
             let delegated = items.iter().any(|item| {
                 matches!(&item.payload, ThreadItemPayload::UserMessage { content, .. }
                     if realtime::realtime_delegation_input(content).is_some())
@@ -208,7 +214,7 @@ impl ChatWidget {
                 } else {
                     self.transcript.recording_finished_cloud_text =
                         status != TurnStatus::InProgress || entry.completed_at_ms.is_some();
-                    self.replay_thread_item(item, turn_id.clone(), replay_kind);
+                    self.replay_thread_item(item, turn_id.clone(), turn_replay_kind);
                     self.transcript.recording_finished_cloud_text = false;
                 }
             }
@@ -253,10 +259,10 @@ impl ChatWidget {
                             duration_ms,
                         },
                     },
-                    Some(replay_kind),
+                    Some(turn_replay_kind),
                 );
             }
-            if !replay_kind.preserves_live_processes() {
+            if !turn_replay_kind.preserves_live_processes() {
                 self.finalize_replayed_process_tracking();
             }
         }
@@ -306,7 +312,9 @@ impl ChatWidget {
         let replay_kind = render_source.replay_kind();
         match item {
             ThreadItemPayload::UserMessage {
-                content, client_id, ..
+                id,
+                content,
+                client_id,
             } => {
                 if let Some(replies) = crate::async_question_reply::parse_input(&content) {
                     let ids = replies
@@ -326,6 +334,7 @@ impl ChatWidget {
                     client_id.as_deref(),
                     from_replay,
                     &turn_id,
+                    &id,
                 );
             }
             ThreadItemPayload::AgentMessage {
@@ -468,6 +477,7 @@ impl ChatWidget {
                 summary,
                 message,
                 decode_error,
+                available_skills,
                 ..
             } => {
                 self.on_context_compaction_completed(
@@ -478,6 +488,15 @@ impl ChatWidget {
                     message,
                     decode_error,
                 );
+                if !available_skills.is_empty() {
+                    self.add_to_history(history_cell::new_info_event(
+                        format!(
+                            "Available skills after compaction: {}",
+                            available_skills.join(", ")
+                        ),
+                        /*hint*/ None,
+                    ));
+                }
             }
             ThreadItemPayload::FunctionCallOutput {
                 name,

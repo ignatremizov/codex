@@ -5,6 +5,7 @@ use codex_protocol::ThreadId;
 use super::super::LocalThreadStore;
 use super::super::thread_history::RolloutProjectionStep;
 use super::super::thread_history::apply_projection;
+use super::ProjectionReadOutcome;
 use super::ProjectionRollout;
 use super::read_projection_batches;
 use crate::ThreadStoreError;
@@ -18,6 +19,7 @@ pub(super) enum ProjectionMessage {
         next_offset: u64,
     },
     Complete,
+    RequiresRebuild,
     Failed(ThreadStoreError),
 }
 
@@ -35,10 +37,11 @@ pub(super) async fn read_and_apply(
     let (sender, receiver) = tokio::sync::mpsc::channel(QUEUED_BATCHES);
     let (stop, keep_running) = tokio::sync::oneshot::channel::<()>();
     let span = tracing::Span::current();
+    let reader_rollout = rollout.clone();
     let worker = tokio::task::spawn_blocking(move || {
         let _entered = span.enter();
         let read = read_projection_batches(
-            &rollout,
+            &reader_rollout,
             start_offset,
             expected_ordinal,
             thread_id,
@@ -56,7 +59,8 @@ pub(super) async fn read_and_apply(
             },
         );
         let completion = match read {
-            Ok(()) => ProjectionMessage::Complete,
+            Ok(ProjectionReadOutcome::Complete) => ProjectionMessage::Complete,
+            Ok(ProjectionReadOutcome::RequiresRebuild) => ProjectionMessage::RequiresRebuild,
             Err(error) => ProjectionMessage::Failed(error),
         };
         let _ = sender.blocking_send(completion);
@@ -67,7 +71,12 @@ pub(super) async fn read_and_apply(
     worker.await.map_err(|err| ThreadStoreError::Internal {
         message: format!("projection producer failed: {err}"),
     })?;
-    result
+    match result? {
+        ProjectionReadOutcome::Complete => Ok(()),
+        ProjectionReadOutcome::RequiresRebuild => {
+            super::rebuild_projection(store, thread_id, rollout).await
+        }
+    }
 }
 
 pub(super) async fn apply_batches(
@@ -76,7 +85,7 @@ pub(super) async fn apply_batches(
     mut start_offset: u64,
     initial_ordinal: u64,
     mut receiver: tokio::sync::mpsc::Receiver<ProjectionMessage>,
-) -> ThreadStoreResult<()> {
+) -> ThreadStoreResult<ProjectionReadOutcome> {
     // Receive before opening the transaction so a slow reader cannot hold the SQLite writer.
     while let Some(message) = receiver.recv().await {
         match message {
@@ -96,7 +105,10 @@ pub(super) async fn apply_batches(
                 .await?;
                 start_offset = next_offset;
             }
-            ProjectionMessage::Complete => return Ok(()),
+            ProjectionMessage::Complete => return Ok(ProjectionReadOutcome::Complete),
+            ProjectionMessage::RequiresRebuild => {
+                return Ok(ProjectionReadOutcome::RequiresRebuild);
+            }
             ProjectionMessage::Failed(error) => return Err(error),
         }
     }

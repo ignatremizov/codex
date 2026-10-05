@@ -27,6 +27,7 @@ use codex_context_fragments::to_annotated_content;
 use codex_history::InitialHistory;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RolloutItem;
+use codex_history::rollout_without_exact_rollback_ranges;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -226,7 +227,7 @@ pub(super) async fn prepare_forked_history(
 
     let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
         .then_some(ThreadHistoryMode::Paginated);
-    let mut forked_rollout_items =
+    let forked_rollout_items =
         load_agent_model_context(state, parent_thread_id, parent_history_mode)
             .await?
             .ok_or_else(|| {
@@ -236,10 +237,16 @@ pub(super) async fn prepare_forked_history(
             })?
             .items;
 
-    if let SpawnAgentForkMode::LastNTurns(last_n_turns) = fork_mode {
-        forked_rollout_items =
-            truncate_rollout_to_last_n_fork_turns(forked_rollout_items, *last_n_turns);
-    }
+    // Last-N selection needs the original source positions and catalog authority before
+    // exact-rollback projection removes context records or turns snapshots into metadata.
+    let mut forked_rollout_items = match fork_mode {
+        SpawnAgentForkMode::LastNTurns(last_n_turns) => {
+            truncate_rollout_to_last_n_fork_turns(forked_rollout_items, *last_n_turns)
+        }
+        SpawnAgentForkMode::FullHistory => {
+            rollout_without_exact_rollback_ranges(&forked_rollout_items)
+        }
+    };
     let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
         if multi_agent_version == MultiAgentVersion::V2 {
             let parent_config = parent_thread.session.get_config().await;

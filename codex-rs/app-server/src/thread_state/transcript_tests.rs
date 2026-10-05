@@ -79,6 +79,7 @@ fn failed_current_turn_remains_available_to_live_snapshots() {
     state.track_current_turn_event(
         "turn-a",
         &EventMsg::Error(ErrorEvent {
+            rejected_audio_file_ids: Default::default(),
             misalignment: None,
             message: "model failed".to_string(),
             codex_error_info: None,
