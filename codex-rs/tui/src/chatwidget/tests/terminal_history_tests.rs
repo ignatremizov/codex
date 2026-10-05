@@ -173,13 +173,17 @@ async fn replayed_command_execution_is_visible_in_transcript() {
 
 #[tokio::test]
 async fn resumed_history_keeps_command_without_restoring_background_terminal() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.replay_thread_turns(
-        vec![AppServerTurn {
-            id: "turn-1".to_string(),
-            root_turn_id: None,
-            items: vec![AppServerThreadItem::untimed(
-                AppServerThreadItemPayload::CommandExecution {
+    for replay_kind in [
+        ReplayKind::ResumeInitialMessages,
+        ReplayKind::ThreadSnapshot,
+    ] {
+        let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.replay_thread_turns(
+            vec![AppServerTurn {
+                id: "turn-1".to_string(),
+                root_turn_id: None,
+                items: vec![AppServerThreadItem::untimed(
+                    AppServerThreadItemPayload::CommandExecution {
                     id: "exec-1".to_string(),
                     model_context: None,
                     sandbox_type: None,
@@ -196,34 +200,35 @@ async fn resumed_history_keeps_command_without_restoring_background_terminal() {
                     aggregated_output: None,
                     exit_code: None,
                     duration_ms: None,
-                },
-            )],
-            items_view: codex_app_server_protocol::TurnItemsView::Full,
-            status: AppServerTurnStatus::Completed,
-            error: None,
-            started_at: None,
-            completed_at: None,
-            duration_ms: None,
-        }],
-        ReplayKind::ResumeInitialMessages,
-    );
+                    },
+                )],
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                status: AppServerTurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }],
+            replay_kind,
+        );
 
-    assert_eq!(
-        (
-            chat.unified_exec_processes.len(),
-            chat.completed_unified_exec_processes.len(),
-        ),
-        (0, 0)
-    );
-    chat.add_ps_output();
-    let rendered = drain_insert_history_transcript(&mut rx)
-        .into_iter()
-        .map(|lines| lines_to_single_string(&lines))
-        .collect::<String>();
-    let rendered = regex_lite::Regex::new(r"(?m) • (?:\d+ms|\d+\.\d+s|\d+m \d+s)$")
-        .expect("valid duration regex")
-        .replace(&rendered, " • <duration>");
-    insta::assert_snapshot!(rendered, @r"
+        assert_eq!(
+            (
+                chat.unified_exec_processes.len(),
+                chat.completed_unified_exec_processes.len(),
+            ),
+            (0, 0)
+        );
+        chat.add_ps_output();
+        let rendered = drain_insert_history_transcript(&mut rx)
+            .into_iter()
+            .map(|lines| lines_to_single_string(&lines))
+            .collect::<String>();
+        let rendered = regex_lite::Regex::new(r"(?m) • (?:\d+ms|\d+\.\d+s|\d+m \d+s)$")
+            .expect("valid duration regex")
+            .replace(&rendered, " • <duration>");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(rendered, @r"
     $ sleep 20
     ✗ (1) • <duration>
 
@@ -233,6 +238,8 @@ async fn resumed_history_keeps_command_without_restoring_background_terminal() {
 
       • No background terminals running.
     ");
+        }
+    }
 }
 
 #[tokio::test]

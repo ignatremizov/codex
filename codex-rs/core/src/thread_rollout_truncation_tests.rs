@@ -193,6 +193,8 @@ fn truncate_rollout_before_turn_id_rejects_rolled_back_turn() {
         turn_completed("turn-2"),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         turn_started("turn-3"),
         turn_completed("turn-3"),
@@ -237,6 +239,8 @@ fn truncate_rollout_after_turn_id_rejects_rolled_back_turn() {
         turn_completed("turn-2"),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         turn_started("turn-3"),
         turn_completed("turn-3"),
@@ -250,6 +254,37 @@ fn truncate_rollout_after_turn_id_rejects_rolled_back_turn() {
         CodexErrorDetails::InvalidRequest(message)
             if message == "lastTurnId 'turn-2' was not found in the source thread"
     ));
+}
+
+#[test]
+fn fork_truncation_removes_exact_ranges_before_copying_rollout() {
+    let rollout = vec![
+        turn_started("turn-1"),
+        turn_completed("turn-1"),
+        turn_started("turn-2"),
+        turn_completed("turn-2"),
+        RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+            rollback_start_index: Some(2),
+            num_turns: 0,
+            materialized_turns: None,
+        })),
+        turn_started("turn-3"),
+        turn_completed("turn-3"),
+    ];
+
+    let truncated =
+        truncate_rollout_after_turn_id(rollout, "turn-3").expect("truncate through turn-3");
+
+    assert_eq!(
+        serde_json::to_value(truncated).expect("serialize truncated rollout"),
+        serde_json::to_value(vec![
+            turn_started("turn-1"),
+            turn_completed("turn-1"),
+            turn_started("turn-3"),
+            turn_completed("turn-3"),
+        ])
+        .expect("serialize expected rollout")
+    );
 }
 
 #[test]
@@ -369,6 +404,8 @@ fn truncates_rollout_from_start_applies_thread_rollback_markers() {
         response_item(assistant_msg("a2")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u3")),
         response_item(assistant_msg("a3")),
@@ -432,6 +469,25 @@ fn fork_turn_positions_use_inter_agent_delivery_metadata() {
 }
 
 #[test]
+fn instruction_positions_include_user_event_before_model_message() {
+    let rollout = vec![
+        turn_started("turn-1"),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "initial".to_string(),
+            ..Default::default()
+        })),
+        RolloutItem::ResponseItem(user_msg("initial").into()),
+        RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            message: "steer".to_string(),
+            ..Default::default()
+        })),
+        RolloutItem::ResponseItem(user_msg("steer").into()),
+    ];
+
+    assert_eq!(instruction_positions_in_rollout(&rollout), vec![1, 3]);
+}
+
+#[test]
 fn fork_turn_positions_use_canonical_agent_messages_and_delivery_metadata() {
     let queued = InterAgentCommunication::new(
         AgentPath::root(),
@@ -461,11 +517,14 @@ fn fork_turn_positions_use_canonical_agent_messages_and_delivery_metadata() {
     ];
 
     assert_eq!(fork_turn_positions_in_rollout(&rollout), vec![0, 4, 7]);
+    assert_eq!(instruction_positions_in_rollout(&rollout), vec![0, 1, 4, 7]);
 
     rollout.insert(
         7,
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
     );
     assert_eq!(fork_turn_positions_in_rollout(&rollout), vec![0, 8]);
@@ -551,6 +610,118 @@ fn fork_catalog_checkpoint(thread_id: ThreadId, tools: Vec<DynamicToolSpec>) -> 
         replacement_history_media_sanitized_prefix_len: Some(1),
         replacement_history_media_repair: true,
         ..Default::default()
+    }
+}
+
+#[test]
+fn last_n_fork_preserves_removed_checkpoint_catalog_without_removed_context() {
+    let owner = ThreadId::new();
+    let foreign = ThreadId::new();
+    for tools in [fork_catalog("selected"), Vec::new()] {
+        for header_after_boundary in [false, true] {
+            let header = fork_catalog_header(owner, Some(fork_catalog("creation")));
+            let kept_user = response_item(user_msg("retained task"));
+            let kept_answer = response_item(assistant_msg("retained answer"));
+            let mut rollout = vec![
+                response_item(user_msg("earlier removed task")),
+                RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                    num_turns: 1,
+                    materialized_turns: None,
+                    rollback_start_index: Some(0),
+                })),
+            ];
+            if !header_after_boundary {
+                rollout.push(header.clone());
+            }
+            rollout.push(kept_user.clone());
+            if header_after_boundary {
+                rollout.push(header.clone());
+            }
+            rollout.push(kept_answer.clone());
+            let removed_start = rollout.len() as u64;
+            rollout.extend([
+                response_item(user_msg("removed task")),
+                RolloutItem::Compacted(Box::new(fork_catalog_checkpoint(owner, tools.clone()))),
+                fork_catalog_header(foreign, Some(fork_catalog("foreign header"))),
+                RolloutItem::Compacted(Box::new(fork_catalog_checkpoint(
+                    foreign,
+                    fork_catalog("foreign checkpoint"),
+                ))),
+                RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                    num_turns: 1,
+                    materialized_turns: None,
+                    rollback_start_index: Some(removed_start),
+                })),
+            ]);
+
+            let truncated = truncate_rollout_to_last_n_fork_turns(rollout, 1);
+            let mut expected = vec![kept_user];
+            if header_after_boundary {
+                expected.push(header);
+            }
+            expected.extend([
+                kept_answer,
+                RolloutItem::DynamicToolsUpdated {
+                    thread_id: owner,
+                    tools: tools.clone(),
+                },
+            ]);
+            assert_eq!(
+                serde_json::to_value(&truncated).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+            );
+            assert_eq!(latest_dynamic_tools(&truncated), Some(tools.as_slice()));
+        }
+    }
+}
+
+#[test]
+fn exact_prefix_fork_keeps_only_catalog_metadata_inside_original_boundary() {
+    let owner = ThreadId::new();
+    for tools in [fork_catalog("selected"), Vec::new()] {
+        let retained = vec![
+            fork_catalog_header(owner, Some(fork_catalog("creation"))),
+            turn_started("turn-1"),
+            response_item(user_msg("retained task")),
+            response_item(assistant_msg("retained answer")),
+            turn_completed("turn-1"),
+        ];
+        let mut rollout = retained.clone();
+        let removed_start = rollout.len() as u64;
+        rollout.extend([
+            turn_started("removed-turn"),
+            response_item(user_msg("removed task")),
+            RolloutItem::Compacted(Box::new(fork_catalog_checkpoint(owner, tools.clone()))),
+            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+                num_turns: 1,
+                materialized_turns: Some(1),
+                rollback_start_index: Some(removed_start),
+            })),
+            turn_started("turn-2"),
+            response_item(user_msg("excluded future task")),
+            turn_completed("turn-2"),
+            RolloutItem::DynamicToolsUpdated {
+                thread_id: owner,
+                tools: fork_catalog("excluded future catalog"),
+            },
+        ]);
+        let mut expected = retained;
+        expected.push(RolloutItem::DynamicToolsUpdated {
+            thread_id: owner,
+            tools: tools.clone(),
+        });
+
+        let before = truncate_rollout_before_turn_id(rollout.clone(), "turn-2")
+            .expect("cut before the surviving next turn");
+        let after = truncate_rollout_after_turn_id(rollout, "turn-1")
+            .expect("cut after the surviving previous turn");
+        for truncated in [before, after] {
+            assert_eq!(
+                serde_json::to_value(&truncated).unwrap(),
+                serde_json::to_value(&expected).unwrap(),
+            );
+            assert_eq!(latest_dynamic_tools(&truncated), Some(tools.as_slice()));
+        }
     }
 }
 
@@ -738,7 +909,11 @@ fn last_n_fork_keeps_surviving_canonical_header_and_catalog_without_duplicate_ca
     assert!(truncate_rollout_to_last_n_fork_turns(expected.clone(), 1).is_empty());
     expected.insert(0, response_item(user_msg("rolled-back task")));
     expected.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-        ThreadRolledBackEvent { num_turns: 1 },
+        ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
+        },
     )));
     assert!(truncate_rollout_to_last_n_fork_turns(expected, 1).is_empty());
 }
@@ -755,6 +930,8 @@ fn truncates_rollout_to_last_n_fork_turns_applies_thread_rollback_markers() {
         response_item(assistant_msg("a2")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u2")),
         response_item(assistant_msg("a3")),
@@ -778,6 +955,8 @@ fn fork_turn_positions_ignore_zero_turn_rollback_markers() {
         )),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 0,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u2")),
     ];
@@ -797,6 +976,8 @@ fn truncates_rollout_to_last_n_fork_turns_discards_trigger_boundaries_in_rolled_
         response_item(assistant_msg("a1")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(user_msg("u3")),
         response_item(assistant_msg("a2")),
@@ -824,6 +1005,8 @@ fn truncates_rollout_to_last_n_fork_turns_discards_rolled_back_assistant_instruc
         response_item(assistant_msg("a2")),
         RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
             num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
         })),
         response_item(inter_agent_msg(
             "triggered task 2",

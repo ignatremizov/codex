@@ -285,6 +285,14 @@ fn completed(turn_id: &str) -> RolloutItem {
     }))
 }
 
+fn rolled_back(num_turns: u32) -> RolloutItem {
+    RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
+        num_turns,
+        materialized_turns: None,
+        rollback_start_index: None,
+    }))
+}
+
 fn read_rollout(path: &Path) -> Vec<RolloutLine> {
     let mut contents = String::new();
     codex_rollout::open_rollout_seekable_reader(path, || false)
@@ -892,9 +900,7 @@ async fn migration_applies_historical_rollbacks_before_sqlite_projection() {
             completed("remove"),
             started("shell"),
             completed("shell"),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             started("replacement"),
             user_message("replacement question"),
             agent_message("replacement answer"),
@@ -937,6 +943,8 @@ async fn migration_rolls_back_response_and_inter_agent_user_boundaries() {
             rollout_response_item(input_response_message("user", "remove response boundary")),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             user_message("replacement question"),
         ],
@@ -954,9 +962,7 @@ async fn migration_rolls_back_response_and_inter_agent_user_boundaries() {
                 "remove communication boundary".to_string(),
                 /*trigger_turn*/ true,
             )),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             user_message("replacement question"),
         ],
     );
@@ -982,6 +988,8 @@ async fn migration_rolls_back_response_and_inter_agent_user_boundaries() {
             rollout_response_item(input_response_message("user", "remove real user boundary")),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             user_message("replacement question"),
         ],
@@ -1030,9 +1038,7 @@ async fn migration_drops_trailing_context_when_rollback_arrives_before_next_turn
                 "user",
                 "<turn_aborted>remove this context too</turn_aborted>",
             )),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             user_message("replacement question"),
         ],
     );
@@ -1101,6 +1107,8 @@ async fn migration_coalesces_response_first_user_message_rollback_boundary() {
             RolloutItem::EventMsg(EventMsg::UserMessage(event)),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             user_message("replacement question"),
         ],
@@ -1130,9 +1138,7 @@ async fn migration_does_not_coalesce_distinct_adjacent_user_records() {
         vec![
             rollout_response_item(input_response_message("user", "copied parent question")),
             user_message("child question"),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             user_message("replacement question"),
         ],
     );
@@ -1185,9 +1191,7 @@ async fn assert_late_completion_migration(source: SessionSource) {
             item_completed("old", "reason-old"),
             exec_completion("remove", "call-remove", "ok"),
             completed("remove"),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             started("replacement"),
             user_message("replacement question"),
             completed("replacement"),
@@ -1304,6 +1308,8 @@ async fn migration_rolls_back_inter_agent_metadata_with_its_delivery() {
             rollout_response_item(delivery.to_model_input_item()),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             user_message("replacement question"),
         ],
@@ -1392,9 +1398,7 @@ async fn migration_rolls_back_pre_compaction_turns_from_sqlite_history() {
             started("remove-after-compaction"),
             user_message("new question"),
             completed("remove-after-compaction"),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 2,
-            })),
+            rolled_back(/*num_turns*/ 2),
             user_message("replacement question"),
         ],
     );
@@ -1481,7 +1485,11 @@ async fn migration_preserves_answers_before_a_rolled_back_steer() {
     items.push(completed("shared-turn"));
     items.push(RolloutItem::Compacted(checkpoint));
     items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-        ThreadRolledBackEvent { num_turns: 1 },
+        ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
+        },
     )));
     let path = write_rollout(home.path(), thread_id, SessionSource::Cli, items);
     let store = indexed_store(home.path()).await;
@@ -1547,7 +1555,11 @@ fn worker_communication(text: &str) -> InterAgentCommunication {
 
 async fn migrate_after_rollback(mut items: Vec<RolloutItem>) -> Vec<RolloutItem> {
     items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-        ThreadRolledBackEvent { num_turns: 1 },
+        ThreadRolledBackEvent {
+            num_turns: 1,
+            materialized_turns: None,
+            rollback_start_index: None,
+        },
     )));
     let home = TempDir::new().expect("create Codex home");
     let path = write_rollout(home.path(), ThreadId::new(), SessionSource::Cli, items);
@@ -1742,7 +1754,7 @@ async fn migration_keeps_downgraded_delivery_before_later_same_turn_steer() {
 }
 
 #[tokio::test]
-async fn migration_preserves_reverse_replay_anchor_after_pre_compaction_rollback() {
+async fn migration_preserves_checkpoint_contents_after_an_older_rollback() {
     let home = TempDir::new().expect("create Codex home");
     let thread_id = ThreadId::new();
     let path = write_rollout(
@@ -1753,6 +1765,8 @@ async fn migration_preserves_reverse_replay_anchor_after_pre_compaction_rollback
             rollout_response_item(input_response_message("user", "remove question")),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             compacted(vec![input_response_message("user", "old question")]),
             user_message("replacement question"),
@@ -1772,7 +1786,9 @@ async fn migration_preserves_reverse_replay_anchor_after_pre_compaction_rollback
             _ => None,
         })
         .expect("retained compaction");
-    assert!(replacement_history.is_empty());
+    let expected: Vec<codex_rollout::ResponseItemEnvelope> =
+        vec![input_response_message("user", "old question").into()];
+    assert_eq!(replacement_history, expected);
 }
 
 #[tokio::test]
@@ -1909,6 +1925,8 @@ async fn assert_migrated_evidence_order(steer_order: Option<u64>) {
             completed("compaction-turn"),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             // This checkpoint already contains the correct live rollback result.
             started("post-rollback-compaction"),
@@ -1981,9 +1999,7 @@ async fn migration_keeps_empty_replay_anchor_from_rolled_back_turn() {
             user_message("remove question"),
             compacted(vec![input_response_message("user", "old question")]),
             completed("remove"),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             started("replacement"),
             user_message("replacement question"),
             completed("replacement"),
@@ -2043,9 +2059,7 @@ async fn migration_uses_turn_context_to_select_reverse_replay_anchor() {
             }))
             .expect("build turn context"),
             compacted(vec![input_response_message("user", "remove question")]),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             started("replacement"),
             user_message("replacement question"),
             completed("replacement"),
@@ -2091,15 +2105,11 @@ async fn migration_applies_cumulative_and_overflowing_rollbacks() {
             started("second"),
             user_message("second question"),
             completed("second"),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 1,
-            })),
+            rolled_back(/*num_turns*/ 1),
             started("third"),
             user_message("third question"),
             completed("third"),
-            RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
-                num_turns: 99,
-            })),
+            rolled_back(/*num_turns*/ 99),
             user_message("replacement question"),
         ],
     );
@@ -2271,6 +2281,8 @@ async fn assert_subagent_transcript_migration(scenario: SubagentMigrationScenari
             completed("removed-turn"),
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(ThreadRolledBackEvent {
                 num_turns: 1,
+                materialized_turns: None,
+                rollback_start_index: None,
             })),
             exec_completion("old-turn", "OLD_TOOL_SENTINEL", "old tool output"),
             RolloutItem::Compacted(Box::new(CompactedItem {
@@ -2628,6 +2640,9 @@ async fn assert_subagent_full_replay_fallback(mut prefix: Vec<RolloutItem>) {
     assert_eq!(turns.turns.len(), 1);
     assert_eq!(turns.turns[0].items.len(), 2);
 }
+
+#[path = "rollout_migration_exact_tests.rs"]
+mod exact_tests;
 
 #[tokio::test]
 async fn migration_rejects_legacy_lineage_without_changing_source_or_recovery_state() {

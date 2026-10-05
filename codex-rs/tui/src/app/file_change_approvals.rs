@@ -22,6 +22,12 @@ impl App {
         &mut self,
         event: ThreadBufferedEvent,
     ) {
+        if self
+            .current_displayed_thread_id()
+            .is_some_and(|id| self.history_recovery_required.contains(&id))
+        {
+            return;
+        }
         let changes = match (&event, self.active_thread_id) {
             (ThreadBufferedEvent::Request(request), Some(thread_id)) => match request.as_ref() {
                 ServerRequest::FileChangeRequestApproval { params, .. } => {

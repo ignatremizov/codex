@@ -145,6 +145,8 @@ impl TurnSummary {
 #[derive(Default)]
 pub(crate) struct ThreadState {
     goal_resume_lock: Arc<Mutex<()>>,
+    pub(crate) pending_rollback:
+        Option<crate::request_processors::thread_rollback::PendingRollback>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
     pub(crate) turn_summary: TurnSummary,
@@ -169,6 +171,12 @@ impl ThreadState {
     pub(crate) async fn lock_goal_resume(state: &Mutex<Self>) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = Arc::clone(&state.lock().await.goal_resume_lock);
         lock.lock_owned().await
+    }
+
+    pub(crate) fn reset_after_rollback(&mut self) {
+        self.current_turn_history.reset();
+        self.turn_summary = TurnSummary::default();
+        self.last_terminal_turn_id = None;
     }
 
     pub(crate) fn listener_matches(&self, conversation: &Arc<CodexThread>) -> bool {

@@ -38,6 +38,8 @@ fn storage_failure_classification_does_not_change_mutation_error_policy() {
         },
     );
 }
+#[path = "thread_rollback_tests.rs"]
+mod legacy_exact_rollback_tests;
 
 mod thread_list_cwd_filter_tests {
     use super::super::normalize_thread_list_cwd_filters;

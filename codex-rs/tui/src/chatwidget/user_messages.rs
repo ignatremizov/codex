@@ -582,7 +582,7 @@ pub(super) fn merge_user_messages_with_history_record(
 pub(crate) struct UserMessageDisplay {
     pub(crate) message: String,
     // Keep distinct replies distinct when their visible question and answer text match.
-    pub(super) replies: Vec<crate::async_question_reply::AsyncQuestionReply>,
+    pub(crate) replies: Vec<crate::async_question_reply::AsyncQuestionReply>,
     pub(crate) remote_image_urls: Vec<String>,
     pub(crate) local_images: Vec<PathBuf>,
     pub(crate) text_elements: Vec<TextElement>,

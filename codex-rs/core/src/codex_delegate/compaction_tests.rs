@@ -69,6 +69,7 @@ async fn closed_shutdown_channel_still_waits_for_actual_termination() {
             .io
             .set(SessionIo {
                 tx_sub,
+                submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
                 rx_event,
                 agent_status,
                 session_loop_termination: async move {
@@ -110,6 +111,7 @@ async fn panicked_lifetime_owner_is_not_an_ordinary_retryable_decoder_error() {
             .io
             .set(SessionIo {
                 tx_sub,
+                submission_admission: Arc::new(crate::session::SubmissionAdmission::default()),
                 rx_event,
                 agent_status,
                 session_loop_termination: async {

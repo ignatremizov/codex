@@ -76,11 +76,12 @@ impl App {
         let checkout = &transition.checkout;
         let mode = transition.mode;
         if self.reconnect.offline
+            || self.history_recovery_required.contains(&source_thread_id)
             || (mode == crate::app_event::ManagedWorktreeMode::Fork
                 && self.chat_widget.has_misalignment_policy_violation())
         {
             self.chat_widget.add_error_message(format!(
-                "Cannot continue into the new worktree while the session is offline or blocked by a policy warning. An unused checkout was created at {}; remove it with `git worktree remove <checkout-path>` from the source repository.",
+                "Cannot continue into the new worktree while the session is unavailable or blocked by a policy warning. An unused checkout was created at {}; remove it with `git worktree remove <checkout-path>` from the source repository.",
                 checkout.root.display()
             ));
             return Ok(());
@@ -161,6 +162,11 @@ impl App {
         let Some(thread_id) = self.chat_widget.thread_id() else {
             return;
         };
+        if self.history_recovery_required.contains(&thread_id) {
+            return self.working_directory_error(
+                "Start a new conversation, or quit and reopen this conversation before changing directories.",
+            );
+        }
         if self.pending_server_profiles.contains_key(&thread_id) {
             return self.working_directory_error(
                 "Wait for permissions to update before changing directories.",

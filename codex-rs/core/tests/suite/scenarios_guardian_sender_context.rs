@@ -95,7 +95,11 @@ async fn cross_host_sender_context(history_mode: ThreadHistoryMode) -> Result<()
     sender
         .codex
         .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
-            ThreadRolledBackEvent { num_turns: 1 },
+            ThreadRolledBackEvent {
+                materialized_turns: None,
+                rollback_start_index: None,
+                num_turns: 1,
+            },
         ))])
         .await?;
     sender.codex.flush_rollout().await?;
