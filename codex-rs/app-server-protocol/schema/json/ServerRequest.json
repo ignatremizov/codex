@@ -349,7 +349,7 @@
     "CommandExecutionRequestApprovalParams": {
       "properties": {
         "approvalId": {
-          "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to one parent `itemId`, so `approvalId` is a distinct opaque callback id (a UUID) used to disambiguate routing. Stdin approvals also use a distinct callback id; inspect `kind` to distinguish them.",
+          "description": "Unique identifier for this specific approval callback.\n\nOpaque identifier for this approval callback. It is present for every human command approval and is distinct from `itemId`, which retains command provenance.",
           "type": [
             "string",
             "null"
@@ -388,6 +388,15 @@
           "description": "Environment in which the command will run.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "expiresAtMs": {
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when this approval request expires.\n\n`None` means that this approval has no deadline.",
+          "format": "int64",
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -442,9 +451,13 @@
           ]
         },
         "startedAtMs": {
-          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when this approval request started.\n\nOlder servers may omit timing metadata.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"
@@ -455,7 +468,6 @@
       },
       "required": [
         "itemId",
-        "startedAtMs",
         "threadId",
         "turnId"
       ],

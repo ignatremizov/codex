@@ -9,6 +9,7 @@ export type ItemStartedNotification = { item: ThreadItem, threadId: string, turn
  */
 startedAtMs: number,
 /**
- * Unix timestamp (in milliseconds) when a waiting item should report back.
+ * Advisory Unix-millisecond estimate for the current wait, or null when unavailable.
+ * This is not a process deadline and must not be restored as live state during replay.
  */
 deadlineAtMs: number | null, };

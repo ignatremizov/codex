@@ -379,6 +379,30 @@
             },
             "method": {
               "enum": [
+                "thread/unload"
+              ],
+              "title": "Thread/unloadRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadUnloadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/unloadRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/name/set"
               ],
               "title": "Thread/name/setRequestMethod",
@@ -418,6 +442,30 @@
             "params"
           ],
           "title": "Thread/goal/setRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/mcpServer/activate"
+              ],
+              "title": "Thread/mcpServer/activateRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadMcpServerActivateParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/mcpServer/activateRequest",
           "type": "object"
         },
         {
@@ -682,6 +730,30 @@
             "params"
           ],
           "title": "Thread/approveGuardianDeniedActionRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/rollback"
+              ],
+              "title": "Thread/rollbackRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadRollbackParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/rollbackRequest",
           "type": "object"
         },
         {
@@ -2477,6 +2549,30 @@
             },
             "method": {
               "enum": [
+                "server/read"
+              ],
+              "title": "Server/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ServerReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Server/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "config/read"
               ],
               "title": "Config/readRequestMethod",
@@ -2802,7 +2898,7 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "approvalId": {
-          "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to one parent `itemId`, so `approvalId` is a distinct opaque callback id (a UUID) used to disambiguate routing. Stdin approvals also use a distinct callback id; inspect `kind` to distinguish them.",
+          "description": "Unique identifier for this specific approval callback.\n\nOpaque identifier for this approval callback. It is present for every human command approval and is distinct from `itemId`, which retains command provenance.",
           "type": [
             "string",
             "null"
@@ -2841,6 +2937,15 @@
           "description": "Environment in which the command will run.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "expiresAtMs": {
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when this approval request expires.\n\n`None` means that this approval has no deadline.",
+          "format": "int64",
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -2895,9 +3000,13 @@
           ]
         },
         "startedAtMs": {
-          "description": "Unix timestamp (in milliseconds) when this approval request started.",
+          "default": null,
+          "description": "Unix timestamp (in milliseconds) when this approval request started.\n\nOlder servers may omit timing metadata.",
           "format": "int64",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"
@@ -2908,7 +3017,6 @@
       },
       "required": [
         "itemId",
-        "startedAtMs",
         "threadId",
         "turnId"
       ],
@@ -4579,7 +4687,7 @@
           "type": "object"
         },
         {
-          "description": "Automatic approval review timed out before reaching a decision.",
+          "description": "Human or automatic approval review timed out before reaching a decision.",
           "enum": [
             "timed_out"
           ],
@@ -5217,6 +5325,26 @@
             "params"
           ],
           "title": "Item/completedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "item/contextCompaction/status"
+              ],
+              "title": "Item/contextCompaction/statusNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ContextCompactionStatusNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Item/contextCompaction/statusNotification",
           "type": "object"
         },
         {
@@ -6999,6 +7127,969 @@
         },
         "type": "object"
       },
+      "AgentAlias": {
+        "description": "Root-scoped user-facing aliases for one canonical agent thread.",
+        "properties": {
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/definitions/v2/AgentAliasState"
+          },
+          "taskPath": {
+            "description": "Current root-scoped assignment label, independent of lifecycle ancestry.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "state",
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "AgentAliasState": {
+        "description": "Durable lifecycle state of an alias in one root namespace.",
+        "enum": [
+          "active",
+          "closed",
+          "transferred"
+        ],
+        "type": "string"
+      },
+      "AgentControlAction": {
+        "description": "A user-authored multi-agent control operation.",
+        "oneOf": [
+          {
+            "description": "Spawn a default or configured-role child.",
+            "properties": {
+              "fork_mode": {
+                "$ref": "#/definitions/v2/AgentForkMode"
+              },
+              "input": {
+                "description": "Omitted creates a real idle child without starting its first turn.",
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "model": {
+                "description": "Explicit model override. Takes precedence over role and configured defaults.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reasoning_effort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ReasoningEffort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Explicit reasoning override for the resolved child model. An explicit model without this field uses that model's catalog default."
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted uses passive final-response delivery."
+              },
+              "role": {
+                "description": "Omitted selects the default child configuration.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task": {
+                "description": "Optional assignment label, resolved within the issuing agent's root namespace.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "spawn"
+                ],
+                "title": "SpawnAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "fork_mode",
+              "type"
+            ],
+            "title": "SpawnAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Send genuine user input to a controlled agent, reopening a known closed descendant.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": "array"
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted uses passive final-response delivery."
+              },
+              "target": {
+                "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "prompt"
+                ],
+                "title": "PromptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input",
+              "target",
+              "type"
+            ],
+            "title": "PromptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Admit target input using response handling reserved by spawn or resume.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": "array"
+              },
+              "target": {
+                "description": "Canonical target thread UUID.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "reservedPrompt"
+                ],
+                "title": "ReservedPromptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input",
+              "target",
+              "type"
+            ],
+            "title": "ReservedPromptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Queue input as a distinct future target turn, starting it immediately when the target is idle.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": "array"
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted uses passive final-response delivery."
+              },
+              "target": {
+                "description": "Root-scoped ref or nickname, or a canonical thread UUID.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "queuedPrompt"
+                ],
+                "title": "QueuedPromptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input",
+              "target",
+              "type"
+            ],
+            "title": "QueuedPromptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Reopen a controlled closed agent or explicitly adopt a stored agent by UUID.",
+            "properties": {
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Omitted reserves passive delivery for the next admitted target turn."
+              },
+              "target": {
+                "description": "Root-scoped ref or nickname, or a canonical thread UUID for explicit adoption.",
+                "type": "string"
+              },
+              "task": {
+                "description": "New assignment for cross-root adoption only; same-root resume cannot rename a task.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "resume"
+                ],
+                "title": "ResumeAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
+              "type"
+            ],
+            "title": "ResumeAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Interrupt the active target turn and optionally submit a follow-up after cancellation.",
+            "properties": {
+              "input": {
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Valid only when `input` is present."
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "interrupt"
+                ],
+                "title": "InterruptAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
+              "type"
+            ],
+            "title": "InterruptAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Close a controlled agent runtime.",
+            "properties": {
+              "response_handling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Controls replay of an undelivered completion after close."
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "close"
+                ],
+                "title": "CloseAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target",
+              "type"
+            ],
+            "title": "CloseAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Authoritatively replace final-response handling for one target turn.",
+            "properties": {
+              "authored_observer_selector": {
+                "description": "Original observer token for audit only, before client-side normalization. Ignored when `observer` is omitted; never used to resolve or authorize an endpoint.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observer": {
+                "description": "Existing subscription owner. Omitted means the issuing source thread.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "response_handling": {
+                "$ref": "#/definitions/v2/AgentObservationMode"
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "observe"
+                ],
+                "title": "ObserveAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "response_handling",
+              "target",
+              "type"
+            ],
+            "title": "ObserveAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Enable or disable the target's attributed reply route to a controlled recipient.",
+            "properties": {
+              "mode": {
+                "$ref": "#/definitions/v2/AgentReplyRouteMode"
+              },
+              "recipient": {
+                "description": "Omitted means the source thread issuing the user command.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "replyRoute"
+                ],
+                "title": "ReplyRouteAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "target",
+              "type"
+            ],
+            "title": "ReplyRouteAgentControlAction",
+            "type": "object"
+          },
+          {
+            "description": "Live default for communication within the source's current and future subtree. Explicit directed routes override this default. Not restored from history.",
+            "properties": {
+              "mode": {
+                "$ref": "#/definitions/v2/AgentReplyRouteMode"
+              },
+              "type": {
+                "enum": [
+                  "subtreeMessaging"
+                ],
+                "title": "SubtreeMessagingAgentControlActionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "type"
+            ],
+            "title": "SubtreeMessagingAgentControlAction",
+            "type": "object"
+          }
+        ]
+      },
+      "AgentControlOutcome": {
+        "description": "Outcome of a user-authored operation; input may be admitted or indeterminate after enqueue.",
+        "oneOf": [
+          {
+            "properties": {
+              "input_outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentInputOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "nickname": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after child input admission or uncertain routing.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "task_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "spawned"
+                ],
+                "title": "SpawnedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "SpawnedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "input_outcome": {
+                "$ref": "#/definitions/v2/AgentInputOutcome"
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after target input admission or uncertain routing.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submission_id": {
+                "type": "string"
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "prompted"
+                ],
+                "title": "PromptedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_outcome",
+              "submission_id",
+              "target_thread_id",
+              "type"
+            ],
+            "title": "PromptedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "input_outcome": {
+                "$ref": "#/definitions/v2/AgentInputOutcome"
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after target input admission, including an indeterminate target turn after enqueue.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submission_id": {
+                "type": "string"
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "turn_id": {
+                "description": "The admitted target turn when routing can prove it; null means the input outcome is indeterminate after enqueue and must not be retried automatically.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "reservedPrompted"
+                ],
+                "title": "ReservedPromptedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "input_outcome",
+              "submission_id",
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ReservedPromptedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "nickname": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observation_binding": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentObservationBinding"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "post_commit_warning": {
+                "description": "Degradation that occurred after an exclusive ownership transfer committed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "task_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_path_mapping": {
+                "default": [],
+                "items": {
+                  "$ref": "#/definitions/v2/AgentTaskPathMapping"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "resumed"
+                ],
+                "title": "ResumedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ResumedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "input_outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentInputOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "post_admission_warning": {
+                "description": "Non-retryable degradation after follow-up input admission or uncertain routing.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "submission_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "interrupted"
+                ],
+                "title": "InterruptedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "InterruptedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "closed"
+                ],
+                "title": "ClosedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ClosedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "binding": {
+                "$ref": "#/definitions/v2/AgentObservationBinding"
+              },
+              "observer_thread_id": {
+                "type": "string"
+              },
+              "previous_response_handling": {
+                "$ref": "#/definitions/v2/AgentFinalResponseHandling"
+              },
+              "response_handling": {
+                "$ref": "#/definitions/v2/AgentFinalResponseHandling"
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "observed"
+                ],
+                "title": "ObservedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "binding",
+              "observer_thread_id",
+              "previous_response_handling",
+              "response_handling",
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ObservedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "mode": {
+                "$ref": "#/definitions/v2/AgentReplyRouteMode"
+              },
+              "previous_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentReplyRouteMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "recipient_thread_id": {
+                "type": "string"
+              },
+              "target_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "replyRouteChanged"
+                ],
+                "title": "ReplyRouteChangedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "recipient_thread_id",
+              "target_thread_id",
+              "type"
+            ],
+            "title": "ReplyRouteChangedAgentControlOutcome",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "mode": {
+                "$ref": "#/definitions/v2/AgentReplyRouteMode"
+              },
+              "previous_mode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentReplyRouteMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "root_thread_id": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "subtreeMessagingChanged"
+                ],
+                "title": "SubtreeMessagingChangedAgentControlOutcomeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "root_thread_id",
+              "type"
+            ],
+            "title": "SubtreeMessagingChangedAgentControlOutcome",
+            "type": "object"
+          }
+        ]
+      },
+      "AgentFinalResponseHandling": {
+        "description": "Final-response handling selected by an explicit user observation replacement.",
+        "enum": [
+          "none",
+          "passive",
+          "wake",
+          "presentation"
+        ],
+        "type": "string"
+      },
+      "AgentForkMode": {
+        "description": "Parent conversation history copied into a user-spawned child.",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "none"
+                ],
+                "title": "NoneAgentForkModeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "NoneAgentForkMode",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "all"
+                ],
+                "title": "AllAgentForkModeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "AllAgentForkMode",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "turns": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "lastNTurns"
+                ],
+                "title": "LastNTurnsAgentForkModeType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "turns",
+              "type"
+            ],
+            "title": "LastNTurnsAgentForkMode",
+            "type": "object"
+          }
+        ]
+      },
+      "AgentInputAttribution": {
+        "description": "Presentation-only provenance; the original message and attachments are in the item's input.",
+        "properties": {
+          "batchId": {
+            "default": null,
+            "description": "Shared sender tool-call identity for an array-target `send_input` batch.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recipient": {
+            "$ref": "#/definitions/v2/AgentInputIdentity"
+          },
+          "sender": {
+            "$ref": "#/definitions/v2/AgentInputIdentity"
+          },
+          "senderTurnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient",
+          "sender",
+          "senderTurnId"
+        ],
+        "type": "object"
+      },
+      "AgentInputIdentity": {
+        "description": "Trusted send-time identity, retained even when current aliases or ownership change.",
+        "properties": {
+          "agentRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasoningEffort": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "taskPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "AgentInputOutcome": {
+        "description": "Whether a user input submission is known to have been admitted.",
+        "enum": [
+          "admitted",
+          "queued",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "AgentMessageDelivery": {
         "enum": [
           "async"
@@ -7074,8 +8165,168 @@
           }
         ]
       },
+      "AgentObservationBinding": {
+        "description": "Exact target work whose final-response handling was replaced.",
+        "enum": [
+          "activeTurn",
+          "nextTurn",
+          "undeliveredCompletion"
+        ],
+        "type": "string"
+      },
+      "AgentObservationMode": {
+        "description": "Authoritative final-response policy accepted by `agent/control` observe.",
+        "enum": [
+          "passive",
+          "wake",
+          "presentation"
+        ],
+        "type": "string"
+      },
       "AgentPath": {
         "type": "string"
+      },
+      "AgentQueueEntry": {
+        "description": "Structured input waiting to start a distinct target turn.",
+        "properties": {
+          "authoredSelector": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "input": {
+            "items": {
+              "$ref": "#/definitions/v2/UserInput"
+            },
+            "type": "array"
+          },
+          "promptPreview": {
+            "type": "string"
+          },
+          "responseHandling": {
+            "$ref": "#/definitions/v2/AgentResponseHandling"
+          },
+          "sourceThreadId": {
+            "type": "string"
+          },
+          "targetThreadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "input",
+          "promptPreview",
+          "responseHandling",
+          "sourceThreadId",
+          "targetThreadId"
+        ],
+        "type": "object"
+      },
+      "AgentQueueTurnMetadata": {
+        "description": "Queue provenance and response handling bound to a newly started target turn.",
+        "properties": {
+          "queueId": {
+            "type": "string"
+          },
+          "responseHandling": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AgentResponseHandling"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Committed queue-entry policy, including queued source delivery; `null` when source-side persistence degraded after admission."
+          },
+          "sourceThreadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "queueId",
+          "sourceThreadId"
+        ],
+        "type": "object"
+      },
+      "AgentReplyRouteMode": {
+        "description": "User-authored state for a target's attributed reply route.",
+        "enum": [
+          "enabled",
+          "disabled"
+        ],
+        "type": "string"
+      },
+      "AgentResponseFinalDelivery": {
+        "description": "Final-response handling retained as durable evidence for an observer.",
+        "enum": [
+          "none",
+          "presentation_only",
+          "passive",
+          "wake"
+        ],
+        "type": "string"
+      },
+      "AgentResponseHandling": {
+        "description": "Response, reverse-message, and admission handling for one target turn.",
+        "properties": {
+          "commentary": {
+            "description": "Deliver the first complete commentary item from the target turn.",
+            "type": "boolean"
+          },
+          "finalResponse": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/AgentFinalResponseHandling"
+              }
+            ],
+            "description": "Select how the target turn's final response reaches the source."
+          },
+          "queueInput": {
+            "description": "Admit supplied input as a distinct queued target turn and queue its model-visible final response for the source's next turn.",
+            "type": "boolean"
+          },
+          "targetMessages": {
+            "description": "Let the target turn send attributed input back to the source.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "commentary",
+          "finalResponse",
+          "queueInput",
+          "targetMessages"
+        ],
+        "type": "object"
+      },
+      "AgentTaskPathMapping": {
+        "description": "Committed adoption label mapping. Thread identity remains unchanged.",
+        "properties": {
+          "previousTaskPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "taskPath": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
       },
       "AllowDenyRequirement": {
         "enum": [
@@ -8422,6 +9673,7 @@
               "unauthorized",
               "badRequest",
               "threadRollbackFailed",
+              "threadRollbackCommitUnknown",
               "sandboxError",
               "other"
             ],
@@ -8553,6 +9805,136 @@
           "bemTags"
         ],
         "type": "string"
+      },
+      "CollabAgentInputBatch": {
+        "properties": {
+          "flags": {
+            "description": "Shared, normalized handling flags. Empty means default passive handling.",
+            "type": "string"
+          },
+          "results": {
+            "description": "Empty while the batch is in progress; populated only on normal completion.",
+            "items": {
+              "$ref": "#/definitions/v2/CollabAgentInputResult"
+            },
+            "type": "array"
+          },
+          "senderThreadId": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sender identity for a child-originated live/replayed batch presentation."
+          }
+        },
+        "required": [
+          "flags",
+          "results"
+        ],
+        "type": "object"
+      },
+      "CollabAgentInputResult": {
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receiverThreadId": {
+            "description": "Joins the parent item's receiver metadata; absent for unresolved selectors.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/v2/CollabAgentInputStatus"
+          },
+          "target": {
+            "description": "Canonical ref when available, otherwise UUID or the unresolved authored selector.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "target"
+        ],
+        "type": "object"
+      },
+      "CollabAgentInputStatus": {
+        "oneOf": [
+          {
+            "enum": [
+              "submitted",
+              "queued",
+              "mailboxAccepted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The operation returned an error, potentially after admission.",
+            "enum": [
+              "error"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "CollabAgentRef": {
+        "properties": {
+          "agentNickname": {
+            "default": null,
+            "description": "Optional nickname assigned to the receiving agent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentRef": {
+            "default": null,
+            "description": "Trusted root-scoped numeric reference, when available from the agent alias.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentRole": {
+            "default": null,
+            "description": "Optional role assigned to the receiving agent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "taskPath": {
+            "default": null,
+            "description": "Trusted task assignment path, when available from the agent alias.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "description": "Thread ID of the receiving agent.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "type": "object"
       },
       "CollabAgentState": {
         "properties": {
@@ -10668,6 +12050,31 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "Deprecated: Use `ContextCompaction` item type instead.",
         "properties": {
+          "availableSkills": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "decodeError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "threadId": {
             "type": "string"
           },
@@ -10680,6 +12087,31 @@
           "turnId"
         ],
         "title": "ContextCompactedNotification",
+        "type": "object"
+      },
+      "ContextCompactionStatusNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "itemId": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "itemId",
+          "message",
+          "threadId",
+          "turnId"
+        ],
+        "title": "ContextCompactionStatusNotification",
         "type": "object"
       },
       "ConversationTextRole": {
@@ -13742,6 +15174,22 @@
         ],
         "type": "object"
       },
+      "InterAgentMessageSource": {
+        "description": "Presentation provenance for incoming communication, not sender authority or a delivery receipt.",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "recipient": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "author",
+          "recipient"
+        ],
+        "type": "object"
+      },
       "InternalChatMessageMetadataPassthrough": {
         "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
         "properties": {
@@ -13882,6 +15330,14 @@
       "ItemStartedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "deadlineAtMs": {
+            "description": "Advisory Unix-millisecond estimate for the current wait, or null when unavailable. This is not a process deadline and must not be restored as live state during replay.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "item": {
             "$ref": "#/definitions/v2/ThreadItem"
           },
@@ -14332,6 +15788,62 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "LogoutAccountResponse",
         "type": "object"
+      },
+      "MailboxReadSelector": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "all"
+                ],
+                "title": "AllMailboxReadSelectorType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "AllMailboxReadSelector",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "user"
+                ],
+                "title": "UserMailboxReadSelectorType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "UserMailboxReadSelector",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "threadId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "agent"
+                ],
+                "title": "AgentMailboxReadSelectorType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "threadId",
+              "type"
+            ],
+            "title": "AgentMailboxReadSelector",
+            "type": "object"
+          }
+        ]
       },
       "ManagedHooksRequirements": {
         "properties": {
@@ -14939,6 +16451,10 @@
       },
       "McpServerStatus": {
         "properties": {
+          "allowImplicitInvocation": {
+            "default": true,
+            "type": "boolean"
+          },
           "authStatus": {
             "$ref": "#/definitions/v2/McpAuthStatus"
           },
@@ -19943,6 +21459,22 @@
         "title": "SendAddCreditsNudgeEmailResponse",
         "type": "object"
       },
+      "ServerAuthProfile": {
+        "description": "Startup credential selection, without credentials or absolute auth paths.\n\nThe opaque ID describes host-local configuration, not an authenticated account, and cannot be used to compare credential paths across hosts.",
+        "properties": {
+          "displayLabel": {
+            "type": "string"
+          },
+          "profileOpaqueId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "displayLabel",
+          "profileOpaqueId"
+        ],
+        "type": "object"
+      },
       "ServerDiagnosticsGauge": {
         "properties": {
           "name": {
@@ -19987,6 +21519,24 @@
         "required": [
           "id"
         ],
+        "type": "object"
+      },
+      "ServerReadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ServerReadParams",
+        "type": "object"
+      },
+      "ServerReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "authProfile": {
+            "$ref": "#/definitions/v2/ServerAuthProfile"
+          }
+        },
+        "required": [
+          "authProfile"
+        ],
+        "title": "ServerReadResponse",
         "type": "object"
       },
       "ServerRequestResolvedNotification": {
@@ -20482,6 +22032,15 @@
         "title": "SkillsListResponse",
         "type": "object"
       },
+      "SleepOutcome": {
+        "description": "Terminal outcome of an interruptible `clock.sleep` tool call.",
+        "enum": [
+          "completed",
+          "interrupted",
+          "error"
+        ],
+        "type": "string"
+      },
       "SortDirection": {
         "enum": [
           "asc",
@@ -20636,6 +22195,14 @@
       "TerminalInteractionNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "deadlineAtMs": {
+            "description": "Advisory Unix-millisecond empty-poll estimate, or null when cleared or unavailable.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "itemId": {
             "type": "string"
           },
@@ -20650,6 +22217,16 @@
           },
           "turnId": {
             "type": "string"
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/TerminalWait"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -20661,6 +22238,141 @@
         ],
         "title": "TerminalInteractionNotification",
         "type": "object"
+      },
+      "TerminalWait": {
+        "description": "Start or completion metadata for one `write_stdin` wait.",
+        "oneOf": [
+          {
+            "description": "A wait has started for the identified invocation.",
+            "properties": {
+              "interactionId": {
+                "description": "The `write_stdin` function-call ID, distinct from the command item ID.",
+                "type": "string"
+              },
+              "mode": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/v2/TerminalWaitMode"
+                  }
+                ],
+                "description": "Whether this wait has a deadline or continues until process exit."
+              },
+              "phase": {
+                "enum": [
+                  "started"
+                ],
+                "type": "string"
+              },
+              "startedAtMs": {
+                "description": "Unix timestamp in milliseconds when the wait began.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "interactionId",
+              "mode",
+              "phase",
+              "startedAtMs"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A wait has ended; the process may still be running for non-exit reasons.",
+            "properties": {
+              "elapsedMs": {
+                "description": "Actual elapsed wait time in milliseconds.",
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "interactionId": {
+                "description": "The `write_stdin` function-call ID matching the start event.",
+                "type": "string"
+              },
+              "phase": {
+                "enum": [
+                  "finished"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/v2/TerminalWaitCompletionReason"
+                  }
+                ],
+                "description": "Why the wait finished."
+              }
+            },
+            "required": [
+              "elapsedMs",
+              "interactionId",
+              "phase",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TerminalWaitCompletionReason": {
+        "description": "Reason a `write_stdin` wait stopped waiting.",
+        "oneOf": [
+          {
+            "description": "The associated process exited.",
+            "enum": [
+              "exited"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The bounded poll deadline elapsed while the process remained live.",
+            "enum": [
+              "timeout"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "New turn input released an until-exit wait.",
+            "enum": [
+              "input"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The tool invocation was cancelled.",
+            "enum": [
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The wait ended because process or approval handling failed.",
+            "enum": [
+              "failed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "TerminalWaitMode": {
+        "description": "Duration policy for a `write_stdin` wait.",
+        "oneOf": [
+          {
+            "description": "Wait for the requested or resolved `yield_time_ms` deadline.",
+            "enum": [
+              "timed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Wait until the associated process exits or the waiter is released.",
+            "enum": [
+              "untilExit"
+            ],
+            "type": "string"
+          }
+        ]
       },
       "TextElement": {
         "properties": {
@@ -21772,6 +23484,17 @@
           },
           {
             "properties": {
+              "attribution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentInputAttribution"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "delivery": {
                 "anyOf": [
                   {
@@ -21785,6 +23508,27 @@
               },
               "id": {
                 "type": "string"
+              },
+              "input": {
+                "default": null,
+                "items": {
+                  "$ref": "#/definitions/v2/UserInput"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "interAgentSource": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/InterAgentMessageSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "memoryCitation": {
                 "anyOf": [
@@ -22017,6 +23761,17 @@
                 ],
                 "title": "CommandExecutionThreadItemType",
                 "type": "string"
+              },
+              "userShellResponseHandling": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ThreadShellCommandResponseHandling"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Completion delivery policy for a user-authored shell command. `None` for model-authored and unified-exec commands."
               }
             },
             "required": [
@@ -22223,6 +23978,43 @@
             "type": "object"
           },
           {
+            "description": "Terminal, payload-free result of a direct `check_mail` invocation.",
+            "properties": {
+              "consumedCount": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "rejectedCount": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "selector": {
+                "$ref": "#/definitions/v2/MailboxReadSelector"
+              },
+              "type": {
+                "enum": [
+                  "mailboxRead"
+                ],
+                "title": "MailboxReadThreadItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "consumedCount",
+              "id",
+              "rejectedCount",
+              "selector",
+              "type"
+            ],
+            "title": "MailboxReadThreadItem",
+            "type": "object"
+          },
+          {
             "properties": {
               "agentsStates": {
                 "additionalProperties": {
@@ -22235,6 +24027,26 @@
                 "description": "Unique identifier for this collab tool call.",
                 "type": "string"
               },
+              "inputBatch": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/CollabAgentInputBatch"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Per-recipient admission outcomes for array-target sends; errors may follow admission."
+              },
+              "mailboxInput": {
+                "default": null,
+                "description": "Whether this V1 send explicitly requested mailbox delivery (`send_input` with `w:z`). This is presentation metadata, not evidence of receiver execution or visibility.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
               "model": {
                 "description": "Model requested for the spawned agent, when applicable.",
                 "type": [
@@ -22242,10 +24054,26 @@
                   "null"
                 ]
               },
+              "observeCommentary": {
+                "default": null,
+                "description": "Whether commentary from the receiver is requested.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
               "prompt": {
                 "description": "Prompt text sent as part of the collab tool call, when available.",
                 "type": [
                   "string",
+                  "null"
+                ]
+              },
+              "queueInput": {
+                "default": null,
+                "description": "Whether input waits in the target-owned queue instead of steering active work.",
+                "type": [
+                  "boolean",
                   "null"
                 ]
               },
@@ -22259,6 +24087,14 @@
                   }
                 ],
                 "description": "Reasoning effort requested for the spawned agent, when applicable."
+              },
+              "receiverAgents": {
+                "default": [],
+                "description": "Receiver metadata, when available. Absent in older history and populated for new collab tool calls.",
+                "items": {
+                  "$ref": "#/definitions/v2/CollabAgentRef"
+                },
+                "type": "array"
               },
               "receiverThreadIds": {
                 "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
@@ -22279,6 +24115,14 @@
                 ],
                 "description": "Current status of the collab tool call."
               },
+              "targetMessages": {
+                "default": null,
+                "description": "Whether this call grants replies scoped to the target's admitted turn.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
               "tool": {
                 "allOf": [
                   {
@@ -22293,6 +24137,14 @@
                 ],
                 "title": "CollabAgentToolCallThreadItemType",
                 "type": "string"
+              },
+              "wakeOnCompletion": {
+                "default": null,
+                "description": "Whether the receiver's terminal response should wake the sender.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -22321,6 +24173,12 @@
               "kind": {
                 "$ref": "#/definitions/v2/SubAgentActivityKind"
               },
+              "prompt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "type": {
                 "enum": [
                   "subAgentActivity"
@@ -22337,6 +24195,199 @@
               "type"
             ],
             "title": "SubAgentActivityThreadItem",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "action": {
+                "$ref": "#/definitions/v2/UserAgentControlAction"
+              },
+              "authoredObserverSelector": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "authoredSelector": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "finalResponse": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentResponseFinalDelivery"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "forkMode": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/UserAgentForkMode"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "inputOutcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentInputOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "model": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "newOwnerSessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "nickname": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observeCommentary": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "observerThreadId": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "previousOwnerSessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "promptPreview": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "queueInput": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "reasoningEffort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ReasoningEffort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "replyRecipientThreadId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resumedTarget": {
+                "type": "boolean"
+              },
+              "role": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/definitions/v2/UserAgentControlStatus"
+              },
+              "targetMessages": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "targetThreadId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "taskPath": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "taskPathMapping": {
+                "default": [],
+                "items": {
+                  "$ref": "#/definitions/v2/AgentTaskPathMapping"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "userAgentControl"
+                ],
+                "title": "UserAgentControlThreadItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "id",
+              "resumedTarget",
+              "status",
+              "type"
+            ],
+            "title": "UserAgentControlThreadItem",
             "type": "object"
           },
           {
@@ -22414,8 +24465,26 @@
                 "minimum": 0.0,
                 "type": "integer"
               },
+              "elapsedMs": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "id": {
                 "type": "string"
+              },
+              "outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/SleepOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "type": {
                 "enum": [
@@ -22545,8 +24614,34 @@
           },
           {
             "properties": {
+              "availableSkills": {
+                "default": [],
+                "description": "Skill names in the model-visible inventory installed after this compaction.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "decodeError": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "id": {
                 "type": "string"
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "type": {
                 "enum": [
@@ -22913,6 +25008,106 @@
           "data"
         ],
         "title": "ThreadLoadedListResponse",
+        "type": "object"
+      },
+      "ThreadMailboxMessageState": {
+        "enum": [
+          "pending",
+          "claimed",
+          "consumed",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "ThreadMailboxPendingSender": {
+        "description": "Pending counts grouped by the canonical mailbox sender identity.",
+        "oneOf": [
+          {
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "user"
+                ],
+                "title": "UserThreadMailboxPendingSenderType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "type"
+            ],
+            "title": "UserThreadMailboxPendingSender",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "threadId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "agent"
+                ],
+                "title": "AgentThreadMailboxPendingSenderType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "threadId",
+              "type"
+            ],
+            "title": "AgentThreadMailboxPendingSender",
+            "type": "object"
+          }
+        ]
+      },
+      "ThreadMcpServerActivateOutcome": {
+        "enum": [
+          "activated",
+          "alreadyActivated",
+          "alreadyImplicitlyAvailable"
+        ],
+        "type": "string"
+      },
+      "ThreadMcpServerActivateParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "serverName": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverName",
+          "threadId"
+        ],
+        "title": "ThreadMcpServerActivateParams",
+        "type": "object"
+      },
+      "ThreadMcpServerActivateResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "outcome": {
+            "$ref": "#/definitions/v2/ThreadMcpServerActivateOutcome"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "ThreadMcpServerActivateResponse",
         "type": "object"
       },
       "ThreadMemoryMode": {
@@ -23891,6 +26086,61 @@
         "title": "ThreadRevertedNotification",
         "type": "object"
       },
+      "ThreadRollbackParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Legacy-history rollback request. This route applies only to Legacy history mode; Paginated history uses `thread/revert`.",
+        "properties": {
+          "expectedStartTurnId": {
+            "description": "Optional first turn expected in the selected rollback suffix.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectedTurnCount": {
+            "description": "Optional materialized turn count observed when the rollback target was selected.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "numTurns": {
+            "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "numTurns",
+          "threadId"
+        ],
+        "title": "ThreadRollbackParams",
+        "type": "object"
+      },
+      "ThreadRollbackResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "thread": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/Thread"
+              }
+            ],
+            "description": "The updated Legacy thread after applying the rollback, with canonical turns populated."
+          }
+        },
+        "required": [
+          "thread"
+        ],
+        "title": "ThreadRollbackResponse",
+        "type": "object"
+      },
       "ThreadSearchResult": {
         "properties": {
           "snippet": {
@@ -24280,6 +26530,31 @@
         "title": "ThreadSettingsUpdatedNotification",
         "type": "object"
       },
+      "ThreadShellCommandFinalDelivery": {
+        "oneOf": [
+          {
+            "description": "Add the result to model context without starting a turn.",
+            "enum": [
+              "passive"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Add the result to model context and wake the thread when it is idle.",
+            "enum": [
+              "wake"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Publish the result without adding it to model context.",
+            "enum": [
+              "presentationOnly"
+            ],
+            "type": "string"
+          }
+        ]
+      },
       "ThreadShellCommandParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -24287,11 +26562,22 @@
             "description": "Shell command string evaluated by the thread's configured shell. Unlike `command/exec`, this intentionally preserves shell syntax such as pipes, redirects, and quoting. This runs unsandboxed with full access rather than inheriting the thread sandbox policy.",
             "type": "string"
           },
+          "responseHandling": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadShellCommandResponseHandling"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional completion delivery policy. Omission preserves passive model delivery."
+          },
           "threadId": {
             "type": "string"
           },
           "timeoutMs": {
-            "description": "Maximum execution time in milliseconds. Defaults to one hour when omitted or null. Must be non-negative; zero requests an immediate timeout, not unlimited execution. Does not affect the immediate RPC acknowledgement.",
+            "description": "Maximum execution time in milliseconds. Omission or null uses the configured user-shell default, which is unlimited unless overridden. Must be non-negative; an explicit zero requests an immediate timeout. Does not affect the immediate RPC acknowledgement.",
             "format": "int64",
             "type": [
               "integer",
@@ -24309,6 +26595,27 @@
       "ThreadShellCommandResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadShellCommandResponse",
+        "type": "object"
+      },
+      "ThreadShellCommandResponseHandling": {
+        "properties": {
+          "finalDelivery": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadShellCommandFinalDelivery"
+              }
+            ],
+            "description": "Whether the completed result is delivered passively, wakes the thread, or stays presentation-only."
+          },
+          "queueCommand": {
+            "description": "Whether execution waits for every earlier user-shell submission in this thread.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "finalDelivery",
+          "queueCommand"
+        ],
         "type": "object"
       },
       "ThreadSortKey": {
@@ -24970,6 +27277,42 @@
           "threadId"
         ],
         "title": "ThreadUnarchivedNotification",
+        "type": "object"
+      },
+      "ThreadUnloadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Stop and unload the owning root and its loaded spawn descendants.",
+        "properties": {
+          "threadId": {
+            "description": "Any thread in the owning spawn subtree, including the root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadUnloadParams",
+        "type": "object"
+      },
+      "ThreadUnloadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Acknowledges durable shutdown and removal of the captured runtime instances.",
+        "properties": {
+          "rootThreadId": {
+            "type": "string"
+          },
+          "unloadedThreadIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rootThreadId",
+          "unloadedThreadIds"
+        ],
+        "title": "ThreadUnloadResponse",
         "type": "object"
       },
       "ThreadUnsubscribeParams": {
@@ -25672,6 +28015,17 @@
       "TurnStartedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "agentQueue": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AgentQueueTurnMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when this exact turn was admitted from the shared agent queue."
+          },
           "threadId": {
             "type": "string"
           },
@@ -25785,6 +28139,62 @@
           "data"
         ],
         "type": "object"
+      },
+      "UserAgentControlAction": {
+        "enum": [
+          "spawn",
+          "prompt",
+          "queued_prompt",
+          "resume",
+          "interrupt",
+          "close",
+          "observe",
+          "reply_route",
+          "subtree_messaging"
+        ],
+        "type": "string"
+      },
+      "UserAgentControlStatus": {
+        "enum": [
+          "succeeded",
+          "unknown",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "UserAgentForkMode": {
+        "oneOf": [
+          {
+            "enum": [
+              "none",
+              "all"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "last_n_turns": {
+                "properties": {
+                  "turns": {
+                    "format": "uint32",
+                    "minimum": 0.0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "turns"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "last_n_turns"
+            ],
+            "title": "LastNTurnsUserAgentForkMode",
+            "type": "object"
+          }
+        ]
       },
       "UserInput": {
         "oneOf": [

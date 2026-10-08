@@ -27,4 +27,4 @@ serverCapabilities: JsonValue | null, tools: { [key in string]?: Tool },
  * Tool discovery failed and no catalog was returned.
  * Null when a catalog is returned, including cached or empty catalogs.
  */
-toolsError: string | null, resources: Array<Resource>, resourceTemplates: Array<ResourceTemplate>, authStatus: McpAuthStatus, };
+toolsError: string | null, resources: Array<Resource>, resourceTemplates: Array<ResourceTemplate>, authStatus: McpAuthStatus, allowImplicitInvocation: boolean, };
