@@ -108,7 +108,7 @@
         },
         "globScanMaxDepth": {
           "format": "uint",
-          "minimum": 1,
+          "minimum": 1.0,
           "type": [
             "integer",
             "null"
@@ -830,12 +830,12 @@
       "properties": {
         "end": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "start": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
@@ -876,7 +876,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -900,7 +900,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -924,7 +924,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -948,7 +948,7 @@
               "properties": {
                 "httpStatusCode": {
                   "format": "uint16",
-                  "minimum": 0,
+                  "minimum": 0.0,
                   "type": [
                     "integer",
                     "null"
@@ -2257,7 +2257,7 @@
         "indices": {
           "items": {
             "format": "uint32",
-            "minimum": 0,
+            "minimum": 0.0,
             "type": "integer"
           },
           "type": [
@@ -2276,7 +2276,7 @@
         },
         "score": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
@@ -2552,7 +2552,7 @@
             },
             "port": {
               "format": "uint16",
-              "minimum": 0,
+              "minimum": 0.0,
               "type": "integer"
             },
             "protocol": {
@@ -3471,12 +3471,12 @@
       "properties": {
         "lineEnd": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "lineStart": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "note": {
@@ -4812,13 +4812,13 @@
         "column": {
           "description": "1-based column number (in Unicode scalar values).",
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "line": {
           "description": "1-based line number.",
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         }
       },
@@ -6324,7 +6324,7 @@
           "properties": {
             "durationMs": {
               "format": "uint64",
-              "minimum": 0,
+              "minimum": 0.0,
               "type": "integer"
             },
             "elapsedMs": {
@@ -6710,17 +6710,17 @@
         },
         "numChannels": {
           "format": "uint16",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "sampleRate": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "samplesPerChannel": {
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": [
             "integer",
             "null"
@@ -6773,7 +6773,7 @@
           "properties": {
             "index": {
               "format": "uint32",
-              "minimum": 0,
+              "minimum": 0.0,
               "type": "integer"
             },
             "type": {
@@ -8244,7 +8244,7 @@
       "properties": {
         "extraCount": {
           "format": "uint",
-          "minimum": 0,
+          "minimum": 0.0,
           "type": "integer"
         },
         "failedScan": {
