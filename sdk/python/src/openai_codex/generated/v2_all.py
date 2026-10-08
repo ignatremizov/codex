@@ -155,9 +155,6 @@ class LastNTurnsAgentForkMode(BaseModel):
 
 
 class AgentForkMode(RootModel[NoneAgentForkMode | AllAgentForkMode | LastNTurnsAgentForkMode]):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: Annotated[
         NoneAgentForkMode | AllAgentForkMode | LastNTurnsAgentForkMode,
         Field(description="Parent conversation history copied into a user-spawned child."),
@@ -735,9 +732,6 @@ class CollabAgentInputStatusValue(Enum):
 
 
 class CollabAgentInputStatus(RootModel[CollabAgentInputStatusValue | Literal["error"]]):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: CollabAgentInputStatusValue | Literal["error"]
 
 
@@ -2565,9 +2559,6 @@ class AgentMailboxReadSelector(BaseModel):
 class MailboxReadSelector(
     RootModel[AllMailboxReadSelector | UserMailboxReadSelector | AgentMailboxReadSelector]
 ):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: AllMailboxReadSelector | UserMailboxReadSelector | AgentMailboxReadSelector
 
 
@@ -4999,7 +4990,6 @@ class FuzzyFileSearchSessionCompletedServerNotification(BaseModel):
 
 
 class ServerReadParams(BaseModel):
-    pass
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -5897,9 +5887,6 @@ class AgentThreadMailboxPendingSender(BaseModel):
 class ThreadMailboxPendingSender(
     RootModel[UserThreadMailboxPendingSender | AgentThreadMailboxPendingSender]
 ):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: Annotated[
         UserThreadMailboxPendingSender | AgentThreadMailboxPendingSender,
         Field(description="Pending counts grouped by the canonical mailbox sender identity."),
@@ -6863,9 +6850,6 @@ class LastNTurnsUserAgentForkMode(BaseModel):
 
 
 class UserAgentForkMode(RootModel[UserAgentForkModeValue | LastNTurnsUserAgentForkMode]):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: UserAgentForkModeValue | LastNTurnsUserAgentForkMode
 
 
@@ -7378,9 +7362,6 @@ class AgentControlAction(
         | SubtreeMessagingAgentControlAction
     ]
 ):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: Annotated[
         SpawnAgentControlAction
         | PromptAgentControlAction
@@ -7469,7 +7450,9 @@ class ResumedAgentControlOutcome(BaseModel):
     ref: str | None = None
     target_thread_id: str
     task_path: str | None = None
-    task_path_mapping: list[AgentTaskPathMapping] | None = []
+    task_path_mapping: Annotated[
+        list[AgentTaskPathMapping] | None, Field(validate_default=True)
+    ] = []
     type: Annotated[Literal["resumed"], Field(title="ResumedAgentControlOutcomeType")]
 
 
@@ -7540,9 +7523,6 @@ class AgentControlOutcome(
         | SubtreeMessagingChangedAgentControlOutcome
     ]
 ):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: Annotated[
         SpawnedAgentControlOutcome
         | PromptedAgentControlOutcome
@@ -10813,9 +10793,6 @@ class TerminalWait2(BaseModel):
 
 
 class TerminalWait(RootModel[TerminalWait1 | TerminalWait2]):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
     root: Annotated[
         TerminalWait1 | TerminalWait2,
         Field(description="Start or completion metadata for one `write_stdin` wait."),
@@ -11049,7 +11026,7 @@ class UserAgentControlThreadItem(BaseModel):
     task: str | None = None
     task_path: Annotated[str | None, Field(alias="taskPath")] = None
     task_path_mapping: Annotated[
-        list[AgentTaskPathMapping] | None, Field(alias="taskPathMapping")
+        list[AgentTaskPathMapping] | None, Field(alias="taskPathMapping", validate_default=True)
     ] = []
     type: Annotated[Literal["userAgentControl"], Field(title="UserAgentControlThreadItemType")]
 
@@ -12693,6 +12670,7 @@ class CollabAgentToolCallThreadItem(BaseModel):
         Field(
             alias="receiverAgents",
             description="Receiver metadata, when available. Absent in older history and populated for new collab tool calls.",
+            validate_default=True,
         ),
     ] = []
     receiver_thread_ids: Annotated[
