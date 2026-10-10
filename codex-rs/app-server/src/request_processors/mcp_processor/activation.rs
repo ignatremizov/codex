@@ -38,11 +38,7 @@ impl McpRequestProcessor {
             .await
         {
             ThreadMcpServerActivateOutcome::AlreadyImplicitlyAvailable
-        } else if thread
-            .latest_mcp_server_use_context_text(&server_name)
-            .await
-            .is_some()
-        {
+        } else if thread.mcp_server_use_context_is_current(&server_name).await {
             ThreadMcpServerActivateOutcome::AlreadyActivated
         } else {
             thread

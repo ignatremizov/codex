@@ -175,6 +175,8 @@ Use `/mcp use docs` to add that server's complete current tool inventory, includ
 
 Explicit use adds context forward without rewriting earlier messages or promoting tools into the frozen non-Apps direct tool contract. It never starts a model turn by itself. Before the first user turn, the request is queued; during an active turn, insertion waits for a safe input boundary. Each distinct accepted inventory block survives compaction in order. Inventories are deliberately complete and can be large, so invoke only the servers whose details you want in model context.
 
+Repeating `/mcp use docs` is a no-op when its latest explicit inventory still matches the current one. After an MCP catalog reload changes that inventory, repeat the command to append the new complete inventory. Returning to a previously seen inventory also appends it when the latest block differs; earlier blocks are retained as history.
+
 The default is `true`. Non-Apps direct declarations are frozen from ready inventory when the model first sees tools; Apps remain turn-scoped. Status checks, prewarming, and activation queries do not themselves freeze the direct contract. Configuration reload and runtime permissions remain authoritative for calls regardless of an older visible declaration or context block.
 
 Executor and selected-plugin servers ready for that first sampling request use their resolved thread-scoped catalog policy too. A plugin mention can require startup without overriding `allow_implicit_invocation = false`; once the direct contract is frozen, later discovery does not add declarations to it.

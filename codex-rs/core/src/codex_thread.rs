@@ -1021,6 +1021,13 @@ impl CodexThread {
             .await
     }
 
+    /// Checks current explicit prompt coverage without changing tool-call authorization.
+    pub async fn mcp_server_use_context_is_current(&self, server_name: &str) -> bool {
+        self.session
+            .mcp_server_use_context_is_current(server_name)
+            .await
+    }
+
     /// Captures the exact MCP config and environment bindings for the current thread state.
     pub async fn current_mcp_config_and_runtime_context(
         &self,

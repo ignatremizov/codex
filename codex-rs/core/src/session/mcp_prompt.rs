@@ -274,6 +274,36 @@ impl Session {
         !current.is_empty() && current == direct
     }
 
+    /// Existing explicit context only covers the exact latest effective inventory.
+    /// A prior selection must not suppress a user-requested refresh after reload.
+    pub(crate) async fn mcp_server_use_context_is_current(
+        self: &Arc<Self>,
+        server_name: &str,
+    ) -> bool {
+        let current = self.current_mcp_server_use_context(server_name).await;
+        self.latest_mcp_server_use_context_text(server_name).await
+            == use_text(&current.item, server_name)
+    }
+
+    async fn current_mcp_server_use_context(
+        self: &Arc<Self>,
+        server_name: &str,
+    ) -> ResponseItemEnvelope {
+        self.refresh_mcp_if_dirty().await;
+        let binding = self
+            .services
+            .mcp_runtime
+            .current_binding_for_call(server_name)
+            .await;
+        render_inventory(
+            server_name,
+            binding
+                .as_deref()
+                .map(McpBinding::tools)
+                .unwrap_or_default(),
+        )
+    }
+
     pub(crate) async fn activate_mcp_server(self: &Arc<Self>, server_name: String) {
         if self
             .mcp_server_would_be_direct_at_session_start(&server_name)
@@ -288,18 +318,7 @@ impl Session {
             }
             return;
         }
-        let binding = self
-            .services
-            .mcp_runtime
-            .current_binding_for_call(&server_name)
-            .await;
-        let item = render_inventory(
-            &server_name,
-            binding
-                .as_deref()
-                .map(McpBinding::tools)
-                .unwrap_or_default(),
-        );
+        let item = self.current_mcp_server_use_context(&server_name).await;
         if self.latest_mcp_server_use_context_text(&server_name).await
             == use_text(&item.item, &server_name)
         {

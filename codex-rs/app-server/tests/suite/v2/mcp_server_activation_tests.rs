@@ -1,4 +1,5 @@
 use super::start_mcp_server;
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
@@ -185,6 +186,155 @@ url = "{implicit_url}/mcp"
     implicit_handle.abort();
     let _ = hidden_handle.await;
     let _ = implicit_handle.await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reactivation_refreshes_changed_inventory_without_rewriting_history() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let requests = responses::mount_sse_sequence(
+        &server,
+        (0..4)
+            .map(|index| {
+                responses::sse(vec![
+                    responses::ev_assistant_message(&format!("refresh-message-{index}"), "done"),
+                    responses::ev_completed(&format!("refresh-response-{index}")),
+                ])
+            })
+            .collect(),
+    )
+    .await;
+    let (first_url, first_handle) = start_mcp_server("lookup_first", /*tools_error*/ None).await?;
+    let (second_url, second_handle) =
+        start_mcp_server("lookup_second", /*tools_error*/ None).await?;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config("model_auto_compact_token_limit = 1000000")
+        .with_provider_config("supports_websockets = false")
+        .disable_feature(Feature::ToolSearch)
+        .disable_feature(Feature::CodeMode)
+        .with_extra_config(&format!(
+            r#"[mcp_servers."{HIDDEN_SERVER}"]
+url = "{first_url}/mcp"
+allow_implicit_invocation = false
+"#
+        ))
+        .write(home.path())?;
+    let config_path = home.path().join("config.toml");
+    let initial_config = std::fs::read_to_string(&config_path)?;
+    assert_eq!(initial_config.matches(first_url.as_str()).count(), 1);
+    let mut app = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized()
+        .await?;
+    let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
+    let mut retained = Vec::<String>::new();
+
+    // Reverting to A after B must append A again, but repeating that latest A is a no-op.
+    for (index, (url, tool_name)) in [
+        (&first_url, "lookup_first"),
+        (&second_url, "lookup_second"),
+        (&first_url, "lookup_first"),
+        (&first_url, "lookup_first"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index == 1 || index == 2 {
+            std::fs::write(
+                &config_path,
+                initial_config.replace(first_url.as_str(), url.as_str()),
+            )?;
+            let request_id = app
+                .send_raw_request("config/mcpServer/reload", /*params*/ None)
+                .await?;
+            timeout(
+                TIMEOUT,
+                app.read_stream_until_response_message(RequestId::Integer(request_id)),
+            )
+            .await??;
+        }
+        // Read the actual loaded thread's connection, not a second threadless catalog.
+        let status: ListMcpServerStatusResponse = timeout(
+            TIMEOUT,
+            app.request(|request_id| ClientRequest::McpServerStatusList {
+                request_id,
+                params: ListMcpServerStatusParams {
+                    server_name: Some(HIDDEN_SERVER.to_string()),
+                    thread_id: Some(thread.id.clone()),
+                    detail: Some(McpServerStatusDetail::ToolsAndAuthOnly),
+                    cursor: None,
+                    limit: None,
+                },
+            }),
+        )
+        .await??;
+        assert_eq!(status.data.len(), 1);
+        let current = &status.data[0];
+        assert_eq!(current.name, HIDDEN_SERVER);
+        assert_eq!(current.tools_error, None);
+        assert!(!current.allow_implicit_invocation);
+        assert_eq!(
+            current
+                .tools
+                .values()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec![tool_name],
+        );
+        assert_eq!(
+            activate(&mut app, &thread.id, HIDDEN_SERVER).await?,
+            ThreadMcpServerActivateResponse {
+                outcome: if index < 3 {
+                    ThreadMcpServerActivateOutcome::Activated
+                } else {
+                    ThreadMcpServerActivateOutcome::AlreadyActivated
+                },
+            },
+        );
+        complete_turn(
+            &mut app,
+            &thread.id,
+            &format!("explicit inventory stage {index}"),
+        )
+        .await?;
+        let captured = requests.requests();
+        assert_eq!(
+            captured.len(),
+            index + 1,
+            "activation must not start inference"
+        );
+        let request = &captured[index];
+        let explicit = request
+            .message_input_texts("developer")
+            .into_iter()
+            .filter(|text| text.contains("<mcp_use>"))
+            .collect::<Vec<_>>();
+        if index < 3 {
+            assert_eq!(explicit.len(), retained.len() + 1);
+            assert_eq!(&explicit[..retained.len()], retained.as_slice());
+            let latest = explicit.last().context("new inventory block")?;
+            assert!(latest.contains(tool_name));
+            assert!(latest.contains("Look up test data."));
+            assert!(latest.contains("additionalProperties"));
+            if index == 2 {
+                assert_eq!(latest, &retained[0]);
+            }
+            retained = explicit;
+        } else {
+            assert_eq!(explicit, retained);
+        }
+        let declarations = request.body_json()["tools"].clone();
+        assert_eq!(declarations, captured[0].body_json()["tools"]);
+        assert!(!declarations.to_string().contains("lookup_first"));
+        assert!(!declarations.to_string().contains("lookup_second"));
+    }
+    let exit = timeout(TIMEOUT, app.shutdown_gracefully()).await??;
+    assert!(exit.success());
+    first_handle.abort();
+    second_handle.abort();
+    let _ = first_handle.await;
+    let _ = second_handle.await;
     Ok(())
 }
 
