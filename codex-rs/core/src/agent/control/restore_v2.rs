@@ -5,7 +5,6 @@ use super::restore_environments::explicit_workspace_environments;
 use super::restore_metadata::apply_restored_agent_model;
 use super::restore_metadata::apply_restored_v2_agent_role;
 use super::restore_metadata::canonical_agent_path;
-use super::spawn::load_agent_model_context;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agents_md_manager::SessionInstructions;
@@ -59,7 +58,8 @@ impl LocalAgentControl {
                 include_history: false,
             })
             .await?;
-        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+        let history = state
+            .load_agent_model_context(thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
@@ -292,10 +292,10 @@ impl LocalAgentControl {
                 None => {
                     let stored_source = stored_thread.source.clone();
                     let stored_parent_thread_id = stored_thread.parent_thread_id;
-                    let history =
-                        load_agent_model_context(&state, thread_id, stored_thread.history_mode)
-                            .await?
-                            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+                    let history = state
+                        .load_agent_model_context(thread_id, stored_thread.history_mode)
+                        .await?
+                        .ok_or(CodexErr::ThreadNotFound(thread_id))?;
                     let initial_history = InitialHistory::Resumed(ResumedHistory {
                         conversation_id: thread_id,
                         history: Arc::new(history),

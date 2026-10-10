@@ -165,33 +165,6 @@ fn retain_forked_developer_message(item: &mut ResponseItem, usage_hint_texts: &[
     !content.is_empty() && set_annotated_content(item, content).is_some()
 }
 
-pub(super) async fn load_agent_model_context(
-    state: &ThreadManagerState,
-    thread_id: ThreadId,
-    history_mode: ThreadHistoryMode,
-) -> CodexResult<Option<Vec<RolloutItem>>> {
-    match history_mode {
-        ThreadHistoryMode::Legacy => Ok(state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: true,
-            })
-            .await?
-            .history
-            .map(|history| history.items)),
-        ThreadHistoryMode::Paginated => Ok(Some(
-            state
-                .load_latest_model_context(LoadThreadHistoryParams {
-                    thread_id,
-                    include_archived: true,
-                })
-                .await?
-                .items,
-        )),
-    }
-}
-
 impl LocalAgentControl {
     /// Model authorship is an internal capability, not part of the public spawn options.
     pub(crate) async fn spawn_model_agent_with_metadata(
@@ -820,14 +793,14 @@ impl LocalAgentControl {
 
         let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
             .then_some(ThreadHistoryMode::Paginated);
-        let forked_rollout_items =
-            load_agent_model_context(state, parent_thread_id, parent_history_mode)
-                .await?
-                .ok_or_else(|| {
-                    CodexErr::Fatal(format!(
-                        "parent thread history unavailable for fork: {parent_thread_id}"
-                    ))
-                })?;
+        let forked_rollout_items = state
+            .load_agent_model_context(parent_thread_id, parent_history_mode)
+            .await?
+            .ok_or_else(|| {
+                CodexErr::Fatal(format!(
+                    "parent thread history unavailable for fork: {parent_thread_id}"
+                ))
+            })?;
         let mut forked_rollout_items = rollout_without_exact_rollback_ranges(&forked_rollout_items);
 
         let selected_capability_roots = forked_rollout_items

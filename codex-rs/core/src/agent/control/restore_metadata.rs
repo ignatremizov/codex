@@ -1,7 +1,6 @@
 //! Exact persisted identity and configuration checks shared by restoration paths.
 
 use super::resume_role::apply_resumed_agent_role;
-use super::spawn::load_agent_model_context;
 use super::*;
 use crate::codex_thread::CodexThread;
 use futures::StreamExt;
@@ -206,21 +205,18 @@ impl LocalAgentControl {
                                     include_history: false,
                                 })
                                 .await?;
-                            let canonical_source = load_agent_model_context(
-                                state,
-                                thread_id,
-                                stored_thread.history_mode,
-                            )
-                            .await?
-                            .and_then(|history| {
-                                InitialHistory::Resumed(ResumedHistory {
-                                    conversation_id: thread_id,
-                                    history: Arc::new(history),
-                                    rollout_path: stored_thread.rollout_path.clone(),
-                                })
-                                .get_resumed_session_sources()
-                                .map(|(source, _)| source)
-                            });
+                            let canonical_source = state
+                                .load_agent_model_context(thread_id, stored_thread.history_mode)
+                                .await?
+                                .and_then(|history| {
+                                    InitialHistory::Resumed(ResumedHistory {
+                                        conversation_id: thread_id,
+                                        history: Arc::new(history),
+                                        rollout_path: stored_thread.rollout_path.clone(),
+                                    })
+                                    .get_resumed_session_sources()
+                                    .map(|(source, _)| source)
+                                });
                             Ok::<_, CodexErr>((stored_thread, canonical_source))
                         }
                         .await;

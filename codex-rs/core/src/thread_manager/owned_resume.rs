@@ -779,6 +779,8 @@ impl ThreadManagerState {
             .map_err(thread_store_rollout_read_error)
     }
 
+    /// Shared store selection for agent forks and all native restoration paths.
+    /// Keep archived reads and Legacy's optional history distinct from Paginated context.
     pub(crate) async fn load_agent_model_context(
         &self,
         thread_id: ThreadId,

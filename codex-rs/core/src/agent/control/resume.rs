@@ -5,7 +5,6 @@ use super::restore_environments::explicit_workspace_environments;
 use super::restore_metadata::apply_restored_agent_model;
 use super::restore_metadata::apply_restored_v2_agent_role;
 use super::resume_role::apply_resumed_agent_role;
-use super::spawn::load_agent_model_context;
 use super::user_resume::RestoredAgent;
 use super::user_resume::ResumeAuthority;
 use super::*;
@@ -276,10 +275,10 @@ impl LocalAgentControl {
                     .map_err(|err| {
                         CodexErr::InvalidRequest(format!("invalid stored agent path: {err}"))
                     })?;
-                let history =
-                    load_agent_model_context(&state, thread_id, stored_thread.history_mode)
-                        .await?
-                        .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+                let history = state
+                    .load_agent_model_context(thread_id, stored_thread.history_mode)
+                    .await?
+                    .ok_or(CodexErr::ThreadNotFound(thread_id))?;
                 (
                     resumed_agent_path,
                     stored_thread.agent_nickname,
