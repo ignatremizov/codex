@@ -226,6 +226,8 @@ mod subagent_notifications;
 mod subagent_observer_control;
 mod subagent_permission_sampling;
 mod subagent_service_tier;
+#[path = "test_codex_submission_tests.rs"]
+mod test_codex_submission;
 mod token_budget;
 mod token_usage_rollout;
 mod tool_harness;

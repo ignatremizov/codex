@@ -1264,7 +1264,8 @@ impl TestCodex {
         let turn_environment_selections = environments.map(|environments| {
             TurnEnvironmentSelections::new(self.config.cwd.clone(), environments)
         });
-        self.codex
+        let submission = self
+            .codex
             .start_or_steer_turn(
                 TurnInputRequest::user_input(vec![UserInput::Text {
                     text: prompt.into(),
@@ -1289,11 +1290,17 @@ impl TestCodex {
             )
             .await?;
 
-        let turn_id = wait_for_event_match(&self.codex, |event| match event {
-            EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
-            _ => None,
-        })
-        .await;
+        // A steer has no new TurnStarted event, and older turn events may still
+        // be queued. The admission receipt identifies the only completion this
+        // invocation may use, just as in submit_text_turn.
+        let turn_id = match submission {
+            TurnInputSubmission::Started { turn_id } | TurnInputSubmission::Steered { turn_id } => {
+                turn_id
+            }
+            TurnInputSubmission::NotSubmitted { reason } => {
+                return Err(anyhow!("test turn was not submitted: {reason:?}"));
+            }
+        };
         wait_for_event_with_timeout(
             &self.codex,
             |event| match event {
