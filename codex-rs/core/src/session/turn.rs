@@ -2060,6 +2060,22 @@ async fn run_sampling_request(
                 sess.services.image_store.as_ref(),
             )
             .await;
+        let agent_identities = if first_attempt {
+            step_context.agent_identities.clone()
+        } else if step_context.agent_identities.is_some() {
+            // Draining the failed stream may have completed lifecycle tools. Keep
+            // retry history and every disposable projection on a fresh alias snapshot.
+            Some(
+                sess.services
+                    .local_agent_runtime
+                    .control(sess.session_id())
+                    .v1_agent_identity_snapshot()
+                    .or_cancel(&cancellation_token)
+                    .await??,
+            )
+        } else {
+            None
+        };
         sess.project_child_developer_instructions(&turn_context, &mut prompt_input);
         sess.services
             .local_agent_runtime
@@ -2067,7 +2083,7 @@ async fn run_sampling_request(
             .messaging_context_snapshot(sess.presentation_id())
             .await?
             .reconcile(&mut prompt_input);
-        if let Some(identities) = &step_context.agent_identities {
+        if let Some(identities) = &agent_identities {
             crate::context::world_state::prepare_v1_agent_model_input(
                 &mut prompt_input,
                 identities,
