@@ -27,10 +27,8 @@ fn identity_blocks(request: &ResponsesRequest) -> Vec<Value> {
         .map(|text| {
             let json = text
                 .strip_suffix("\n</agent_identity_context>")
-                .expect("closing identity marker")
-                .split_once('\n')
-                .expect("identity instructions and JSON")
-                .1;
+                .expect("closing identity marker");
+            let json = json.split_once('\n').map_or(json, |(_, payload)| payload);
             serde_json::from_str::<Value>(json).expect("identity JSON")
         })
         .collect()
@@ -45,16 +43,14 @@ fn identities(request: &ResponsesRequest) -> Value {
             identities = full.clone();
             continue;
         }
-        let upsert = block["upsert"].as_array().expect("identity upserts");
-        let removed_refs = block["removed_refs"]
-            .as_array()
-            .expect("removed identity refs");
-        identities.retain(|identity| {
-            !removed_refs
-                .iter()
-                .any(|removed| removed.as_str() == identity["ref"].as_str())
-        });
-        for changed in upsert {
+        if let Some(removed_refs) = block["removed_refs"].as_array() {
+            identities.retain(|identity| {
+                !removed_refs
+                    .iter()
+                    .any(|removed| removed.as_str() == identity["ref"].as_str())
+            });
+        }
+        for changed in block["upsert"].as_array().into_iter().flatten() {
             if let Some(existing) = identities
                 .iter_mut()
                 .find(|identity| identity["ref"] == changed["ref"])
@@ -63,6 +59,15 @@ fn identities(request: &ResponsesRequest) -> Value {
             } else {
                 identities.push(changed.clone());
             }
+        }
+        for changed in block["patch"].as_array().into_iter().flatten() {
+            identities
+                .iter_mut()
+                .find(|identity| identity["ref"] == changed["ref"])
+                .expect("patch baseline")
+                .as_object_mut()
+                .expect("identity object")
+                .extend(changed.as_object().expect("patch fields").clone());
         }
     }
     Value::Array(identities)
@@ -240,15 +245,27 @@ async fn durable_aliases_hydrate_sampling_and_compaction_without_rewriting_histo
     assert_eq!(
         closed_blocks.last(),
         Some(&json!({
-            "upsert":[{
+            "patch":[{
                 "ref": child.agent_ref.expect("durable child ref").to_string(),
-                "nickname": child.nickname,
-                "task_path": child.task_path,
                 "state":"closed",
             }],
-            "removed_refs":[],
         })),
         "state changes should append one identity delta",
+    );
+    assert!(
+        closed_request
+            .message_input_texts("developer")
+            .iter()
+            .any(|text| {
+                text == &format!(
+                    "<agent_identity_context>\n{}\n</agent_identity_context>",
+                    json!({"patch":[{
+                        "ref": child.agent_ref.expect("durable child ref").to_string(),
+                        "state":"closed",
+                    }]}),
+                )
+            }),
+        "lifecycle-only updates must not repeat instructions or unchanged identity labels",
     );
     test.codex.submit(Op::Compact).await?;
     wait_for_event(&test.codex, |event| {
