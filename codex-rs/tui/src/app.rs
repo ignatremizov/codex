@@ -671,8 +671,9 @@ pub(crate) struct App {
     /// Keeps that boundary armed while an approval waits for the typing-idle timer or a visible
     /// modal's terminal input has not settled.
     startup_pending_protected_request: bool,
-    /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
+    /// Rejects account-email reads started before the latest identity boundary.
     account_email_request_id: Option<uuid::Uuid>,
+    /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
     rate_limit_hard_stop_generation: u64,
     rate_limit_refresh_state: rate_limit_refresh::RateLimitRefreshState,
     pending_mcp_login_start: Option<PendingMcpLoginStart>,
