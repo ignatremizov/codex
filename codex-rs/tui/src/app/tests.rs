@@ -3,13 +3,15 @@
 #[path = "tests/terminal_size_telemetry_tests.rs"]
 mod terminal_size_telemetry_tests;
 
+#[path = "tests/account_display_tests.rs"]
+mod account_display_tests;
+
 #[path = "tests/copy_mode_tests.rs"]
 mod copy_mode_tests;
-#[path = "tests/mcp_login_tests.rs"]
-mod mcp_login_tests;
-
 #[path = "tests/math_interruption_tests.rs"]
 mod math_interruption_tests;
+#[path = "tests/mcp_login_tests.rs"]
+mod mcp_login_tests;
 #[path = "tests/security_setup_tests.rs"]
 mod security_setup_tests;
 
