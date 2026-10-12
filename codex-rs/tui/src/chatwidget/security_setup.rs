@@ -16,7 +16,14 @@ impl ChatWidget {
         self.security_setup_dismissed = previous.security_setup_dismissed
             || (previous.security_setup_presented
                 && previous.bottom_pane.inline_banner_lifecycle().1);
-        if previous.security_setup_presented && !self.has_applicable_backend_banner() {
+        if previous.security_setup_presented
+            && !self
+                .local_settings
+                .notices
+                .hide_security_setup_notice
+                .unwrap_or(false)
+            && !self.has_applicable_backend_banner()
+        {
             self.bottom_pane
                 .transfer_inline_banner_from(&mut previous.bottom_pane);
             self.security_setup_presented = true;
@@ -42,6 +49,15 @@ impl ChatWidget {
     }
 
     pub(crate) fn show_security_setup(&mut self, identity: Identity, notice: Notice) {
+        if self
+            .local_settings
+            .notices
+            .hide_security_setup_notice
+            .unwrap_or(false)
+        {
+            self.clear_security_setup_banner();
+            return;
+        }
         if !notice.valid() {
             return;
         }

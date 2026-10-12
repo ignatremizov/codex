@@ -1,6 +1,7 @@
 use super::*;
 use crate::security_setup::Identity;
 use crate::security_setup::Notice;
+use pretty_assertions::assert_eq;
 use serde_json::json;
 
 fn setup_notice() -> Notice {
@@ -17,6 +18,69 @@ fn setup_identity() -> Identity {
         account: "account".into(),
         user: "user".into(),
     }
+}
+
+#[tokio::test]
+async fn security_setup_opt_out_suppresses_fresh_and_inherited_notices() {
+    let (mut previous, _events, _ops) = make_chatwidget_manual(Some("test-model-a")).await;
+    previous.show_security_setup(setup_identity(), setup_notice());
+    assert!(render_bottom_popup(&previous, /*width*/ 70).contains("Set up security"));
+
+    for inherit in [false, true] {
+        let (mut chat, _events, _ops) = make_chatwidget_manual(Some("test-model-a")).await;
+        chat.local_settings.notices.hide_security_setup_notice = Some(true);
+        if inherit {
+            chat.inherit_security_setup(&mut previous);
+        }
+        chat.show_security_setup(setup_identity(), setup_notice());
+        assert_eq!(chat.bottom_pane.inline_banner_lifecycle(), (false, false));
+        let rendered = normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 70));
+        if !inherit {
+            insta::assert_snapshot!("security_setup_hidden", rendered);
+        }
+
+        chat.invalidate_security_setup();
+        chat.show_security_setup(
+            Identity {
+                account: "other-account".into(),
+                ..setup_identity()
+            },
+            setup_notice(),
+        );
+        assert_eq!(
+            normalize_snapshot_paths(render_bottom_popup(&chat, /*width*/ 70)),
+            rendered
+        );
+
+        // An explicit false restores the default behavior without changing eligibility.
+        chat.local_settings.notices.hide_security_setup_notice = Some(false);
+        chat.show_security_setup(setup_identity(), setup_notice());
+        assert!(render_bottom_popup(&chat, /*width*/ 70).contains("Set up security"));
+    }
+}
+
+#[tokio::test]
+async fn security_setup_opt_out_clears_pending_notice_without_hiding_usage() {
+    let (mut chat, _events, _ops) = make_chatwidget_manual(Some("test-model-a")).await;
+    chat.show_security_setup(setup_identity(), setup_notice());
+    chat.local_settings.notices.hide_security_setup_notice = Some(true);
+    chat.show_security_setup(setup_identity(), setup_notice());
+    assert!(!render_bottom_popup(&chat, /*width*/ 70).contains("Set up security"));
+
+    chat.update_backend_banner(&codex_app_server_protocol::GetAccountRateLimitsResponse {
+        ordinary_usage_allowed: None,
+        account_id: Some("account".into()),
+        rate_limit_upsell: Some(json!({
+            "banner_type": "selected_model_limit", "model_slug": "test-model-a",
+            "title": "Selected model usage exhausted", "description": "Switch models.",
+            "presentation": "dismissible", "ctas": [],
+        })),
+        rate_limits: snapshot(/*percent*/ 100.0),
+        rate_limits_by_limit_id: None,
+        rate_limit_reset_credits: None,
+    });
+    chat.show_security_setup(setup_identity(), setup_notice());
+    assert!(render_bottom_popup(&chat, /*width*/ 70).contains("Selected model usage exhausted"));
 }
 
 #[tokio::test]
