@@ -200,6 +200,14 @@ async fn agent_prompt_keeps_internal_route_out_of_the_typed_visible_input(attrib
     );
     assert_eq!(canonical.len(), 2);
     route.set_id(canonical[1].item.id().cloned());
+    route.set_turn_id_if_missing(&turn.sub_id);
+    let create_time = canonical[1]
+        .item
+        .executed_tool_call_metadata()
+        .and_then(|metadata| metadata.create_time.clone())
+        .expect("published harness context has a creation timestamp");
+    assert!(create_time.as_f64().is_some_and(|seconds| seconds > 0.0));
+    route.set_create_time_if_missing(create_time);
     assert_eq!(canonical[1].item, route);
     assert!(!crate::context::is_user_authorization_message(
         &canonical[1].item
