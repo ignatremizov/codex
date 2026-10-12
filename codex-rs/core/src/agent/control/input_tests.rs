@@ -47,14 +47,20 @@ fn attributed_input_keeps_original_input_separate_from_model_context() {
         attribution: attribution.clone(),
         presentation: vec![text("payload")],
     };
+    let submitted = input.into_request().input;
+    let replayed: TurnInput =
+        serde_json::from_value(serde_json::to_value(&submitted).expect("serialize trusted input"))
+            .expect("restore trusted input");
+    assert_eq!(replayed, submitted);
     assert_eq!(
-        input.into_request().input,
+        submitted,
         TurnInput::AgentInput {
             content: vec![text("trusted envelope")],
             presentation: AgentInputPresentation::AttributedInput {
                 attribution,
                 input: vec![text("payload")],
             },
+            context: Vec::new(),
         }
     );
 }
