@@ -139,10 +139,11 @@ async fn retry_after_spawn_refreshes_receiving_root_identity(
     )?;
     let child_ref = receipt["ref"].as_str().context("spawn assigned a ref")?;
     assert_ne!(child_ref, "1");
-    let child_id: ThreadId = receipt["agent_id"]
-        .as_str()
-        .context("spawn receipt retains canonical UUID")?
-        .parse()?;
+    let child_id = ThreadId::from_string(
+        receipt["agent_id"]
+            .as_str()
+            .context("spawn receipt retains canonical UUID")?,
+    )?;
     assert_ne!(child_id, test.session_configured.thread_id);
     assert_eq!(
         identity_entries(&retried)?,
