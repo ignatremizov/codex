@@ -156,16 +156,14 @@ async fn sibling_discovery_keeps_concurrent_prompts_isolated(
     let delta = identities[1]
         .strip_prefix("<agent_identity_context>\n")
         .and_then(|text| text.strip_suffix("\n</agent_identity_context>"))
-        .and_then(|text| text.split_once('\n'))
-        .ok_or_else(|| anyhow::anyhow!("missing identity delta"))?
-        .1;
+        .ok_or_else(|| anyhow::anyhow!("missing identity delta"))?;
     let delta: Value = serde_json::from_str(delta)?;
     let added = delta["upsert"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing identity upserts"))?;
     assert_eq!(added.len(), 1);
     assert_eq!(added[0]["ref"], json!(peer));
-    assert_eq!(delta["removed_refs"], json!([]));
+    assert_eq!(delta, json!({"upsert": added}));
     for (_, child, _) in children {
         wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     }

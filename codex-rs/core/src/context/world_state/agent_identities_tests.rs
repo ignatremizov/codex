@@ -22,7 +22,7 @@ fn payload(fragment: &dyn ContextualUserFragment) -> Value {
     let rendered = fragment.render().expect_text();
     let body = body_from_rendered_fragment(&rendered, AgentIdentitiesState::type_markers())
         .expect("identity body");
-    let (_, payload) = body.split_once('\n').expect("instructions and payload");
+    let payload = body.split_once('\n').map_or(body, |(_, payload)| payload);
     serde_json::from_str(payload).expect("identity payload")
 }
 
@@ -84,7 +84,6 @@ fn render_diff_emits_only_added_or_changed_entries_and_removed_refs() {
         payload(added_diff.as_ref()),
         json!({
             "upsert":[{"ref":"3", "nickname":"Hume", "state":"active"}],
-            "removed_refs":[],
         }),
     );
     let changed_diff = changed
@@ -94,8 +93,7 @@ fn render_diff_emits_only_added_or_changed_entries_and_removed_refs() {
     assert_eq!(
         payload(changed_diff.as_ref()),
         json!({
-            "upsert":[{"ref":"2", "nickname":"Curie", "state":"closed"}],
-            "removed_refs":[],
+            "patch":[{"ref":"2", "state":"closed"}],
         }),
     );
     let removed_diff = removed
@@ -104,7 +102,7 @@ fn render_diff_emits_only_added_or_changed_entries_and_removed_refs() {
         .expect("removal delta");
     assert_eq!(
         payload(removed_diff.as_ref()),
-        json!({"upsert":[], "removed_refs":["2"]}),
+        json!({"removed_refs":["2"]}),
     );
     assert!(
         original
@@ -140,6 +138,99 @@ fn render_diff_uses_full_authority_without_a_usable_previous_snapshot() {
             ]),
         );
     }
+}
+
+#[test]
+fn partial_updates_clear_labels_add_complete_entries_and_replay_legacy_upserts() {
+    let original = state(json!([
+        {"ref":"1", "nickname":"Main", "task_path":"/root", "state":"active"},
+        {"ref":"2", "nickname":"Curie", "task_path":"/root/old", "state":"active"},
+        {"ref":"3", "nickname":"Hume", "task_path":null, "state":"active"}
+    ]));
+    let legacy = "Agent identity changes: upsert by ref, remove listed refs; all other mappings stay unchanged.\n{\"upsert\":[{\"ref\":\"2\",\"nickname\":\"Curie\",\"task_path\":\"/root/new\",\"state\":\"closed\"}],\"removed_refs\":[]}";
+    let previous = state(json!([
+        {"ref":"1", "nickname":"Main", "task_path":"/root", "state":"active"},
+        {"ref":"2", "nickname":"Curie", "task_path":"/root/new", "state":"closed"},
+        {"ref":"3", "nickname":"Hume", "task_path":null, "state":"active"}
+    ]));
+    let current = state(json!([
+        {"ref":"1", "nickname":"Main", "task_path":"/root", "state":"active"},
+        {"ref":"2", "nickname":null, "task_path":null, "state":"active"},
+        {"ref":"4", "nickname":"New", "task_path":"/root/new", "state":"active"}
+    ]));
+    let delta = current
+        .render_fragment_diff(PreviousSectionState::Known(&previous.body))
+        .1
+        .expect("partial update");
+    assert_eq!(
+        payload(delta.as_ref()),
+        json!({
+            "patch":[{"ref":"2", "nickname":null, "task_path":null, "state":"active"}],
+            "upsert":[{"ref":"4", "nickname":"New", "task_path":"/root/new", "state":"active"}],
+            "removed_refs":["3"],
+        }),
+    );
+    let rendered = delta.render().expect_text();
+    let body = body_from_rendered_fragment(&rendered, AgentIdentitiesState::type_markers())
+        .expect("compact body");
+    assert_eq!(
+        resolve_retained_chain([original.body.as_str(), legacy, body]),
+        IdentityMapping::from_authority_body(&current.body),
+    );
+    let mut items = vec![
+        identity_item(original.body),
+        identity_item(legacy.to_string()),
+    ];
+    let retained = items.clone();
+    current.reconcile_annotated(&mut items);
+    assert_eq!(&items[..retained.len()], retained.as_slice());
+    assert_eq!(items.len(), 3);
+    current.reconcile_annotated(&mut items);
+    assert_eq!(items.len(), 3);
+}
+
+#[test]
+fn unusable_partial_updates_reset_to_full_authority_without_rewriting_history() {
+    let current = state(json!([
+        {"ref":"1", "nickname":"Main", "task_path":"/root", "state":"active"}
+    ]));
+    for delta in [
+        json!({"patch":[{"ref":"2", "state":"closed"}]}),
+        json!({"patch":[{"ref":"1"}]}),
+        json!({"patch":[{"ref":"1", "nickname":false}]}),
+        json!({"patch":[{"ref":"1", "task_path":42}]}),
+        json!({"patch":[{"ref":"1", "state":null}]}),
+        json!({"patch":[{"ref":"1", "state":"unknown"}]}),
+        json!({"patch":[{"ref":"1", "unknown":"value"}]}),
+        json!({"patch":[{"ref":"1", "state":"closed"}, {"ref":"1", "state":"active"}]}),
+        json!({"patch":[{"ref":"1", "state":"closed"}], "removed_refs":["1"]}),
+        json!({"patch":[{"ref":"1", "state":"closed"}], "upsert":[{"ref":"1"}]}),
+        json!({"patch":[{"ref":"0", "state":"closed"}]}),
+        json!({"patch":null}),
+    ] {
+        let mut items = vec![
+            identity_item(current.body.clone()),
+            identity_item(delta.to_string()),
+        ];
+        let retained = items.clone();
+        current.reconcile_annotated(&mut items);
+        assert_eq!(&items[..retained.len()], retained.as_slice());
+        assert_eq!(
+            items.last().expect("full recovery").item,
+            ContextualUserFragment::into(current.clone()),
+        );
+        assert_eq!(items.len(), 3);
+        current.reconcile_annotated(&mut items);
+        assert_eq!(items.len(), 3);
+    }
+    let mut items = vec![identity_item(
+        json!({"patch":[{"ref":"1", "state":"closed"}]}).to_string(),
+    )];
+    current.reconcile_annotated(&mut items);
+    assert_eq!(
+        items.last().expect("missing baseline recovery").item,
+        ContextualUserFragment::into(current),
+    );
 }
 
 #[test]
@@ -221,11 +312,9 @@ fn reconcile_appends_one_delta_and_preserves_retained_content_and_annotations() 
     let body = body_from_rendered_fragment(text, AgentIdentitiesState::type_markers())
         .expect("delta body");
     assert_eq!(
-        serde_json::from_str::<Value>(body.split_once('\n').expect("payload").1)
-            .expect("delta JSON"),
+        serde_json::from_str::<Value>(body).expect("delta JSON"),
         json!({
-            "upsert":[{"ref":"2", "nickname":"Curie", "state":"closed"}],
-            "removed_refs":[],
+            "patch":[{"ref":"2", "state":"closed"}],
         }),
     );
     current.reconcile_annotated(&mut items);
@@ -261,7 +350,7 @@ fn reconcile_recovers_missing_or_malformed_bases_with_one_full_snapshot() {
     current.reconcile_annotated(&mut items);
     assert_eq!(items.len(), 2);
 
-    let mut malformed = vec![identity_item("instructions\n{\"upsert\":[]}".to_string())];
+    let mut malformed = vec![identity_item("instructions\n{\"upsert\":null}".to_string())];
     current.reconcile_annotated(&mut malformed);
     assert_eq!(malformed.len(), 2);
 
@@ -302,9 +391,8 @@ fn empty_authority_clears_stale_refs_but_stays_absent_for_root_only_history() {
     let body = body_from_rendered_fragment(text, AgentIdentitiesState::type_markers())
         .expect("clear delta body");
     assert_eq!(
-        serde_json::from_str::<Value>(body.split_once('\n').expect("payload").1)
-            .expect("clear delta JSON"),
-        json!({"upsert":[], "removed_refs":["1", "2"]}),
+        serde_json::from_str::<Value>(body).expect("clear delta JSON"),
+        json!({"removed_refs":["1", "2"]}),
     );
 
     let mut root_only = Vec::new();
@@ -364,6 +452,46 @@ fn individually_bounded_retained_deltas_cannot_grow_an_unbounded_mapping() {
     );
     current.reconcile_annotated(&mut items);
     assert_eq!(items.len(), originals.len() + 1);
+}
+
+#[test]
+fn individually_bounded_partial_updates_cannot_grow_an_unbounded_mapping() {
+    let current = state(json!([
+        {"ref":"1", "nickname":"Main", "task_path":"/root", "state":"active"}
+    ]));
+    let baseline = state(Value::Array(
+        (1..=4)
+            .map(|agent_ref| {
+                json!({
+                    "ref": agent_ref.to_string(),
+                    "nickname": null,
+                    "task_path": null,
+                    "state": "active",
+                })
+            })
+            .collect(),
+    ));
+    let mut items = vec![identity_item(baseline.body)];
+    for agent_ref in 1..=4 {
+        let body = json!({"patch":[{
+            "ref":agent_ref.to_string(),
+            "nickname":"<".repeat(1_000),
+        }]})
+        .to_string()
+        .replace('<', "\\u003c");
+        assert!(body.len() < 16_384);
+        items.push(identity_item(body));
+    }
+    let retained = items.clone();
+    current.reconcile_annotated(&mut items);
+    assert_eq!(&items[..retained.len()], retained.as_slice());
+    assert_eq!(items.len(), retained.len() + 1);
+    assert_eq!(
+        items.last().expect("bounded full recovery").item,
+        ContextualUserFragment::into(current.clone()),
+    );
+    current.reconcile_annotated(&mut items);
+    assert_eq!(items.len(), retained.len() + 1);
 }
 
 #[test]
