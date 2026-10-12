@@ -767,6 +767,7 @@ pub(crate) async fn record_pending_input(
         TurnInput::AgentInput {
             content,
             presentation,
+            context,
             metadata,
         } => {
             return sess
@@ -779,8 +780,9 @@ pub(crate) async fn record_pending_input(
                         presentation,
                         metadata,
                     },
-                    additional_context_messages(additional_contexts)
+                    context
                         .into_iter()
+                        .chain(additional_context_messages(additional_contexts))
                         .map(codex_history::ResponseItemEnvelope::new)
                         .collect(),
                 )
