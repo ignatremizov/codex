@@ -180,6 +180,7 @@ impl App {
     }
 
     pub(super) fn begin_reconnect(&mut self) -> bool {
+        self.account_email_request_id = None;
         if matches!(self.app_server_target, AppServerTarget::Embedded) {
             return false;
         }
@@ -196,7 +197,6 @@ impl App {
             }
             self.retire_background_voice();
             self.reconnect.offline = true;
-            self.account_email_request_id = None;
             // Cached blank sessions are usable only while this connection owns a subscription.
             self.agents_overview.blank_sessions.clear();
             self.reconnect.failed = false;
