@@ -3534,6 +3534,10 @@
           "description": "Tracks whether the user opted out of the rate limit model switch reminder.",
           "type": "boolean"
         },
+        "hide_security_setup_notice": {
+          "description": "Hides optional account-security setup reminders without changing security requirements.",
+          "type": "boolean"
+        },
         "hide_world_writable_warning": {
           "description": "Tracks whether the user has acknowledged the Windows world-writable directories warning.",
           "type": "boolean"
