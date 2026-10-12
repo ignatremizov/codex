@@ -277,6 +277,7 @@ mod user_shell_cmd;
 mod user_shell_completion;
 mod user_shell_processes;
 mod v1_agent_identity_context;
+mod v1_agent_identity_retry;
 mod view_image;
 mod wake_reservation;
 mod web_search;
