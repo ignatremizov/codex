@@ -430,6 +430,15 @@ Custom colors must be six-digit `#RRGGBB` values. Invalid or omitted colors fall
 
 Codex stores "do not show again" flags for some UI prompts under the `[notice]` table.
 
+To suppress the optional Daybreak/account-security setup reminder across launches:
+
+```toml
+[notice]
+hide_security_setup_notice = true
+```
+
+This client-local preference skips the reminder fetch and hides its banner, including late results and reminders inherited during thread navigation. It applies to all accounts using this configuration. Omitting the setting or setting it to `false` preserves the default reminder behavior. It does not change account security, Daybreak eligibility, security requirements, or unrelated warnings and usage notices. Restart Codex after changing the setting; Esc only dismisses the banner for the current run.
+
 ## Plan mode defaults
 
 `plan_mode_reasoning_effort` lets you set a Plan-mode-specific default reasoning
