@@ -81,7 +81,7 @@ async fn sample(thread: &CodexThread, prompt: &str) -> Result<()> {
             text_elements: Vec::new(),
         }]))
         .await?;
-    let TurnInputSubmission::Started { turn_id } = submitted else {
+    let TurnInputSubmission::Started { turn_id, .. } = submitted else {
         anyhow::bail!("expected a fresh turn for {prompt}: {submitted:?}");
     };
     finish(thread, &turn_id).await
@@ -302,7 +302,9 @@ async fn inherited_role_instructions_apply_to_compaction_without_rewriting_audit
             _ => None,
         })
         .collect::<serde_json::Result<Vec<_>>>()?;
-    assert_eq!(configuration_texts(&original_input), parent_expected);
+    // Fork creation applies the child's role to its new canonical history.
+    // Compaction must preserve that child baseline and the parent's separate audit.
+    assert_eq!(configuration_texts(&original_input), expected);
 
     child.submit(Op::Compact).await?;
     let started = timeout(
