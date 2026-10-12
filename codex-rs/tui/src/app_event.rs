@@ -704,6 +704,12 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
     },
 
+    /// Email read for the current account-update boundary; does not change authentication.
+    AccountEmailLoaded {
+        request_id: Uuid,
+        email: Option<String>,
+    },
+
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         request_id: u64,

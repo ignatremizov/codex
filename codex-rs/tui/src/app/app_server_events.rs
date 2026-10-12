@@ -105,6 +105,7 @@ impl App {
                 self.repaint_agents_overview();
             }
             AppServerEvent::Disconnected { message } => {
+                self.account_email_request_id = None;
                 if self.begin_reconnect() {
                     return;
                 }
@@ -341,6 +342,7 @@ impl App {
                         .is_some_and(AuthMode::has_chatgpt_account),
                     has_codex_backend_auth,
                 );
+                self.refresh_account_email(app_server_client);
                 if self.chat_widget.has_chatgpt_account() {
                     crate::security_setup::prefetch(
                         &self.config,

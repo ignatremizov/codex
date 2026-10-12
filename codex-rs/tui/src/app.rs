@@ -194,6 +194,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use uuid::Uuid;
+mod account_display;
 mod agent_message_consolidation;
 mod agent_navigation;
 mod agent_picker;
@@ -655,6 +656,8 @@ pub(crate) struct App {
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
     rate_limit_hard_stop_generation: u64,
     rate_limit_refresh_state: rate_limit_refresh::RateLimitRefreshState,
+    /// Rejects account-email reads started before the latest identity boundary.
+    account_email_request_id: Option<Uuid>,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
     // cwd contexts.

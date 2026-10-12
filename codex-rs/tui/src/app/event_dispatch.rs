@@ -1237,6 +1237,18 @@ impl App {
                         elicitation_target: None,
                     });
             }
+            AppEvent::AccountEmailLoaded { request_id, email } => {
+                if self.account_email_request_id == Some(request_id) {
+                    self.account_email_request_id = None;
+                    if let Some(crate::status::StatusAccountDisplay::ChatGpt { plan, .. }) =
+                        self.chat_widget.status_account_display().cloned()
+                    {
+                        self.chat_widget.set_status_account_display(Some(
+                            crate::status::StatusAccountDisplay::ChatGpt { email, plan },
+                        ));
+                    }
+                }
+            }
             AppEvent::SecuritySetupLoaded { request_id, identity, notice } => {
                 tracing::debug!(current = request_id == self.chat_widget.security_setup_request_id, "handling security setup notice");
                 if request_id == self.chat_widget.security_setup_request_id {

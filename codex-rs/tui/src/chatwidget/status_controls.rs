@@ -7,6 +7,12 @@
 use super::*;
 
 impl ChatWidget {
+    /// Refresh presentation without resetting billing, permissions, or other account state.
+    pub(crate) fn set_status_account_display(&mut self, display: Option<StatusAccountDisplay>) {
+        self.status_account_display = display;
+        self.request_redraw();
+    }
+
     /// Update the status indicator header and details.
     ///
     /// Passing `None` clears any existing details. Returns whether the visible status indicator
