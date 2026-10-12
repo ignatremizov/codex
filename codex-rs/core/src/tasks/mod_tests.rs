@@ -96,6 +96,7 @@ async fn task_finish_rejects_uploaded_audio_without_losing_other_pending_input(a
             presentation: codex_protocol::protocol::AgentInputPresentation::Attributed(
                 "preserve pending text".to_string(),
             ),
+            context: Vec::new(),
             metadata: Default::default(),
         }
     } else {

@@ -51,6 +51,8 @@ pub enum TurnInput {
     AgentInput {
         content: Vec<UserInput>,
         presentation: AgentInputPresentation,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        context: Vec<ResponseItem>,
         #[serde(flatten)]
         metadata: UserInputMetadata,
     },

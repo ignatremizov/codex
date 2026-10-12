@@ -1185,6 +1185,7 @@ async fn scored_prompt_keeps_its_submission_item_id() {
         presentation: codex_protocol::protocol::AgentInputPresentation::Attributed(
             "attributed input".to_string(),
         ),
+        context: Vec::new(),
     });
     agent_request.user_item_uuid = Some(Uuid::new_v4());
     handle(
@@ -1214,7 +1215,13 @@ async fn scored_prompt_keeps_its_submission_item_id() {
                     metadata,
                 },
             ),
-            TurnInput::AgentInput { content, presentation, metadata } => {
+            TurnInput::AgentInput {
+                content,
+                presentation,
+                context,
+                metadata,
+            } => {
+                assert!(context.is_empty());
                 assert!(metadata.response_item_uuid.is_none());
                 assert!(metadata.acceptance_order.is_some());
                 (
