@@ -1,6 +1,6 @@
 # V1 attributed messaging and task-path discovery
 
-Status: partially implemented. `feat(multi-agent): add attributed V1 messages and task-path discovery` carries typed V1 attribution, spawn/adoption task labels, opt-in root-controlled discovery, directed and subtree user controls, and live-only audit presentation. Configured global/role messaging defaults and later task-label editing remain proposals; this document does not activate those surfaces. The implementation and current API documentation define the available fields. Source integration is not compilation, test, generated-schema, or CI qualification.
+Status: typed V1 attribution, spawn/adoption task labels, opt-in root-controlled discovery, and live-only audit presentation are implemented. Same-owned-tree sends are always available; directed/subtree permission controls and their proposed config defaults are retired. Later task-label editing remains a proposal. Source integration is not compilation, test, generated-schema, or CI qualification.
 
 Related contracts:
 
@@ -94,7 +94,23 @@ A stream retry refreshes the identity snapshot after draining completed tools fr
 
 The example is illustrative, not permission to concatenate arbitrary text into delimiters. Use reversible escaping or structured serialization for header values and payload text so embedded `<agent_message>`/`</agent_message>` strings, newlines in labels, or fabricated sender headers remain data rather than additional envelope structure. Preserve the original payload in audit storage and recover it exactly for human presentation. This prevents structural ambiguity; it is not a claim that serialization alone prevents model confusion or prompt injection.
 
-Once a complete mapping is retained, ordinary updates append only changed/new entries and removed refs. Unchanged mappings add nothing; prior prompt content and annotations stay intact. Missing or malformed bases, and changes to the omission boundary, require a fresh full mapping. Empty authority explicitly clears earlier refs. World-state checkpoints still retain full bounded snapshots, so missing hydration after compaction or resume does not depend on keeping every old delta. Neither these discovery deltas nor compact mailbox inventories grant messaging permissions or change canonical sender/receiver attribution.
+Once a complete mapping is retained, ordinary updates append a JSON-only object
+inside `<agent_identity_context>`, without repeating instructional prose. Its
+`patch` array contains a `ref` and only changed fields for each existing identity;
+omitted fields retain their values, while explicit `null` clears a nickname or
+task path. For example, a lifecycle-only update is
+`{"patch":[{"ref":"2","state":"closed"}]}`. New identities appear as complete
+entries in `upsert`; removals appear in `removed_refs`. Empty operation arrays are
+omitted. Existing instruction-prefixed full mappings and historical complete-entry
+`upsert` deltas remain readable without rewriting them. A patch requires an existing
+baseline for its ref; malformed or conflicting operations reset to a full mapping.
+Unchanged mappings add nothing; prior prompt content and
+annotations stay intact. Missing or malformed bases, and changes to the omission
+boundary, require a fresh full mapping. Empty authority explicitly clears earlier
+refs. World-state checkpoints still retain full bounded snapshots, so missing
+hydration after compaction or resume does not depend on keeping every old delta.
+Neither these discovery deltas nor compact mailbox inventories grant messaging
+permissions or change canonical sender/receiver attribution.
 
 Core supplies trusted sender/recipient identity; names embedded in payload text do not establish attribution. Preserve the payload completely.
 
@@ -116,106 +132,31 @@ Do not add an arbitrary per-message token ceiling or truncate complete agent pay
 
 Reuse or extend the existing `AgentMessage` representation and shared projection machinery where appropriate. Do not select a wire representation solely because its name fits: verify Responses API requirements, item-ID prefixes, persistence, and model serialization first.
 
-Attribution identifies the sender; it does **not** authorize a reply. A child that learns Main's ref or UUID still needs an applicable route to call `send_input` upward.
+Attribution identifies the sender. Any two agents in the same owned tree may use `send_input`;
+there is no separate messaging-permission route to configure.
 
-## Permission and observation remain independent
+## Same-tree messaging and compatibility
 
-Keep `send_input` as the single V1 messaging operation and preserve existing `w` semantics. Message attribution must not silently add a completion subscription or wake the sender.
+Parents, siblings, and descendants can send directly without grants or per-agent send settings. Immediate input steers an active recipient or starts an idle turn. A single originating sender turn can start later idle recipient turns; there is no one-idle-wake cap. `w:q` retains a distinct FIFO turn and next-source-turn response boundary. Only descendants may be interrupted; sending does not grant broader lifecycle control.
 
-Normal parent-to-descendant task dispatch remains permitted. User controls gate reverse and peer communication:
+The `m` flag, `/agent sends`, and its picker controls are removed. The app-server `replyRoute` and `subtreeMessaging` action variants reject as obsolete before mutating runtime state. Existing wire fields, SQL settings, and typed history remain readable but do not restrict admission. Old rollouts are not rewritten. Classified route and permission notices remain omitted from model requests; ordinary quoted text and canonical sender attribution are preserved.
 
-```text
-/agent sends <sender> [to <recipient>] enable|disable
-/agent sends all enable|disable
-```
+Ownership and runtime identity still matter. Direct and queued admission validate the exact live endpoints within one owned tree. Close and ownership transfer retain their lifecycle/source-admission gates, cancellation, and accepted-work draining. Cold resume and fork do not restore unadmitted queues or old response subscriptions. No special messaging-policy handoff is needed for live revert.
 
-Omitted recipient means the issuing thread. An explicit pair grant is directional. `all` covers the issuing supervisor and current/future descendants, not outside ancestors or siblings. Explicit pair settings override subtree defaults; the nearest common supervisor with a configured default determines inherited permission.
+Mailbox acceptance still requires durable same-root identity and preserves invocation idempotency and attribution. Consumption of accepted pending mail no longer consults old send settings. Consumed and rejected rows remain terminal; removing permission checks does not requeue them.
 
-Downward supervisor dispatch is outside these permission disables. `/agent sends all disable` disables applicable reverse/peer routes, not parent-to-descendant task assignment. Reject an explicit downward disable with a clear explanation instead of recording or displaying a disabled route that runtime dispatch ignores.
-
-User TUI grants persist across live turns, not process shutdown, cold resume, or history fork. Ownership transfer does not export live grants. Retained historical instructions are audit evidence, not executable permission state.
-
-### Layer boundaries and policy resolution
-
-Separate permission, workflow instructions, and response observation. Only effective runtime permission authorizes a send; text describing a workflow or naming an agent cannot grant access.
-
-| Layer | Responsibility |
-|---|---|
-| Global config | Default communication policy for newly initialized graphs. |
-| Agent role config | Default for the selected supervisor role's subtree, including future children. It does not grant access outside that subtree. |
-| Tool schema | Explain `send_input`, targeting, `w`, and permission errors once. Do not embed dynamic directories or per-agent permission lists in the schema. |
-| Skill file | Guide coordination, reporting, and escalation. Skill text does not grant permissions. |
-| Supervisor message | Assign responsibilities and request coordination. Message text does not grant permissions; existing `w:m` remains an explicit exact-turn reverse-route grant. |
-| User TUI | Authoritative live override through subtree defaults and directed exceptions; update runtime policy and notify affected senders without waking idle threads. |
-
-For the planned config/role surface, resolve defaults when initializing a graph or role subtree, rather than rereading configuration on every send. A selected role supplies its subtree default over the global fallback. Explicit user TUI settings override those configured defaults. Within live user settings, directed pair exceptions override subtree defaults; otherwise use the nearest common supervisor's applicable subtree setting. A user disable cannot be bypassed by `w:m`, a skill, or a supervisor's prose instruction.
-
-Config and role fields remain follow-up work; this spec does not introduce TOML names or require new configuration plumbing in the initial implementation. Cold resume and history fork initialize from applicable configured defaults once that surface exists, not replayed TUI grants. That is fresh policy initialization, not restoration of live subscriptions or automatic recreation of subagents.
-
-Keep one authoritative runtime policy representation: subtree defaults plus sparse directed exceptions, not a separately maintained grant for every possible pair. Admission, context updates, and `/agent` presentation must use the same effective-policy resolver. Cached projections are not another authority.
-
-Share pure ancestry and inherited-policy calculation across Core authorization and TUI presentation; each layer supplies its own authoritative or cached graph view. Likewise, share task-path grammar without moving caller-relative resolution out of Core or uniqueness and reservation checks out of persistence.
-
-Show policy provenance in the picker, for example `enabled · inherited from Main` or `disabled · user override`. Keep permission-change audit records distinct from message-delivery records. Main's sender→recipient peer-message copies remain presentation-only and must not become model input.
-
-Enabling a subtree informs affected loaded members once; future members receive current applicable policy at startup. Disabling rejects newly unauthorized sends, while already admitted work continues. Neither operation starts work merely to announce policy. Explicit pair exceptions remain effective and must not be obscured by a blanket subtree notice.
-
-Admission belongs to an individual input, not a permission grant. Establishing `w:m` does not pre-admit future reverse messages: each later `send_input` checks current effective permission, including user revocation. “Already admitted work” means an actual accepted input, not an unused route or wake reservation. A queued peer message must pass the current permission check at target-turn admission; mere enqueueing does not grandfather permission.
-
-Keep `w:c/f/x/q` response/input handling separate from messaging permission. Keep peer discovery separate from policy changes: do not resend the directory whenever the user changes a permission.
-
-### Rollback, paginated revert, and live-session lifecycle
-
-- **Non-paginated rollback and paginated `thread/revert`:** changing the conversation boundary of the same logical thread does not undo live permission settings. Retain their audit provenance independently of removed conversational work, and reconcile reconstructed model context with current effective policy so an old grant or missing revocation cannot misrepresent permission.
-- **Close:** ends directed live grants incident to the closed thread and any subtree setting owned by that thread. It does not remove a still-live ancestor supervisor's subtree default.
-- **Warm resume:** does not restore the closed thread's ended grants from history. A still-live supervisor's default can independently apply to the resumed member through current membership; present the resulting effective policy without reviving old pair exceptions or completion subscriptions.
-- **Cold resume/history fork:** initialize from applicable configured defaults when supported, never replay historical TUI grants as authority. Do not recreate subagents or subscriptions merely to restore a directory.
-- **Ownership transfer:** revoke former-owner grants. Resolve policy in the destination graph independently; historical attribution and permission-change records remain audit evidence.
-
-Keep runtime policy, audit records, and model-visible current-policy context distinct across these boundaries. Reconcile stale context without waking idle agents solely to announce the reconciliation.
-
-Paginated revert can replace the underlying runtime while retaining the logical thread UUID. Treat that replacement as part of the explicit live revert operation, not as permission restoration from rollout history or a user close/cold resume. Carry current permission state through the operation's existing lifecycle boundary and reconcile it before accepting new sends. Do not recreate completion subscriptions merely because messaging permissions survive.
-
-If the user instead forks at an earlier turn, the new thread follows history-fork rules and receives no historical live grants. Rollback/revert must also discard queued inputs or pending deliveries whose originating work was removed, under their existing turn-boundary rules; retaining a permission does not retain an obsolete message. Cover permission changes both before and after the selected boundary, including boundaries around compaction and inherited paginated history.
-
-### Model-visible permission updates
-
-When a user changes effective permission, deliver a concise developer-context update to the affected sender without waking an idle thread merely to announce the change.
-
-Policy and lifecycle transitions own reconciliation and notice delivery. Sampling and compaction only read the requesting sender's current permission context: they must not refresh the entire graph, mutate grants, or inject notices into other agents. Preserve unchanged notice identities and harness metadata so repeated requests do not churn the prompt prefix.
-
-A directed command updates one destination. For `/agent sends 2 to 3 enable`, agent 2 receives:
-
-```text
-User enabled send_input to Pascal (3).
-```
-
-Use `disabled` for the corresponding disable command. Do not list unrelated agents or imply batch command syntax.
-
-For `/agent sends all enable`, summarize the subtree scope:
-
-```text
-User enabled send_input within Main's subtree, including sibling communication and future agents.
-```
-
-For a nested supervisor, replace `Main` with its ref or canonical task path, for example `ref 2's subtree`. Do not say “your subtree” in a notice distributed to children: each recipient would interpret that scope differently. Explicit pair exceptions must remain clear; do not describe an inherited grant as overriding them.
-
-Permission changes affect `send_input`, not commentary/final-response delivery. Explain that distinction in tool guidance rather than repeating “Response subscriptions unchanged” in each context update. Do not add “No new task,” which could be read as an instruction to stop ongoing work. Do not describe disabled `send_input` as “on turn completion”: commentary/final delivery is a separate observation policy and may be passive, waking, or presentation-only.
-
-Avoid repeated identical updates. Future children receive current applicable permission state once at startup. Preserve changes in the audit history; compaction should carry current effective state rather than accumulating obsolete permission instructions. Cold resume must not restore permissions simply because an old grant appears in history.
-
-### Shared targets: observation versus addressed replies
+## Shared targets: observation versus addressed replies
 
 `w:c` observes the target's first subsequent commentary, and `w:f` observes its turn completion. Neither correlates that output to one sender's instruction. If backend API and backend logic agents both steer a schema agent during the same turn, the observed commentary or final response may address either request or both.
 
-Use workflow guidance rather than additional permission modes:
+Use workflow guidance to choose observation versus an addressed reply:
 
 - Supervisors use `w:cf` when acknowledgement and completion observation are useful, or ask workers for explicit mid-turn updates through `send_input`.
 - Peers normally coordinate and answer one another with `send_input(..., w:"x")`, preserving attribution without subscribing to the recipient's commentary or final response.
 - Workers send requested mid-turn updates to their supervisor with `w:"x"` so the supervisor's later completion does not enter the worker's task context.
 - `w:q` separates input into queued turns when serialized work is useful; it is not reply addressing.
 
-For example, with the necessary directed permissions enabled:
+For example, within one owned tree:
 
 ```text
 backend-2 → backend-1: Confirm schema for endpoint A. Reply via send_input.
@@ -226,15 +167,16 @@ backend-1 → backend-3: Field B is nullable …
 
 The supervisor or workflow skill should establish these conventions when assigning collaborating agents. Tool guidance should explain the underlying distinction once: `c/f` observe shared target output; `send_input` addresses a recipient. These are defaults for coordination, not restrictions on valid flag combinations.
 
-Follow-up: once `/agent sends all enable` is available, update the existing supervisor skills in the separately managed skills repository with these conventions. Skills must not assume that messaging permission has been granted.
+Current supervisor skills should assume that same-owned-tree messaging is available without a
+separate permission-control step.
 
 If a sender requests `c` and the recipient emits commentary followed by an explicit `send_input` reply, both are legitimate deliveries. Do not suppress one as a duplicate merely because their meaning overlaps; existing exact-event deduplication remains separate.
 
-`/agent sends` must not disable `c/f`. Do not parse model-authored `Reply 2:` prefixes as routing instructions or synthesize “no reply made—ask again” messages, which could cause retry loops. Guaranteed per-message reply correlation, if needed later, should use structured message IDs and `reply_to`; it is outside this proposal.
+Do not parse model-authored `Reply 2:` prefixes as routing instructions or synthesize “no reply made—ask again” messages, which could cause retry loops. Guaranteed per-message reply correlation, if needed later, should use structured message IDs and `reply_to`; it is outside this proposal.
 
 ## Discovery and presentation
 
-Discovery answers “who owns this work?”; permission answers “may I message them?” Keep both visible without repeating the complete directory on every permission change.
+Discovery answers “who owns this work?” within the owned tree. It is independent of always-on same-tree messaging and does not grant lifecycle control.
 
 Illustrative directory:
 
@@ -250,11 +192,11 @@ Provide a user-controlled, default-disabled read-only V1 `list_agents` directory
 
 V2 already has `list_agents`; reuse that familiar name and applicable shared machinery without importing V2 task/mailbox lifecycle semantics or changing V2's existing availability in this pass. Its unfiltered listing covers the root control's live graph, not merely the caller's siblings or descendants; relative `path_prefix` values resolve against the caller's path. Keep the same unfiltered graph scope for V1, with the explicit status/pagination contract above.
 
-V1 directory discovery requires explicit user enablement and supports explicit user disablement. When disabled, omit the model-facing tool and reject stale or previously discovered invocations at execution. `/agent sends` does not enable directory discovery, and enabling discovery grants neither messaging nor spawning permission. Skills and supervisor prose cannot enable it. Disabling discovery does not retract already seen identities or prevent permitted sends to known refs/UUIDs. Human `/agent` inspection and the app-server alias-list API remain available independently.
+V1 directory discovery requires explicit user enablement and supports explicit user disablement. When disabled, omit the model-facing tool and reject stale or previously discovered invocations at execution. Skills and supervisor prose cannot enable it. Disabling discovery does not retract already seen identities or prevent sends to known same-tree refs/UUIDs. Human `/agent` inspection and the app-server alias-list API remain available independently.
 
 When enabled for the graph, directory discovery applies to its current and future members, including leaves that cannot spawn. Do not infer enablement from task-path use, model metadata, or role selection. Reuse existing user-controlled tool-availability configuration where possible; a live user override, if exposed, must follow the same admission gate and must not be restored merely from historical tool calls.
 
-Permission updates need not enumerate all agents. Reuse existing identity/context machinery for attributed senders and authorized route hints, avoiding repeated UUID lists and repeated tool instructions. These limited hints are distinct from directory enumeration; do not inject the whole directory automatically as a substitute for disabled `list_agents`.
+Reuse existing bounded identity/context machinery for attributed senders, avoiding repeated UUID lists and repeated tool instructions. This hydration is distinct from directory enumeration; do not inject the whole directory as a substitute for disabled `list_agents`.
 
 Preserve sender→recipient presentation in Main for peer communication, marked presentation-only relative to Main's model. Such display copies must not become Main model inputs or accidental subscriptions. Live, resumed, paginated, non-paginated, Review, and Full transcript projections must retain attribution and full auditable payloads under their existing presentation contracts.
 
@@ -270,7 +212,7 @@ A later V2 `send_message`/`followup_task` consolidation can build on this common
 
 ## Implementation sequence
 
-1. Add trusted attribution for V1 agent-originated input and concise permission-change context.
+1. Add trusted attribution for V1 agent-originated input without permission-change context.
 2. Add optional task paths, directory presentation, and shared targeting.
 3. Reconcile reusable envelope/projection code with V2; keep tool/lifecycle consolidation separate.
 
@@ -290,23 +232,23 @@ Task labels do not authorize history inheritance, change its default of no inher
 - Human `/agent` prompts, including spawn and queued prompts, remain ordinary target-thread user messages with normal user styling and semantics in live, resumed, paginated, and non-paginated history; only model-authored sends receive agent attribution. Issuing-thread audit records do not change target authorship.
 - Payload text cannot forge trusted attribution.
 - Embedded envelope delimiters, fabricated headers, and header-value newlines remain payload data under the selected serialization; audit payloads round-trip without loss.
-- Knowing a sender's ref/path does not grant reverse permission.
-- Parent task dispatch remains available; directed and inherited permissions behave independently of commentary/final subscriptions.
-- Permission updates do not wake idle agents, repeat unchanged state, or instruct agents to stop.
-- Future children discover current peers/permissions without inheriting parent conversation history.
+- Knowing a foreign-tree ref/path does not confer ownership or authorize cross-tree sends.
+- Parent, sibling, and upward sends work without grants and select commentary/final observations independently.
+- Historical settings do not alter current admission or install subscriptions.
+- Future children receive bounded current identities without inheriting parent conversation history.
 - Task targeting agrees across tools and TUI; ordinary duplicate-path spawns fail for both live and closed members, including concurrent spawns, without publishing a conflicting agent.
 - Nested spawns and relative selectors/prefixes resolve against the caller's task path; absolute paths remain root-scoped, callers without a task path use `/root`, and unfiltered directory discovery is not restricted to siblings or descendants.
 - Verify actual V1/V2 child and grandchild request payloads with task labels present and absent: role defaults, conflicting configured child defaults, explicit model/effort overrides, model-only reasoning reset, and role base/developer instructions must match the existing spawn contract. Include user TUI dispatch and close/unload/resume preservation of resolved settings.
 - Cover default no-history spawns and explicitly authorized history forks with independent model/reasoning overrides; preserve service-tier and `w` behavior at nested depth without weakening existing admission checks.
 - Separate roots can reuse paths; adoption allocates collision-free suffixed paths for the imported subtree atomically, reports the mapping, and preserves UUIDs and historical attribution.
 - Directory filtering defaults to loaded members, supports running/status/closed/all selection before pagination, and does not release paths hidden by a filter.
-- V1 `list_agents` is absent and rejects stale calls by default; explicit user enable/disable affects current/future graph members independently of sends permission, while human inspection remains available.
-- Rename, close/resume, adoption, and history fork preserve canonical identity without restoring stale live grants or confusing separate roots with identical paths.
+- V1 `list_agents` is absent and rejects stale calls by default; explicit user enable/disable affects current/future graph members independently of messaging, while human inspection remains available.
+- Rename, close/resume, adoption, and history fork preserve canonical identity without confusing separate roots with identical paths.
 - Renames preserve send-time attribution while directory lookup uses current labels.
-- Revocation after a `w:m` grant rejects a subsequent unauthorized send; queued messages recheck permission at target admission.
-- Downward disable commands cannot block supervisor dispatch or leave misleading disabled-policy presentation.
-- Non-paginated rollback and paginated revert preserve live permission state and reconcile model context, including runtime replacement, compaction boundaries, and inherited history. Fork-at-turn does not copy live grants, and removed work cannot leave stale queued input/delivery behind.
-- Warm resume can inherit a surviving supervisor default without restoring ended directed grants.
+- Source close before admission rejects queued work; accepted source work retains exact-incarnation draining.
+- Repeated direct and queued peer sends from one originating turn can start later idle recipient turns.
+- Non-paginated rollback and paginated revert preserve attribution through runtime replacement and inherited history without restoring retired messaging controls.
+
 - Compaction/rollback and both history modes preserve attribution and correct effective context.
 - Main's peer presentation copies remain absent from Main model input.
 - JSON/TypeScript/generated exports and Responses API item identities match the chosen typed representation; include request-payload integration tests and TUI snapshots.
