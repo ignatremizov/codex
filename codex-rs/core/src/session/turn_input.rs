@@ -965,9 +965,11 @@ async fn pending_turn_input(
         SubmittedTurnInput::AgentInput {
             content,
             presentation,
+            context,
         } => TurnInput::AgentInput {
             content,
             presentation,
+            context,
             metadata: super::UserInputMetadata {
                 acceptance_order: Some(session.reserve_user_input_order().await),
                 origin,

@@ -39,6 +39,7 @@ impl AgentControlInput {
                     attribution,
                     input: presentation,
                 },
+                context: Vec::new(),
             }),
         }
     }
