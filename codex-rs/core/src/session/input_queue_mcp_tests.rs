@@ -240,6 +240,7 @@ async fn prompt_wait_generation_preserves_deferred_mail_and_never_consumes_input
     }];
     let prompt = if agent {
         TurnInput::AgentInput {
+            context: Vec::new(),
             content,
             presentation: AgentInputPresentation::Attributed("receiver-bound task".into()),
             metadata: Default::default(),

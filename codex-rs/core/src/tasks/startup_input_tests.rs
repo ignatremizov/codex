@@ -123,6 +123,7 @@ async fn startup_and_run_keep_prepared_mailbox_order_and_exact_prompt_metadata(
     };
     let prompt = if agent {
         TurnInput::AgentInput {
+            context: Vec::new(),
             content,
             presentation: AgentInputPresentation::Attributed("agent task".to_string()),
             metadata,
