@@ -49,6 +49,19 @@ impl StreamingSseRequest {
     pub fn body_json(&self) -> serde_json::Value {
         serde_json::from_slice(&self.body).expect("streaming SSE request body should be JSON")
     }
+
+    /// Returns all `input_text` spans from `message` inputs for the provided role.
+    pub fn message_input_texts(&self, role: &str) -> Vec<String> {
+        self.body_json()["input"]
+            .as_array()
+            .expect("input array not found in request")
+            .iter()
+            .filter(|item| item["type"] == "message" && item["role"] == role)
+            .flat_map(|item| item["content"].as_array().into_iter().flatten())
+            .filter(|span| span["type"] == "input_text")
+            .filter_map(|span| span["text"].as_str().map(str::to_owned))
+            .collect()
+    }
 }
 
 /// One-shot request and completion signals for a dynamically mounted SSE response.
