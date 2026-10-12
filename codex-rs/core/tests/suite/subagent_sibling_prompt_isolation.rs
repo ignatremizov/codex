@@ -145,31 +145,11 @@ async fn sibling_discovery_keeps_concurrent_prompts_isolated(
     )
     .await?;
     assert!(!request.body_contains_text(SIBLING_PROMPT));
-    let body = request.body_json();
     let peer = children[1]
         .2
         .ok_or_else(|| anyhow::anyhow!("missing sibling ref"))?
         .to_string();
-    let route = body["input"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("missing request input"))?
-        .iter()
-        .flat_map(|item| item["content"].as_array().into_iter().flatten())
-        .filter_map(|content| content["text"].as_str())
-        .filter_map(|text| {
-            text.trim()
-                .strip_prefix("<agent_reply_route>")?
-                .strip_suffix("</agent_reply_route>")
-        })
-        .map(serde_json::from_str::<Value>)
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .into_iter()
-        .find(|route| route["ref"] == peer)
-        .ok_or_else(|| anyhow::anyhow!("new sibling route was not published"))?;
-    assert_eq!(
-        route,
-        json!({"ref": peer, "send_input": "allowed_until_disabled"}),
-    );
+    assert!(!request.body_contains_text("<agent_reply_route>"));
     let identities = request
         .message_input_texts("developer")
         .into_iter()
@@ -181,16 +161,14 @@ async fn sibling_discovery_keeps_concurrent_prompts_isolated(
     let delta = identities[1]
         .strip_prefix("<agent_identity_context>\n")
         .and_then(|text| text.strip_suffix("\n</agent_identity_context>"))
-        .and_then(|text| text.split_once('\n'))
-        .ok_or_else(|| anyhow::anyhow!("missing identity delta"))?
-        .1;
+        .ok_or_else(|| anyhow::anyhow!("missing identity delta"))?;
     let delta: Value = serde_json::from_str(delta)?;
     let added = delta["upsert"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing identity upserts"))?;
     assert_eq!(added.len(), 1);
     assert_eq!(added[0]["ref"], json!(peer));
-    assert_eq!(delta["removed_refs"], json!([]));
+    assert_eq!(delta, json!({"upsert": added}));
     for (_, child, _) in children {
         wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     }

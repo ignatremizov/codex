@@ -6,11 +6,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use codex_agent_graph_store::AgentAliasState;
 use serde_json::Value;
 use serde_json::json;
 
-const DELTA_INSTRUCTIONS: &str =
-    "Agent identity changes: upsert by ref, remove listed refs; all other mappings stay unchanged.";
 const EMPTY_AUTHORITY_INSTRUCTIONS: &str = "This is the current receiving root's agent identity \
     mapping and replaces earlier mappings. Refs identify only the agents listed here; use a \
     canonical agent_id for other agents. Task paths and nicknames are descriptive and may change.";
@@ -84,21 +83,36 @@ impl IdentityMapping {
             .iter()
             .filter_map(|entry| Some((entry.get("ref")?.as_str()?, entry)))
             .collect::<HashMap<_, _>>();
-        let upsert = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry
-                    .get("ref")
-                    .and_then(Value::as_str)
-                    .is_some_and(|agent_ref| {
-                        previous_by_ref
-                            .get(agent_ref)
-                            .is_none_or(|previous| *previous != *entry)
-                    })
-            })
-            .cloned()
-            .collect();
+        let mut upsert = Vec::new();
+        let mut patch = Vec::new();
+        for entry in &self.entries {
+            let agent_ref = entry.get("ref")?.as_str()?;
+            let Some(previous) = previous_by_ref.get(agent_ref) else {
+                upsert.push(entry.clone());
+                continue;
+            };
+            if *previous == entry {
+                continue;
+            }
+            let current = entry.as_object()?;
+            // Current authorities always include nullable labels. Historical schemas that
+            // actually drop a field need a full replacement, not an ambiguous null patch.
+            if previous
+                .as_object()?
+                .keys()
+                .any(|key| !current.contains_key(key))
+            {
+                return None;
+            }
+            let mut changed = serde_json::Map::new();
+            changed.insert("ref".to_string(), json!(agent_ref));
+            for (key, value) in current {
+                if previous.get(key) != Some(value) {
+                    changed.insert(key.clone(), value.clone());
+                }
+            }
+            patch.push(Value::Object(changed));
+        }
         let removed_refs = previous
             .entries
             .iter()
@@ -108,6 +122,7 @@ impl IdentityMapping {
             .collect();
         let delta = IdentityDelta {
             upsert,
+            patch,
             removed_refs,
         };
         let framing = "<agent_identity_context>\n\n</agent_identity_context>".len();
@@ -134,6 +149,21 @@ impl IdentityMapping {
                 self.entries.push(upsert.clone());
             }
         }
+        for patch in &delta.patch {
+            let Some(fields) = patch.as_object() else {
+                return false;
+            };
+            let Some(entry) = self
+                .entries
+                .iter_mut()
+                .find(|entry| entry.get("ref") == patch.get("ref"))
+                .and_then(Value::as_object_mut)
+            else {
+                // Partial updates never invent an identity when their baseline is missing.
+                return false;
+            };
+            entry.extend(fields.clone());
+        }
         serde_json::to_string(&self.entries).is_ok_and(|entries| {
             entries
                 .replace('<', "\\u003c")
@@ -147,61 +177,95 @@ impl IdentityMapping {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct IdentityDelta {
     upsert: Vec<Value>,
+    patch: Vec<Value>,
     removed_refs: Vec<String>,
 }
 
 impl IdentityDelta {
     pub(super) fn is_empty(&self) -> bool {
-        self.upsert.is_empty() && self.removed_refs.is_empty()
+        self.upsert.is_empty() && self.patch.is_empty() && self.removed_refs.is_empty()
     }
 
     pub(super) fn body(&self) -> String {
-        let payload = json!({
-            "upsert": self.upsert,
-            "removed_refs": self.removed_refs,
-        })
-        .to_string()
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e");
-        format!("{DELTA_INSTRUCTIONS}\n{payload}")
+        // Keys describe the operations without repeating prose. A patch assigns only listed
+        // fields; explicit null clears a nullable label, while absent fields stay unchanged.
+        let mut payload = serde_json::Map::new();
+        if !self.upsert.is_empty() {
+            payload.insert("upsert".to_string(), json!(self.upsert));
+        }
+        if !self.patch.is_empty() {
+            payload.insert("patch".to_string(), json!(self.patch));
+        }
+        if !self.removed_refs.is_empty() {
+            payload.insert("removed_refs".to_string(), json!(self.removed_refs));
+        }
+        Value::Object(payload)
+            .to_string()
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
     }
 
     fn from_value(value: Value) -> Option<Self> {
         let object = value.as_object()?;
-        if object
-            .keys()
-            .any(|key| key != "upsert" && key != "removed_refs")
+        if object.is_empty()
+            || object
+                .keys()
+                .any(|key| key != "upsert" && key != "patch" && key != "removed_refs")
         {
             return None;
         }
-        let upsert = object.get("upsert")?.as_array()?.clone();
+        let upsert = match object.get("upsert") {
+            Some(value) => value.as_array()?.clone(),
+            None => Vec::new(),
+        };
         IdentityMapping::from_value(Value::Array(upsert.clone()), /*omitted*/ false)?;
-        let removed_refs = object
-            .get("removed_refs")?
-            .as_array()?
+        let patch = match object.get("patch") {
+            Some(value) => value.as_array()?.clone(),
+            None => Vec::new(),
+        };
+        IdentityMapping::from_value(Value::Array(patch.clone()), /*omitted*/ false)?;
+        for entry in &patch {
+            let fields = entry.as_object()?;
+            if fields.len() < 2
+                || fields.iter().any(|(key, value)| match key.as_str() {
+                    "ref" => !value.is_string(),
+                    "state" => serde_json::from_value::<AgentAliasState>(value.clone()).is_err(),
+                    "nickname" | "task_path" => !value.is_string() && !value.is_null(),
+                    _ => true,
+                })
+            {
+                return None;
+            }
+        }
+        let removed = match object.get("removed_refs") {
+            Some(value) => value.as_array()?.clone(),
+            None => Vec::new(),
+        };
+        let removed_refs = removed
             .iter()
             .map(Value::as_str)
             .collect::<Option<Vec<_>>>()?
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>();
-        let mut unique_removed = HashSet::new();
+        let mut affected_refs = HashSet::new();
         if removed_refs
             .iter()
-            .any(|agent_ref| !unique_removed.insert(agent_ref.as_str()))
+            .any(|agent_ref| !affected_refs.insert(agent_ref.as_str()))
         {
             return None;
         }
-        if upsert.iter().any(|entry| {
+        if upsert.iter().chain(&patch).any(|entry| {
             entry
                 .get("ref")
                 .and_then(Value::as_str)
-                .is_some_and(|agent_ref| unique_removed.contains(agent_ref))
+                .is_some_and(|agent_ref| !affected_refs.insert(agent_ref))
         }) {
             return None;
         }
         Some(Self {
             upsert,
+            patch,
             removed_refs,
         })
     }
@@ -216,10 +280,13 @@ fn parse_fragment_body(body: &str) -> Option<IdentityFragment> {
     if body.len() > MAX_FRAGMENT_BYTES {
         return None;
     }
-    let (_, payload) = body.split_once('\n')?;
+    let (instructions, payload) = if body.starts_with('{') {
+        ("", body)
+    } else {
+        body.split_once('\n')?
+    };
     let value: Value = serde_json::from_str(payload).ok()?;
     if value.is_array() {
-        let (instructions, _) = body.split_once('\n')?;
         IdentityMapping::from_value(value, instructions.contains(OMITTED_IDENTITIES))
             .map(IdentityFragment::Full)
     } else {
