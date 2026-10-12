@@ -3287,7 +3287,6 @@ async fn user_control_keeps_v2_identity_and_durable_response_observation() -> Re
                     params: ThreadListParams {
                         attached_to_thread_id: None,
                         excluded_thread_ids: None,
-                        originators: None,
                         cursor: None,
                         limit: Some(10),
                         sort_key: None,
