@@ -230,6 +230,7 @@ impl ChatWidget {
         {
             *email = current_email;
             *workspace = current_workspace;
+            self.request_redraw();
         }
     }
 

@@ -14,13 +14,17 @@ use uuid::Uuid;
 
 impl App {
     pub(super) fn refresh_account_email(&mut self, app_server: &AppServerSession) {
+        self.account_email_request_id = None;
+        if !self.chat_widget.has_chatgpt_account() {
+            return;
+        }
         let request_id = Uuid::new_v4();
         self.account_email_request_id = Some(request_id);
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
             let result = tokio::time::timeout(
-                Duration::from_secs(/*secs*/ 30),
+                Duration::from_secs(/*secs*/ 10),
                 request_handle.request_typed::<GetAccountResponse>(ClientRequest::GetAccount {
                     request_id: RequestId::String(format!("account-status-{request_id}")),
                     params: GetAccountParams {
@@ -29,28 +33,32 @@ impl App {
                 }),
             )
             .await;
-            match result {
-                Ok(Ok(response)) => {
-                    if let Some(Account::Chatgpt {
+            let (email, workspace) = match result {
+                Ok(Ok(response)) => match response.account {
+                    Some(Account::Chatgpt {
                         email,
                         workspace_name,
                         ..
-                    }) = response.account
-                    {
-                        app_event_tx.send(AppEvent::AccountEmailLoaded {
-                            request_id,
-                            email,
-                            workspace: crate::app_server_session::workspace_display(
-                                workspace_name,
-                                response.workspace_routing,
-                            ),
-                        });
-                    }
-                }
+                    }) => (
+                        email,
+                        crate::app_server_session::workspace_display(
+                            workspace_name,
+                            response.workspace_routing,
+                        ),
+                    ),
+                    Some(Account::ApiKey {} | Account::AmazonBedrock { .. } | Account::Gcp {})
+                    | None => (None, None),
+                },
                 Ok(Err(_)) | Err(_) => {
                     tracing::warn!("failed to read account identity after account update");
+                    (None, None)
                 }
-            }
+            };
+            app_event_tx.send(AppEvent::AccountEmailLoaded {
+                request_id,
+                email,
+                workspace,
+            });
         });
     }
 }
