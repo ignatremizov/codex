@@ -40,6 +40,10 @@ pub enum TurnInput {
     AgentInput {
         content: Vec<UserInput>,
         presentation: crate::protocol::AgentInputPresentation,
+        /// Core-authored context published atomically with this prompt, preserving
+        /// each item's classification independently from agent-authored content.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        context: Vec<ResponseItem>,
     },
     ResponseItem(ResponseItem),
     AnnotatedResponseItem(AnnotatedResponseItem),

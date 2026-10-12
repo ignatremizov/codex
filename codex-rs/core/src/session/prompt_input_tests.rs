@@ -1,6 +1,9 @@
 //! Prompt publication retains captured input metadata and settles only its canonical receipt.
 
 use super::*;
+use crate::context::AgentContextIdentity;
+use crate::context::AgentReplyRoute;
+use crate::context::ContextualUserFragment;
 use crate::session::UserInputMetadata;
 use crate::session::tests::attach_in_memory_thread_store;
 use crate::session::tests::make_session_and_context_with_rx;
@@ -150,11 +153,10 @@ async fn agent_prompt_keeps_internal_route_out_of_the_typed_visible_input(attrib
         text: "the authored task".to_string(),
         text_elements: Vec::new(),
     }];
-    let mut input = visible.clone();
-    input.push(UserInput::Text {
-        text: "internal scoped route".to_string(),
-        text_elements: Vec::new(),
-    });
+    let mut route =
+        ContextualUserFragment::into(AgentReplyRoute::new(AgentContextIdentity::Canonical {
+            agent_id: codex_protocol::ThreadId::new(),
+        }));
     let presentation = if attributed {
         AgentInputPresentation::Attributed("attributed task".to_string())
     } else {
@@ -164,7 +166,7 @@ async fn agent_prompt_keeps_internal_route_out_of_the_typed_visible_input(attrib
         .record_prompt_and_emit_turn_item(
             &turn,
             turn.model_info(),
-            &input,
+            &visible,
             PersistContext::Standard,
             PromptInputKind::Agent {
                 presentation,
@@ -173,7 +175,7 @@ async fn agent_prompt_keeps_internal_route_out_of_the_typed_visible_input(attrib
                     ..Default::default()
                 },
             },
-            Vec::new(),
+            vec![ResponseItemEnvelope::new(route.clone())],
         )
         .await
         .expect("publish attributed input");
@@ -196,7 +198,12 @@ async fn agent_prompt_keeps_internal_route_out_of_the_typed_visible_input(attrib
         session.state.lock().await.history.annotated_items(),
         canonical.as_slice()
     );
-    assert_eq!(canonical.len(), 1);
+    assert_eq!(canonical.len(), 2);
+    route.set_id(canonical[1].item.id().cloned());
+    assert_eq!(canonical[1].item, route);
+    assert!(!crate::context::is_user_authorization_message(
+        &canonical[1].item
+    ));
     assert_eq!(
         crate::context::is_user_authorization_message(&canonical[0].item),
         !attributed
