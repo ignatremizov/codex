@@ -90,6 +90,8 @@ Spawn and resume results hydrate the ref, nickname, and task path together. Rece
 
 Incremental identity updates have a separate 16,384-byte rendered-fragment ceiling. Replaying individually bounded deltas must not accumulate a larger identity map. An oversized or unusable retained chain, or a removal/update delta that exceeds the ceiling, falls back to the complete current bounded authority without rewriting earlier history. These limits do not truncate agent messages or their canonical evidence.
 
+A stream retry refreshes the identity snapshot after draining completed tools from the failed attempt. Its rebuilt history, identity hydration, agent envelopes, and mailbox projections all use that one refreshed snapshot; a successful spawn receipt must not be paired with the pre-spawn mapping. This does not rewrite the stored history or re-run completed lifecycle tools.
+
 The example is illustrative, not permission to concatenate arbitrary text into delimiters. Use reversible escaping or structured serialization for header values and payload text so embedded `<agent_message>`/`</agent_message>` strings, newlines in labels, or fabricated sender headers remain data rather than additional envelope structure. Preserve the original payload in audit storage and recover it exactly for human presentation. This prevents structural ambiguity; it is not a claim that serialization alone prevents model confusion or prompt injection.
 
 Once a complete mapping is retained, ordinary updates append only changed/new
