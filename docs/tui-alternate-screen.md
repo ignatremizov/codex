@@ -13,6 +13,8 @@ This is separate from the terminal's alternate screen:
 
 Temporary full-screen surfaces include the transcript pager, diff view, full-screen approval views, resume picker, and model-migration prompt. Leaving one of these surfaces restores the conversation viewport: inline sessions return to the primary buffer, while owned-transcript sessions retain their screen.
 
+When a fullscreen conversation exits, Codex copies the last visible frame—including its composer and status footer—to the primary screen before printing the exit summary and resume command. The retained view becomes ordinary terminal scrollback, keeping its text styles and links. This copies only the visible frame, not the full virtual transcript. Inline sessions keep their existing scrollback behavior; closing temporary overlays, suspending Codex, or opening an external editor does not append a copy.
+
 ## `tui.alternate_screen`
 
 The `tui.alternate_screen` setting controls whether the TUI may enter the alternate screen. Temporary surfaces and the owned transcript (when `tui.fullscreen_transcript` is enabled) use that gate.
