@@ -1691,25 +1691,26 @@ See the Codex keymap documentation for supported actions and examples."
             tracing::warn!(error = %err, "failed to shut down embedded app server");
         }
         let clear_pet_result = tui.clear_ambient_pet_image();
-        let clear_result = tui.terminal.clear();
+        let finish_result = tui.finish();
         if let Some(task) = app.daemon_restart.take()
             && let Err(err) = task.await.unwrap_or_else(|err| Err(err.into()))
         {
             tracing::warn!(error = %err, "failed to finish background server restart during exit");
         }
-        // Keep the alternate screen active until the outer guard restores both keyboard stacks.
+        // Fullscreen sessions retain their final frame on the primary screen. The outer guard
+        // still restores terminal input modes before the CLI prints its exit/resume messages.
         let exit_reason = match exit_reason_result {
             Ok(exit_reason) => {
                 clear_pet_result?;
-                clear_result?;
+                finish_result?;
                 exit_reason
             }
             Err(err) => {
                 if let Err(clear_pet_err) = clear_pet_result {
                     tracing::warn!(error = %clear_pet_err, "failed to clear ambient pet image");
                 }
-                if let Err(clear_err) = clear_result {
-                    tracing::warn!(error = %clear_err, "failed to clear terminal UI");
+                if let Err(finish_err) = finish_result {
+                    tracing::warn!(error = %finish_err, "failed to finish terminal UI");
                 }
                 return Err(err);
             }
