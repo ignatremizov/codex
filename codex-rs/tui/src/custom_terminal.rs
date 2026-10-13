@@ -50,6 +50,7 @@ use ratatui::style::Modifier;
 use ratatui::widgets::WidgetRef;
 
 mod cursor;
+mod exit;
 
 #[cfg(test)]
 #[path = "custom_terminal_test_support.rs"]
