@@ -63,6 +63,7 @@ use codex_config::types::NotificationMethod;
 
 mod alternate_screen;
 mod event_stream;
+mod exit;
 mod frame_rate_limiter;
 mod frame_requester;
 mod history_tail;
