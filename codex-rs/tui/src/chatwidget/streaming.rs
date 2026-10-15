@@ -423,6 +423,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_stream_error(&mut self, message: String, additional_details: Option<String>) {
+        self.clear_status_countdown();
         self.status_state.remember_retry_status_header();
         self.bottom_pane.ensure_status_indicator();
         self.status_state.terminal_title_status_kind = TerminalTitleStatusKind::Thinking;

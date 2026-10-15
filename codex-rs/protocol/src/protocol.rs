@@ -4165,6 +4165,10 @@ pub struct ThreadRolledBackEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct StreamErrorEvent {
     pub message: String,
+    /// Unix seconds at which the next automatic retry is scheduled.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub retry_at: Option<i64>,
     #[serde(default)]
     pub codex_error_info: Option<CodexErrorInfo>,
     /// Optional details about the underlying stream failure (often the same
@@ -5030,6 +5034,23 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
+
+    #[test]
+    fn stream_error_retry_deadline_accepts_legacy_records() -> Result<()> {
+        let legacy = json!({
+            "message": "Reconnecting",
+            "codex_error_info": null,
+            "additional_details": null
+        });
+        let event: StreamErrorEvent = serde_json::from_value(legacy.clone())?;
+        let mut expected = legacy;
+        expected["retry_at"] = serde_json::Value::Null;
+        assert_eq!(serde_json::to_value(&event)?, expected);
+        expected["retry_at"] = json!(1234);
+        let timed: StreamErrorEvent = serde_json::from_value(expected.clone())?;
+        assert_eq!(serde_json::to_value(timed)?, expected);
+        Ok(())
+    }
 
     #[test]
     fn old_turn_started_records_have_no_root_attribution() {

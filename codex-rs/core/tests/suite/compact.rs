@@ -72,6 +72,10 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use wiremock::MockServer;
+
+#[path = "compact_capacity_tests.rs"]
+mod capacity_tests;
+
 // --- Test helpers -----------------------------------------------------------
 
 pub(super) const FIRST_REPLY: &str = "FIRST_REPLY";

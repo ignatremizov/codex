@@ -379,12 +379,6 @@ async fn run_compact_task_inner_impl(
             .clone()
             .for_prompt(&turn_context.model_info().input_modalities);
         sess.services
-            .local_agent_runtime
-            .control(sess.session_id())
-            .messaging_context_snapshot(sess.presentation_id())
-            .await?
-            .reconcile(&mut turn_input);
-        sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);
         // Checkpoint publication compares exact canonical payloads, never projected refs.
@@ -458,6 +452,15 @@ async fn run_compact_task_inner_impl(
                 ) =>
             {
                 return Err(e);
+            }
+            Err(e) if matches!(e.details(), CodexErrorDetails::ServerOverloaded) => {
+                crate::responses_retry::retry_capacity_error(
+                    &sess,
+                    &turn_context,
+                    e,
+                    codex_client::RetryOperation::Sampling,
+                )
+                .await?;
             }
             Err(e)
                 if matches!(
