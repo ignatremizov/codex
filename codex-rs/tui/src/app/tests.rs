@@ -11183,6 +11183,13 @@ async fn start_config_write_test_app_server(app: &App) -> Result<AppServerSessio
 #[path = "tests/active_reconnect_tests.rs"]
 mod active_reconnect;
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "tests/local_daemon_fallback_tests.rs"]
+mod local_daemon_fallback;
+
+#[path = "tests/local_tree_recovery_tests.rs"]
+mod local_tree_recovery;
+
 #[cfg(unix)]
 #[path = "tests/navigation_reconnect_tests.rs"]
 mod navigation_reconnect;

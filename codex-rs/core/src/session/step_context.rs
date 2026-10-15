@@ -78,6 +78,31 @@ impl StepContext {
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
         let mut item = self.turn.to_turn_context_item();
         item.realtime_active = Some(self.realtime.active);
+        if item.model != self.settings.model_info.slug
+            || item.collaboration_mode != Some(self.settings.effective_collaboration_mode())
+            || item.effort.as_ref() != self.settings.reasoning_effort()
+            || item.personality != self.settings.personality()
+            || item.approval_policy != self.settings.approval_policy()
+            || item.approvals_reviewer != Some(self.settings.approvals_reviewer())
+            || self.environments.all_selections() != self.turn.initial_environments.all_selections()
+            || !self
+                .environments
+                .turn_environments()
+                .map(|environment| (&environment.selection, environment.config_origin))
+                .eq(self
+                    .turn
+                    .initial_environments
+                    .turn_environments()
+                    .map(|environment| (&environment.selection, environment.config_origin)))
+        {
+            // Legacy context fields still describe the frozen turn, not every live step
+            // setting. Do not certify exact automatic recovery from a mixed snapshot.
+            item.recovery_start_options = None;
+        } else if let Some(recovery) = &mut item.recovery_start_options {
+            recovery.service_tier = self.settings.service_tier.clone();
+            recovery.reasoning_summary = Some(self.settings.reasoning_summary);
+            recovery.configured_reasoning_summary = self.settings.selected().reasoning_summary;
+        }
         item
     }
 
@@ -91,3 +116,7 @@ impl StepContext {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "step_context_recovery_tests.rs"]
+mod recovery_tests;

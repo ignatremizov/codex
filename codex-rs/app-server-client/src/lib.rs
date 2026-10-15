@@ -20,6 +20,10 @@
 //! runtime remain bounded; the local consumer event queue is unbounded so
 //! unread notifications cannot prevent request responses from being delivered.
 
+// Recovery plans carry the same recursive thread-manager state as core and app-server.
+#![recursion_limit = "256"]
+
+mod local_tree_recovery;
 mod path;
 mod remote;
 mod server_request;
@@ -33,6 +37,8 @@ use std::io::Result as IoResult;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use codex_app_server::LocalTreeRecoveryOutcome;
+pub use codex_app_server::PreparedLocalTreeRecovery;
 pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::app_server_profile_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
@@ -311,6 +317,14 @@ impl InProcessClientStartArgs {
 /// Each variant carries a oneshot sender so the caller can `await` the
 /// result without holding a mutable reference to the client.
 enum ClientCommand {
+    PrepareLocalTreeRecovery {
+        thread_id: codex_protocol::ThreadId,
+        response_tx: oneshot::Sender<IoResult<PreparedLocalTreeRecovery>>,
+    },
+    ContinueLocalTreeRecovery {
+        plan: Box<PreparedLocalTreeRecovery>,
+        response_tx: oneshot::Sender<IoResult<LocalTreeRecoveryOutcome>>,
+    },
     Request {
         request: Box<ClientRequest>,
         response_tx: oneshot::Sender<IoResult<RequestResult>>,
@@ -390,6 +404,24 @@ impl InProcessAppServerClient {
                 tokio::select! {
                     command = command_rx.recv() => {
                         match command {
+                            Some(ClientCommand::PrepareLocalTreeRecovery { thread_id, response_tx }) => {
+                                let sender = request_sender.clone();
+                                tokio::spawn(async move {
+                                    if !response_tx.is_closed() {
+                                        let result = sender.prepare_local_tree_recovery(thread_id).await;
+                                        let _ = response_tx.send(result);
+                                    }
+                                });
+                            }
+                            Some(ClientCommand::ContinueLocalTreeRecovery { plan, response_tx }) => {
+                                let sender = request_sender.clone();
+                                tokio::spawn(async move {
+                                    if !response_tx.is_closed() {
+                                        let result = sender.continue_local_tree_recovery(*plan).await;
+                                        let _ = response_tx.send(result);
+                                    }
+                                });
+                            }
                             Some(ClientCommand::Request { request, response_tx }) => {
                                 let request_sender = request_sender.clone();
                                 // Request waits happen on a detached task so
@@ -753,6 +785,15 @@ impl AppServerRequestHandle {
 }
 
 impl AppServerClient {
+    /// Retained death evidence for a connected local out-of-process server.
+    /// In-process servers and remote TCP endpoints have no local peer monitor.
+    pub fn local_peer_process(&self) -> Option<codex_uds::PeerProcess> {
+        match self {
+            Self::InProcess(_) => None,
+            Self::Remote(client) => client.local_peer_process(),
+        }
+    }
+
     /// App-server platform family, which can differ from the executor's platform.
     /// Older remote servers may omit this metadata.
     pub fn platform_family(&self) -> Option<&str> {

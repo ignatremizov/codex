@@ -150,6 +150,8 @@ pub use crate::code_mode_host::AppServerCodeModeHostArgs;
 pub use crate::code_mode_host::CodeModeHostTransport;
 pub use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 pub use crate::error_code::INVALID_PARAMS_ERROR_CODE;
+pub use crate::request_processors::LocalTreeRecoveryOutcome;
+pub use crate::request_processors::PreparedLocalTreeRecovery;
 pub use crate::startup_auth::AppServerStartupAuth;
 pub use crate::startup_auth::validate_app_server_listen_url;
 pub use crate::transport::AppServerTransport;

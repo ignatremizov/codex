@@ -1371,6 +1371,7 @@ mod tests {
                 turn_id: Some("turn-1".to_string()),
                 root_turn_id: None,
                 disabled_plugin_ids: None,
+                recovery_start_options: None,
                 cwd: serde_json::from_value(serde_json::json!(cwd)).expect("absolute cwd"),
                 approval_policy,
                 approvals_reviewer: None,

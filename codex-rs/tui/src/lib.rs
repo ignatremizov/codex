@@ -347,14 +347,9 @@ impl AppServerTarget {
     }
 
     fn uses_embedded_network_policy(&self) -> bool {
-        matches!(
-            self,
-            Self::Embedded
-                | Self::LocalDaemon {
-                    allow_embedded_fallback: true,
-                    ..
-                }
-        )
+        // Even required-daemon launches can recover after verified process death. Bind
+        // caller-owned clients now so they follow the recovered server's live policy.
+        matches!(self, Self::Embedded | Self::LocalDaemon { .. })
     }
 
     fn environment_http_client_factory(
@@ -364,16 +359,8 @@ impl AppServerTarget {
     ) -> codex_http_client::HttpClientFactory {
         let factory = config.http_client_factory();
         match self {
-            Self::Embedded
-            | Self::LocalDaemon {
-                allow_embedded_fallback: true,
-                ..
-            } => policy.bind(factory),
-            Self::LocalDaemon {
-                allow_embedded_fallback: false,
-                ..
-            }
-            | Self::Remote { .. } => factory,
+            Self::Embedded | Self::LocalDaemon { .. } => policy.bind(factory),
+            Self::Remote { .. } => factory,
         }
     }
 
@@ -2133,6 +2120,21 @@ async fn run_ratatui_app(
 
     // Keep the large event-loop future out of the enclosing startup futures so session
     // transitions have enough stack headroom to rebuild configuration and the chat widget.
+    let embedded_recovery =
+        matches!(app_server_target, AppServerTarget::LocalDaemon { .. }).then(|| {
+            app::EmbeddedAppServerRecovery {
+                arg0_paths,
+                config: config.clone(),
+                cli_kv_overrides: cli_kv_overrides.clone(),
+                loader_overrides: loader_overrides.clone(),
+                strict_config,
+                cloud_config_bundle: cloud_config_bundle.clone(),
+                feedback: feedback.clone(),
+                log_db,
+                environment_manager: Arc::clone(&environment_manager),
+                network_policy: embedded_network_policy,
+            }
+        });
     let app_result = Box::pin(App::run(
         &mut tui,
         app_server,
@@ -2159,6 +2161,7 @@ async fn run_ratatui_app(
         startup_draft,
         managed_worktree,
         daemon_cli_executable,
+        embedded_recovery,
     ))
     .await;
 

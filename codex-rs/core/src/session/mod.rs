@@ -1263,6 +1263,7 @@ impl SessionIo {
         start_options: TurnStartOptions,
         trace: Option<W3cTraceContext>,
         turn_id: String,
+        expected_previous_turn_id: Option<String>,
         turn_extension_init: Option<ExtensionDataInit>,
     ) -> CodexResult<TurnInputSubmission> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -1271,6 +1272,7 @@ impl SessionIo {
             op: Op::RecoverTurn {
                 thread_settings,
                 start_options,
+                expected_previous_turn_id,
                 reply: reply_tx,
             },
             trace,
@@ -3623,6 +3625,7 @@ impl Session {
             )
             .await
         {
+            self.quarantine_history(format!("conversation publication failed: {error}"));
             error!("failed to publish conversation items: {error}");
         }
     }
