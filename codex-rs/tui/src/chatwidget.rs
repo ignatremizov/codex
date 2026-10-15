@@ -1981,7 +1981,10 @@ impl ChatWidget {
         }
         if matches!(
             &op,
-            AppCommand::UserTurn { .. } | AppCommand::Review { .. } | AppCommand::Compact
+            AppCommand::UserTurn { .. }
+                | AppCommand::Review { .. }
+                | AppCommand::Compact
+                | AppCommand::Continue
         ) && self.reject_blocked_input()
         {
             return false;

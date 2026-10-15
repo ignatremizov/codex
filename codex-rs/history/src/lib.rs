@@ -5,6 +5,10 @@ pub use heartbeat::HEARTBEAT_CONTENT_KIND;
 pub use heartbeat::Heartbeat;
 pub use heartbeat::UserInputOrigin;
 
+mod turn_recovery;
+pub use turn_recovery::TurnRecoveryMode;
+pub use turn_recovery::select_recoverable_turn;
+
 mod compaction_resume_metadata;
 pub use codex_protocol::turn_input::TurnAttribution;
 pub use compaction_resume_metadata::CompactionResumeMetadata;

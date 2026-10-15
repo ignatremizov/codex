@@ -38,6 +38,7 @@ enum RecoveryScenario {
     ChangedSettings,
     ChangedSummary,
     UnfinishedTool,
+    UnfinishedToolExplicit,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,7 +218,10 @@ async fn tree_owner_child() -> Result<()> {
                 if started
                     && context
                     && input
-                    && (scenario != RecoveryScenario::UnfinishedTool || tool_pending)
+                    && (!matches!(
+                        scenario,
+                        RecoveryScenario::UnfinishedTool | RecoveryScenario::UnfinishedToolExplicit
+                    ) || tool_pending)
                 {
                     return Ok::<_, color_eyre::Report>(turn.id.clone());
                 }
@@ -311,6 +315,14 @@ async fn crashed_child_selection_continues_when_persisted_tool_call_has_no_outco
         .await
 }
 
+#[tokio::test]
+async fn explicit_continue_after_crash_accepts_a_tool_call_without_its_outcome() -> Result<()> {
+    crashed_child_selection_restores_tree_and_checks_original_turn(
+        RecoveryScenario::UnfinishedToolExplicit,
+    )
+    .await
+}
+
 async fn crashed_child_selection_restores_tree_and_checks_original_turn(
     scenario: RecoveryScenario,
 ) -> Result<()> {
@@ -326,7 +338,10 @@ async fn crashed_child_selection_restores_tree_and_checks_original_turn(
              [agents]\nmax_concurrent_threads_per_session = 3\nmax_depth = 2",
         )
         .write(home.path())?;
-    let original_response = if scenario == RecoveryScenario::UnfinishedTool {
+    let original_response = if matches!(
+        scenario,
+        RecoveryScenario::UnfinishedTool | RecoveryScenario::UnfinishedToolExplicit
+    ) {
         // Leave a child-authorized timer pending, with a durable call but no output.
         // Root-only interactive tools would return an error rather than reliably stay pending.
         ResponseTemplate::new(/*s*/ 200)
@@ -482,57 +497,67 @@ async fn crashed_child_selection_restores_tree_and_checks_original_turn(
         "{error:#}"
     );
 
-    let (mut app, _events, _operations) = make_test_app_with_channels().await;
-    app.chat_widget
-        .handle_thread_session(test_thread_session(tree.running, cwd.path().to_path_buf()));
-    app.chat_widget
-        .set_queue_autosend_suppressed(/*suppressed*/ true);
-    app.chat_widget
-        .apply_external_edit("queued after recovery".into());
-    app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    app.chat_widget
-        .set_queue_autosend_suppressed(/*suppressed*/ false);
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(/*secs*/ 30),
-        app.continue_recovered_local_tree(&replacement, plan),
-    )
-    .await?
-    .ok_or_else(|| color_eyre::eyre::eyre!("recovery continuation was not confirmed"))?;
-    assert!(!app.chat_widget.maybe_send_next_queued_input());
-    assert_eq!(
-        app.chat_widget.queued_user_message_texts(),
-        vec!["queued after recovery"]
-    );
-    if matches!(
-        scenario,
-        RecoveryScenario::ChangedSettings | RecoveryScenario::ChangedSummary
-    ) {
-        assert!(outcome.resumed_turns.is_empty());
-        let changed_setting = if scenario == RecoveryScenario::ChangedSettings {
-            "collaboration mode"
-        } else {
-            "reasoning summary"
-        };
+    if scenario == RecoveryScenario::UnfinishedToolExplicit {
+        // Use the same public control operation as /continue after cold restoration.
+        drop(plan);
+        tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 30),
+            replacement.turn_continue(tree.running),
+        )
+        .await??;
+    } else {
+        let (mut app, _events, _operations) = make_test_app_with_channels().await;
+        app.chat_widget
+            .handle_thread_session(test_thread_session(tree.running, cwd.path().to_path_buf()));
+        app.chat_widget
+            .set_queue_autosend_suppressed(/*suppressed*/ true);
+        app.chat_widget
+            .apply_external_edit("queued after recovery".into());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.chat_widget
+            .set_queue_autosend_suppressed(/*suppressed*/ false);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 30),
+            app.continue_recovered_local_tree(&replacement, plan),
+        )
+        .await?
+        .ok_or_else(|| color_eyre::eyre::eyre!("recovery continuation was not confirmed"))?;
+        assert!(!app.chat_widget.maybe_send_next_queued_input());
         assert_eq!(
-            outcome.paused_threads,
-            vec![(
-                tree.running,
-                format!(
-                    "original turn settings differ from restored thread settings ({changed_setting}); explicit retry is required"
-                ),
-            )]
+            app.chat_widget.queued_user_message_texts(),
+            vec!["queued after recovery"]
         );
-        assert!(response.requests().is_empty());
-        replacement.shutdown().await?;
-        return Ok(());
+        if matches!(
+            scenario,
+            RecoveryScenario::ChangedSettings | RecoveryScenario::ChangedSummary
+        ) {
+            assert!(outcome.resumed_turns.is_empty());
+            let changed_setting = if scenario == RecoveryScenario::ChangedSettings {
+                "collaboration mode"
+            } else {
+                "reasoning summary"
+            };
+            assert_eq!(
+                outcome.paused_threads,
+                vec![(
+                    tree.running,
+                    format!(
+                        "original turn settings differ from restored thread settings ({changed_setting}); explicit retry is required"
+                    ),
+                )]
+            );
+            assert!(response.requests().is_empty());
+            replacement.shutdown().await?;
+            return Ok(());
+        }
+        assert!(
+            outcome.paused_threads.is_empty(),
+            "{:?}",
+            outcome.paused_threads
+        );
+        assert_eq!(outcome.resumed_turns, vec![tree.running]);
     }
-    assert!(
-        outcome.paused_threads.is_empty(),
-        "{:?}",
-        outcome.paused_threads
-    );
-    assert_eq!(outcome.resumed_turns, vec![tree.running]);
     let completed = tokio::time::timeout(Duration::from_secs(/*secs*/ 30), async {
         loop {
             let thread = replacement
@@ -589,7 +614,10 @@ async fn crashed_child_selection_restores_tree_and_checks_original_turn(
     // Include all completed recovery work when asserting that only the selected
     // unfinished child sampled, even if a passive audit reached its idle parent.
     let request = response.single_request();
-    if scenario == RecoveryScenario::UnfinishedTool {
+    if matches!(
+        scenario,
+        RecoveryScenario::UnfinishedTool | RecoveryScenario::UnfinishedToolExplicit
+    ) {
         assert_eq!(
             request.function_call_output_text("pending-tool"),
             Some("aborted".to_string())

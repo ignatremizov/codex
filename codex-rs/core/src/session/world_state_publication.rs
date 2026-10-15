@@ -76,6 +76,7 @@ impl Session {
                 state.pending_audio_duration_ids.extend(audio_ids);
                 state.history.set_world_state_baseline(update.world_state);
                 if let Some(reference_context) = update.reference_context {
+                    state.history.apply_turn_continuation(&reference_context);
                     state.set_reference_context_item(Some(reference_context));
                 }
             },

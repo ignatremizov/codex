@@ -27,6 +27,7 @@ mod side_chat_history;
 use side_chat_history::side_context_checkpoint;
 mod startup_launch;
 mod thread_list;
+mod turn_continue;
 pub(crate) mod user_message_submission;
 mod web_search;
 

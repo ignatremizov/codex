@@ -1,11 +1,12 @@
 //! Inspect durable unfinished work before allocating a recovered agent runtime.
 
 use super::ThreadRequestProcessor;
-use super::select_unfinished_own_turn;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnContextItem;
 use codex_rollout::RolloutItem;
+use codex_rollout::TurnRecoveryMode;
+use codex_rollout::select_recoverable_turn;
 use codex_thread_store::ListTurnsParams;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::SortDirection;
@@ -34,7 +35,9 @@ impl ThreadRequestProcessor {
         let Some(own_segment) = segments.segments.pop() else {
             return Ok(None);
         };
-        let Some(context) = select_unfinished_own_turn(thread_id, &own_segment)? else {
+        let Some(context) =
+            select_recoverable_turn(thread_id, &own_segment, TurnRecoveryMode::Automatic)?
+        else {
             return Ok(None);
         };
         if own_segment.iter().any(|item| matches!(item,
