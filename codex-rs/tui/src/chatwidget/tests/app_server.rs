@@ -2168,6 +2168,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
                 additional_details: None,
             },
             will_retry: false,
+            retry_at: None,
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
         }),
@@ -2396,6 +2397,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
                 additional_details: None,
             },
             will_retry: true,
+            retry_at: None,
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
         }),
@@ -2461,7 +2463,7 @@ async fn live_app_server_errors_render_upstream_message() {
 }
 
 #[tokio::test]
-async fn live_app_server_server_overloaded_error_renders_error() {
+async fn live_app_server_server_overloaded_error_renders_error_and_pauses_follow_up() {
     for (message, error_info) in [
         ("server overloaded", CodexErrorInfo::ServerOverloaded),
         (
@@ -2471,11 +2473,13 @@ async fn live_app_server_server_overloaded_error_renders_error() {
         ("", CodexErrorInfo::ServerOverloaded),
         ("", CodexErrorInfo::PolicyCapacityUnavailable),
     ] {
-        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let thread_id = ThreadId::new();
+        chat.thread_id = Some(thread_id);
 
         chat.handle_server_notification(
             ServerNotification::TurnStarted(TurnStartedNotification {
-                thread_id: "thread-1".to_string(),
+                thread_id: thread_id.to_string(),
                 turn: AppServerTurn {
                     id: "turn-1".to_string(),
                     root_turn_id: None,
@@ -2493,16 +2497,20 @@ async fn live_app_server_server_overloaded_error_renders_error() {
         );
         drain_insert_history(&mut rx);
 
+        chat.input_queue
+            .queued_user_messages
+            .push_back(UserMessage::from("continue after the answer").into());
         chat.handle_server_notification(
             ServerNotification::Error(ErrorNotification {
                 error: AppServerTurnError {
                     misalignment: None,
                     message: message.to_string(),
-                    codex_error_info: Some(error_info),
+                    codex_error_info: Some(error_info.clone()),
                     additional_details: None,
                 },
                 will_retry: false,
-                thread_id: "thread-1".to_string(),
+                retry_at: None,
+                thread_id: thread_id.to_string(),
                 turn_id: "turn-1".to_string(),
             }),
             /*replay_kind*/ None,
@@ -2519,6 +2527,33 @@ async fn live_app_server_server_overloaded_error_renders_error() {
             }
         }
         assert!(!chat.bottom_pane.is_task_running());
+        assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+        assert!(chat.input_queue.recovered_queue);
+
+        chat.handle_server_notification(
+            ServerNotification::TurnCompleted(TurnCompletedNotification {
+                thread_id: thread_id.to_string(),
+                turn: app_server_turn(
+                    "turn-1",
+                    AppServerTurnStatus::Failed,
+                    /*duration_ms*/ None,
+                    Some(AppServerTurnError {
+                        misalignment: None,
+                        message: message.to_string(),
+                        codex_error_info: Some(error_info),
+                        additional_details: None,
+                    }),
+                ),
+            }),
+            /*replay_kind*/ None,
+        );
+        assert!(drain_insert_history(&mut rx).is_empty());
+        assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+        assert!(!chat.maybe_send_next_queued_input());
+        assert!(
+            std::iter::from_fn(|| op_rx.try_recv().ok())
+                .all(|op| !matches!(op, Op::UserTurn { .. }))
+        );
     }
 }
 
@@ -2555,6 +2590,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
                 additional_details: None,
             },
             will_retry: false,
+            retry_at: None,
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
         }),

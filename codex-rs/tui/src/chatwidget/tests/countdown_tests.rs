@@ -1,6 +1,150 @@
 use super::*;
 use pretty_assertions::assert_eq;
 
+fn capacity_retry(turn_id: &str, retry_at: i64) -> ServerNotification {
+    ServerNotification::Error(ErrorNotification {
+        error: AppServerTurnError {
+            misalignment: None,
+            message: "Model at capacity. Retrying... 1/5".into(),
+            codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
+            additional_details: None,
+        },
+        will_retry: true,
+        retry_at: Some(retry_at),
+        thread_id: String::new(),
+        turn_id: turn_id.into(),
+    })
+}
+
+#[tokio::test]
+async fn capacity_retry_countdown_resets_recovers_and_interrupts() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+    chat.handle_server_notification(
+        capacity_retry("turn-1", /*retry_at*/ 0),
+        /*replay_kind*/ None,
+    );
+    assert!(render_bottom_popup(&chat, /*width*/ 100).contains("0s left"));
+    let owner = Some(StatusCountdownOwner::ModelRetry {
+        turn_id: "turn-1".into(),
+    });
+    assert_eq!(chat.status_state.countdown_owner, owner);
+    chat.handle_server_notification(
+        ServerNotification::Warning(codex_app_server_protocol::WarningNotification {
+            thread_id: None,
+            message: "An unrelated background warning".into(),
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.status_state.countdown_owner, owner);
+    assert_eq!(
+        chat.status_state.current_status.header,
+        "Model at capacity. Retrying... 1/5"
+    );
+    chat.handle_server_notification(
+        capacity_retry("turn-1", chrono::Utc::now().timestamp() + 600),
+        /*replay_kind*/ None,
+    );
+    assert!(!render_bottom_popup(&chat, /*width*/ 100).contains("(0s left"));
+    chat.handle_server_notification(
+        capacity_retry("old-turn", /*retry_at*/ 0),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.status_state.countdown_owner, owner);
+    chat.handle_server_notification(
+        capacity_retry("turn-1", /*retry_at*/ 0),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    assert!(!render_bottom_popup(&chat, /*width*/ 100).contains("(0s left"));
+    chat.handle_server_notification(
+        ServerNotification::AgentMessageDelta(
+            codex_app_server_protocol::AgentMessageDeltaNotification {
+                thread_id: String::new(),
+                turn_id: "turn-1".into(),
+                item_id: "message".into(),
+                delta: "Recovered".into(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.status_state.countdown_owner, None);
+    chat.handle_server_notification(
+        capacity_retry("turn-1", /*retry_at*/ 0),
+        /*replay_kind*/ None,
+    );
+    handle_turn_interrupted(&mut chat, "turn-1");
+    assert_eq!(chat.status_state.countdown_owner, None);
+    chat.handle_server_notification(
+        capacity_retry("turn-1", /*retry_at*/ 0),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.status_state.countdown_owner, None);
+    handle_turn_started(&mut chat, "turn-2");
+    chat.handle_server_notification(
+        capacity_retry("turn-2", /*retry_at*/ 0),
+        /*replay_kind*/ None,
+    );
+    chat.finalize_replayed_process_tracking();
+    assert_eq!(chat.status_state.countdown_owner, None);
+}
+
+#[tokio::test]
+async fn capacity_retry_for_another_thread_cannot_replace_current_countdown() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    handle_turn_started(&mut chat, "turn-1");
+    let ServerNotification::Error(mut error) = capacity_retry("turn-1", /*retry_at*/ 0) else {
+        unreachable!()
+    };
+    error.thread_id = thread_id.to_string();
+    chat.handle_server_notification(
+        ServerNotification::Error(error.clone()),
+        /*replay_kind*/ None,
+    );
+    let owner = Some(StatusCountdownOwner::ModelRetry {
+        turn_id: "turn-1".into(),
+    });
+    assert_eq!(chat.status_state.countdown_owner, owner);
+    error.thread_id = ThreadId::new().to_string();
+    error.retry_at = Some(chrono::Utc::now().timestamp() + 600);
+    chat.handle_server_notification(ServerNotification::Error(error), /*replay_kind*/ None);
+    assert_eq!(chat.status_state.countdown_owner, owner);
+    assert!(render_bottom_popup(&chat, /*width*/ 100).contains("0s left"));
+}
+
+#[tokio::test]
+async fn capacity_failure_and_following_failed_completion_keep_queue_paused() {
+    let (mut chat, _rx, mut ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    handle_turn_started(&mut chat, "turn-1");
+    chat.input_queue
+        .queued_user_messages
+        .push_back(UserMessage::from("dependent follow-up").into());
+    let ServerNotification::Error(mut error) = capacity_retry("turn-1", /*retry_at*/ 0) else {
+        unreachable!()
+    };
+    error.will_retry = false;
+    error.retry_at = None;
+    chat.handle_server_notification(ServerNotification::Error(error), /*replay_kind*/ None);
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert!(chat.input_queue.recovered_queue);
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: String::new(),
+            turn: app_server_turn(
+                "turn-1",
+                AppServerTurnStatus::Failed,
+                /*duration_ms*/ None,
+                /*error*/ None,
+            ),
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert!(ops.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn unchanged_countdown_deadlines_do_not_schedule_another_frame() {
     let (frame_requester, mut draw_rx) = FrameRequester::test_channel();

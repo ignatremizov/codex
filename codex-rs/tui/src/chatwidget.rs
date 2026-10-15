@@ -1007,12 +1007,6 @@ impl ChatWidget {
         self.bottom_pane.set_agent_prompt_targets(targets);
     }
 
-    fn restore_retry_status_header_if_present(&mut self) {
-        if let Some(header) = self.status_state.take_retry_status_header() {
-            self.set_status_header(header);
-        }
-    }
-
     pub(crate) fn open_feedback(&mut self, mode: crate::ThreadParamsMode) {
         use crate::ThreadParamsMode;
         let unavailable = match mode {

@@ -39,6 +39,9 @@ pub(super) enum TerminalTitleStatusKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum StatusCountdownOwner {
+    ModelRetry {
+        turn_id: String,
+    },
     CollabWait {
         turn_id: String,
         call_id: String,

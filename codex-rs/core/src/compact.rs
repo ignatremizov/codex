@@ -397,12 +397,6 @@ async fn run_compact_task_inner_impl(
             )
             .await;
         sess.services
-            .local_agent_runtime
-            .control(sess.session_id())
-            .messaging_context_snapshot(sess.presentation_id())
-            .await?
-            .reconcile(&mut turn_input);
-        sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);
         // Checkpoint publication compares exact canonical payloads, never projected refs.
@@ -460,6 +454,41 @@ async fn run_compact_task_inner_impl(
         match attempt_result {
             Ok(response) => {
                 break (response, completion_source_items);
+            }
+            Err(err)
+                if matches!(
+                    err.details(),
+                    CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted
+                ) =>
+            {
+                return Err(err);
+            }
+            Err(e)
+                if matches!(
+                    e.details(),
+                    CodexErrorDetails::SessionBudgetExceeded
+                        | CodexErrorDetails::ResponseIncomplete(_)
+                ) =>
+            {
+                return Err(e);
+            }
+            Err(e) if matches!(e.details(), CodexErrorDetails::ServerOverloaded) => {
+                crate::responses_retry::retry_capacity_error(
+                    &sess,
+                    &turn_context,
+                    e,
+                    codex_client::RetryOperation::Sampling,
+                )
+                .await?;
+            }
+            Err(e)
+                if matches!(
+                    e.details(),
+                    CodexErrorDetails::CompactionTimedOut { .. }
+                        | CodexErrorDetails::CompactionOutputLimit { .. }
+                ) =>
+            {
+                return Err(e);
             }
             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
                 if turn_input_len > 1 {

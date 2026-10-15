@@ -568,6 +568,7 @@ pub(super) fn handle_error(
                 additional_details: None,
             },
             will_retry: false,
+            retry_at: None,
             thread_id: thread_id(chat),
             turn_id: chat
                 .turn_lifecycle
@@ -602,6 +603,7 @@ pub(super) fn handle_stream_error_with_replay(
                 additional_details,
             },
             will_retry: true,
+            retry_at: None,
             thread_id: thread_id(chat),
             turn_id: chat
                 .turn_lifecycle
