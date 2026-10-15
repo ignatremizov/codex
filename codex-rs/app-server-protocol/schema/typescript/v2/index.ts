@@ -659,6 +659,8 @@ export type { ToolRequestUserInputResponse } from "./ToolRequestUserInputRespons
 export type { ToolsV2 } from "./ToolsV2";
 export type { Turn } from "./Turn";
 export type { TurnCompletedNotification } from "./TurnCompletedNotification";
+export type { TurnContinueParams } from "./TurnContinueParams";
+export type { TurnContinueResponse } from "./TurnContinueResponse";
 export type { TurnDiffUpdatedNotification } from "./TurnDiffUpdatedNotification";
 export type { TurnEnvironmentParams } from "./TurnEnvironmentParams";
 export type { TurnError } from "./TurnError";

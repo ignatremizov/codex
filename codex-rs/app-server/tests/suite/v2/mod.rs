@@ -174,6 +174,8 @@ mod thread_unload;
 mod thread_unload_durable;
 mod thread_unload_websocket;
 mod thread_unsubscribe;
+#[path = "turn_continue_tests.rs"]
+mod turn_continue_tests;
 mod turn_cost_otel;
 mod turn_interrupt;
 mod turn_settings_update;

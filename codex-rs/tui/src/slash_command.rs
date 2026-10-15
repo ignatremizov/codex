@@ -40,6 +40,7 @@ pub enum SlashCommand {
     Init,
     Compact,
     Config,
+    Continue,
     Recap,
     Plan,
     Voice,
@@ -101,6 +102,7 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::Continue => "continue the last unfinished turn without a new prompt",
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Rename => "name or rename the current thread",
@@ -230,7 +232,7 @@ impl SlashCommand {
     /// Whether dispatch needs thread state to validate this command before consuming its draft.
     /// The composer must defer busy-state rejection and draft clearing for these commands.
     pub(crate) fn requires_dispatch_validation(self) -> bool {
-        matches!(self, SlashCommand::Review)
+        matches!(self, SlashCommand::Review | SlashCommand::Continue)
     }
 
     /// Commands that do not require a writable current thread. The server must still be connected.
@@ -263,6 +265,7 @@ impl SlashCommand {
             | SlashCommand::Worktree
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Continue
             | SlashCommand::Recap
             | SlashCommand::Export
             | SlashCommand::Keymap

@@ -905,6 +905,11 @@ impl TurnContext {
                 parent_turn_id: self.turn_metadata_state.parent_turn_id(),
                 configured_reasoning_summary: self.initial_settings.selected().reasoning_summary,
                 reasoning_summary: Some(self.reasoning_summary()),
+                cleared_interrupt_message_ids: self
+                    .extension_data
+                    .get::<super::turn_continuation::ClearedInterrupts>()
+                    .map(|cleared| cleared.0.clone())
+                    .unwrap_or_default(),
             }),
             root_turn_id: self.turn_metadata_state.root_turn_id(),
             disabled_plugin_ids: Some(self.disabled_plugin_ids.clone()),

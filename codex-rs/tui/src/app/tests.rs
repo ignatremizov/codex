@@ -86,6 +86,8 @@ mod prompt_edit_tests;
 #[path = "tests/unavailable_commands_tests.rs"]
 mod unavailable_commands;
 
+#[path = "tests/continue_turn_tests.rs"]
+mod continue_turn_tests;
 #[path = "tests/history_hydration_tests.rs"]
 mod history_hydration_tests;
 #[path = "tests/permission_shortcuts_tests.rs"]
@@ -1274,7 +1276,6 @@ async fn queued_start_merges_entry_handling_with_next_turn_reservation() -> Resu
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
-                target_messages: false,
                 queue_delivery: true,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Wake,
@@ -1332,7 +1333,6 @@ async fn degraded_queued_start_still_consumes_next_turn_reservation() -> Result<
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
-                target_messages: false,
                 queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Wake,
@@ -2736,7 +2736,6 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: false,
-                target_messages: false,
                 queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Passive,
@@ -2786,7 +2785,6 @@ async fn collab_response_observation_tracks_current_and_resume_next_turn_policie
             crate::app::agent_observation_display::AgentResponseObservationDisplay {
                 binding: AgentResponseObservationBinding::Bound,
                 commentary: true,
-                target_messages: false,
                 queue_delivery: false,
                 final_response:
                     crate::app::agent_observation_display::AgentFinalResponseDisplay::Presentation,

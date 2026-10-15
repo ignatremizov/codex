@@ -1255,7 +1255,6 @@ impl BottomPane {
         self.composer.current_cursor()
     }
 
-    #[cfg(test)]
     pub(crate) fn composer_text_elements(&self) -> Vec<TextElement> {
         self.composer.text_elements()
     }

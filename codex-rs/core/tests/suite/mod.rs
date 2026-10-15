@@ -254,6 +254,7 @@ mod tool_parallelism;
 mod tool_registration_metrics;
 mod tools;
 mod truncation;
+mod turn_continuation;
 #[path = "turn_error_details_tests.rs"]
 mod turn_error_details;
 mod turn_input_submission;

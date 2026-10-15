@@ -1,4 +1,3 @@
-use super::select_unfinished_own_turn;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ContentItem;
@@ -17,9 +16,18 @@ use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnRecoveryStartOptions;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout::RolloutItem;
+use codex_rollout::TurnRecoveryMode;
+use codex_rollout::select_recoverable_turn;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use test_case::test_case;
+
+fn select_unfinished_own_turn(
+    thread_id: ThreadId,
+    items: &[RolloutItem],
+) -> std::io::Result<Option<TurnContextItem>> {
+    select_recoverable_turn(thread_id, items, TurnRecoveryMode::Automatic)
+}
 
 fn history(thread_id: ThreadId, mode: ThreadHistoryMode) -> anyhow::Result<Vec<RolloutItem>> {
     let cwd = AbsolutePathBuf::try_from(std::env::current_dir()?)?;
@@ -46,6 +54,7 @@ fn history(thread_id: ThreadId, mode: ThreadHistoryMode) -> anyhow::Result<Vec<R
         RolloutItem::TurnContext(TurnContextItem {
             turn_id: Some("original".to_string()),
             recovery_start_options: Some(TurnRecoveryStartOptions {
+                cleared_interrupt_message_ids: Vec::new(),
                 final_output_json_schema: None,
                 service_tier: None,
                 parent_turn_id: None,

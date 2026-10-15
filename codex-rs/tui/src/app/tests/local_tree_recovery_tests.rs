@@ -38,6 +38,7 @@ enum RecoveryScenario {
     ChangedSettings,
     ChangedSummary,
     UnfinishedTool,
+    UnfinishedToolExplicit,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,7 +218,10 @@ async fn tree_owner_child() -> Result<()> {
                 if started
                     && context
                     && input
-                    && (scenario != RecoveryScenario::UnfinishedTool || tool_pending)
+                    && (!matches!(
+                        scenario,
+                        RecoveryScenario::UnfinishedTool | RecoveryScenario::UnfinishedToolExplicit
+                    ) || tool_pending)
                 {
                     return Ok::<_, color_eyre::Report>(turn.id.clone());
                 }
@@ -311,6 +315,14 @@ async fn crashed_child_selection_continues_when_persisted_tool_call_has_no_outco
         .await
 }
 
+#[tokio::test]
+async fn explicit_continue_after_crash_accepts_a_tool_call_without_its_outcome() -> Result<()> {
+    crashed_child_selection_restores_tree_and_checks_original_turn(
+        RecoveryScenario::UnfinishedToolExplicit,
+    )
+    .await
+}
+
 async fn crashed_child_selection_restores_tree_and_checks_original_turn(
     scenario: RecoveryScenario,
 ) -> Result<()> {
@@ -326,7 +338,10 @@ async fn crashed_child_selection_restores_tree_and_checks_original_turn(
              [agents]\nmax_concurrent_threads_per_session = 3\nmax_depth = 2",
         )
         .write(home.path())?;
-    let original_response = if scenario == RecoveryScenario::UnfinishedTool {
+    let original_response = if matches!(
+        scenario,
+        RecoveryScenario::UnfinishedTool | RecoveryScenario::UnfinishedToolExplicit
+    ) {
         // Leave a child-authorized timer pending, with a durable call but no output.
         // Root-only interactive tools would return an error rather than reliably stay pending.
         ResponseTemplate::new(/*s*/ 200)
@@ -482,26 +497,36 @@ async fn crashed_child_selection_restores_tree_and_checks_original_turn(
         "{error:#}"
     );
 
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(/*secs*/ 30),
-        replacement.continue_local_tree_recovery(plan),
-    )
-    .await??;
-    if matches!(
-        scenario,
-        RecoveryScenario::ChangedSettings | RecoveryScenario::ChangedSummary
-    ) {
-        assert!(outcome.resumed_turns.is_empty());
-        assert!(response.requests().is_empty());
-        replacement.shutdown().await?;
-        return Ok(());
+    if scenario == RecoveryScenario::UnfinishedToolExplicit {
+        // Use the same public control operation as /continue after cold restoration.
+        drop(plan);
+        tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 30),
+            replacement.turn_continue(tree.running),
+        )
+        .await??;
+    } else {
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 30),
+            replacement.continue_local_tree_recovery(plan),
+        )
+        .await??;
+        if matches!(
+            scenario,
+            RecoveryScenario::ChangedSettings | RecoveryScenario::ChangedSummary
+        ) {
+            assert!(outcome.resumed_turns.is_empty());
+            assert!(response.requests().is_empty());
+            replacement.shutdown().await?;
+            return Ok(());
+        }
+        assert!(
+            outcome.paused_threads.is_empty(),
+            "{:?}",
+            outcome.paused_threads
+        );
+        assert_eq!(outcome.resumed_turns, vec![tree.running]);
     }
-    assert!(
-        outcome.paused_threads.is_empty(),
-        "{:?}",
-        outcome.paused_threads
-    );
-    assert_eq!(outcome.resumed_turns, vec![tree.running]);
     let completed = tokio::time::timeout(Duration::from_secs(/*secs*/ 30), async {
         loop {
             let thread = replacement
@@ -558,7 +583,10 @@ async fn crashed_child_selection_restores_tree_and_checks_original_turn(
     // Include all completed recovery work when asserting that only the selected
     // unfinished child sampled, even if a passive audit reached its idle parent.
     let request = response.single_request();
-    if scenario == RecoveryScenario::UnfinishedTool {
+    if matches!(
+        scenario,
+        RecoveryScenario::UnfinishedTool | RecoveryScenario::UnfinishedToolExplicit
+    ) {
         assert_eq!(
             request.function_call_output_text("pending-tool"),
             Some("aborted".to_string())
