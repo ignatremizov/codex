@@ -1,5 +1,6 @@
 //! Trusted reasoning-effort updates follow surviving history and the next turn's selected settings.
 
+use anyhow::Context;
 use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::ForkSnapshot;
 use codex_core::RecoverTurnRequest;
@@ -570,10 +571,14 @@ async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
         responses::sse(vec![responses::ev_completed("first")]),
     )
     .await;
-    let failed = responses::mount_response_once(
+    let failed = responses::mount_response_sequence(
         &server,
-        ResponseTemplate::new(503)
-            .set_body_json(serde_json::json!({"error": {"code": "server_is_overloaded"}})),
+        vec![
+            ResponseTemplate::new(503)
+                .insert_header("retry-after", "0")
+                .set_body_json(serde_json::json!({"error": {"code": "server_is_overloaded"}}));
+            6
+        ],
     )
     .await;
     let retried = responses::mount_sse_once(
@@ -634,7 +639,16 @@ async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
     })
     .await;
     let request = retried.single_request();
-    let mut expected = failed.single_request().input();
+    let failed_requests = failed.requests();
+    let mut expected = failed_requests
+        .last()
+        .context("capacity retries must exhaust before the manual retry")?
+        .input();
+    assert!(
+        failed_requests
+            .iter()
+            .all(|request| request.input() == expected)
+    );
     assert_eq!(expected.pop(), Some(effort_update(ReasoningEffort::High)));
     expected.push(effort_update(ReasoningEffort::Medium));
     assert_eq!(request.input(), expected);

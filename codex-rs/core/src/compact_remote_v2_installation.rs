@@ -7,6 +7,7 @@ use crate::compact::build_compaction_replacement_history;
 use crate::context::world_state::split_prefix_updates;
 use crate::context_manager::updates::merge_world_state_updates;
 use crate::session::CompactedHistoryInstallation;
+use codex_async_utils::OrCancelExt;
 use codex_rollout_trace::CompactionCheckpointTracePayload;
 
 #[cfg(test)]
@@ -134,12 +135,15 @@ async fn build_and_install_compaction(
             analytics_details,
             RemoteCompactV2AttemptInput::Foreground(client_session.as_deref_mut()),
         )
-        .await;
+        .or_cancel(run.cancellation)
+        .await?;
         let (attempt, compaction_turn_context) = match attempt {
             Ok(attempt) => (attempt, turn_context),
             Err(error) => {
                 let fallback_turn_context = &replacement_step_context.turn;
-                if !should_retry_with_current_model(&error, turn_context, fallback_turn_context) {
+                if matches!(error.details(), CodexErrorDetails::ServerOverloaded)
+                    || !should_retry_with_current_model(&error, turn_context, fallback_turn_context)
+                {
                     return Err(error);
                 }
                 sess.set_last_known_step_context(replacement_step_context)
@@ -159,7 +163,8 @@ async fn build_and_install_compaction(
                     analytics_details,
                     RemoteCompactV2AttemptInput::Foreground(client_session),
                 )
-                .await;
+                .or_cancel(run.cancellation)
+                .await?;
                 record_model_fallback(
                     &sess.services.session_telemetry,
                     turn_context.model_info().slug.as_str(),
@@ -170,6 +175,14 @@ async fn build_and_install_compaction(
                 );
                 match fallback_result {
                     Ok(attempt) => (attempt, fallback_turn_context),
+                    Err(fallback_error)
+                        if matches!(
+                            fallback_error.details(),
+                            CodexErrorDetails::ServerOverloaded | CodexErrorDetails::TurnAborted
+                        ) =>
+                    {
+                        return Err(fallback_error);
+                    }
                     Err(_) => return Err(error),
                 }
             }

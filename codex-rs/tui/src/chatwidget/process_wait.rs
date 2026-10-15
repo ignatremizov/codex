@@ -530,6 +530,7 @@ impl ChatWidget {
                 self.clear_status_countdown();
             }
             Some(StatusCountdownOwner::CollabWait { .. })
+            | Some(StatusCountdownOwner::ModelRetry { .. })
             | Some(StatusCountdownOwner::Sleep { .. })
             | None => {}
         }
